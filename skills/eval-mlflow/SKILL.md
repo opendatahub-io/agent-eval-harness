@@ -165,6 +165,6 @@ Suggest next steps (include `--config <config>` if a non-default config was used
 - **No hardcoded fields** — determine inputs vs expectations by reading the schema descriptions, not by assuming field names.
 - **Graceful degradation** — if MLflow is not available, scripts exit 0 and the skill reports "MLflow not available, skipping."
 - **Idempotent** — safe to run multiple times. `merge_records` deduplicates, `log_feedback` overwrites.
-- **Don't block on traces** — trace feedback is optional. If no traces exist, skip and suggest enabling tracing via `/eval-setup`.
+- **Don't block on traces** — trace feedback is optional. If no traces exist, skip and note that tracing is configured automatically by `/eval-run`.
 
 $ARGUMENTS
