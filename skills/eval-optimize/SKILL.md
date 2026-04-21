@@ -21,7 +21,7 @@ The key difference from `/eval-review`: you act autonomously. You read judge rat
 
 ```bash
 mkdir -p tmp
-python3 -m agent_eval.state init tmp/optimize-config.yaml \
+python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py init tmp/optimize-config.yaml \
   model=<model> max_iterations=<N> run_id=<id> target_judge=<judge>
 ```
 
@@ -40,7 +40,7 @@ If results already exist (the user just ran `/eval-run`), skip this and use the 
 Read the results:
 
 ```bash
-python3 -m agent_eval.state read $AGENT_EVAL_RUNS_DIR/<id>-iter-0/summary.yaml
+python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py read $AGENT_EVAL_RUNS_DIR/<id>-iter-0/summary.yaml
 ```
 
 If all judges pass, report success and exit — nothing to improve.
@@ -119,7 +119,7 @@ Use the Skill tool to invoke /eval-run --run-id <id>-iter-<N> --baseline <id>-it
 Read the new results:
 
 ```bash
-python3 -m agent_eval.state read $AGENT_EVAL_RUNS_DIR/<id>-iter-<N>/summary.yaml
+python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py read $AGENT_EVAL_RUNS_DIR/<id>-iter-<N>/summary.yaml
 ```
 
 Check:

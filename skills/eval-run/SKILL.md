@@ -46,7 +46,7 @@ Persist parsed flags:
 
 ```bash
 mkdir -p tmp ${AGENT_EVAL_RUNS_DIR:-eval/runs}
-python3 -m agent_eval.state init tmp/eval-config.yaml \
+python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py init tmp/eval-config.yaml \
   model=<model> skill=<skill> run_id=<id> baseline=<baseline> \
   gold=<true/false> no_judge=<true/false>
 ```
@@ -168,7 +168,7 @@ Look for phase markers (`## Phase`, `## Step`, `Batch N/M`), agent counts (`N ag
 
 When you spot an issue, report it to the user with the relevant output lines rather than waiting for completion.
 
-After execution, check `run_result.json` for `exit_code`, `duration_s`, `cost_usd`, `num_turns`, and per-model token usage. Read it with `cat` (it's JSON — `agent_eval.state` would corrupt it to YAML).
+After execution, check `run_result.json` for `exit_code`, `duration_s`, `cost_usd`, `num_turns`, and per-model token usage. Read it with `cat` (it's JSON — `state.py` would corrupt it to YAML).
 
 ```bash
 cat $AGENT_EVAL_RUNS_DIR/<id>/run_result.json
@@ -187,7 +187,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/collect.py \
   --output $AGENT_EVAL_RUNS_DIR/<id>
 ```
 
-Read the collection summary (JSON file — do not use `agent_eval.state` on it):
+Read the collection summary (JSON file — do not use `state.py` on it):
 
 ```bash
 cat $AGENT_EVAL_RUNS_DIR/<id>/collection.json
@@ -225,7 +225,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/score.py pairwise \
 Read the full results:
 
 ```bash
-python3 -m agent_eval.state read $AGENT_EVAL_RUNS_DIR/<id>/summary.yaml
+python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py read $AGENT_EVAL_RUNS_DIR/<id>/summary.yaml
 ```
 
 `summary.yaml` has three sections: `judges` (per-judge `mean` and `pass_rate`), `per_case` (per-case `{value, rationale}` per judge), and `pairwise` (only if `--baseline` was used: `run_a`, `run_b`, `wins_a`, `wins_b`, `ties`).
@@ -289,7 +289,7 @@ Use the Skill tool to invoke /eval-mlflow --action log-results --run-id <id> --c
 ## Rules
 
 - **Never read large artifact files into your context** — delegate content analysis to agents. The summary.yaml has everything you need for reporting.
-- **Persist state at every step** — use `python3 -m agent_eval.state` so flags and results survive context compression.
+- **Persist state at every step** — use `python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py` so flags and results survive context compression.
 - **Report progress** at each step so the user knows what's happening and how long it's taking.
 - **Fail fast** — if execution fails, report it immediately. Don't continue to scoring with no artifacts.
 - **Be decisive in analysis** — the user wants to know what's wrong and what to do about it, not a list of possibilities.

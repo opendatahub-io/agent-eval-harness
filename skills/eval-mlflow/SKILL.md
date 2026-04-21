@@ -22,7 +22,7 @@ Parse `$ARGUMENTS` for:
 Check MLflow is configured:
 
 ```bash
-python3 -c "
+PYTHONPATH=${CLAUDE_SKILL_DIR}/scripts python3 -c "
 from agent_eval.mlflow.experiment import ensure_server
 if ensure_server():
     print('MLflow server: OK')

@@ -20,7 +20,7 @@ You are an interactive reviewer. You present evaluation results to the user, col
 Read the scoring summary and per-case results:
 
 ```bash
-python3 -m agent_eval.state read $AGENT_EVAL_RUNS_DIR/<id>/summary.yaml
+python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py read $AGENT_EVAL_RUNS_DIR/<id>/summary.yaml
 ```
 
 Also read eval.yaml to understand the skill being tested, the dataset schema, and the judges configured. Note which judges are inline checks vs LLM judges — check failures are structural, LLM failures are qualitative.
@@ -80,7 +80,7 @@ feedback:
   case-003-name: ""  # empty = acceptable
 ```
 
-Use the Write tool to create the file directly — do NOT use `agent_eval.state` commands (they produce a different format). This file is read by `/eval-optimize` to ground changes in human judgment, and by `/eval-mlflow` to push feedback to MLflow traces.
+Use the Write tool to create the file directly — do NOT use `state.py` commands (they produce a different format). This file is read by `/eval-optimize` to ground changes in human judgment, and by `/eval-mlflow` to push feedback to MLflow traces.
 
 ## Step 6: Analyze Patterns
 

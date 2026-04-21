@@ -19,7 +19,7 @@ The core principle: **observe, don't assume**. Every field name, file pattern, a
 
 ```bash
 mkdir -p tmp
-python3 -m agent_eval.state init tmp/analyze-config.yaml \
+python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py init tmp/analyze-config.yaml \
   skill=<skill> config=<config> update=<true/false>
 ```
 
