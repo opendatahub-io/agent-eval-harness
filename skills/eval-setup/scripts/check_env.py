@@ -34,24 +34,24 @@ def main():
     # 2. mlflow[genai]
     mlflow_ver = _check_import("mlflow")
     checks.append(("mlflow", bool(mlflow_ver), mlflow_ver or "not installed",
-                    "pip install 'mlflow[genai]>=3.5'"))
+                    "Run /eval-setup to install"))
 
     # 3. pyyaml
     yaml_ver = _check_import("yaml", "pyyaml")
     checks.append(("pyyaml", bool(yaml_ver), yaml_ver or "not installed",
-                    "pip install 'pyyaml>=6.0'"))
+                    "Run /eval-setup to install"))
 
     # 4. agent_eval (this harness)
     agent_eval_ver = _check_import("agent_eval")
     checks.append(("agent_eval", bool(agent_eval_ver),
                     agent_eval_ver or "not installed",
-                    "pip install -e /path/to/agent-eval-harness"))
+                    "Run /eval-setup to install"))
 
-    # 5. anthropic SDK (optional)
+    # 5. anthropic SDK (optional — needed for LLM judges and pairwise comparison)
     anthropic_ver = _check_import("anthropic")
     checks.append(("anthropic", bool(anthropic_ver),
                     anthropic_ver or "not installed (optional)",
-                    "pip install 'anthropic>=0.40'"))
+                    "Run /eval-setup to install"))
 
     # 6. API keys
     has_api_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
@@ -66,7 +66,7 @@ def main():
                     ", ".join(api_detail) if api_detail else "none set",
                     "export ANTHROPIC_API_KEY=<key> or ANTHROPIC_VERTEX_PROJECT_ID=<id>"))
 
-    # 6. MLflow tracking URI
+    # 7. MLflow tracking URI
     tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "")
     if tracking_uri:
         mlflow_ok = True
@@ -79,7 +79,7 @@ def main():
                     mlflow_detail,
                     "export MLFLOW_TRACKING_URI=<uri> or run: mlflow server --port 5000"))
 
-    # 7. Directory structure
+    # 8. Directory structure
     runs_dir = os.environ.get("AGENT_EVAL_RUNS_DIR", "eval/runs")
     dirs_to_check = [runs_dir, "tmp"]
     missing_dirs = [d for d in dirs_to_check if not Path(d).exists()]
@@ -93,7 +93,7 @@ def main():
                     "all present" if dirs_ok else f"missing: {', '.join(missing_dirs)}",
                     f"mkdir -p {runs_dir} tmp" + (" (use --fix to create)" if not args.fix else "")))
 
-    # 8. eval.yaml (if --config provided)
+    # 9. eval.yaml (if --config provided)
     if args.config:
         config_path = Path(args.config)
         if config_path.exists():
@@ -119,7 +119,7 @@ def main():
         status = "OK" if ok else "MISSING"
         icon = "+" if ok else "-"
         print(f"  [{icon}] {name:<16} {detail}")
-        if not ok and name not in ("anthropic", "mlflow_server"):
+        if not ok and name not in ("anthropic", "mlflow", "mlflow_server"):
             all_required_ok = False
             print(f"      Fix: {fix}")
 

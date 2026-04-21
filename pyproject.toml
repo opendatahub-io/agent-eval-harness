@@ -15,11 +15,10 @@ dependencies = [
 
 [project.optional-dependencies]
 mlflow = ["mlflow[genai]>=3.5"]
-anthropic = ["anthropic>=0.40"]
-anthropic-vertex = ["anthropic[vertex]>=0.40"]
+anthropic = ["anthropic[vertex]>=0.40"]
 all = [
     "mlflow[genai]>=3.5",
-    "anthropic>=0.40",
+    "anthropic[vertex]>=0.40",
 ]
 test = ["pytest>=8.0"]
 
