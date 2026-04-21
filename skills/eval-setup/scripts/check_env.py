@@ -41,11 +41,16 @@ def main():
     checks.append(("pyyaml", bool(yaml_ver), yaml_ver or "not installed",
                     "Run /eval-setup to install"))
 
-    # 4. agent_eval (this harness)
-    agent_eval_ver = _check_import("agent_eval")
-    checks.append(("agent_eval", bool(agent_eval_ver),
-                    agent_eval_ver or "not installed",
-                    "Run /eval-setup to install"))
+    # 4. agent_eval (available via symlink in each skill's scripts/ dir)
+    script_dir = Path(__file__).parent
+    agent_eval_link = script_dir / "agent_eval"
+    link_ok = agent_eval_link.is_dir()
+    if link_ok:
+        link_detail = f"symlink at {agent_eval_link}"
+    else:
+        link_detail = f"missing symlink at {agent_eval_link}"
+    checks.append(("agent_eval", link_ok, link_detail,
+                    "Create symlink: ln -sf ../../../agent_eval scripts/agent_eval"))
 
     # 5. anthropic SDK (optional — needed for LLM judges and pairwise comparison)
     anthropic_ver = _check_import("anthropic")

@@ -19,55 +19,33 @@ Parse `$ARGUMENTS` for:
 | `--skip-mlflow` | no | false | Skip MLflow setup entirely |
 | `--runs-dir <path>` | no | `eval/runs` | Directory where eval runs are stored |
 
-## Step 1: Install the Eval Harness
+## Step 1: Install Dependencies
 
-First check if `agent_eval` is already importable:
+The `agent_eval` package is available to skill scripts via symlinks — no pip install needed for it. Only third-party dependencies need to be installed.
 
-```bash
-python3 -c "from agent_eval.config import EvalConfig; print('agent_eval: OK')" 2>&1 || echo "agent_eval: NOT INSTALLED"
-```
-
-If already installed, skip to Step 2.
-
-If not installed, detect whether this is a local checkout or a marketplace install:
+Check what's missing:
 
 ```bash
-HARNESS_ROOT="$(cd "$CLAUDE_SKILL_DIR/../.." && pwd)"
-if [ -f "$HARNESS_ROOT/pyproject.toml" ] && [ -d "$HARNESS_ROOT/.git" ]; then
-    echo "LOCAL_CHECKOUT=$HARNESS_ROOT"
-else
-    echo "MARKETPLACE_INSTALL"
-fi
+python3 -c "import yaml; print('pyyaml: OK')" 2>&1 || echo "pyyaml: MISSING"
 ```
 
-Choose the extras based on `--skip-mlflow`:
-- If `--skip-mlflow`: use `[anthropic]`
-- Otherwise: use `[anthropic,mlflow]`
-
-**Local checkout** — ask the user whether they want an editable install (for development, changes to agent_eval take effect immediately) or a regular install (stable):
-
-- Editable: `pip install -e "$HARNESS_ROOT[anthropic]"` or `pip install -e "$HARNESS_ROOT[anthropic,mlflow]"`
-- Regular: `pip install "$HARNESS_ROOT[anthropic]"` or `pip install "$HARNESS_ROOT[anthropic,mlflow]"`
-
-Default to editable if the user doesn't have a preference.
-
-**Marketplace install** — install from GitHub:
+Install pyyaml if missing:
 
 ```bash
-# With MLflow (default)
-pip install "agent-eval-harness[anthropic,mlflow] @ git+https://github.com/opendatahub-io/agent-eval-harness.git"
-
-# Without MLflow (--skip-mlflow)
-pip install "agent-eval-harness[anthropic] @ git+https://github.com/opendatahub-io/agent-eval-harness.git"
+pip install 'pyyaml>=6.0'
 ```
 
-After install, verify:
+If `--skip-mlflow` was NOT passed, also install mlflow:
 
 ```bash
-python3 -c "from agent_eval.config import EvalConfig; print('agent_eval: OK')"
+pip install 'mlflow[genai]>=3.5'
 ```
 
-If pip install fails, check network connectivity and whether the user has write permissions to the target Python environment (system Python may require `sudo` or `--user`).
+For LLM judges and pairwise comparison (optional):
+
+```bash
+pip install 'anthropic[vertex]>=0.40'
+```
 
 ## Step 2: Run Preflight Checks
 
@@ -159,7 +137,7 @@ test -f eval.yaml && echo "CONFIG_EXISTS" || echo "NO_CONFIG"
 If eval.yaml exists:
 
 ```bash
-python3 -c "
+PYTHONPATH=${CLAUDE_SKILL_DIR}/scripts python3 -c "
 from agent_eval.config import EvalConfig
 from agent_eval.mlflow.experiment import setup_experiment, resolve_tracking_uri
 config = EvalConfig.from_yaml('eval.yaml')
