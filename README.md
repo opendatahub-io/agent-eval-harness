@@ -49,7 +49,7 @@ Or clone and load as a local plugin:
 
 ```bash
 git clone https://github.com/opendatahub-io/agent-eval-harness
-pip install -e ./agent-eval-harness
+pip install -e .
 claude --plugin-dir ./agent-eval-harness
 ```
 
