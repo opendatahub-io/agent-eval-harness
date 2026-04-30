@@ -100,9 +100,13 @@ def main():
     mlflow_experiment = args.mlflow_experiment or config.mlflow.experiment
     effort = args.effort or config.runner.effort
 
+    # Resolve plugin_dirs relative to project root (CWD) so they survive
+    # the workspace CWD change — keeps plugin names stable.
+    resolved_plugin_dirs = [str(Path(d).resolve()) for d in config.runner.plugin_dirs] if config.runner.plugin_dirs else []
+
     runner = runner_cls(
         permissions=config.permissions,
-        plugin_dirs=config.runner.plugin_dirs,
+        plugin_dirs=resolved_plugin_dirs,
         env_strip=config.runner.env_strip,
         system_prompt=config.runner.system_prompt,
         subagent_model=subagent_model,
