@@ -73,6 +73,16 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
                     record["annotations"] = yaml.safe_load(f) or {}
             except (yaml.YAMLError, OSError):
                 pass
+            # Load annotation-referenced files into the record
+            for key, val in record["annotations"].items():
+                if isinstance(val, str) and not val.startswith("/"):
+                    ref_path = (dataset_root / case_id / val).resolve()
+                    if (ref_path.is_file() and not ref_path.is_symlink()
+                            and ref_path.is_relative_to(dataset_root)):
+                        try:
+                            record[f"annotation_{key}_content"] = ref_path.read_text()
+                        except (UnicodeDecodeError, OSError):
+                            pass
 
     # --- File artifacts (from path outputs) ---
     for output in config.outputs:
@@ -91,7 +101,7 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
             try:
                 record["files"][rel] = f.read_text()
             except UnicodeDecodeError:
-                record["files"][rel] = f"<binary: {f.name}>"
+                record["files"][rel] = {"_binary": True, "path": str(f), "name": f.name}
 
     # Convenience keys for the first file in each path output dir
     for output in config.outputs:
@@ -404,23 +414,63 @@ def _make_anthropic_llm_judge(name, prompt, judge_model):
     import re
 
     def scorer(outputs=None, **kwargs):
+        import base64
         client = _get_anthropic_client()
+        image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+        image_blocks = []
+
         # Render {{ outputs }} template variable
         rendered_prompt = prompt
         if outputs and "{{ outputs }}" in rendered_prompt:
-            # Build a text summary of outputs for the LLM
             files = outputs.get("files", {})
             output_text = ""
             for path, content in sorted(files.items()):
-                output_text += f"\n### {path}\n\n{content}\n"
+                if isinstance(content, dict) and content.get("_binary"):
+                    suffix = Path(path).suffix.lower()
+                    if suffix in image_extensions:
+                        try:
+                            with open(content["path"], "rb") as img_f:
+                                b64 = base64.standard_b64encode(img_f.read()).decode()
+                            media_type = "image/jpeg" if suffix in (".jpg", ".jpeg") else f"image/{suffix.lstrip('.')}"
+                            image_blocks.append({"label": path, "media_type": media_type, "data": b64})
+                            output_text += f"\n### {path}\n\n[image attached below]\n"
+                        except OSError:
+                            output_text += f"\n### {path}\n\n<binary: {content['name']}>\n"
+                    else:
+                        output_text += f"\n### {path}\n\n<binary: {content['name']}>\n"
+                else:
+                    output_text += f"\n### {path}\n\n{content}\n"
             rendered_prompt = rendered_prompt.replace("{{ outputs }}", output_text)
+
+        # Render {{ annotations }} template variable
+        if outputs and "{{ annotations }}" in rendered_prompt:
+            ann = outputs.get("annotations", {})
+            ann_text = ""
+            for key, val in sorted(ann.items()):
+                ann_text += f"- **{key}**: {val}\n"
+            # Include annotation file contents
+            for key in sorted(outputs):
+                if key.startswith("annotation_") and key.endswith("_content"):
+                    field = key[len("annotation_"):-len("_content")]
+                    ann_text += f"\n### {field} (file content)\n\n{outputs[key]}\n"
+            rendered_prompt = rendered_prompt.replace("{{ annotations }}", ann_text)
+
+        # Build message content — multimodal if images present
+        if image_blocks:
+            content_parts = [{"type": "text", "text": rendered_prompt}]
+            for img in image_blocks:
+                content_parts.append({"type": "text", "text": f"\n**Image: {img['label']}**"})
+                content_parts.append({"type": "image", "source": {"type": "base64", "media_type": img["media_type"], "data": img["data"]}})
+            user_message = content_parts
+        else:
+            user_message = rendered_prompt
 
         response = client.messages.create(
             model=judge_model,
             max_tokens=1024,
             system="You are a judge evaluating skill outputs. "
                    "Return a JSON object with 'score' (integer 1-5) and 'rationale' (string).",
-            messages=[{"role": "user", "content": rendered_prompt}],
+            messages=[{"role": "user", "content": user_message}],
         )
         text = response.content[0].text.strip()
         # Extract score from JSON response
