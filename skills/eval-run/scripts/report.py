@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import base64
 import difflib
 import json
 import os
@@ -154,6 +155,48 @@ def _read_text(path: Path, max_lines: int = 200) -> str:
         return "\n".join(lines)
     except (UnicodeDecodeError, OSError):
         return ""
+
+
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+_IMAGE_MIME = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+}
+
+
+def _is_image_file(path: Path) -> bool:
+    return path.suffix.lower() in _IMAGE_SUFFIXES
+
+
+def _image_to_data_uri(path: Path) -> str:
+    mime = _IMAGE_MIME.get(path.suffix.lower(), "application/octet-stream")
+    try:
+        data = base64.b64encode(path.read_bytes()).decode("ascii")
+        return f"data:{mime};base64,{data}"
+    except OSError:
+        return ""
+
+
+def _find_gold_standard_image(case_id: str, dataset_path: str):
+    """Find a gold standard image for a case from the dataset annotations."""
+    if not dataset_path:
+        return None
+    case_ds = Path(dataset_path) / case_id
+    ann_path = case_ds / "annotations.yaml"
+    if not ann_path.is_file():
+        return None
+    ann = _load_yaml(ann_path)
+    gold_name = ann.get("gold_diagram")
+    if not gold_name:
+        return None
+    stem = Path(gold_name).stem
+    full_stem = gold_name  # e.g. "gold-standard.drawio"
+    for suffix in _IMAGE_SUFFIXES:
+        for candidate_name in [f"{full_stem}{suffix}", f"{stem}{suffix}"]:
+            candidate = case_ds / candidate_name
+            if candidate.is_file():
+                return candidate
+    return None
 
 
 def _read_case_input(dataset_path: str, case_id: str) -> str:
@@ -387,6 +430,42 @@ a:hover { text-decoration: underline; }
   #theme-toggle { display: none; }
   .section, .analysis, details.case { box-shadow: none; break-inside: avoid; }
 }
+
+/* Image artifacts */
+.img-artifact { margin: 0.5em 0; }
+.img-artifact img { max-width: 100%; height: auto; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+.img-label { display: inline-block; font-size: 0.78em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 9px; border-radius: 999px; margin-bottom: 6px; }
+.img-label-gen { background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent); }
+.img-label-ref { background: var(--success-soft); color: var(--success); border: 1px solid var(--success-border); }
+.img-label-bl { background: var(--warning-soft); color: var(--warning); border: 1px solid var(--warning-border); }
+
+/* Comparison widget */
+.img-compare { margin: 0.8em 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.img-compare-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.img-compare-tab { padding: 7px 16px; font-size: 0.85em; font-weight: 600; color: var(--text-muted); background: transparent; border: none; cursor: pointer; border-bottom: 2px solid transparent; transition: color .15s, border-color .15s; }
+.img-compare-tab:hover { color: var(--text); }
+.img-compare-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.img-compare-panel { display: none; padding: 1em; }
+.img-compare-panel.active { display: block; }
+
+/* Side-by-side */
+.img-compare-sbs { display: flex; gap: 1em; }
+.img-compare-sbs > div { flex: 1; min-width: 0; }
+.img-compare-sbs img { width: 100%; height: auto; border: 1px solid var(--border); border-radius: 4px; background: #fff; }
+
+/* Swipe */
+.img-compare-swipe-imgs { display: grid; border: 1px solid var(--border); border-radius: 4px; background: #fff; overflow: hidden; }
+.img-compare-swipe-imgs > img { grid-area: 1/1; display: block; width: 100%; height: auto; }
+.img-compare-swipe-imgs .swipe-ref { z-index: 1; clip-path: inset(0 50% 0 0); }
+.img-compare-swipe-imgs .swipe-line { grid-area: 1/1; z-index: 2; justify-self: start; width: 3px; background: var(--accent); pointer-events: none; margin-left: 50%; }
+.img-compare-swipe input[type="range"] { display: block; width: 100%; margin: 8px 0 0; accent-color: var(--accent); }
+.img-compare-swipe-labels { display: flex; justify-content: space-between; padding: 4px 1em; font-size: 0.82em; color: var(--text-muted); }
+
+/* Onion */
+.img-compare-onion-wrap { display: grid; border: 1px solid var(--border); border-radius: 4px; background: #fff; overflow: hidden; }
+.img-compare-onion-wrap > img { grid-area: 1/1; display: block; width: 100%; height: auto; }
+.img-compare-onion input[type="range"] { display: block; width: 100%; margin: 8px 0 0; accent-color: var(--accent); }
+.img-compare-onion .onion-label { text-align: center; font-size: 0.82em; color: var(--text-muted); margin-top: 2px; }
 """
 
 THEME_SCRIPT = """
@@ -420,6 +499,57 @@ TOGGLE_SCRIPT = """
     paint();
   });
   paint();
+})();
+"""
+
+IMAGE_COMPARE_SCRIPT = """
+(function () {
+  document.querySelectorAll('.img-compare').forEach(function (widget) {
+    var tabs = widget.querySelectorAll('.img-compare-tab');
+    var panels = widget.querySelectorAll('.img-compare-panel');
+    tabs.forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        tabs.forEach(function (t) { t.classList.remove('active'); });
+        panels.forEach(function (p) { p.classList.remove('active'); });
+        tab.classList.add('active');
+        var target = widget.querySelector('#' + tab.dataset.panel);
+        if (target) target.classList.add('active');
+      });
+    });
+    var swipe = widget.querySelector('.img-compare-swipe');
+    if (swipe) {
+      (function (sw) {
+        var sl = sw.querySelector('input[type="range"]');
+        var ref = sw.querySelector('.swipe-ref');
+        var ln = sw.querySelector('.swipe-line');
+        if (sl && ref) {
+          function update() {
+            var p = sl.value;
+            ref.style.clipPath = 'inset(0 ' + (100 - p) + '% 0 0)';
+            if (ln) ln.style.marginLeft = p + '%';
+          }
+          sl.addEventListener('input', update);
+          update();
+        }
+      })(swipe);
+    }
+    var onion = widget.querySelector('.img-compare-onion');
+    if (onion) {
+      (function (on) {
+        var sl = on.querySelector('input[type="range"]');
+        var top = on.querySelector('.onion-top');
+        var lbl = on.querySelector('.onion-label');
+        if (sl && top) {
+          function update() {
+            top.style.opacity = sl.value / 100;
+            if (lbl) lbl.textContent = 'Generated opacity: ' + sl.value + '%';
+          }
+          sl.addEventListener('input', update);
+          update();
+        }
+      })(onion);
+    }
+  });
 })();
 """
 
@@ -1320,6 +1450,66 @@ def _md_table_to_html(table_lines):
     return html
 
 
+_img_compare_counter = 0
+
+
+def _render_image_compare(gen_uri, ref_uri, gen_label="Generated",
+                          ref_label="Reference", ref_class="img-label-ref"):
+    global _img_compare_counter
+    _img_compare_counter += 1
+    uid = f"ic{_img_compare_counter}"
+    return (
+        f'<div class="img-compare">\n'
+        f'  <div class="img-compare-tabs">\n'
+        f'    <button class="img-compare-tab active" data-panel="{uid}-sbs">Side by side</button>\n'
+        f'    <button class="img-compare-tab" data-panel="{uid}-swipe">Swipe</button>\n'
+        f'    <button class="img-compare-tab" data-panel="{uid}-onion">Onion</button>\n'
+        f'  </div>\n'
+        f'  <div id="{uid}-sbs" class="img-compare-panel active">\n'
+        f'    <div class="img-compare-sbs">\n'
+        f'      <div><span class="img-label {ref_class}">{_esc(ref_label)}</span><br>'
+        f'<img src="{ref_uri}" loading="lazy" alt="{_esc(ref_label)}"></div>\n'
+        f'      <div><span class="img-label img-label-gen">{_esc(gen_label)}</span><br>'
+        f'<img src="{gen_uri}" loading="lazy" alt="{_esc(gen_label)}"></div>\n'
+        f'    </div>\n'
+        f'  </div>\n'
+        f'  <div id="{uid}-swipe" class="img-compare-panel">\n'
+        f'    <div class="img-compare-swipe">\n'
+        f'      <div class="img-compare-swipe-imgs">\n'
+        f'        <img src="{gen_uri}" alt="{_esc(gen_label)}">\n'
+        f'        <img class="swipe-ref" src="{ref_uri}" alt="{_esc(ref_label)}">\n'
+        f'        <div class="swipe-line"></div>\n'
+        f'      </div>\n'
+        f'      <input type="range" min="0" max="100" value="50">\n'
+        f'    </div>\n'
+        f'    <div class="img-compare-swipe-labels">'
+        f'<span>◀ {_esc(gen_label)}</span><span>{_esc(ref_label)} ▶</span></div>\n'
+        f'  </div>\n'
+        f'  <div id="{uid}-onion" class="img-compare-panel">\n'
+        f'    <div class="img-compare-onion">\n'
+        f'      <div class="img-compare-onion-wrap">\n'
+        f'        <img src="{ref_uri}" alt="{_esc(ref_label)}">\n'
+        f'        <img class="onion-top" src="{gen_uri}" alt="{_esc(gen_label)}" style="opacity:0.5">\n'
+        f'      </div>\n'
+        f'      <input type="range" min="0" max="100" value="50">\n'
+        f'      <div class="img-compare-swipe-labels">'
+        f'<span>◀ {_esc(ref_label)}</span>'
+        f'<span class="onion-label">{_esc(gen_label)} opacity: 50%</span>'
+        f'<span>{_esc(gen_label)} ▶</span></div>\n'
+        f'    </div>\n'
+        f'  </div>\n'
+        f'</div>\n'
+    )
+
+
+def _render_standalone_image(data_uri, label):
+    return (
+        f'<div class="img-artifact">\n'
+        f'  <img src="{data_uri}" loading="lazy" alt="{_esc(label)}">\n'
+        f'</div>\n'
+    )
+
+
 def _shared_output_paths(config):
     """Return set of output paths with batch_pattern '*' (shared across cases)."""
     return {o.get("path") for o in config.get("outputs", [])
@@ -1501,6 +1691,11 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
         # Output files — when baseline is provided, skip files under output_paths
         # since those will appear in the baseline diff section below.
         has_baseline = bl_cases_dir and (bl_cases_dir / case_id).exists()
+
+        # Resolve gold standard image for comparison
+        gold_img_path = _find_gold_standard_image(case_id, dataset_path)
+        gold_data_uri = _image_to_data_uri(gold_img_path) if gold_img_path else ""
+
         # Execution logs at the case root — not skill output, exclude from
         # the report.  Only exclude root-level files, not nested ones with the
         # same name (a skill could legitimately produce artifacts/stdout.log).
@@ -1536,6 +1731,22 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
                         except (UnicodeDecodeError, OSError):
                             html += (f'<div class="file-badge">{_esc(str(rel))} '
                                      f'<span class="skip">(could not read)</span></div>\n')
+                    elif _is_image_file(f):
+                        data_uri = _image_to_data_uri(f)
+                        if data_uri:
+                            html += f'<div class="file-badge">{_esc(str(rel))}</div>\n'
+                            if gold_data_uri:
+                                html += _render_image_compare(
+                                    data_uri, gold_data_uri,
+                                    gen_label="Generated",
+                                    ref_label="Gold Standard",
+                                    ref_class="img-label-ref")
+                            else:
+                                html += _render_standalone_image(data_uri, str(rel))
+                        else:
+                            size = f.stat().st_size
+                            html += (f'<div class="file-badge">{_esc(str(rel))} '
+                                     f'<span class="skip">({size} bytes, unreadable)</span></div>\n')
                     else:
                         content = _read_text(f, max_lines=200)
                         if content:
@@ -1559,9 +1770,28 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
                 curr_files = {f.name: f for f in curr_dir.iterdir() if f.is_file()} if curr_dir.exists() else {}
                 base_files = {f.name: f for f in base_dir.iterdir() if f.is_file()} if base_dir.exists() else {}
                 for name in sorted(set(curr_files) | set(base_files)):
+                    curr_f = curr_files.get(name)
+                    base_f = base_files.get(name)
+                    # Image comparison
+                    if ((curr_f and _is_image_file(curr_f))
+                            or (base_f and _is_image_file(base_f))):
+                        curr_uri = _image_to_data_uri(curr_f) if curr_f else ""
+                        base_uri = _image_to_data_uri(base_f) if base_f else ""
+                        if curr_uri and base_uri:
+                            diffs.append((f"{out_path}/{name}",
+                                _render_image_compare(
+                                    curr_uri, base_uri,
+                                    gen_label="Current",
+                                    ref_label="Baseline",
+                                    ref_class="img-label-bl")))
+                        elif curr_uri:
+                            diffs.append((f"{out_path}/{name} (new)",
+                                _render_standalone_image(curr_uri, name)))
+                        continue
+                    # Text comparison
                     try:
-                        ct = curr_files[name].read_text() if name in curr_files else ""
-                        bt = base_files[name].read_text() if name in base_files else ""
+                        ct = curr_f.read_text() if curr_f else ""
+                        bt = base_f.read_text() if base_f else ""
                     except (UnicodeDecodeError, OSError):
                         continue
                     if ct != bt:
@@ -1623,7 +1853,11 @@ def generate_report(config, summary, run_result, run_dir,
     html += _wrap_section(_render_regressions(summary, config))
     html += _wrap_section(_render_shared_outputs(run_dir, config))
     html += _render_per_case(summary, run_dir, config, baseline_dir, review)
-    html += f"\n<script>{TOGGLE_SCRIPT}</script>\n</body>\n</html>\n"
+    global _img_compare_counter
+    _img_compare_counter = 0
+    html += f"\n<script>{TOGGLE_SCRIPT}</script>\n"
+    html += f"<script>{IMAGE_COMPARE_SCRIPT}</script>\n"
+    html += "</body>\n</html>\n"
     return html
 
 
