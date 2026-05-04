@@ -24,25 +24,74 @@ HARNESS_SKILLS = {"eval-setup", "eval-analyze", "eval-dataset", "eval-run",
                    "eval-review", "eval-mlflow", "eval-optimize"}
 
 
+def _skills_from_plugin_json(plugin_json):
+    """Extract skill directories from a plugin.json file.
+
+    Returns a list of skill dir paths (relative to CWD) or None.
+    """
+    try:
+        with open(plugin_json) as f:
+            manifest = json.load(f)
+        skills_field = manifest.get("skills")
+        if skills_field:
+            plugin_root = plugin_json.parent.parent
+            if isinstance(skills_field, str):
+                return [str(plugin_root / skills_field.lstrip("./"))]
+            elif isinstance(skills_field, list):
+                return [str(plugin_root / s.lstrip("./")) for s in skills_field]
+    except Exception:
+        pass
+    return None
+
+
+def _discover_via_marketplace():
+    """Follow marketplace.json source paths to find nested plugin skill dirs."""
+    marketplace = Path(".claude-plugin/marketplace.json")
+    if not marketplace.exists():
+        return []
+
+    try:
+        with open(marketplace) as f:
+            data = json.load(f)
+    except Exception:
+        return []
+
+    dirs = []
+    for plugin in data.get("plugins", []):
+        source = plugin.get("source", "")
+        if not source:
+            continue
+        source_path = Path(source.lstrip("./"))
+        nested_pj = source_path / ".claude-plugin" / "plugin.json"
+        if nested_pj.exists():
+            from_pj = _skills_from_plugin_json(nested_pj)
+            if from_pj:
+                dirs.extend(from_pj)
+                continue
+        # Default: <source>/skills/
+        default_skills = source_path / "skills"
+        if default_skills.is_dir():
+            dirs.append(str(default_skills))
+    return dirs
+
+
 def get_skill_dirs():
     """Get skill directories for the current project.
 
-    Reads .claude-plugin/plugin.json for a custom 'skills' field.
-    Falls back to the default locations.
+    Priority:
+    1. Root .claude-plugin/plugin.json 'skills' field
+    2. Nested plugins discovered via marketplace.json source paths
+    3. Default locations (.claude/skills, skills)
     """
     plugin_json = Path(".claude-plugin/plugin.json")
-    if plugin_json.exists():
-        try:
-            with open(plugin_json) as f:
-                manifest = json.load(f)
-            skills_field = manifest.get("skills")
-            if skills_field:
-                if isinstance(skills_field, str):
-                    return [skills_field.lstrip("./")]
-                elif isinstance(skills_field, list):
-                    return [s.lstrip("./") for s in skills_field]
-        except Exception:
-            pass
+    from_root = _skills_from_plugin_json(plugin_json) if plugin_json.exists() else None
+    if from_root:
+        return from_root
+
+    from_marketplace = _discover_via_marketplace()
+    if from_marketplace:
+        return from_marketplace
+
     return DEFAULT_SKILL_DIRS
 
 
