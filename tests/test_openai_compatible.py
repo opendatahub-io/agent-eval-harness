@@ -384,6 +384,15 @@ class TestRunSkillURLConstruction:
         )
         assert result.exit_code == 0
 
+    def test_v1_suffix_not_doubled(self, mock_server, tmp_path):
+        """base_url ending in /v1 should not produce /v1/v1/chat/completions."""
+        runner = OpenAICompatibleRunner(base_url=f"{mock_server}/v1")
+        result = runner.run_skill(
+            skill_name="s", args="a",
+            workspace=tmp_path, model="m",
+        )
+        assert result.exit_code == 0
+
 
 class TestRunSkillErrors:
     """Test error handling paths."""
@@ -469,6 +478,20 @@ class TestRunSkillErrors:
         # (because the condition is `exit_code == 0 and response_text`)
         assert not (tmp_path / "artifacts" / "response.md").exists()
 
+    def test_empty_choices_array_returns_error(self, mock_server, tmp_path):
+        _MockHandler.response_body = {
+            "id": "chatcmpl-abc",
+            "choices": [],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5},
+        }
+        runner = OpenAICompatibleRunner(base_url=mock_server)
+        result = runner.run_skill(
+            skill_name="s", args="a",
+            workspace=tmp_path, model="m",
+        )
+        assert result.exit_code == 1
+        assert "empty choices" in result.stderr
+
 
 class TestRunSkillReturnType:
     """Verify RunResult fields and types."""
@@ -509,6 +532,23 @@ class TestRunSkillReturnType:
         assert result.per_model_usage is None
         assert result.per_model_turns is None
         assert result.permission_denials is None
+
+    def test_raw_output_contains_response_body(self, mock_server, tmp_path):
+        runner = OpenAICompatibleRunner(base_url=mock_server)
+        result = runner.run_skill(
+            skill_name="s", args="a",
+            workspace=tmp_path, model="m",
+        )
+        assert result.raw_output is not None
+        assert "choices" in result.raw_output
+
+    def test_raw_output_none_on_error(self, mock_server, tmp_path):
+        _MockHandler.response_code = 500
+        runner = OpenAICompatibleRunner(base_url=mock_server)
+        result = runner.run_skill(
+            skill_name="s", args="a",
+            workspace=tmp_path, model="m",
+        )
         assert result.raw_output is None
 
 

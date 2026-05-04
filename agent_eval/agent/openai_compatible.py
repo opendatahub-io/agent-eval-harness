@@ -69,8 +69,10 @@ class OpenAICompatibleRunner(EvalRunner):
         effective_model = model or self._default_model
         effective_system = system_prompt or self._system_prompt or ""
         api_url = self._base_url.rstrip("/")
+        if api_url.endswith("/v1"):
+            api_url = api_url[:-3]
         if not api_url.endswith("/v1/chat/completions"):
-            api_url = api_url.rstrip("/") + "/v1/chat/completions"
+            api_url = api_url + "/v1/chat/completions"
 
         messages = []
         if effective_system:
@@ -95,14 +97,20 @@ class OpenAICompatibleRunner(EvalRunner):
         response_text = ""
         token_usage = None
         cost_usd = None
+        body = None
 
         try:
             req = urllib.request.Request(api_url, data=payload, headers=headers)
             with urllib.request.urlopen(req, timeout=timeout_s) as resp:
                 body = json.loads(resp.read().decode())
 
-            response_text = body["choices"][0]["message"]["content"]
-            stdout_lines.append(response_text)
+            choices = body.get("choices", [])
+            if not choices:
+                exit_code = 1
+                stderr_text = "API returned empty choices array"
+            else:
+                response_text = choices[0]["message"]["content"]
+                stdout_lines.append(response_text)
 
             usage = body.get("usage", {})
             if usage:
@@ -156,4 +164,5 @@ class OpenAICompatibleRunner(EvalRunner):
             cost_usd=cost_usd,
             num_turns=1,
             resolved_model=effective_model,
+            raw_output=body if exit_code == 0 else None,
         )
