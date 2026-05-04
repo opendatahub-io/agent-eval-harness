@@ -146,6 +146,7 @@ def _install_deps(venv_dir, specs):
 
     if result.returncode != 0:
         print(f"Install failed: {result.stderr}", file=sys.stderr)
+        sys.exit(1)
 
 
 def _all_importable(venv_python, deps):

@@ -28,7 +28,7 @@ Dependencies are managed in an isolated venv at `<plugin_root>/.eval-venv/`. The
 This step is a fallback for mid-session installs or troubleshooting. Re-run the hook's install script:
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/../../scripts/ensure_deps.py "${CLAUDE_PLUGIN_DATA:-/tmp/agent-eval-data}"
+python3 "${CLAUDE_SKILL_DIR}/../../scripts/ensure_deps.py" "${CLAUDE_PLUGIN_DATA:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-eval-data}"
 ```
 
 To check the venv status:
@@ -36,7 +36,7 @@ To check the venv status:
 ```bash
 VENV_PYTHON="${CLAUDE_SKILL_DIR}/../../.eval-venv/bin/python3"
 test -x "$VENV_PYTHON" && echo "venv: OK" || echo "venv: MISSING"
-$VENV_PYTHON -c "import yaml; print('pyyaml: OK')" 2>&1 || echo "pyyaml: MISSING"
+"$VENV_PYTHON" -c "import yaml; print('pyyaml: OK')" 2>&1 || echo "pyyaml: MISSING"
 ```
 
 To install additional packages manually into the venv:
