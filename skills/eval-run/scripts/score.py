@@ -11,6 +11,8 @@ Usage:
     python3 ${CLAUDE_SKILL_DIR}/scripts/score.py regression --run-id <id> --config eval.yaml
 """
 
+import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
+
 import argparse
 import importlib
 import json

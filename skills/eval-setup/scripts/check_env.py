@@ -8,6 +8,8 @@ Usage:
     python3 ${CLAUDE_SKILL_DIR}/scripts/check_env.py [--config eval.yaml] [--fix]
 """
 
+import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
+
 import argparse
 import os
 import sys
