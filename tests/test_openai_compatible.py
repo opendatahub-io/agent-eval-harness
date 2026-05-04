@@ -5,8 +5,6 @@ import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from threading import Thread
-from unittest.mock import patch
-
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -112,6 +110,26 @@ class TestOpenAICompatibleInit:
         assert runner._max_tokens == 1024
         assert runner._temperature == 0.7
 
+    def test_rejects_file_scheme(self):
+        with pytest.raises(ValueError, match="http or https"):
+            OpenAICompatibleRunner(base_url="file:///etc/passwd")
+
+    def test_rejects_ftp_scheme(self):
+        with pytest.raises(ValueError, match="http or https"):
+            OpenAICompatibleRunner(base_url="ftp://evil.com/payload")
+
+    def test_rejects_data_scheme(self):
+        with pytest.raises(ValueError, match="http or https"):
+            OpenAICompatibleRunner(base_url="data:text/plain,hello")
+
+    def test_rejects_empty_netloc(self):
+        with pytest.raises(ValueError, match="host"):
+            OpenAICompatibleRunner(base_url="http://")
+
+    def test_accepts_https_scheme(self):
+        runner = OpenAICompatibleRunner(base_url="https://api.example.com")
+        assert runner._base_url == "https://api.example.com"
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PART 3: run_skill() with a real local HTTP mock server
@@ -138,47 +156,53 @@ def _make_completion_response(content="Hello world", prompt_tokens=10,
     }
 
 
-class _MockHandler(BaseHTTPRequestHandler):
-    """HTTP handler that returns configurable responses."""
+class _MockState:
+    """Per-test state container for the mock HTTP server."""
 
-    response_body = _make_completion_response()
-    response_code = 200
-    last_request_body = None
-    last_request_headers = None
+    def __init__(self):
+        self.response_body = _make_completion_response()
+        self.response_code = 200
+        self.last_request_body = None
+        self.last_request_headers = None
 
-    def do_POST(self):
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length)
-        _MockHandler.last_request_body = json.loads(body)
-        _MockHandler.last_request_headers = dict(self.headers)
 
-        self.send_response(_MockHandler.response_code)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps(_MockHandler.response_body).encode())
+def _make_handler(state: _MockState):
+    """Factory that returns a handler class bound to the given state instance."""
 
-    def log_message(self, format, *args):
-        pass  # Suppress noisy HTTP logging
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            state.last_request_body = json.loads(body)
+            state.last_request_headers = dict(self.headers)
+
+            self.send_response(state.response_code)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(state.response_body).encode())
+
+        def log_message(self, format, *args):
+            pass
+
+    return Handler
 
 
 @pytest.fixture
-def mock_server():
-    """Start a local HTTP server and yield its base URL."""
-    server = HTTPServer(("127.0.0.1", 0), _MockHandler)
+def mock_state():
+    """Fresh per-test state for the mock server (xdist-safe)."""
+    return _MockState()
+
+
+@pytest.fixture
+def mock_server(mock_state):
+    """Start a local HTTP server with isolated state and yield its base URL."""
+    handler_cls = _make_handler(mock_state)
+    server = HTTPServer(("127.0.0.1", 0), handler_cls)
     port = server.server_address[1]
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     yield f"http://127.0.0.1:{port}"
     server.shutdown()
-
-
-@pytest.fixture(autouse=True)
-def reset_handler():
-    """Reset mock handler state between tests."""
-    _MockHandler.response_body = _make_completion_response()
-    _MockHandler.response_code = 200
-    _MockHandler.last_request_body = None
-    _MockHandler.last_request_headers = None
 
 
 class TestRunSkillSuccess:
@@ -199,8 +223,8 @@ class TestRunSkillSuccess:
         assert result.resolved_model == "test-model"
         assert result.duration_s > 0
 
-    def test_response_written_to_artifacts(self, mock_server, tmp_path):
-        _MockHandler.response_body = _make_completion_response(
+    def test_response_written_to_artifacts(self, mock_server, mock_state, tmp_path):
+        mock_state.response_body = _make_completion_response(
             content="Review looks good!")
         runner = OpenAICompatibleRunner(base_url=mock_server)
         runner.run_skill(
@@ -225,8 +249,8 @@ class TestRunSkillSuccess:
         assert data["num_turns"] == 1
         assert data["duration_s"] >= 0
 
-    def test_stdout_log_written(self, mock_server, tmp_path):
-        _MockHandler.response_body = _make_completion_response(
+    def test_stdout_log_written(self, mock_server, mock_state, tmp_path):
+        mock_state.response_body = _make_completion_response(
             content="response text")
         runner = OpenAICompatibleRunner(base_url=mock_server)
         runner.run_skill(
@@ -237,8 +261,8 @@ class TestRunSkillSuccess:
         assert log.exists()
         assert "response text" in log.read_text()
 
-    def test_token_usage_extracted(self, mock_server, tmp_path):
-        _MockHandler.response_body = _make_completion_response(
+    def test_token_usage_extracted(self, mock_server, mock_state, tmp_path):
+        mock_state.response_body = _make_completion_response(
             prompt_tokens=42, completion_tokens=17)
         runner = OpenAICompatibleRunner(base_url=mock_server)
         result = runner.run_skill(
@@ -247,8 +271,8 @@ class TestRunSkillSuccess:
         )
         assert result.token_usage == {"input": 42, "output": 17}
 
-    def test_token_usage_in_run_result_json(self, mock_server, tmp_path):
-        _MockHandler.response_body = _make_completion_response(
+    def test_token_usage_in_run_result_json(self, mock_server, mock_state, tmp_path):
+        mock_state.response_body = _make_completion_response(
             prompt_tokens=100, completion_tokens=50)
         runner = OpenAICompatibleRunner(base_url=mock_server)
         runner.run_skill(
@@ -258,10 +282,10 @@ class TestRunSkillSuccess:
         data = json.loads((tmp_path / "run_result.json").read_text())
         assert data["token_usage"] == {"input": 100, "output": 50}
 
-    def test_no_usage_field_returns_none(self, mock_server, tmp_path):
+    def test_no_usage_field_returns_none(self, mock_server, mock_state, tmp_path):
         body = _make_completion_response()
         del body["usage"]
-        _MockHandler.response_body = body
+        mock_state.response_body = body
         runner = OpenAICompatibleRunner(base_url=mock_server)
         result = runner.run_skill(
             skill_name="s", args="a",
@@ -273,31 +297,31 @@ class TestRunSkillSuccess:
 class TestRunSkillRequestFormat:
     """Verify the HTTP request sent to the endpoint."""
 
-    def test_sends_user_message(self, mock_server, tmp_path):
+    def test_sends_user_message(self, mock_server, mock_state, tmp_path):
         runner = OpenAICompatibleRunner(base_url=mock_server)
         runner.run_skill(
             skill_name="review", args="Review this diff",
             workspace=tmp_path, model="m",
         )
-        body = _MockHandler.last_request_body
+        body = mock_state.last_request_body
         messages = body["messages"]
         assert len(messages) == 1
         assert messages[0]["role"] == "user"
         assert messages[0]["content"] == "Review this diff"
 
-    def test_sends_system_prompt_from_constructor(self, mock_server, tmp_path):
+    def test_sends_system_prompt_from_constructor(self, mock_server, mock_state, tmp_path):
         runner = OpenAICompatibleRunner(
             base_url=mock_server, system_prompt="Be concise")
         runner.run_skill(
             skill_name="s", args="prompt",
             workspace=tmp_path, model="m",
         )
-        messages = _MockHandler.last_request_body["messages"]
+        messages = mock_state.last_request_body["messages"]
         assert len(messages) == 2
         assert messages[0] == {"role": "system", "content": "Be concise"}
         assert messages[1]["role"] == "user"
 
-    def test_run_skill_system_prompt_overrides_constructor(self, mock_server, tmp_path):
+    def test_run_skill_system_prompt_overrides_constructor(self, mock_server, mock_state, tmp_path):
         runner = OpenAICompatibleRunner(
             base_url=mock_server, system_prompt="Default system")
         runner.run_skill(
@@ -305,54 +329,54 @@ class TestRunSkillRequestFormat:
             workspace=tmp_path, model="m",
             system_prompt="Override system",
         )
-        messages = _MockHandler.last_request_body["messages"]
+        messages = mock_state.last_request_body["messages"]
         assert messages[0]["content"] == "Override system"
 
-    def test_model_sent_in_request(self, mock_server, tmp_path):
+    def test_model_sent_in_request(self, mock_server, mock_state, tmp_path):
         runner = OpenAICompatibleRunner(base_url=mock_server)
         runner.run_skill(
             skill_name="s", args="a",
             workspace=tmp_path, model="mistral-7b-instruct",
         )
-        assert _MockHandler.last_request_body["model"] == "mistral-7b-instruct"
+        assert mock_state.last_request_body["model"] == "mistral-7b-instruct"
 
-    def test_default_model_used_when_arg_empty(self, mock_server, tmp_path):
+    def test_default_model_used_when_arg_empty(self, mock_server, mock_state, tmp_path):
         runner = OpenAICompatibleRunner(
             base_url=mock_server, default_model="llama-3-8b")
         runner.run_skill(
             skill_name="s", args="a",
             workspace=tmp_path, model="",
         )
-        assert _MockHandler.last_request_body["model"] == "llama-3-8b"
+        assert mock_state.last_request_body["model"] == "llama-3-8b"
 
-    def test_max_tokens_and_temperature_sent(self, mock_server, tmp_path):
+    def test_max_tokens_and_temperature_sent(self, mock_server, mock_state, tmp_path):
         runner = OpenAICompatibleRunner(
             base_url=mock_server, max_tokens=2048, temperature=0.9)
         runner.run_skill(
             skill_name="s", args="a",
             workspace=tmp_path, model="m",
         )
-        body = _MockHandler.last_request_body
+        body = mock_state.last_request_body
         assert body["max_tokens"] == 2048
         assert body["temperature"] == 0.9
 
-    def test_authorization_header_sent(self, mock_server, tmp_path):
+    def test_authorization_header_sent(self, mock_server, mock_state, tmp_path):
         runner = OpenAICompatibleRunner(
             base_url=mock_server, api_key="sk-secret-key")
         runner.run_skill(
             skill_name="s", args="a",
             workspace=tmp_path, model="m",
         )
-        assert _MockHandler.last_request_headers["Authorization"] == "Bearer sk-secret-key"
+        assert mock_state.last_request_headers["Authorization"] == "Bearer sk-secret-key"
 
-    def test_no_auth_header_when_no_key(self, mock_server, tmp_path, monkeypatch):
+    def test_no_auth_header_when_no_key(self, mock_server, mock_state, tmp_path, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         runner = OpenAICompatibleRunner(base_url=mock_server)
         runner.run_skill(
             skill_name="s", args="a",
             workspace=tmp_path, model="m",
         )
-        assert "Authorization" not in _MockHandler.last_request_headers
+        assert "Authorization" not in mock_state.last_request_headers
 
 
 class TestRunSkillURLConstruction:
@@ -397,9 +421,9 @@ class TestRunSkillURLConstruction:
 class TestRunSkillErrors:
     """Test error handling paths."""
 
-    def test_http_error_returns_nonzero_exit(self, mock_server, tmp_path):
-        _MockHandler.response_code = 500
-        _MockHandler.response_body = {"error": "Internal server error"}
+    def test_http_error_returns_nonzero_exit(self, mock_server, mock_state, tmp_path):
+        mock_state.response_code = 500
+        mock_state.response_body = {"error": "Internal server error"}
         runner = OpenAICompatibleRunner(base_url=mock_server)
         result = runner.run_skill(
             skill_name="s", args="a",
@@ -408,9 +432,9 @@ class TestRunSkillErrors:
         assert result.exit_code == 1
         assert "HTTP 500" in result.stderr
 
-    def test_http_401_reports_auth_error(self, mock_server, tmp_path):
-        _MockHandler.response_code = 401
-        _MockHandler.response_body = {"error": "Unauthorized"}
+    def test_http_401_reports_auth_error(self, mock_server, mock_state, tmp_path):
+        mock_state.response_code = 401
+        mock_state.response_body = {"error": "Unauthorized"}
         runner = OpenAICompatibleRunner(base_url=mock_server)
         result = runner.run_skill(
             skill_name="s", args="a",
@@ -419,9 +443,9 @@ class TestRunSkillErrors:
         assert result.exit_code == 1
         assert "401" in result.stderr
 
-    def test_http_429_reports_rate_limit(self, mock_server, tmp_path):
-        _MockHandler.response_code = 429
-        _MockHandler.response_body = {"error": "Rate limit exceeded"}
+    def test_http_429_reports_rate_limit(self, mock_server, mock_state, tmp_path):
+        mock_state.response_code = 429
+        mock_state.response_body = {"error": "Rate limit exceeded"}
         runner = OpenAICompatibleRunner(base_url=mock_server)
         result = runner.run_skill(
             skill_name="s", args="a",
@@ -441,9 +465,9 @@ class TestRunSkillErrors:
         assert result.exit_code == 1
         assert "Connection" in result.stderr or "error" in result.stderr.lower()
 
-    def test_error_written_to_artifact(self, mock_server, tmp_path):
-        _MockHandler.response_code = 503
-        _MockHandler.response_body = {"error": "Service unavailable"}
+    def test_error_written_to_artifact(self, mock_server, mock_state, tmp_path):
+        mock_state.response_code = 503
+        mock_state.response_body = {"error": "Service unavailable"}
         runner = OpenAICompatibleRunner(base_url=mock_server)
         runner.run_skill(
             skill_name="s", args="a",
@@ -455,8 +479,8 @@ class TestRunSkillErrors:
         # No response.md when errored
         assert not (tmp_path / "artifacts" / "response.md").exists()
 
-    def test_run_result_json_on_error(self, mock_server, tmp_path):
-        _MockHandler.response_code = 500
+    def test_run_result_json_on_error(self, mock_server, mock_state, tmp_path):
+        mock_state.response_code = 500
         runner = OpenAICompatibleRunner(base_url=mock_server)
         runner.run_skill(
             skill_name="s", args="a",
@@ -466,9 +490,9 @@ class TestRunSkillErrors:
         assert data["exit_code"] == 1
         assert data["num_turns"] == 1
 
-    def test_empty_response_text_writes_empty_response_marker(self, mock_server, tmp_path):
+    def test_empty_response_text_writes_empty_response_marker(self, mock_server, mock_state, tmp_path):
         body = _make_completion_response(content="")
-        _MockHandler.response_body = body
+        mock_state.response_body = body
         runner = OpenAICompatibleRunner(base_url=mock_server)
         result = runner.run_skill(
             skill_name="s", args="a",
@@ -480,8 +504,8 @@ class TestRunSkillErrors:
         assert empty_marker.exists()
         assert "empty content" in empty_marker.read_text().lower()
 
-    def test_empty_choices_array_returns_error(self, mock_server, tmp_path):
-        _MockHandler.response_body = {
+    def test_empty_choices_array_returns_error(self, mock_server, mock_state, tmp_path):
+        mock_state.response_body = {
             "id": "chatcmpl-abc",
             "choices": [],
             "usage": {"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5},
@@ -493,6 +517,9 @@ class TestRunSkillErrors:
         )
         assert result.exit_code == 1
         assert "empty choices" in result.stderr
+        # Body is still available for debugging even with empty choices
+        assert result.raw_output is not None
+        assert result.raw_output["choices"] == []
 
 
 class TestRunSkillReturnType:
@@ -544,13 +571,14 @@ class TestRunSkillReturnType:
         assert result.raw_output is not None
         assert "choices" in result.raw_output
 
-    def test_raw_output_none_on_error(self, mock_server, tmp_path):
-        _MockHandler.response_code = 500
+    def test_raw_output_none_on_transport_error(self, mock_server, mock_state, tmp_path):
+        mock_state.response_code = 500
         runner = OpenAICompatibleRunner(base_url=mock_server)
         result = runner.run_skill(
             skill_name="s", args="a",
             workspace=tmp_path, model="m",
         )
+        # body is None on transport/HTTP errors (never parsed)
         assert result.raw_output is None
 
 
@@ -594,9 +622,9 @@ class TestABCCompliance:
 class TestEdgeCases:
     """Edge cases and boundary conditions."""
 
-    def test_large_response_handled(self, mock_server, tmp_path):
+    def test_large_response_handled(self, mock_server, mock_state, tmp_path):
         large_content = "x" * 100_000
-        _MockHandler.response_body = _make_completion_response(
+        mock_state.response_body = _make_completion_response(
             content=large_content)
         runner = OpenAICompatibleRunner(base_url=mock_server)
         result = runner.run_skill(
@@ -606,8 +634,8 @@ class TestEdgeCases:
         assert result.exit_code == 0
         assert len(result.stdout) == 100_000
 
-    def test_unicode_response(self, mock_server, tmp_path):
-        _MockHandler.response_body = _make_completion_response(
+    def test_unicode_response(self, mock_server, mock_state, tmp_path):
+        mock_state.response_body = _make_completion_response(
             content="你好世界 🌍 مرحبا")
         runner = OpenAICompatibleRunner(base_url=mock_server)
         result = runner.run_skill(
@@ -617,7 +645,7 @@ class TestEdgeCases:
         assert result.exit_code == 0
         assert "你好世界" in result.stdout
 
-    def test_special_chars_in_prompt(self, mock_server, tmp_path):
+    def test_special_chars_in_prompt(self, mock_server, mock_state, tmp_path):
         prompt = 'Review this: `def f(): "quoted" & <html>`'
         runner = OpenAICompatibleRunner(base_url=mock_server)
         result = runner.run_skill(
@@ -625,7 +653,7 @@ class TestEdgeCases:
             workspace=tmp_path, model="m",
         )
         assert result.exit_code == 0
-        sent = _MockHandler.last_request_body["messages"][-1]["content"]
+        sent = mock_state.last_request_body["messages"][-1]["content"]
         assert sent == prompt
 
     def test_workspace_created_if_not_exists(self, mock_server, tmp_path):
@@ -639,9 +667,9 @@ class TestEdgeCases:
         assert (workspace / "artifacts" / "response.md").exists()
         assert (workspace / "run_result.json").exists()
 
-    def test_multiline_response(self, mock_server, tmp_path):
+    def test_multiline_response(self, mock_server, mock_state, tmp_path):
         content = "Line 1\nLine 2\nLine 3\n"
-        _MockHandler.response_body = _make_completion_response(content=content)
+        mock_state.response_body = _make_completion_response(content=content)
         runner = OpenAICompatibleRunner(base_url=mock_server)
         result = runner.run_skill(
             skill_name="s", args="a",
@@ -650,9 +678,9 @@ class TestEdgeCases:
         assert result.exit_code == 0
         assert (tmp_path / "artifacts" / "response.md").read_text() == content
 
-    def test_null_content_does_not_crash(self, mock_server, tmp_path):
+    def test_null_content_does_not_crash(self, mock_server, mock_state, tmp_path):
         """Endpoints may return content: null (tool-use, content-filter)."""
-        _MockHandler.response_body = {
+        mock_state.response_body = {
             "id": "chatcmpl-abc",
             "choices": [{"message": {"role": "assistant", "content": None}}],
             "usage": {"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5},

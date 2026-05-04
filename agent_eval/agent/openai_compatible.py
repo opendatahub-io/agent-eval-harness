@@ -13,8 +13,12 @@ import os
 import time
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from .base import EvalRunner, RunResult
+
+
+_MAX_RESPONSE_BYTES = 50 * 1024 * 1024  # 50 MB hard cap
 
 
 class OpenAICompatibleRunner(EvalRunner):
@@ -36,6 +40,13 @@ class OpenAICompatibleRunner(EvalRunner):
                 "OpenAI-compatible runner requires base_url argument or "
                 "OPENAI_BASE_URL environment variable"
             )
+        parsed = urlparse(self._base_url)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(
+                f"base_url must use http or https scheme, got: {parsed.scheme!r}"
+            )
+        if not parsed.netloc:
+            raise ValueError("base_url must include a host (netloc is empty)")
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self._default_model = default_model
         self._system_prompt = system_prompt
@@ -103,7 +114,12 @@ class OpenAICompatibleRunner(EvalRunner):
         try:
             req = urllib.request.Request(api_url, data=payload, headers=headers)
             with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-                body = json.loads(resp.read().decode())
+                raw = resp.read(_MAX_RESPONSE_BYTES + 1)
+                if len(raw) > _MAX_RESPONSE_BYTES:
+                    raise ValueError(
+                        f"Response exceeded {_MAX_RESPONSE_BYTES} byte limit"
+                    )
+                body = json.loads(raw.decode())
 
             choices = body.get("choices", [])
             if not choices:
@@ -169,5 +185,5 @@ class OpenAICompatibleRunner(EvalRunner):
             cost_usd=cost_usd,
             num_turns=1,
             resolved_model=effective_model,
-            raw_output=body if exit_code == 0 else None,
+            raw_output=body,
         )
