@@ -247,11 +247,15 @@ def _collect_modified_files(case_dir, config):
         parts = Path(rel).parts
         if not parts:
             continue
+        if ".." in parts:
+            continue
         if parts[0] in _HARNESS_PATHS:
             continue
         if parts[0] in output_dirs:
             continue
-        abs_path = case_dir / rel
+        abs_path = (case_dir / rel).resolve()
+        if not abs_path.is_relative_to(case_dir.resolve()):
+            continue
         if abs_path.is_file() and not abs_path.is_symlink():
             result.append((rel, abs_path))
 
