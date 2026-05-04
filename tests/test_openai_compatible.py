@@ -466,7 +466,7 @@ class TestRunSkillErrors:
         assert data["exit_code"] == 1
         assert data["num_turns"] == 1
 
-    def test_empty_response_text_treated_as_error(self, mock_server, tmp_path):
+    def test_empty_response_text_writes_empty_response_marker(self, mock_server, tmp_path):
         body = _make_completion_response(content="")
         _MockHandler.response_body = body
         runner = OpenAICompatibleRunner(base_url=mock_server)
@@ -474,9 +474,11 @@ class TestRunSkillErrors:
             skill_name="s", args="a",
             workspace=tmp_path, model="m",
         )
-        # Empty content → exit_code 0 but no response.md written
-        # (because the condition is `exit_code == 0 and response_text`)
         assert not (tmp_path / "artifacts" / "response.md").exists()
+        assert not (tmp_path / "artifacts" / "error.txt").exists()
+        empty_marker = tmp_path / "artifacts" / "empty_response.txt"
+        assert empty_marker.exists()
+        assert "empty content" in empty_marker.read_text().lower()
 
     def test_empty_choices_array_returns_error(self, mock_server, tmp_path):
         _MockHandler.response_body = {
@@ -647,3 +649,34 @@ class TestEdgeCases:
         )
         assert result.exit_code == 0
         assert (tmp_path / "artifacts" / "response.md").read_text() == content
+
+    def test_null_content_does_not_crash(self, mock_server, tmp_path):
+        """Endpoints may return content: null (tool-use, content-filter)."""
+        _MockHandler.response_body = {
+            "id": "chatcmpl-abc",
+            "choices": [{"message": {"role": "assistant", "content": None}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5},
+        }
+        runner = OpenAICompatibleRunner(base_url=mock_server)
+        result = runner.run_skill(
+            skill_name="s", args="a",
+            workspace=tmp_path, model="m",
+        )
+        assert result.exit_code == 0
+        assert result.stdout == ""
+        assert not (tmp_path / "artifacts" / "response.md").exists()
+
+    def test_accepts_harness_kwargs(self):
+        """Runner must accept kwargs from execute.py without crashing."""
+        runner = OpenAICompatibleRunner(
+            base_url="http://localhost:8000",
+            log_prefix="eval",
+            permissions={"allow": ["*"]},
+            plugin_dirs=["/tmp/plugins"],
+            env_strip=["SECRET"],
+            subagent_model="sonnet",
+            mlflow_experiment="test-exp",
+            mlflow_tracking_uri="http://mlflow:5000",
+            effort="high",
+        )
+        assert runner.name == "openai-compatible"

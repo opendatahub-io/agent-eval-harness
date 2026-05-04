@@ -28,6 +28,7 @@ class OpenAICompatibleRunner(EvalRunner):
         system_prompt: Optional[str] = None,
         max_tokens: int = 512,
         temperature: float = 0.3,
+        **kwargs,
     ):
         self._base_url = base_url or os.environ.get("OPENAI_BASE_URL", "")
         if not self._base_url:
@@ -109,8 +110,9 @@ class OpenAICompatibleRunner(EvalRunner):
                 exit_code = 1
                 stderr_text = "API returned empty choices array"
             else:
-                response_text = choices[0]["message"]["content"]
-                stdout_lines.append(response_text)
+                response_text = choices[0].get("message", {}).get("content") or ""
+                if response_text:
+                    stdout_lines.append(response_text)
 
             usage = body.get("usage", {})
             if usage:
@@ -140,9 +142,12 @@ class OpenAICompatibleRunner(EvalRunner):
 
         if exit_code == 0 and response_text:
             (artifacts_dir / "response.md").write_text(response_text)
-        else:
+        elif exit_code != 0:
             (artifacts_dir / "error.txt").write_text(
                 f"Runner failed (exit_code={exit_code}): {stderr_text}")
+        else:
+            (artifacts_dir / "empty_response.txt").write_text(
+                "Model returned empty content (HTTP 200 but no output)")
 
         run_result = {
             "exit_code": exit_code,
