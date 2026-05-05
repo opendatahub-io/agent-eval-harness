@@ -200,6 +200,33 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
     return record
 
 
+def _extract_assistant_text(stdout_raw):
+    """Extract top-level assistant conversation text from JSONL stdout."""
+    if not stdout_raw or not stdout_raw.strip():
+        return "(no stdout captured)"
+    texts = []
+    found_jsonl = False
+    for line in stdout_raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        found_jsonl = True
+        if obj.get("type") != "assistant" or obj.get("parent_tool_use_id"):
+            continue
+        for block in (obj.get("message") or {}).get("content", []):
+            if block.get("type") == "text":
+                texts.append(block["text"])
+    if texts:
+        return "\n".join(texts)
+    if found_jsonl:
+        return "(no top-level assistant text)"
+    return stdout_raw
+
+
 def _extract_tool_calls(stdout_text, tool_outputs):
     """Extract tool calls from stream-json stdout matching configured patterns."""
     tool_patterns = [o.tool for o in tool_outputs]
@@ -460,6 +487,12 @@ def _make_anthropic_llm_judge(name, prompt, judge_model):
                 else:
                     output_text += f"\n### {path}\n\n{content}\n"
             rendered_prompt = rendered_prompt.replace("{{ outputs }}", output_text)
+
+        # Render {{ stdout }} template variable
+        if outputs and "{{ stdout }}" in rendered_prompt:
+            stdout_raw = outputs.get("stdout", "")
+            rendered_prompt = rendered_prompt.replace(
+                "{{ stdout }}", _extract_assistant_text(stdout_raw))
 
         # Render {{ annotations }} template variable
         if outputs and "{{ annotations }}" in rendered_prompt:

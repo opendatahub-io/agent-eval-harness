@@ -94,7 +94,9 @@ suggested_judges:
     # For check type, include a working inline script:
     check: |
       <python snippet that takes outputs dict, returns (bool, str)>
-    # For llm type, include evaluation instructions:
+    # For llm type, include evaluation instructions.
+    # Use {{ outputs }} for file artifacts, {{ stdout }} for conversation text,
+    # or both. For stdout-only skills (no file output), use {{ stdout }}:
     prompt: |
       <what to evaluate and how to score>
 ```

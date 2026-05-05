@@ -322,15 +322,49 @@ Example check judge for in-place edits (skills that edit input files via Edit to
 - Accuracy: is the content correct?
 - Relevance: does it address the input?
 
-**IMPORTANT**: LLM judges only see what's in their prompt text. To include the skill's output files, use the `{{ outputs }}` template variable. The harness replaces it with all collected file contents (from `outputs[*].path` directories), formatted as markdown sections with file paths as headers. Without `{{ outputs }}`, the LLM receives only the raw prompt text and cannot see any output files.
+**IMPORTANT**: LLM judges only see what's in their prompt text. Use template variables to include skill output:
 
-Example:
+- `{{ outputs }}` renders all collected file contents (from `outputs[*].path` directories and `_modified/` in-place edits), formatted as markdown sections with file paths as headers.
+- `{{ stdout }}` renders extracted assistant conversation text from the JSONL stdout log. It filters out subagent messages, tool calls, and non-text events. For stdout-only skills (no file artifacts), this is the primary way to give judges the skill's output.
+- `{{ annotations }}` renders dataset annotations from the case's `annotations.yaml`.
+
+All three can be used in the same prompt. Without any template variables, the LLM receives only the raw prompt text and cannot see any output.
+
+Example with file artifacts:
 ```yaml
   - name: output_quality
     prompt: |
       Review the following outputs:
 
       {{ outputs }}
+
+      Score on a 1-5 scale:
+      ...
+```
+
+Example for stdout-only skills:
+```yaml
+  - name: response_quality
+    prompt: |
+      Evaluate this skill's response:
+
+      {{ stdout }}
+
+      Score on a 1-5 scale:
+      ...
+```
+
+Example with both file artifacts and conversation output:
+```yaml
+  - name: comprehensive_quality
+    prompt: |
+      The skill produced these file artifacts:
+
+      {{ outputs }}
+
+      And this conversation output:
+
+      {{ stdout }}
 
       Score on a 1-5 scale:
       ...

@@ -170,6 +170,8 @@ Skills that modify input files using the Edit tool (rather than writing to an ou
 
 **Note on `{{ outputs }}` in LLM judges**: The `{{ outputs }}` template variable renders ALL entries in `files`, including `_modified/` entries. Each file appears as a markdown section with its path as the heading. Modified files will appear as `### _modified/source.md` followed by the edited content.
 
+**Note on `{{ stdout }}` in LLM judges**: The `{{ stdout }}` template variable extracts assistant conversation text from the JSONL stdout log. It filters for top-level assistant text blocks (skipping subagent messages, tool calls, system events, and user input), then concatenates the extracted text. For non-JSONL stdout (e.g., from non-Claude runners), the raw content is passed through. If stdout is empty or missing, it renders as `(no stdout captured)`. Use `{{ stdout }}` for skills that produce their primary output via conversation text rather than file artifacts.
+
 **Key naming convention for convenience keys**: for an output with `path: "artifacts/rfe-tasks"`, the convenience key is `rfe-tasks_content` (the last directory component + `_content`). For `path: "."`, the key is `main_content`.
 
 ## 5. Scoring → Judges
@@ -239,4 +241,4 @@ for line in outputs.get("stdout", "").splitlines():
 rewritten_text = "\n".join(texts)
 ```
 
-**For LLM judges**: prefer `{{ outputs }}` (renders file artifacts and modified files as markdown) over `{{ stdout }}` (not a recognized template variable). If the skill edits files in-place, the rewritten content appears in `{{ outputs }}` via the `_modified/` collection.
+**For LLM judges**: use `{{ outputs }}` to render file artifacts and modified files as markdown. Use `{{ stdout }}` to render extracted assistant conversation text from the JSONL stream. Both can be used in the same prompt. If the skill edits files in-place, the rewritten content appears in `{{ outputs }}` via the `_modified/` collection.
