@@ -26,7 +26,7 @@ def main():
         sys.exit(f"Failed to load job spec from {config_path}: {e}")
     log.info("Job: id=%s provider=%s benchmark=%s", spec.id, spec.provider_id, spec.benchmark_id)
     log.info("Model: %s / %s", spec.model.url, spec.model.name)
-    log.info("Parameters: %s", list(spec.parameters.keys()) if spec.parameters else "{}")
+    log.info("Parameters: keys=%s", list(spec.parameters.keys()) if spec.parameters else "none")
 
     eval_config_path = os.environ.get("EVAL_CONFIG_PATH", "/app/eval-config/eval.yaml")
     log.info("Eval config path: %s (exists=%s)", eval_config_path, os.path.exists(eval_config_path))
@@ -45,11 +45,14 @@ def main():
         log.error("run_benchmark_job returned None — adapter did not produce results")
         sys.exit(1)
 
-    # Log to MLflow (SDK prescribed pattern)
-    rid = callbacks.mlflow.save(results, spec)
-    if rid:
-        results.mlflow_run_id = rid
-        log.info("MLflow run: %s", rid)
+    # Log to MLflow (SDK prescribed pattern) — optional, don't fail the job
+    try:
+        rid = callbacks.mlflow.save(results, spec)
+        if rid:
+            results.mlflow_run_id = rid
+            log.info("MLflow run: %s", rid)
+    except Exception as exc:
+        log.warning("MLflow save failed (non-fatal): %s", exc)
 
     # Report final results to sidecar → EvalHub API
     callbacks.report_results(results)

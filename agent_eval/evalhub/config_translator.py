@@ -79,5 +79,11 @@ def eval_config_to_provider(config: EvalConfig) -> dict:
 
 
 def _infer_metric_type(judge) -> str:
-    """Infer the metric type from a judge configuration."""
-    return judge.feedback_type if judge.feedback_type else "float"
+    """Infer the metric type from a judge configuration.
+
+    Results mapper emits aggregated mean scores (floats) for all judge types,
+    so the default is always "float" unless the judge explicitly declares otherwise.
+    """
+    if judge.feedback_type and judge.feedback_type != "bool":
+        return judge.feedback_type
+    return "float"

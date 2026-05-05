@@ -104,9 +104,8 @@ def test_full_lifecycle(mock_init, mock_download, mock_runner_cls, tmp_path):
     assert mock_runner.run_skill.call_count == 2
     first_call = mock_runner.run_skill.call_args_list[0]
     # Check both positional and keyword arguments
-    assert (
-        first_call.kwargs.get("skill_name") or first_call[1].get("skill_name")
-    ) == "test-skill"
+    actual_skill = first_call.kwargs.get("skill_name") or first_call[1].get("skill_name")
+    assert actual_skill == "test-skill"
 
     # Verify progress reporting
     assert mock_callbacks.report_status.call_count >= 3

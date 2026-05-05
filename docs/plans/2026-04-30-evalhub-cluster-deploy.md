@@ -142,6 +142,7 @@ EvalHub requires the `evalhub-service` ServiceAccount token (NOT `default` SA). 
 
 ```bash
 SA_TOKEN=$(oc create token evalhub-service -n evalhub --duration=30m)
+# -k is required: cluster-internal route uses self-signed TLS cert
 curl -sk -H "Authorization: Bearer ${SA_TOKEN}" -H "X-Tenant: evalhub" \
   "${EVALHUB_URL}/api/v1/evaluations/providers"
 ```

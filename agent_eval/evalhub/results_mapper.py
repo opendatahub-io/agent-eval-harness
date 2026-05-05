@@ -1,6 +1,6 @@
 """Map agent-eval-harness results to EvalHub JobResults format."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from agent_eval.agent.base import RunResult
@@ -120,6 +120,6 @@ def map_to_job_results(
         overall_score=overall_score,
         num_examples_evaluated=num_cases,
         duration_seconds=run_result.duration_s,
-        completed_at=datetime.now(),
+        completed_at=datetime.now(timezone.utc),
         evaluation_metadata=evaluation_metadata,
     )

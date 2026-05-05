@@ -12,7 +12,7 @@ import re
 import shutil
 import tempfile
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -82,8 +82,8 @@ def _resolve_arguments(template: str, input_data: dict) -> str:
         return str(value)
 
     result = re.sub(r"\{([^}]+)\}", _replacer, template)
-    # Clean up double spaces from omitted optional fields
-    return " ".join(result.split())
+    # Clean up runs of spaces from omitted optional fields, preserve newlines
+    return re.sub(r"[ \t]+", " ", result).strip()
 
 
 def _create_anthropic_client():
@@ -281,8 +281,9 @@ class AgentEvalAdapter(FrameworkAdapter):
                     timeout_s=timeout,
                 )
 
-                log.info("Case %s: exit_code=%s cost=%.4f duration=%.1fs",
-                         case_id, result.exit_code, result.cost_usd, result.duration_s)
+                cost_str = f"{result.cost_usd:.4f}" if result.cost_usd is not None else "n/a"
+                log.info("Case %s: exit_code=%s cost=%s duration=%.1fs",
+                         case_id, result.exit_code, cost_str, result.duration_s)
                 case_results.append({
                     "case_id": case_id,
                     "run_result": result,
@@ -378,7 +379,7 @@ class AgentEvalAdapter(FrameworkAdapter):
                 exit_code=max((r.exit_code for r in runs), key=abs),
                 stdout="",
                 stderr=f"{failed_count}/{len(runs)} cases failed" if failed_count else "",
-                duration_s=sum(r.duration_s for r in runs),
+                duration_s=time.monotonic() - start_time,
                 cost_usd=sum(r.cost_usd or 0 for r in runs) or None,
                 num_turns=sum(r.num_turns or 0 for r in runs) or None,
                 resolved_model=runs[0].resolved_model,
@@ -426,7 +427,7 @@ class AgentEvalAdapter(FrameworkAdapter):
                 message=MessageInfo(message=message, message_code="info"),
                 total_steps=total_steps,
                 completed_steps=completed_steps,
-                timestamp=datetime.now(),
+                timestamp=datetime.now(timezone.utc),
             )
             callbacks.report_status(update)
         except Exception as exc:

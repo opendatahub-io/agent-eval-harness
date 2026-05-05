@@ -145,7 +145,7 @@ agent skill evaluations on Red Hat OpenShift AI. The adapter:
 eval-analyze, eval-dataset, eval-optimize, eval-review — authoring workflows
 
 ### EvalHub-managed (via provider)
-Execution, MLflow tracking, result storage, regression detection, OCI export
+Execution, result storage, regression detection, OCI export (MLflow tracking is optional)
 
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
