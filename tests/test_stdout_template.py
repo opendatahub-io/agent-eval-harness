@@ -104,6 +104,25 @@ class TestStdoutTemplateRendering:
         assert "some data" not in rendered
 
     @patch("score._get_anthropic_client")
+    def test_stdout_truncated_at_200k_chars(self, mock_get_client):
+        mock_client = self._make_mock_client()
+        mock_get_client.return_value = mock_client
+
+        prompt = "Start\n{{ stdout }}\nEnd"
+        scorer = _make_anthropic_llm_judge("test", prompt, "test-model")
+
+        long_text = "A" * 210_000
+        event = {"type": "assistant", "message": {"content": [{"type": "text", "text": long_text}]}}
+        stdout = _jsonl(event)
+        scorer(outputs={"stdout": stdout, "files": {}})
+
+        call_args = mock_client.messages.create.call_args
+        rendered = call_args.kwargs["messages"][0]["content"]
+        assert "{{ stdout }}" not in rendered
+        assert len(rendered) < len(long_text)
+        assert "...[truncated]" in rendered
+
+    @patch("score._get_anthropic_client")
     def test_stdout_with_none_outputs(self, mock_get_client):
         mock_client = self._make_mock_client()
         mock_get_client.return_value = mock_client
