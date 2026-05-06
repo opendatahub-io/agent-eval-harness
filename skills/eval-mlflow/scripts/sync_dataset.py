@@ -27,6 +27,8 @@ Schema mapping format (tmp/schema_mapping.json):
     - "filename:__file__" uses the entire file content
 """
 
+import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
+
 import argparse
 import json
 import os

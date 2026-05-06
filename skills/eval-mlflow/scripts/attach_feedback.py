@@ -25,6 +25,8 @@ Usage:
         --run-id <id> --config eval.yaml --action pull
 """
 
+import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
+
 import argparse
 import os
 import sys
