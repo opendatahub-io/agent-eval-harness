@@ -63,7 +63,7 @@ The redundancy of 4 independent JSONL parsers is the root problem, and only a sh
 
 **Tool results included with a size cap.** Tool result content is stored in events with a generous cap (e.g., 50K chars per result). This covers all realistic judge scenarios without bloating `events.json` from pathological cases (e.g., reading a 500K file).
 
-**Subagent events deferred.** The initial implementation covers the main agent's conversation flow only. Subagent transcript merging (deduplication with streamed subagent messages from Claude Code >= 2.1.108) is a follow-up iteration.
+**Subagent events included as flat-with-tags.** All events (root + subagent) in one ordered list, subagent events tagged with `parent_tool_use_id` and `agent_id`. Subagent transcript files merged and deduplicated by message ID. This matches Claude Code's native streaming format and keeps judge iteration simple.
 
 **`trace_builder.py` stays independent for now.** It builds MLflow-specific hierarchical spans, which is a different shape than the flat event list judges need. It could adopt the shared parser later as an optional refactor.
 
