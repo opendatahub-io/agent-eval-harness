@@ -156,20 +156,25 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
             except (json.JSONDecodeError, OSError):
                 pass
 
+    # --- Events (structured event stream) ---
+    events_path = case_dir / "events.json"
+    if events_path.exists():
+        try:
+            with open(events_path) as f:
+                record["events"] = json.load(f)
+            if not isinstance(record["events"], list):
+                print(f"  Warning: events.json is not a list in {case_dir}",
+                      file=sys.stderr)
+                record["events"] = []
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"  Warning: malformed events.json in {case_dir}: {e}",
+                  file=sys.stderr)
+            record["events"] = []
+    else:
+        record["events"] = []
+
     # --- Logs (if traces config enables them) ---
-    # In case mode, stdout/stderr are per-case at case_dir/stdout.log.
-    # In batch mode, they're at runs_dir/run_id/stdout.log.
     if run_id:
-        if config.traces.stdout:
-            # Try case-level first (case mode), fall back to run-level (batch)
-            stdout_path = case_dir / "stdout.log"
-            if not stdout_path.exists():
-                stdout_path = runs_dir / run_id / "stdout.log"
-            if stdout_path.exists():
-                try:
-                    record["stdout"] = stdout_path.read_text()
-                except OSError:
-                    pass
         if config.traces.stderr:
             stderr_path = case_dir / "stderr.log"
             if not stderr_path.exists():
@@ -180,63 +185,54 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
                 except OSError:
                     pass
 
-    # --- Tool call outputs (from stream-json in stdout) ---
-    # Tool calls are extracted regardless of traces.stdout setting —
-    # read stdout.log directly if not already in the record
+    # --- Tool call outputs (derived from events, fallback to raw stdout) ---
     tool_outputs = [o for o in config.outputs if o.tool]
     if tool_outputs:
-        stdout_text = record.get("stdout", "")
-        if not stdout_text and run_id:
-            stdout_path = case_dir / "stdout.log"
-            if not stdout_path.exists():
-                stdout_path = runs_dir / run_id / "stdout.log"
-            if stdout_path.exists():
-                try:
-                    stdout_text = stdout_path.read_text()
-                except OSError:
-                    pass
-        if stdout_text:
-            tool_calls = _extract_tool_calls(stdout_text, tool_outputs)
-            record["tool_calls"] = tool_calls
+        events = record.get("events", [])
+        if events:
+            record["tool_calls"] = _extract_tool_calls_from_events(
+                events, tool_outputs)
+        else:
+            stdout_text = ""
+            if run_id:
+                stdout_path = case_dir / "stdout.log"
+                if not stdout_path.exists():
+                    stdout_path = runs_dir / run_id / "stdout.log"
+                if stdout_path.exists():
+                    try:
+                        stdout_text = stdout_path.read_text()
+                    except OSError:
+                        pass
+            if stdout_text:
+                record["tool_calls"] = _extract_tool_calls(
+                    stdout_text, tool_outputs)
 
     return record
 
 
-def _extract_assistant_text(stdout_raw):
-    """Extract top-level assistant conversation text from JSONL stdout."""
-    if not stdout_raw or not stdout_raw.strip():
-        return "(no stdout captured)"
-    texts = []
-    found_jsonl = False
-    for line in stdout_raw.splitlines():
-        line = line.strip()
-        if not line:
+def _extract_tool_calls_from_events(events, tool_outputs):
+    """Extract tool calls from structured events matching configured patterns."""
+    tool_patterns = [o.tool for o in tool_outputs]
+    calls = []
+    for event in events:
+        if event.get("type") != "assistant":
             continue
-        try:
-            obj = json.loads(line)
-        except (json.JSONDecodeError, ValueError):
+        if event.get("parent_tool_use_id"):
             continue
-        if not isinstance(obj, dict):
-            continue
-        found_jsonl = True
-        if obj.get("type") != "assistant" or obj.get("parent_tool_use_id"):
-            continue
-        for block in (obj.get("message") or {}).get("content", []):
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") == "text":
-                text = block.get("text")
-                if isinstance(text, str):
-                    texts.append(text)
-    if texts:
-        return "\n".join(texts)
-    if found_jsonl:
-        return "(no top-level assistant text)"
-    return stdout_raw
+        for tool in event.get("tools", []):
+            name = tool.get("name", "")
+            for pattern in tool_patterns:
+                if pattern in name or name == pattern:
+                    calls.append({
+                        "name": name,
+                        "input": tool.get("input", {}),
+                    })
+                    break
+    return calls
 
 
 def _extract_tool_calls(stdout_text, tool_outputs):
-    """Extract tool calls from stream-json stdout matching configured patterns."""
+    """Extract tool calls from raw stream-json stdout (fallback when no events)."""
     tool_patterns = [o.tool for o in tool_outputs]
     calls = []
     for line in stdout_text.splitlines():
@@ -249,15 +245,13 @@ def _extract_tool_calls(stdout_text, tool_outputs):
             continue
         if obj.get("type") != "assistant":
             continue
-        # Skip foreground subagent messages (Claude Code >= 2.1.108 streams
-        # them in stdout).  We only want root-level tool calls here.
         if obj.get("parent_tool_use_id"):
             continue
-        for block in obj.get("message", {}).get("content", []):
+        message = obj.get("message", {})
+        for block in message.get("content", []):
             if block.get("type") != "tool_use":
                 continue
             name = block.get("name", "")
-            # Check if this tool call matches any configured pattern
             for pattern in tool_patterns:
                 if pattern in name or name == pattern:
                     calls.append({
@@ -496,14 +490,6 @@ def _make_anthropic_llm_judge(name, prompt, judge_model):
                     output_text += f"\n### {path}\n\n{content}\n"
             rendered_prompt = rendered_prompt.replace("{{ outputs }}", output_text)
 
-        # Render {{ stdout }} template variable
-        if outputs and "{{ stdout }}" in rendered_prompt:
-            stdout_raw = outputs.get("stdout", "")
-            stdout_text = _extract_assistant_text(stdout_raw)
-            if len(stdout_text) > 200_000:
-                stdout_text = stdout_text[:200_000] + "\n...[truncated]"
-            rendered_prompt = rendered_prompt.replace("{{ stdout }}", stdout_text)
-
         # Render {{ annotations }} template variable
         if outputs and "{{ annotations }}" in rendered_prompt:
             ann = outputs.get("annotations", {})
@@ -516,6 +502,14 @@ def _make_anthropic_llm_judge(name, prompt, judge_model):
                     field = key[len("annotation_"):-len("_content")]
                     ann_text += f"\n### {field} (file content)\n\n{outputs[key]}\n"
             rendered_prompt = rendered_prompt.replace("{{ annotations }}", ann_text)
+
+        # Render {{ conversation }} template variable (root-level assistant text)
+        if outputs and "{{ conversation }}" in rendered_prompt:
+            from agent_eval.events import extract_conversation_text
+            events = outputs.get("events", [])
+            conversation_text = extract_conversation_text(events)
+            rendered_prompt = rendered_prompt.replace(
+                "{{ conversation }}", conversation_text)
 
         # Build message content — multimodal if images present
         if image_blocks:

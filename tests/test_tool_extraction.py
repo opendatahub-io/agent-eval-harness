@@ -1,17 +1,43 @@
-"""Tests for tool call extraction in score.py and trace_from_stdout.py."""
+"""Tests for tool call extraction from events and trace_from_stdout.py."""
 
 import json
+
+import pytest
 
 from conftest import make_assistant, make_result, make_user
 
 from agent_eval.config import OutputConfig
-from score import _extract_tool_calls
-from trace_from_stdout import extract_summary
+from agent_eval.events import parse_stream_events
+
+try:
+    from trace_from_stdout import extract_summary
+    _has_mlflow = True
+except (ImportError, SystemExit):
+    _has_mlflow = False
 
 
 def _to_stdout_text(events):
-    """Convert events to newline-separated JSON (what _extract_tool_calls expects)."""
+    """Convert events to newline-separated JSON."""
     return "\n".join(json.dumps(e) for e in events)
+
+
+def _extract_tool_calls_from_events(stdout_text, tool_outputs):
+    """Extract tool calls from parsed events matching configured patterns."""
+    events = parse_stream_events(stdout_text)
+    tool_patterns = [o.tool for o in tool_outputs]
+    calls = []
+    for event in events:
+        if event.get("type") != "assistant":
+            continue
+        if event.get("parent_tool_use_id"):
+            continue
+        for tool in event.get("tools", []):
+            name = tool.get("name", "")
+            for pattern in tool_patterns:
+                if pattern in name or name == pattern:
+                    calls.append({"name": name, "input": tool.get("input", {})})
+                    break
+    return calls
 
 
 class TestExtractToolCalls:
@@ -25,7 +51,8 @@ class TestExtractToolCalls:
                            tools=[("Read", "tu_sub", {"file_path": "/sub"})]),
         ]
         tool_outputs = [OutputConfig(tool="Bash"), OutputConfig(tool="Read")]
-        calls = _extract_tool_calls(_to_stdout_text(events), tool_outputs)
+        calls = _extract_tool_calls_from_events(
+            _to_stdout_text(events), tool_outputs)
         assert len(calls) == 1
         assert calls[0]["name"] == "Bash"
 
@@ -39,11 +66,13 @@ class TestExtractToolCalls:
             ]),
         ]
         tool_outputs = [OutputConfig(tool="Bash")]
-        calls = _extract_tool_calls(_to_stdout_text(events), tool_outputs)
+        calls = _extract_tool_calls_from_events(
+            _to_stdout_text(events), tool_outputs)
         assert len(calls) == 1
         assert calls[0]["name"] == "Bash"
 
 
+@pytest.mark.skipif(not _has_mlflow, reason="mlflow not installed")
 class TestExtractSummary:
     def test_skips_subagent_tools(self):
         """Post-2.1.108: subagent tool calls excluded from summary."""

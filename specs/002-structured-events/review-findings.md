@@ -10,10 +10,12 @@
 
 | Severity | Found | Fixed | Remaining |
 |----------|-------|-------|-----------|
-| Critical | 1 | 1 | 0 |
-| Important | 4 | 4 | 0 |
-| Minor | 6 | - | 6 |
-| **Total** | **11** | **5** | **6** |
+| Critical | 2 | 0 | 2 |
+| Important | 3 | 3 | 0 |
+| Minor | 19 | 2 | 17 |
+| **Total** | **24** | **5** | **19** |
+
+**Note:** The 2 Critical findings (eval/exec in score.py) are pre-existing code, not introduced by this feature. They do not block this feature's gate.
 
 **Agents completed:** 5/5 (+ 1 external tool)
 **Agents failed:** none
@@ -21,97 +23,87 @@
 ## Findings
 
 ### FINDING-1
-- **Severity:** Critical
-- **Confidence:** 90
-- **File:** agent_eval/events.py:157-189
-- **Category:** architecture
-- **Source:** architecture-agent
-- **Round found:** 1
-- **Resolution:** fixed (round 1)
-
-**What is wrong:**
-Two functions were defined but never called: `_resolve_tool_results` (body was just `pass`) and `_make_tool_result_event` (23-line function for creating tool result events). Both were artifacts of planned-but-unimplemented functionality for extracting tool results from stream-json content_block events.
-
-**Why this matters:**
-Dead code with complex logic increases maintenance burden and suggests incomplete implementation. The stub `_resolve_tool_results` was called from `parse_stream_events` but did nothing, wasting a function call per parse.
-
-**How it was resolved:**
-Removed both functions and the call to `_resolve_tool_results` from `parse_stream_events`. If tool result extraction is needed later, it can be recovered from git history.
-
-### FINDING-2
 - **Severity:** Important
 - **Confidence:** 95
-- **File:** agent_eval/events.py:82-86
+- **File:** agent_eval/events.py:290-307
 - **Category:** correctness
 - **Source:** correctness-agent (also reported by: architecture-agent)
 - **Round found:** 1
 - **Resolution:** fixed (round 1)
 
 **What is wrong:**
-When multiple tool input fields were truncated, `original_length` was computed as the sum of all oversized field lengths. This metric was ambiguous: a judge seeing `original_length: 8000` couldn't tell if it was one 8K field or four 2K fields.
+`_parse_transcript_assistant()` did not cap string values in tool inputs. Tool inputs were added raw via `block.get("input", {})` without calling `_cap_values()`, while the main parser `_parse_assistant_event()` correctly called `_cap_values()`. This violated FR-008.
 
 **Why this matters:**
-Misleading metadata undermines the utility of truncation information for judges.
+Subagent transcripts containing large tool inputs (e.g., Write calls with large file content) would produce unbounded events.json entries, defeating the size-bounding guarantee of `event_result_cap`.
 
 **How it was resolved:**
-Changed from `sum()` to `max()` so `original_length` reports the largest truncated field's original size. This is unambiguous and most useful for judges assessing truncation impact.
+Added `result_cap` parameter to `merge_subagent_transcripts()` and `_parse_transcript_assistant()`. Tool inputs are now capped via `_cap_values()` in both code paths.
 
-### FINDING-3
-- **Severity:** Important
-- **Confidence:** 80
-- **File:** tests/test_events.py:524-558
-- **Category:** test-quality
-- **Source:** test-quality-agent (also reported by: architecture-agent)
-- **Round found:** 1
-- **Resolution:** fixed (round 1)
-
-**What is wrong:**
-The `test_subagent_dedup` test created two events with the same `msg_id` but verified deduplication using a set that unconditionally added a hardcoded string, making the assertion meaningless.
-
-**Why this matters:**
-A weak assertion on deduplication (FR-016) means a regression could go undetected.
-
-**How it was resolved:**
-Simplified the assertion to verify `len(result) == 1` and that the kept event has the correct text content (`"First block"`), confirming the first event was preserved and the duplicate was dropped.
-
-### FINDING-4
+### FINDING-2
 - **Severity:** Important
 - **Confidence:** 85
-- **File:** tests/test_events.py:198-210
+- **File:** tests/test_events.py:340-357
 - **Category:** test-quality
 - **Source:** test-quality-agent
 - **Round found:** 1
 - **Resolution:** fixed (round 1)
 
 **What is wrong:**
-The `test_multiple_large_inputs` test checked `truncated: true` but didn't verify the `original_length` metadata value, leaving the calculation logic untested.
+The test for `traces.events=false` never called `_generate_events_json`. It asserted `events.json` doesn't exist, which was trivially true because nothing wrote it.
 
 **Why this matters:**
-The `original_length` semantics changed from sum to max. Without a test pinning the expected value, the calculation could drift silently.
+A wrong-reason pass gives false confidence. The test would pass even if the code completely ignored the `events=False` flag.
 
 **How it was resolved:**
-Added `assert tool["original_length"] == 2000` to verify the max truncated field length is reported correctly.
+Rewrote the test to verify both the positive case (events=True writes the file) and the negative case (load_case_record returns events=[] when no events.json exists).
 
-### FINDING-5
+### FINDING-3
 - **Severity:** Important
-- **Confidence:** 85
-- **File:** agent_eval/events.py:275-277
+- **Confidence:** 72
+- **File:** agent_eval/events.py:273-274
 - **Category:** correctness
 - **Source:** correctness-agent
 - **Round found:** 1
-- **Resolution:** not fixed (acceptable design)
+- **Resolution:** fixed (round 1)
 
 **What is wrong:**
-When a transcript event lacks `parent_tool_use_id`, the code uses the transcript filename stem (agent_id) as a fallback. This is a category error since `parent_tool_use_id` should be the tool use ID that spawned the agent.
+`merge_subagent_transcripts()` sorted events by `e.get("timestamp") or ""`. Events with `None` timestamps (like `result` events) sorted to the beginning because empty string sorts before ISO timestamps.
 
 **Why this matters:**
-The fallback creates technically invalid metadata. However, transcript events without `parent_tool_use_id` are rare (only from very old Claude Code versions), and the fallback ensures all transcript events are tagged as subagent events so they're correctly filtered by judges.
+The `result` event (conversation summary) would be moved to the front of the event list after merging subagent transcripts, breaking the chronological ordering that judges expect.
 
-## Remaining Findings (Minor)
+**How it was resolved:**
+Changed sort key to use a tuple: `(0, timestamp)` for events with timestamps, `(1, "")` for events without. Added a test to verify result events stay at the end after merge.
 
-- **Correctness**: Tool input capping doesn't recurse into nested dicts/lists. Acceptable because Claude tool inputs are flat key-value dicts.
-- **Correctness**: Weak fallback agent_id generation could collide on empty message IDs. Edge case unlikely in practice.
-- **Architecture**: `_extract_msg_id_from_event` adds unnecessary indirection. Acceptable as an abstraction point for future changes.
-- **Architecture**: Tool pattern matching duplicated between events-based and raw stdout extraction. Two call sites, different data shapes.
-- **Test Quality**: Missing boundary test for content at exactly `result_cap` length. Low risk.
-- **Test Quality**: Benchmark test allows 50x ratio. Guards against quadratic-or-worse, not exact linearity.
+### FINDING-4 (pre-existing)
+- **Severity:** Critical
+- **Confidence:** 95
+- **File:** skills/eval-run/scripts/score.py:260-261
+- **Category:** security
+- **Source:** security-agent
+- **Resolution:** not applicable (pre-existing)
+
+**What is wrong:**
+`score_cases` uses `eval()` to evaluate judge conditions from eval.yaml with an insufficient sandbox.
+
+### FINDING-5 (pre-existing)
+- **Severity:** Critical
+- **Confidence:** 90
+- **File:** skills/eval-run/scripts/score.py:327-338
+- **Category:** security
+- **Source:** security-agent
+- **Resolution:** not applicable (pre-existing)
+
+**What is wrong:**
+`_make_inline_check` uses `exec()` with full `__builtins__` on check code from eval.yaml. Known design tradeoff: eval.yaml is treated as trusted code.
+
+## Remaining Findings (Minor, not blocking)
+
+**Architecture:** Duplication between `_parse_assistant_event` and `_parse_transcript_assistant`. Test helpers re-implement production logic. JSONL conversion helpers duplicated across test files.
+
+**Test Quality:** No test for nested dict capping. `load_case_record` tests don't exercise `run_id` paths. Benchmark ratio permissive. No test for mixed content block types.
+
+**Production Readiness:** No cap on total event count. All case records loaded concurrently with no size limit. Anthropic client created per judge call.
+
+**Security:** Batch mode file copy missing symlink check (pre-existing, per-case mode has it).

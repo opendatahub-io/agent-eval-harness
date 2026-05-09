@@ -141,7 +141,19 @@ Skills that modify input files using the Edit tool (rather than writing to an ou
         "source.md": "<edited file content>",
     },
 
-    # --- Tool calls (from outputs with tool) ---
+    # --- Structured events (if traces.events enabled, default: true) ---
+    # Flat list of typed event dicts parsed from stdout.log JSONL.
+    # Event types: assistant, tool_result, system, result.
+    # Subagent events carry parent_tool_use_id and agent_id tags.
+    # Tool results include content (capped at traces.event_result_cap).
+    "events": [
+        {"type": "assistant", "text": "Let me check...", "tools": [...], "timestamp": "..."},
+        {"type": "tool_result", "tool_use_id": "tu_001", "tool_name": "Read",
+         "content": "file contents", "is_error": False, "timestamp": "..."},
+        {"type": "result", "cost_usd": 0.15, "num_turns": 12, "timestamp": None},
+    ],
+
+    # --- Tool calls (from outputs with tool, derived from events) ---
     "tool_calls": [
         {
             "name": "mcp__atlassian__create_issue",
@@ -156,8 +168,7 @@ Skills that modify input files using the Edit tool (rather than writing to an ou
     "cost_usd": 0.15,
     "num_turns": 12,
 
-    # --- Logs (if traces.stdout/stderr enabled) ---
-    "stdout": "<full stdout.log content>",
+    # --- Logs (if traces.stderr enabled) ---
     "stderr": "<full stderr.log content>",
 
     # --- Annotations (from dataset case directory) ---
@@ -208,12 +219,13 @@ For each judge across all cases:
 
 | `traces` field | What it controls | Where data comes from | What judges access |
 |----------------|------------------|-----------------------|-------------------|
-| `stdout: true` | Capture full stdout | `$AGENT_EVAL_RUNS_DIR/{id}/stdout.log` | `outputs["stdout"]` |
-| `stderr: true` | Capture full stderr | `$AGENT_EVAL_RUNS_DIR/{id}/stderr.log` | `outputs["stderr"]` |
-| `events: false` | Capture stream-json events | Parsed from stdout | `outputs["tool_calls"]` (via `outputs.tool` config) |
-| `metrics: true` | Capture execution metadata | `$AGENT_EVAL_RUNS_DIR/{id}/run_result.json` | `outputs["exit_code"]`, `["duration_s"]`, `["cost_usd"]`, `["num_turns"]`, `["token_usage"]` |
+| `stdout: true` | Keep raw stdout.log on disk | `stdout.log` in case/run dir | Debugging only (not loaded into record) |
+| `stderr: true` | Capture full stderr | `stderr.log` in case/run dir | `outputs["stderr"]` |
+| `events: true` | Parse JSONL into events.json | Parsed from stdout.log at collection time | `outputs["events"]` (list of event dicts) |
+| `event_result_cap: 50000` | Max chars per tool result/input | Applied during parsing | Truncated content has `truncated: true` and `original_length` |
+| `metrics: true` | Capture execution metadata | `run_result.json` | `outputs["exit_code"]`, `["duration_s"]`, `["cost_usd"]`, `["num_turns"]`, `["token_usage"]` |
 
-Note: `events` being false doesn't prevent tool call extraction — tool calls are extracted from stdout regardless if `outputs` has `tool:` entries. The `events` flag controls whether the full event stream is stored.
+Note: `events.json` is generated at collection time by `collect.py` and includes merged subagent transcripts from `subagents/*.jsonl`. Tool calls in `outputs["tool_calls"]` are derived from events.
 
 ### Important: stdout format for Claude Code runner
 
@@ -223,22 +235,22 @@ When `runner.type: claude-code`, `outputs["stdout"]` contains the **raw JSONL ev
 {"type": "assistant", "message": {"content": [{"type": "text", "text": "..."}]}}
 ```
 
-**For check judges**: if you need to scan the skill's text output, extract it from the JSONL rather than regex-matching the raw stream (which also contains the original input, tool calls, and tool results). Example:
+**For check judges**: use `outputs["events"]` to access structured events. Filter by type and iterate:
 
 ```python
-import json
-texts = []
-for line in outputs.get("stdout", "").splitlines():
-    try:
-        evt = json.loads(line)
-    except (json.JSONDecodeError, ValueError):
-        continue
-    if evt.get("type") != "assistant" or evt.get("parent_tool_use_id"):
-        continue
-    for block in evt.get("message", {}).get("content", []):
-        if block.get("type") == "text":
-            texts.append(block["text"])
-rewritten_text = "\n".join(texts)
+# Get all root-level assistant text
+texts = [e["text"] for e in outputs.get("events", [])
+         if e["type"] == "assistant" and not e.get("parent_tool_use_id") and e.get("text")]
+
+# Get tool call sequence
+tools = []
+for e in outputs.get("events", []):
+    if e["type"] == "assistant" and not e.get("parent_tool_use_id"):
+        tools.extend(t["name"] for t in e.get("tools", []))
+
+# Separate root from subagent events
+root_events = [e for e in outputs.get("events", []) if not e.get("parent_tool_use_id")]
+sub_events = [e for e in outputs.get("events", []) if e.get("parent_tool_use_id")]
 ```
 
-**For LLM judges**: use `{{ outputs }}` to render file artifacts and modified files as markdown. Use `{{ stdout }}` to render extracted assistant conversation text from the JSONL stream. Both can be used in the same prompt. If the skill edits files in-place, the rewritten content appears in `{{ outputs }}` via the `_modified/` collection.
+**For LLM judges**: use `{{ conversation }}` to render root-level assistant text (excludes subagent text). Use `{{ outputs }}` for file artifacts and modified files. If the skill edits files in-place, the rewritten content appears in `{{ outputs }}` via the `_modified/` collection.

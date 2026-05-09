@@ -110,8 +110,10 @@ suggested_judges:
     check: |
       <python snippet that takes outputs dict, returns (bool, str)>
     # For llm type, include evaluation instructions.
-    # Use {{ outputs }} for file artifacts, {{ stdout }} for conversation text,
-    # or both. For stdout-only skills (no file output), use {{ stdout }}:
+    # Template variables available in LLM judge prompts:
+    #   {{ outputs }} — renders file artifacts and modified files as markdown
+    #   {{ conversation }} — renders root-level assistant text (excludes subagent text)
+    #   {{ annotations }} — renders dataset annotations
     prompt: |
       <what to evaluate and how to score>
 ```

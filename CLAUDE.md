@@ -146,3 +146,8 @@ eval-analyze, eval-dataset, eval-optimize, eval-review — authoring workflows
 
 ### EvalHub-managed (via provider)
 Execution, result storage, regression detection, OCI export (MLflow tracking is optional)
+
+<!-- SPECKIT START -->
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan
+<!-- SPECKIT END -->

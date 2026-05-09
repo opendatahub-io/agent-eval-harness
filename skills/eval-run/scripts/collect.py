@@ -15,15 +15,18 @@ import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import yaml
 
 from agent_eval.config import EvalConfig
+from agent_eval.events import parse_stream_events, merge_subagent_transcripts
 
 # Files/dirs created by the harness infrastructure, not by the skill
 _HARNESS_PATHS = {
@@ -198,6 +201,11 @@ def _collect_per_case(workspace, output_dir, config):
                 shutil.copy2(abs_path, dest)
             results.setdefault(case_id, {})["_modified"] = len(modified)
 
+        # Generate events.json from stdout.log
+        if config.traces.events:
+            _generate_events_json(case_dir, output_dir / "cases" / case_id,
+                                  config)
+
     # Save collection summary
     with open(output_dir / "collection.json", "w") as f:
         json.dump(results, f, indent=2)
@@ -208,6 +216,46 @@ def _collect_per_case(workspace, output_dir, config):
 
     if not results:
         print("WARNING: no artifacts collected", file=sys.stderr)
+
+
+def _generate_events_json(case_dir, output_case_dir, config):
+    """Parse stdout.log into events.json using atomic write."""
+    stdout_path = case_dir / "stdout.log"
+    if not stdout_path.exists():
+        output_case_dir.mkdir(parents=True, exist_ok=True)
+        dest = output_case_dir / "events.json"
+        fd, tmp_path = tempfile.mkstemp(dir=str(output_case_dir), suffix=".tmp")
+        with os.fdopen(fd, "w") as f:
+            json.dump([], f)
+        os.rename(tmp_path, str(dest))
+        return
+
+    try:
+        stdout_text = stdout_path.read_text()
+    except OSError:
+        return
+
+    result_cap = config.traces.event_result_cap
+    events = parse_stream_events(stdout_text, result_cap=result_cap)
+
+    subagent_dir = case_dir / "subagents"
+    if subagent_dir.is_dir():
+        events = merge_subagent_transcripts(events, str(subagent_dir),
+                                            result_cap=result_cap)
+
+    output_case_dir.mkdir(parents=True, exist_ok=True)
+    dest = output_case_dir / "events.json"
+    fd, tmp_path = tempfile.mkstemp(dir=str(output_case_dir), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(events, f, indent=2)
+        os.rename(tmp_path, str(dest))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _collect_modified_files(case_dir, config):

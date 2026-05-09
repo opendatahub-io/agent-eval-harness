@@ -152,10 +152,11 @@ outputs:
 
 # Traces — execution data to capture for judges
 traces:
-  stdout: true     # Capture stdout.log
-  stderr: true     # Capture stderr.log
-  events: false    # Execution events: tool calls, reasoning, results (verbose)
-  metrics: true    # Capture exit code, tokens, cost, duration
+  stdout: true           # Keep raw stdout.log on disk (debugging)
+  stderr: true           # Capture stderr.log
+  events: true           # Parse JSONL into events.json (default: true)
+  event_result_cap: 50000  # Max chars per tool result/input string
+  metrics: true          # Capture exit code, tokens, cost, duration
 
 # Judges — evaluate output quality
 judges:
@@ -167,13 +168,17 @@ judges:
       <python snippet — receives outputs dict, returns (bool, str)>
 
   # LLM judge: assess quality with a prompt
-  # IMPORTANT: include {{ outputs }} so the LLM can see the skill's output files
+  # Template variables:
+  #   {{ outputs }} — renders file artifacts and modified files as markdown
+  #   {{ conversation }} — renders root-level assistant text (excludes subagent text)
+  #   {{ annotations }} — renders dataset annotations
   - name: <descriptive_name>
     description: |
       <what this judge evaluates>
     prompt: |
       <preamble — what to evaluate>
       {{ outputs }}
+      {{ conversation }}
       <scoring criteria — define what each score level means>
     # Optional: supplementary context files
     # context:
