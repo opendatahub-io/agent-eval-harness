@@ -15,6 +15,7 @@ agent_eval/              # Python package (config, runner, state)
   agent/
     base.py              # EvalRunner ABC + RunResult
     claude_code.py       # Claude Code CLI runner (claude --print)
+    cli_runner.py        # Opaque CLI runner (arbitrary command templates)
     stream_capture.py    # Stream-json processing (events, timestamps, usage, hooks)
   mlflow/
     experiment.py        # MLflow experiment setup, server check, feedback logging

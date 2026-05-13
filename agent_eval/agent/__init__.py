@@ -2,9 +2,11 @@
 
 from .base import EvalRunner, RunResult
 from .claude_code import ClaudeCodeRunner
+from .cli_runner import CliRunner
 
 RUNNERS = {
     "claude-code": ClaudeCodeRunner,
+    "cli": CliRunner,
 }
 
-__all__ = ["EvalRunner", "RunResult", "ClaudeCodeRunner", "RUNNERS"]
+__all__ = ["EvalRunner", "RunResult", "ClaudeCodeRunner", "CliRunner", "RUNNERS"]

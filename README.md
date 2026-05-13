@@ -525,12 +525,18 @@ skills/
 
 ## Agent Support
 
-The harness is agent-agnostic via the `EvalRunner` abstraction. Set `runner` in eval.yaml:
+The harness is agent-agnostic via the `EvalRunner` abstraction. Set `runner.type` in eval.yaml:
 
 ```yaml
-runner: claude-code    # default
-runner: opencode       # when implemented
+runner:
+  type: claude-code    # default — uses claude --print
+
+runner:
+  type: cli            # opaque CLI runner — delegates to an arbitrary command
+  command: "my-runner run {agent} --model {model} --workspace {workspace}"
 ```
+
+The `cli` runner executes a configurable command template with placeholder substitution. See **[docs/opaque-cli-runner-contract.md](docs/opaque-cli-runner-contract.md)** for the full contract (placeholders, metrics.json format, what the command MUST and SHOULD do).
 
 Add new runners by subclassing `EvalRunner` in `agent_eval/agent/` and registering in `RUNNERS`.
 

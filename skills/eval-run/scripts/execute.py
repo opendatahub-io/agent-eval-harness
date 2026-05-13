@@ -106,21 +106,14 @@ def main():
     mlflow_experiment = args.mlflow_experiment or config.mlflow.experiment
     effort = args.effort or config.runner.effort
 
-    # Resolve plugin_dirs relative to project root (CWD) so they survive
-    # the workspace CWD change — keeps plugin names stable.
-    resolved_plugin_dirs = [str(Path(d).resolve()) for d in config.runner.plugin_dirs] if config.runner.plugin_dirs else []
-
-    runner_kwargs = dict(
-        permissions=config.permissions,
-        plugin_dirs=resolved_plugin_dirs,
-        env_strip=config.runner.env_strip,
-        system_prompt=config.runner.system_prompt,
+    runner = runner_cls.from_config(
+        config,
+        log_prefix="eval",
         subagent_model=subagent_model,
         mlflow_experiment=mlflow_experiment,
         mlflow_tracking_uri=config.mlflow.tracking_uri,
         effort=effort,
     )
-    runner = runner_cls(log_prefix="eval", **runner_kwargs)
 
     # Resolve timeout and budget: CLI override > config > defaults.
     # Use explicit None checks so that 0 is preserved (an operator who
@@ -134,8 +127,13 @@ def main():
                   else 100.0)
 
     # Compose system prompt: runner.system_prompt (if any) + harness prompt.
+    # Skip the harness safety prompt for the opaque CLI runner — it references
+    # tool interception hooks and permission controls that don't exist there.
     existing_prompt = (config.runner.system_prompt or "").strip()
-    system_prompt = "\n\n".join(p for p in [existing_prompt, _HARNESS_SYSTEM_PROMPT] if p)
+    if agent == "cli":
+        system_prompt = existing_prompt or None
+    else:
+        system_prompt = "\n\n".join(p for p in [existing_prompt, _HARNESS_SYSTEM_PROMPT] if p)
 
     # Capture user-facing eval parameters that defined this run, for the report.
     eval_params = _build_eval_params(args, config, skill_args, max_budget, timeout_s, effort)
@@ -144,12 +142,14 @@ def main():
     if config.execution.mode == "case":
         parallelism = (args.parallelism if args.parallelism is not None
                        else config.execution.parallelism)
-        _execute_per_case(args, config, runner, runner_cls, runner_kwargs,
+        _execute_per_case(args, config, runner, runner_cls,
                           output_dir, max_budget, timeout_s,
                           model, mlflow_experiment, system_prompt,
                           skill_args_template=skill_args,
                           eval_params=eval_params,
-                          parallelism=parallelism)
+                          parallelism=parallelism,
+                          effort=effort,
+                          subagent_model=subagent_model)
         return
 
     # ── Batch execution (below) ──────────────────────────────────
@@ -211,7 +211,7 @@ def _resolve_arguments(template, case_data):
             return ""
         return str(value).strip()
 
-    result = re.sub(r'\{(\w+\??)\}', _replace, template).strip()
+    result = re.sub(r'\{([\w-]+\??)\}', _replace, template).strip()
     if missing:
         raise ValueError(
             f"Missing required fields in input.yaml: {', '.join(missing)}. "
@@ -327,11 +327,11 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
     return case_id, case_result
 
 
-def _execute_per_case(args, config, runner, runner_cls, runner_kwargs,
+def _execute_per_case(args, config, runner, runner_cls,
                       output_dir, max_budget, timeout_s,
                       model, mlflow_experiment, system_prompt="",
                       skill_args_template=None, eval_params=None,
-                      parallelism=None):
+                      parallelism=None, effort=None, subagent_model=None):
     """Execute the skill once per case with case-specific arguments."""
     import yaml as _yaml
 
@@ -364,8 +364,14 @@ def _execute_per_case(args, config, runner, runner_cls, runner_kwargs,
             for i, entry in enumerate(case_order, 1):
                 case_id = entry["case_id"] if isinstance(entry, dict) else entry
                 case_ws = workspace / "cases" / case_id
-                case_runner = runner_cls(
-                    log_prefix=f"eval:{case_id}", **runner_kwargs)
+                case_runner = runner_cls.from_config(
+                    config,
+                    log_prefix=f"eval:{case_id}",
+                    subagent_model=subagent_model,
+                    mlflow_experiment=mlflow_experiment,
+                    mlflow_tracking_uri=config.mlflow.tracking_uri,
+                    effort=effort,
+                )
                 fut = pool.submit(
                     _run_single_case, case_runner, args.skill, case_id,
                     case_ws, output_dir, skill_args_template, model,

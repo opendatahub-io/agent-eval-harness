@@ -37,6 +37,23 @@ class ClaudeCodeRunner(EvalRunner):
 
     _VALID_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 
+    @classmethod
+    def from_config(cls, config, *, log_prefix=None, **overrides):
+        plugin_dirs = config.runner.plugin_dirs or []
+        resolved_plugin_dirs = [
+            str(Path(d).resolve()) for d in plugin_dirs]
+        return cls(
+            permissions=config.permissions,
+            plugin_dirs=resolved_plugin_dirs,
+            env_strip=config.runner.env_strip,
+            system_prompt=config.runner.system_prompt,
+            subagent_model=overrides.get("subagent_model"),
+            mlflow_experiment=overrides.get("mlflow_experiment"),
+            mlflow_tracking_uri=overrides.get("mlflow_tracking_uri"),
+            effort=overrides.get("effort"),
+            log_prefix=log_prefix,
+        )
+
     def __init__(
         self,
         permissions: Optional[dict] = None,

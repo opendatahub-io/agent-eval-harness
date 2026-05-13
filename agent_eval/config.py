@@ -120,6 +120,7 @@ class RunnerConfig:
     that don't read them.
     """
     type: str = "claude-code"
+    command: object = None  # CLI runner: command template (str or list)
     settings: dict = field(default_factory=dict)
     plugin_dirs: list = field(default_factory=list)
     env_strip: list = field(default_factory=list)
@@ -266,6 +267,7 @@ class EvalConfig:
         runner_raw = raw.get("runner") or {}
         runner = RunnerConfig(
             type=runner_raw.get("type", "claude-code"),
+            command=runner_raw.get("command"),
             settings=runner_raw.get("settings", {}) or {},
             plugin_dirs=runner_raw.get("plugin_dirs", []) or [],
             env_strip=runner_raw.get("env_strip", []) or [],
