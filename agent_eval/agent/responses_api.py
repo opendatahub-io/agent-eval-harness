@@ -87,18 +87,32 @@ class ResponsesAPIRunner(EvalRunner):
         with _global_skill_lock:
             if skill_name in _global_skill_cache:
                 return _global_skill_cache[skill_name]
-            skill = client.skills.create(
-                name=skill_name,
-                source_dir=str(skill_dir),
-            )
+            files = []
+            for f in skill_dir.rglob("*"):
+                if not f.is_file() or f.is_symlink():
+                    continue
+                rel = str(f.relative_to(skill_dir))
+                files.append((rel, f.read_bytes()))
+            skill = client.skills.create(files=files)
             _global_skill_cache[skill_name] = skill.id
             return skill.id
+
+    _MEMORY_TIERS = [
+        (1024, "1g"), (4096, "4g"), (16384, "16g"), (65536, "64g"),
+    ]
+
+    def _pick_memory_limit(self, mb: int) -> str:
+        """Map an MB value to the nearest valid API tier."""
+        for threshold, label in self._MEMORY_TIERS:
+            if mb <= threshold:
+                return label
+        return "64g"
 
     def _create_container(self, client, skill_id: str) -> str:
         """Create an isolated container for one eval case with skill attached."""
         kwargs = {
             "name": f"eval-{uuid.uuid4().hex[:12]}",
-            "memory_limit": f"{self._memory_limit_mb}m",
+            "memory_limit": self._pick_memory_limit(self._memory_limit_mb),
             "skills": [{"type": "skill_reference", "skill_id": skill_id}],
         }
         if self._network_policy:
@@ -111,7 +125,8 @@ class ResponsesAPIRunner(EvalRunner):
         """Upload all workspace files to the container. Returns set of paths.
 
         Symlinks are skipped to prevent reading outside the workspace
-        (CWE-59).
+        (CWE-59). The container path is encoded in the filename tuple
+        so the API places files at the correct location.
         """
         uploaded = set()
         for f in workspace.rglob("*"):
@@ -119,12 +134,11 @@ class ResponsesAPIRunner(EvalRunner):
                 continue
             rel = f.relative_to(workspace)
             container_path = f"/workspace/{rel}"
-            with open(f, "rb") as fh:
-                client.containers.files.create(
-                    container_id,
-                    file=fh,
-                    path=container_path,
-                )
+            content = f.read_bytes()
+            client.containers.files.create(
+                container_id,
+                file=(container_path, content),
+            )
             uploaded.add(container_path)
         return uploaded
 
@@ -143,9 +157,10 @@ class ResponsesAPIRunner(EvalRunner):
             rel = f.path[len("/workspace/"):]
             local_path = workspace / rel
             local_path.parent.mkdir(parents=True, exist_ok=True)
-            content = client.containers.files.content(container_id, f.id)
-            local_path.write_bytes(
-                content if isinstance(content, bytes) else content.encode())
+            resp = client.containers.files.content.retrieve(
+                file_id=f.id, container_id=container_id,
+            )
+            local_path.write_bytes(resp.content)
 
     def _delete_container(self, client, container_id: str) -> None:
         """Delete a container (best-effort cleanup)."""

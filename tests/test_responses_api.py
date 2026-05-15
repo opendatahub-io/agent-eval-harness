@@ -2,14 +2,183 @@
 
 Each test class targets a specific concern. Tests are written to catch
 the actual bugs found during review — not just confirm happy paths.
+
+Includes an embedded mock server and integration tests that exercise
+the full 7-step runner lifecycle over real HTTP.
 """
+import json
 import os
 import threading
 import time
+import uuid
 import pytest
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from unittest.mock import patch, MagicMock, call
 from pathlib import Path
 import tempfile
+
+
+# ---------------------------------------------------------------------------
+# Embedded mock Responses API server
+# ---------------------------------------------------------------------------
+
+_mock_skills: dict[str, dict] = {}
+_mock_containers: dict[str, dict] = {}
+_mock_container_files: dict[str, dict[str, dict]] = {}
+
+
+class _MockHandler(BaseHTTPRequestHandler):
+
+    def log_message(self, fmt, *args):
+        pass
+
+    def _parse_multipart(self, body, content_type):
+        boundary = None
+        for part in content_type.split(";"):
+            part = part.strip()
+            if part.startswith("boundary="):
+                boundary = part[len("boundary="):].strip('"')
+        if not boundary:
+            return "/workspace/unknown", body
+        parts = body.split(f"--{boundary}".encode())
+        for part in parts:
+            if b"Content-Disposition" not in part:
+                continue
+            header_end = part.find(b"\r\n\r\n")
+            if header_end == -1:
+                continue
+            headers_section = part[:header_end].decode("utf-8", errors="replace")
+            content = part[header_end + 4:]
+            if content.endswith(b"\r\n"):
+                content = content[:-2]
+            filename = "/workspace/unknown"
+            for line in headers_section.split("\r\n"):
+                if "filename=" in line:
+                    start = line.index('filename="') + len('filename="')
+                    end = line.index('"', start)
+                    filename = line[start:end]
+                    break
+            if b'name="file"' in part:
+                return filename, content
+        return "/workspace/unknown", body
+
+    def _json(self, data, status=200):
+        body = json.dumps(data).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _body(self):
+        length = int(self.headers.get("Content-Length", 0))
+        return self.rfile.read(length) if length else b""
+
+    def do_GET(self):
+        path = self.path.split("?")[0]
+        if path == "/v1/models":
+            self._json({"object": "list", "data": [
+                {"id": "mock-model", "object": "model", "owned_by": "mock"}]})
+            return
+        if "/files/" in path and path.endswith("/content"):
+            parts = path.split("/")
+            f = _mock_container_files.get(parts[3], {}).get(parts[5])
+            if not f:
+                self._json({"detail": "Not Found"}, 404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(f["content"])))
+            self.end_headers()
+            self.wfile.write(f["content"])
+            return
+        if path.startswith("/v1/containers/") and path.endswith("/files"):
+            cid = path.split("/")[3]
+            files = _mock_container_files.get(cid, {})
+            fl = [{"id": fid, "object": "container_file",
+                   "path": f["path"], "size": len(f["content"])}
+                  for fid, f in files.items()]
+            self._json({"object": "list", "data": fl,
+                        "first_id": fl[0]["id"] if fl else None,
+                        "last_id": fl[-1]["id"] if fl else None,
+                        "has_more": False})
+            return
+        self._json({"detail": "Not Found"}, 404)
+
+    def do_POST(self):
+        path = self.path
+        body = self._body()
+        if path == "/v1/skills":
+            sid = f"skill_{uuid.uuid4().hex[:8]}"
+            _mock_skills[sid] = {"id": sid}
+            self._json({"id": sid, "object": "skill", "name": sid})
+            return
+        if path == "/v1/containers":
+            cid = f"ctr_{uuid.uuid4().hex[:8]}"
+            data = json.loads(body) if body else {}
+            _mock_containers[cid] = {"id": cid, "name": data.get("name", ""),
+                                     "status": "running"}
+            _mock_container_files[cid] = {}
+            self._json({"id": cid, "object": "container", "status": "running"})
+            return
+        if path.startswith("/v1/containers/") and path.endswith("/files"):
+            cid = path.split("/")[3]
+            if cid not in _mock_containers:
+                self._json({"detail": "Not found"}, 404)
+                return
+            ct = self.headers.get("Content-Type", "")
+            fid = f"file_{uuid.uuid4().hex[:8]}"
+            fp, fc = ("/workspace/unknown", body)
+            if "multipart" in ct:
+                fp, fc = self._parse_multipart(body, ct)
+            _mock_container_files[cid][fid] = {"path": fp, "content": fc}
+            self._json({"id": fid, "object": "container_file",
+                        "path": fp, "size": len(fc)})
+            return
+        if path == "/v1/responses":
+            data = json.loads(body) if body else {}
+            model = data.get("model", "mock-model")
+            rid = f"resp_{uuid.uuid4().hex[:8]}"
+            for tool in data.get("tools", []):
+                cid = tool.get("environment", {}).get("container_id")
+                if cid and cid in _mock_container_files:
+                    ofid = f"file_{uuid.uuid4().hex[:8]}"
+                    _mock_container_files[cid][ofid] = {
+                        "path": "/workspace/output/result.txt",
+                        "content": b"Mock agent output: task completed successfully.",
+                    }
+            self._json({
+                "id": rid, "object": "response", "status": "completed",
+                "model": model,
+                "output": [{"type": "message", "role": "assistant",
+                            "content": [{"type": "output_text",
+                                         "text": "I executed the skill successfully. "
+                                                 "Created output/result.txt with results."}]}],
+                "usage": {"prompt_tokens": 150, "completion_tokens": 42,
+                          "total_tokens": 192},
+            })
+            return
+        self._json({"detail": "Not Found"}, 404)
+
+    def do_DELETE(self):
+        path = self.path
+        if path.startswith("/v1/containers/"):
+            cid = path.split("/")[3]
+            _mock_containers.pop(cid, None)
+            _mock_container_files.pop(cid, None)
+            self._json({"deleted": True})
+            return
+        self._json({"detail": "Not Found"}, 404)
+
+
+def _start_mock_server():
+    _mock_skills.clear()
+    _mock_containers.clear()
+    _mock_container_files.clear()
+    server = HTTPServer(("127.0.0.1", 0), _MockHandler)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, port
 
 
 class TestRunnersRegistry:
@@ -216,7 +385,7 @@ class TestContainerLifecycle:
             {"type": "skill_reference", "skill_id": "skill-abc"}]
 
     def test_create_container_memory_limit_string_format(self):
-        """memory_limit must be a string like '1024m', not an int."""
+        """memory_limit must be one of the API-accepted tier strings."""
         from agent_eval.agent.responses_api import ResponsesAPIRunner
         runner = ResponsesAPIRunner(
             base_url="http://localhost:8000", memory_limit_mb=1024)
@@ -225,8 +394,19 @@ class TestContainerLifecycle:
 
         runner._create_container(mock_client, "skill-xyz")
         kw = mock_client.containers.create.call_args.kwargs
-        assert kw["memory_limit"] == "1024m"
+        assert kw["memory_limit"] == "1g"
         assert isinstance(kw["memory_limit"], str)
+
+    def test_memory_limit_tiers(self):
+        """Verify MB-to-tier mapping for various sizes."""
+        from agent_eval.agent.responses_api import ResponsesAPIRunner
+        r = ResponsesAPIRunner(base_url="http://x")
+        assert r._pick_memory_limit(512) == "1g"
+        assert r._pick_memory_limit(1024) == "1g"
+        assert r._pick_memory_limit(2048) == "4g"
+        assert r._pick_memory_limit(8000) == "16g"
+        assert r._pick_memory_limit(32000) == "64g"
+        assert r._pick_memory_limit(99999) == "64g"
 
     def test_create_container_names_are_unique(self):
         """Concurrent evals must not clash on container names."""
@@ -311,11 +491,11 @@ class TestContainerLifecycle:
             new_file, modified_file, system_file]
 
         content_map = {
-            ("ctr-1", "f-new"): b"new result",
-            ("ctr-1", "f-mod"): b"modified input",
+            "f-new": MagicMock(content=b"new result"),
+            "f-mod": MagicMock(content=b"modified input"),
         }
-        mock_client.containers.files.content.side_effect = (
-            lambda cid, fid: content_map[(cid, fid)])
+        mock_client.containers.files.content.retrieve.side_effect = (
+            lambda file_id, container_id: content_map[file_id])
 
         with tempfile.TemporaryDirectory() as tmpdir:
             ws = Path(tmpdir)
@@ -326,7 +506,7 @@ class TestContainerLifecycle:
             assert (ws / "output" / "result.md").read_bytes() == b"new result"
             assert (ws / "input.yaml").read_bytes() == b"modified input"
             assert not (ws / "tmp").exists(), "Non-workspace files must be skipped"
-            assert mock_client.containers.files.content.call_count == 2
+            assert mock_client.containers.files.content.retrieve.call_count == 2
 
     def test_download_overwrites_local_content(self):
         """The agent may edit input.yaml in-place; the local copy must update."""
@@ -336,7 +516,8 @@ class TestContainerLifecycle:
 
         mock_file = MagicMock(path="/workspace/data.txt", id="f-1")
         mock_client.containers.files.list.return_value = [mock_file]
-        mock_client.containers.files.content.return_value = b"updated by agent"
+        mock_client.containers.files.content.retrieve.return_value = (
+            MagicMock(content=b"updated by agent"))
 
         with tempfile.TemporaryDirectory() as tmpdir:
             ws = Path(tmpdir)
@@ -656,3 +837,95 @@ class TestEdgeCases:
         with patch.dict(os.environ, {}, clear=True):
             runner = ResponsesAPIRunner()
             assert runner._base_url == ""
+
+
+# ---------------------------------------------------------------------------
+# Integration tests — full lifecycle against embedded mock server
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def mock_server():
+    server, port = _start_mock_server()
+    yield port
+    server.shutdown()
+
+
+@pytest.fixture()
+def live_workspace(tmp_path):
+    skill_dir = tmp_path / ".skills" / "test-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# Test Skill\nDo something useful.")
+    (tmp_path / "input.yaml").write_text("task: write a greeting\n")
+    (tmp_path / "source.md").write_text("# Original\nHello world.\n")
+    (tmp_path / "output").mkdir()
+    return tmp_path
+
+
+@pytest.fixture()
+def live_runner(mock_server):
+    from agent_eval.agent.responses_api import ResponsesAPIRunner
+    return ResponsesAPIRunner(
+        base_url=f"http://127.0.0.1:{mock_server}/v1",
+        api_key="fake-key",
+        default_model="mock-model",
+        log_prefix="test",
+    )
+
+
+class TestIntegrationLifecycle:
+    """End-to-end: run_skill through all 7 steps over real HTTP."""
+
+    def test_run_skill_completes(self, live_runner, live_workspace):
+        result = live_runner.run_skill(
+            skill_name="test-skill", args="--verbose",
+            workspace=live_workspace, model="mock-model", timeout_s=30)
+        assert result.exit_code == 0
+        assert result.stderr == ""
+        assert "executed the skill successfully" in result.stdout
+        assert result.token_usage == {"input": 150, "output": 42}
+        assert result.num_turns == 1
+        assert result.raw_output["status"] == "completed"
+
+    def test_output_file_downloaded(self, live_runner, live_workspace):
+        live_runner.run_skill(
+            skill_name="test-skill", args="",
+            workspace=live_workspace, model="mock-model")
+        result_file = live_workspace / "output" / "result.txt"
+        assert result_file.exists()
+        assert "Mock agent output" in result_file.read_text()
+
+    def test_container_cleaned_up(self, live_runner, live_workspace):
+        live_runner.run_skill(
+            skill_name="test-skill", args="",
+            workspace=live_workspace, model="mock-model")
+        assert len(_mock_containers) == 0
+        assert len(_mock_container_files) == 0
+
+    def test_skill_cached_across_runs(self, live_runner, live_workspace):
+        live_runner.run_skill(
+            skill_name="test-skill", args="",
+            workspace=live_workspace, model="mock-model")
+        count_after_first = len(_mock_skills)
+        live_runner.run_skill(
+            skill_name="test-skill", args="",
+            workspace=live_workspace, model="mock-model")
+        assert len(_mock_skills) == count_after_first
+
+    def test_model_override(self, live_runner, live_workspace):
+        result = live_runner.run_skill(
+            skill_name="test-skill", args="",
+            workspace=live_workspace, model="custom-model")
+        assert result.resolved_model == "custom-model"
+
+    def test_connection_error(self, tmp_path):
+        from agent_eval.agent.responses_api import ResponsesAPIRunner
+        skill_dir = tmp_path / ".skills" / "s"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# S")
+        runner = ResponsesAPIRunner(
+            base_url="http://127.0.0.1:1/v1",
+            api_key="fake", default_model="m")
+        result = runner.run_skill(
+            skill_name="s", args="", workspace=tmp_path, model="m")
+        assert result.exit_code == 1
+        assert result.stderr != ""
