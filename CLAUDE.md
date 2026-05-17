@@ -150,4 +150,5 @@ Execution, result storage, regression detection, OCI export (MLflow tracking is 
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
+at `specs/004-reusable-judges-library/plan.md`
 <!-- SPECKIT END -->

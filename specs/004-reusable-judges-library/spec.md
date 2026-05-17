@@ -71,21 +71,31 @@ When evaluation results are reported, library judges are visually distinguishabl
 
 - What happens when a built-in judge requires event data (`outputs["events"]`) but events were not captured (events list is empty)? The judge should handle this gracefully and report a clear failure reason rather than crashing.
 - What happens when the same judge name is defined both as `type: builtin` and as a custom judge in the same eval.yaml? The harness should reject the duplicate and report an error.
-- What happens when a harness upgrade changes a built-in judge's behavior? Existing eval baselines may shift. Judge files should include a version indicator so authors can pin to a specific behavior.
+- What happens when a harness upgrade changes a built-in judge's behavior? Existing eval baselines may shift. Each judge includes a `__version__` string for documentation; behavior changes are signaled via version bump and changelog. Authors who need the old behavior can vendor the judge file.
+
+## Clarifications
+
+### Session 2026-05-17
+
+- Q: How does `name` in eval.yaml resolve to a judge file across category subdirectories? → A: Flat name resolution. The harness auto-discovers judges across all category dirs and builds a flat registry. Authors reference judges by simple name (e.g., `no_harmful_content`), not by category path.
+- Q: Can built-in judges accept configurable parameters (e.g., cost thresholds)? → A: Yes. An optional `config` dict in eval.yaml is passed as a second argument with default `None`. Judges that don't need config ignore it.
+- Q: Which specific judges should the initial library ship with? → A: Three judges: safety/`no_harmful_content` (checks agent output for harmful/dangerous content), process/`tool_call_validation` (verifies tool calls follow expected patterns and complete successfully), efficiency/`cost_budget` (checks `cost_usd` against a configurable threshold).
+- Q: How should judge versioning work for stability across harness upgrades? → A: Each judge module defines a `__version__` string for documentation only. No pinning mechanism in eval.yaml for this feature. Authors who need old behavior can vendor the judge.
 
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
 
 - **FR-001**: The harness MUST ship a `judges/` directory within the `agent_eval` package containing categorized judge scripts organized by domain (safety, process, efficiency).
-- **FR-002**: Each judge file MUST be a standalone Python module exporting a function with signature `(outputs: dict) -> tuple[bool, str]` compatible with the existing external code judge interface (`module`/`function`).
-- **FR-003**: The harness MUST support a `type: builtin` judge type in eval.yaml that resolves to a bundled judge by name without requiring the author to know the file path.
+- **FR-002**: Each judge file MUST be a standalone Python module exporting a function with signature `(outputs: dict, config: dict | None = None) -> tuple[bool, str]`. The optional `config` parameter receives a dict from the `config` key in the eval.yaml judge entry. Judges that don't need configuration ignore it via the default `None`. This is compatible with the existing external code judge interface (`module`/`function`).
+- **FR-003**: The harness MUST support a `type: builtin` judge type in eval.yaml that resolves to a bundled judge by flat name (e.g., `name: no_harmful_content`). The harness auto-discovers judges across all category subdirectories and builds a flat registry at startup. Name collisions across categories MUST be caught at startup with a clear error.
 - **FR-004**: When `type: builtin` references an unknown name, the harness MUST raise a clear error listing all available built-in judge names.
 - **FR-005**: Each judge file MUST include a module-level docstring describing what it checks, what `outputs` fields it reads, and what a failure means.
 - **FR-006**: Built-in judges MUST compose with existing judge types (inline `check`, LLM `prompt`, external `module`/`function`) in the same eval.yaml without conflicts.
 - **FR-007**: Built-in judges MUST handle missing event data gracefully, returning a clear failure reason (not an unhandled exception) when required fields are absent from the record.
 - **FR-008**: The score report MUST label built-in judges distinctly from custom judges so users can differentiate guardrail failures from skill-specific quality issues.
 - **FR-009**: The harness MUST reject duplicate judge names within a single eval.yaml (whether built-in, custom, or mixed).
+- **FR-010**: Each judge module MUST define a `__version__` string (e.g., `"1.0"`) for documentation purposes. No runtime pinning mechanism is provided; version changes are communicated via changelog.
 
 ### Key Entities
 
@@ -98,7 +108,7 @@ When evaluation results are reported, library judges are visually distinguishabl
 ### Measurable Outcomes
 
 - **SC-001**: A skill author can add a built-in safety judge to their eval.yaml in under 30 seconds (two lines of config: name and type).
-- **SC-002**: The initial library ships with at least one judge per category (safety, process quality, efficiency), covering the most common evaluation patterns.
+- **SC-002**: The initial library ships with three judges: `no_harmful_content` (safety), `tool_call_validation` (process), and `cost_budget` (efficiency), covering the most common evaluation patterns.
 - **SC-003**: 100% of library judge files include a module docstring that describes the check, required fields, and failure meaning.
 - **SC-004**: All library judges handle missing event data without raising unhandled exceptions.
 - **SC-005**: Score reports clearly distinguish library judge results from custom judge results for any eval run using both types.
@@ -107,7 +117,7 @@ When evaluation results are reported, library judges are visually distinguishabl
 
 - Structured events (`outputs["events"]`) are available in the case record when judges run. Judges that depend on events handle the empty-list case gracefully.
 - The existing `JudgeConfig` dataclass and `load_judges` function in `score.py` will be extended (not replaced) to support the new `type: builtin` resolution.
-- Library judges follow the same `(outputs: dict) -> tuple[bool, str]` contract as external code judges, keeping the scoring pipeline uniform.
+- Library judges follow the same `(outputs: dict, config: dict | None = None) -> tuple[bool, str]` contract as external code judges, keeping the scoring pipeline uniform.
 - Execution metrics (`cost_usd`, `duration_s`, `token_usage`, `num_turns`) are available in the case record for efficiency judges.
 - Judge presets (curated bundles like `safety-baseline`) are out of scope for this feature. Individual judge references come first; preset bundles can layer on later.
 - Regression fingerprinting (comparing event patterns between runs) is out of scope. It requires a new judge type beyond what this feature introduces.
