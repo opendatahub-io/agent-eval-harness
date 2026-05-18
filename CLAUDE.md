@@ -14,7 +14,7 @@ agent_eval/              # Python package (config, runner, state)
   state.py               # Shared state persistence (key-value store)
   agent/
     base.py              # EvalRunner ABC + RunResult
-    claude_code.py       # Claude Code CLI runner (claude --print)
+    claude_code.py       # Claude Code CLI runner (claude --bare --print)
     cli_runner.py        # Opaque CLI runner (arbitrary command templates)
     stream_capture.py    # Stream-json processing (events, timestamps, usage, hooks)
   mlflow/
@@ -147,6 +147,13 @@ eval-analyze, eval-dataset, eval-optimize, eval-review — authoring workflows
 
 ### EvalHub-managed (via provider)
 Execution, result storage, regression detection, OCI export (MLflow tracking is optional)
+
+## Claude Code References
+
+The harness runs skills via `claude --bare --print`. Key docs:
+- [Headless mode](https://code.claude.com/docs/en/headless) — `--bare`, `--print`, `--output-format`, `--allowed-tools`
+- [Tools reference](https://code.claude.com/docs/en/tools-reference) — tool names for permission rules (`Bash`, `Read`, `Edit`, `Skill`, etc.)
+- [Permissions](https://code.claude.com/docs/en/permissions) — `allow`/`deny` rule syntax, `ToolName(specifier)` patterns
 
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
