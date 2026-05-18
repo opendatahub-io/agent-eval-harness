@@ -56,7 +56,7 @@ Each case gets ALL files from the dataset case directory (not just input.yaml), 
 ## 2. Workspace → Execution
 
 **What execute.py does**:
-- Invokes the skill via the configured runner (e.g., `claude --bare --print`; see [headless docs](https://code.claude.com/docs/en/headless))
+- Invokes the skill via the configured runner (e.g., `claude --bare --print --output-format stream-json`; see [headless docs](https://code.claude.com/docs/en/headless))
 - Passes `batch.yaml` content as the skill prompt via stdin
 - Captures stdout (stream-json events) and stderr
 - Writes `stdout.log` and `stderr.log` to `$AGENT_EVAL_RUNS_DIR/{id}/`
