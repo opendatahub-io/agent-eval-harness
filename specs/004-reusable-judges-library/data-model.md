@@ -25,7 +25,7 @@ Existing dataclass in `agent_eval/config.py`. New fields marked with `[NEW]`.
 | **config** | dict | `field(default_factory=dict)` | **[NEW]** Arbitrary config dict passed to judge function as second argument. Uses factory default to avoid shared mutable state. |
 
 **Type determination logic** (updated):
-1. If `type == "builtin"`: resolve via builtin registry using `name`
+1. If `type == "builtin"`: resolve via builtin registry using `name`. All other type-discriminating fields (`check`, `prompt`, `prompt_file`, `module`, `function`) MUST be empty, otherwise raise a validation error.
 2. If `check` is set: inline check
 3. If `prompt` or `prompt_file` is set: LLM judge
 4. If `module` and `function` are set: external code judge
@@ -41,7 +41,7 @@ Runtime-only object (not persisted). Built by scanning `agent_eval/judges/` pack
 
 **Operations**:
 - `discover()`: Scan category subdirectories, import modules, extract judge functions, detect name collisions
-- `get(name)`: Return judge callable or raise error listing all available names
+- `get(name) -> Callable[[dict, dict | None], tuple[bool, str]]`: Look up `(module, function_name)` tuple in `_judges`, extract callable via `getattr(module, function_name)`, and return it. Raises `ValueError` listing all available names if not found.
 - `list_names()`: Return sorted list of all available judge names
 
 ### Judge Module (file convention)

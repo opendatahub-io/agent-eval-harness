@@ -12,7 +12,7 @@ judges:
       <key>: <value>
 ```
 
-**Trust boundary**: `eval.yaml` is a repository-controlled, trusted configuration file. The `condition` field is evaluated using Python `eval()` with restricted builtins (no access to `import`, `open`, `exec`, or other dangerous functions). This is an existing behavior shared with all judge types. Do not accept eval.yaml from untrusted sources.
+**Trust boundary**: `eval.yaml` is a repository-controlled, trusted configuration file. The `condition` field is evaluated using `eval(expr, {"__builtins__": {}}, {"annotations": ..., "outputs": ...})`, which disables all Python builtins. Only the `annotations` and `outputs` dicts are available as local variables. No builtin functions (`len`, `str`, `int`, etc.) are accessible. This is an existing behavior shared with all judge types. Do not accept eval.yaml from untrusted sources.
 
 ## Examples
 
@@ -37,7 +37,7 @@ judges:
 judges:
   - name: tool_call_validation
     type: builtin
-    condition: "len(outputs.get('tool_calls', [])) > 0"
+    condition: "bool(outputs.get('tool_calls', []))"
 ```
 
 ### Mixed with other judge types
