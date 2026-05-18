@@ -75,10 +75,21 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
                     record["annotations"] = yaml.safe_load(f) or {}
             except (yaml.YAMLError, OSError):
                 pass
-            # Load annotation-referenced files into the record
+            # Load annotation-referenced files into the record.
+            # Only treat values as file paths if they look like filenames:
+            # - Short enough to be a valid filename (< 256 chars)
+            # - No newlines (multi-line strings are descriptions, not paths)
+            # - No spaces at start/end (paths are usually trimmed)
             for key, val in record["annotations"].items():
                 if isinstance(val, str) and not val.startswith("/"):
-                    ref_path = (dataset_root / case_id / val).resolve()
+                    # Skip values that don't look like filenames
+                    if len(val) > 255 or "\n" in val or val != val.strip():
+                        continue
+                    try:
+                        ref_path = (dataset_root / case_id / val).resolve()
+                    except OSError:
+                        # Path resolution can fail for invalid characters
+                        continue
                     if (ref_path.is_file() and not ref_path.is_symlink()
                             and ref_path.is_relative_to(dataset_root)):
                         try:
