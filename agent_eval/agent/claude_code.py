@@ -105,8 +105,13 @@ class ClaudeCodeRunner(EvalRunner):
         max_budget_usd: float = 5.0,
         timeout_s: int = 600,
     ) -> RunResult:
+        # --bare skips auto-discovery of hooks, plugins, MCP servers, and
+        # settings, loading only what we pass via flags. This makes runs
+        # faster, reproducible, and independent of the machine's config.
+        # See: https://code.claude.com/docs/en/headless
         cmd = [
             "claude",
+            "--bare",
             "--print",
             "--model", model,
             "--output-format", "stream-json" if self._log_prefix else "json",

@@ -56,7 +56,7 @@ Each case gets ALL files from the dataset case directory (not just input.yaml), 
 ## 2. Workspace → Execution
 
 **What execute.py does**:
-- Invokes the skill via the configured runner (e.g., `claude --print`)
+- Invokes the skill via the configured runner (e.g., `claude --bare --print --output-format stream-json`; see [headless docs](https://code.claude.com/docs/en/headless))
 - Passes `batch.yaml` content as the skill prompt via stdin
 - Captures stdout (stream-json events) and stderr
 - Writes `stdout.log` and `stderr.log` to `$AGENT_EVAL_RUNS_DIR/{id}/`
@@ -233,7 +233,7 @@ Note: `events.json` is generated at collection time by `collect.py` and includes
 
 ### Important: stdout format for Claude Code runner
 
-When `runner.type: claude-code`, `outputs["stdout"]` contains the **raw JSONL event stream** from `claude --print`, not plain text. Each line is a JSON object with `type` (`user`, `assistant`, `system`, `result`). Assistant text is in objects like:
+When `runner.type: claude-code`, `outputs["stdout"]` contains the **raw JSONL event stream** from `claude --bare --print --output-format stream-json` (see [streaming docs](https://code.claude.com/docs/en/headless#stream-responses)), not plain text. Each line is a JSON object with `type` (`user`, `assistant`, `system`, `result`). Assistant text is in objects like:
 
 ```json
 {"type": "assistant", "message": {"content": [{"type": "text", "text": "..."}]}}
