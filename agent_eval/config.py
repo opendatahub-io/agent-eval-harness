@@ -217,6 +217,7 @@ class EvalConfig:
     # Dataset — natural language schema + path
     dataset_path: str = ""
     dataset_schema: str = ""
+    dataset_input_files_dir: str = "files"
 
     # Outputs — file artifacts and/or tool calls
     outputs: list = field(default_factory=list)
@@ -319,6 +320,9 @@ class EvalConfig:
             dataset_path=_validate_relative_path(
                 dataset.get("path", ""), "dataset.path"),
             dataset_schema=dataset.get("schema", ""),
+            dataset_input_files_dir=_validate_relative_path(
+                dataset.get("input_files_dir", "files"),
+                "dataset.input_files_dir"),
         )
 
         # Outputs (path or tool)

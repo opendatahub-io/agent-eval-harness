@@ -27,6 +27,7 @@ from pathlib import Path
 import yaml
 
 from agent_eval.config import EvalConfig
+from workspace_files import _copy_input_files
 
 
 def main():
@@ -112,6 +113,9 @@ def main():
         else:
             batch_entries.append(input_content)
             case_order.append({"case_id": case_dir.name, "entry_count": 1})
+
+        # Copy input files directory if present
+        _copy_input_files(case_dir, workspace, config)
 
     # Write batch.yaml
     with open(workspace / "batch.yaml", "w") as f:
@@ -203,6 +207,11 @@ def _create_per_case_workspace(workspace, case_dirs, config, args):
         if input_src:
             shutil.copy2(input_src, case_ws / input_src.name)
 
+        # Copy input files directory if present (e.g., source code for the
+        # agent to work on). Contents are placed at the workspace root,
+        # preserving relative paths within the directory.
+        _copy_input_files(case_dir, case_ws, config)
+
         # Create output directories
         for output in config.outputs:
             if output.path and output.path != ".":
@@ -281,7 +290,7 @@ def _read_input(case_dir):
     Prefers files named 'input.*', then falls back to first parseable file.
     Skips known non-input files like answers.yaml and reference.*.
     """
-    _SKIP_NAMES = {"answers", "reference", "expected", "gold"}
+    _SKIP_NAMES = {"answers", "reference", "expected", "gold", "files"}
 
     # First pass: look for a file named 'input.*'
     for suffix in (".yaml", ".yml", ".json"):
