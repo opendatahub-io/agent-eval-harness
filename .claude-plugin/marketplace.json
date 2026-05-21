@@ -14,7 +14,11 @@
       "author": {
         "name": "opendatahub-io"
       },
-      "source": "./",
+      "source": {
+        "ref": "main",
+        "repo": "opendatahub-io/agent-eval-harness",
+        "source": "github"
+      },
       "homepage": "https://github.com/opendatahub-io/agent-eval-harness",
       "repository": "https://github.com/opendatahub-io/agent-eval-harness"
     }

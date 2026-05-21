@@ -1,0 +1,29 @@
+{
+  "branches": ["main"],
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/changelog",
+      {
+        "changelogFile": "CHANGELOG.md"
+      }
+    ],
+    [
+      "@semantic-release/exec",
+      {
+        "prepareCmd": "sed -i 's/version = \".*\"/version = \"${nextRelease.version}\"/' pyproject.toml && sed -i 's/__version__ = \".*\"/__version__ = \"${nextRelease.version}\"/' agent_eval/__init__.py && sed -i 's/\"version\": \".*\"/\"version\": \"${nextRelease.version}\"/' .claude-plugin/plugin.json && sed -i 's/\"version\": \".*\"/\"version\": \"${nextRelease.version}\"/' .claude-plugin/marketplace.json"
+      }
+    ],
+    [
+      "@semantic-release/github"
+    ],
+    [
+      "@semantic-release/git",
+      {
+        "assets": ["CHANGELOG.md", "pyproject.toml", "agent_eval/__init__.py", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json"],
+        "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+      }
+    ]
+  ]
+}
