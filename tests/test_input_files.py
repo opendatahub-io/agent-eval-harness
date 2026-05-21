@@ -1,12 +1,11 @@
 """Tests for dataset.input_files_dir support."""
 
-import shutil
-import sys
-from pathlib import Path
+import os
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+import pytest
 
 from agent_eval.config import EvalConfig
+from workspace_files import _copy_input_files
 
 
 def _write(tmp_path, body):
@@ -31,20 +30,24 @@ dataset:
     assert cfg.dataset_input_files_dir == "source"
 
 
-def _copy_input_files(case_dir, workspace, config):
-    """Local copy of the function under test to avoid importing workspace.py
-    (which has an agent_eval._bootstrap side-effect import)."""
-    dir_name = getattr(config, "dataset_input_files_dir", "files") or "files"
-    files_dir = case_dir / dir_name
-    if not files_dir.is_dir():
-        return
-    for item in files_dir.rglob("*"):
-        if not item.is_file():
-            continue
-        rel = item.relative_to(files_dir)
-        dst = workspace / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(item, dst)
+def test_input_files_dir_rejects_absolute_path(tmp_path):
+    with pytest.raises(ValueError, match="must be a relative path"):
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+skill: s
+dataset:
+  input_files_dir: /etc/passwd
+"""))
+
+
+def test_input_files_dir_rejects_parent_traversal(tmp_path):
+    with pytest.raises(ValueError, match="must be a relative path"):
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+skill: s
+dataset:
+  input_files_dir: ../secrets
+"""))
 
 
 def test_copy_input_files_places_files_in_workspace(tmp_path):
@@ -99,3 +102,26 @@ def test_copy_input_files_custom_dir_name(tmp_path):
 
     assert (workspace / "main.py").read_text() == "main()"
     assert not (workspace / "decoy.txt").exists()
+
+
+def test_copy_input_files_skips_symlinks(tmp_path):
+    """Symlinks inside files/ are not followed."""
+    case_dir = tmp_path / "cases" / "case-001"
+    files_dir = case_dir / "files"
+    files_dir.mkdir(parents=True)
+    (files_dir / "real.py").write_text("real")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret")
+
+    os.symlink(outside / "secret.txt", files_dir / "link.txt")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = EvalConfig(name="t", skill="s", dataset_input_files_dir="files")
+    _copy_input_files(case_dir, workspace, config)
+
+    assert (workspace / "real.py").read_text() == "real"
+    assert not (workspace / "link.txt").exists()

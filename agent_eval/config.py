@@ -320,7 +320,9 @@ class EvalConfig:
             dataset_path=_validate_relative_path(
                 dataset.get("path", ""), "dataset.path"),
             dataset_schema=dataset.get("schema", ""),
-            dataset_input_files_dir=dataset.get("input_files_dir", "files"),
+            dataset_input_files_dir=_validate_relative_path(
+                dataset.get("input_files_dir", "files"),
+                "dataset.input_files_dir"),
         )
 
         # Outputs (path or tool)
