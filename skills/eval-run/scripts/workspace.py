@@ -113,6 +113,9 @@ def main():
             batch_entries.append(input_content)
             case_order.append({"case_id": case_dir.name, "entry_count": 1})
 
+        # Copy input files directory if present
+        _copy_input_files(case_dir, workspace, config)
+
     # Write batch.yaml
     with open(workspace / "batch.yaml", "w") as f:
         yaml.dump(batch_entries, f, default_flow_style=False,
@@ -203,6 +206,11 @@ def _create_per_case_workspace(workspace, case_dirs, config, args):
         if input_src:
             shutil.copy2(input_src, case_ws / input_src.name)
 
+        # Copy input files directory if present (e.g., source code for the
+        # agent to work on). Contents are placed at the workspace root,
+        # preserving relative paths within the directory.
+        _copy_input_files(case_dir, case_ws, config)
+
         # Create output directories
         for output in config.outputs:
             if output.path and output.path != ".":
@@ -274,6 +282,28 @@ def _find_input_file(case_dir):
     return None
 
 
+def _copy_input_files(case_dir, workspace, config):
+    """Copy the input files directory into the workspace.
+
+    If the case directory contains a subdirectory matching
+    ``config.dataset_input_files_dir`` (default: ``files/``), its contents
+    are recursively copied into the workspace root, preserving relative
+    paths.  This allows test cases to ship source code, config files, or
+    other artifacts the agent needs without embedding them in input.yaml.
+    """
+    dir_name = getattr(config, "dataset_input_files_dir", "files") or "files"
+    files_dir = case_dir / dir_name
+    if not files_dir.is_dir():
+        return
+    for item in files_dir.rglob("*"):
+        if not item.is_file():
+            continue
+        rel = item.relative_to(files_dir)
+        dst = workspace / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(item, dst)
+
+
 def _read_input(case_dir):
     """Read the input file from a case directory.
 
@@ -281,7 +311,7 @@ def _read_input(case_dir):
     Prefers files named 'input.*', then falls back to first parseable file.
     Skips known non-input files like answers.yaml and reference.*.
     """
-    _SKIP_NAMES = {"answers", "reference", "expected", "gold"}
+    _SKIP_NAMES = {"answers", "reference", "expected", "gold", "files"}
 
     # First pass: look for a file named 'input.*'
     for suffix in (".yaml", ".yml", ".json"):
