@@ -10,14 +10,14 @@ Add a reusable judges library to the agent eval harness: an `agent_eval/judges/`
 ## Technical Context
 
 **Language/Version**: Python 3.11+
-**Primary Dependencies**: Jinja2 (for LLM prompt template rendering)
+**Primary Dependencies**: Jinja2 (for LLM prompt template rendering, applies to all LLM judges)
 **Storage**: N/A (file-based package, no persistence)
 **Testing**: pytest (existing test suite in `tests/`)
 **Target Platform**: Cross-platform (CLI tool)
 **Project Type**: Library (Python package extension)
 **Performance Goals**: N/A (judges run in existing thread pool)
 **Constraints**: Must not break existing eval.yaml configurations or scoring behavior
-**Scale/Scope**: 4 initial judges (3 Python + 1 LLM), extensible pattern for future additions
+**Scale/Scope**: 4 initial judges (2 Python + 2 LLM), extensible pattern for future additions
 
 ## Constitution Check
 
@@ -51,7 +51,7 @@ agent_eval/
 │   ├── __init__.py                    # BuiltinJudgeRegistry class
 │   ├── safety/
 │   │   ├── __init__.py
-│   │   └── no_harmful_content.py      # Python: safety judge
+│   │   └── no_harmful_content.md      # LLM: safety judge
 │   ├── process/
 │   │   ├── __init__.py
 │   │   └── tool_call_validation.py    # Python: process quality judge
@@ -89,23 +89,26 @@ tests/
 ### Phase 2: Extend JudgeConfig and Scoring Pipeline
 
 1. **Add fields to `JudgeConfig`** in `agent_eval/config.py`:
-   - `builtin: str = ""` (resolves to a registered builtin name)
-   - `config: dict = field(default_factory=dict)`
+   - `builtin: str = ""` (resolves to a registered builtin name, supports flat or FQN)
+   - `arguments: dict = field(default_factory=dict)` (passed as `**kwargs` to Python, Jinja var to LLM, local to check)
 2. **Extend `load_judges()` in `score.py`**:
    - Add `builtin` branch before existing type inference
    - Validate mutual exclusivity: `builtin` set alongside `check`/`prompt`/`prompt_file`/`module`/`function` raises error
    - Instantiate `BuiltinJudgeRegistry` lazily (only on first `builtin` encounter)
-   - For Python entries: wrap callable to pass `config`
-   - For LLM entries: render Jinja2 template with `config` and `outputs`, send to LLM, parse JSON response into `(bool, str)`
+   - For Python entries: wrap callable to pass `arguments` as `**kwargs`
+   - For LLM entries: render Jinja2 template with `arguments` and `outputs`, send to LLM, parse JSON response into `(bool, str)`
+   - For existing `module`/`function` judges: pass `arguments` as `**kwargs` when present (backward-compatible)
+   - For `prompt_file` judges: apply Jinja2 rendering with `arguments` when present
+   - For `check` judges: inject `arguments` dict into eval locals
 3. **Add duplicate name validation** at start of `load_judges()`
-4. **Jinja2 rendering**: Add template rendering utility that takes a `.md` path, renders with `config` and `outputs` variables, returns the prompt string. Use Jinja2's `Environment` with `tojson` filter available.
+4. **Jinja2 rendering**: Add template rendering utility that takes a `.md` path, renders with `arguments` and `outputs` variables, returns the prompt string. Use Jinja2's `Environment` with `tojson` filter available. Apply to both builtin `.md` files and inline `prompt_file` judges when `arguments` is present.
 
 ### Phase 3: Implement Four Initial Judges
 
-1. **`safety/no_harmful_content.py`** (Python): LLM-free check scanning `conversation` and `files` for harmful content patterns. Returns `(False, reason)` if flagged content detected.
+1. **`safety/no_harmful_content.md`** (LLM): Jinja2 prompt template that evaluates conversation and file contents for harmful or dangerous content via nuanced LLM evaluation. Supports `{{ arguments.categories }}` for customizable content categories to check. Responds with JSON `{"passed": bool, "rationale": str}`.
 2. **`process/tool_call_validation.py`** (Python): Checks `tool_calls` and `events` for tool execution errors. Returns `(False, reason)` if any tool call has error results.
-3. **`efficiency/cost_budget.py`** (Python): Checks `cost_usd` against `config.get("max_cost_usd", 1.0)` default threshold. Configurable via eval.yaml `config` dict.
-4. **`quality/output_completeness.md`** (LLM): Jinja2 prompt template that evaluates output completeness. Supports `config.strictness` and `config.criteria` for customization. Responds with JSON `{"passed": bool, "rationale": str}`.
+3. **`efficiency/cost_budget.py`** (Python): Checks `cost_usd` against `kwargs.get("max_cost_usd", 1.0)` default threshold. Configurable via eval.yaml `arguments` dict.
+4. **`quality/output_completeness.md`** (LLM): Jinja2 prompt template that evaluates output completeness. Supports `{{ arguments.strictness }}` and `{{ arguments.criteria }}` for customization. Responds with JSON `{"passed": bool, "rationale": str}`.
 
 ### Phase 4: Report Labeling
 
@@ -121,9 +124,10 @@ tests/
 ## Key Design Decisions
 
 1. **`builtin` field as discriminator** (not `type: builtin`): Follows the existing field-based type inference pattern. `name` stays user-defined. Decided based on reviewer feedback (PR #66, @astefanutti).
-2. **Dual-type registry**: Auto-detects judge type from file extension rather than requiring explicit type markers. Keeps the user-facing API uniform.
-3. **Jinja2 for LLM templates**: Provides conditionals, loops, and filters (especially `tojson`) for flexible prompt construction. `config` and `outputs` are the only template variables.
-4. **Lazy registry instantiation**: Only scan `agent_eval/judges/` on first encounter of a `builtin` field in the judge list. Avoids filesystem overhead for configs that don't use builtins.
+2. **Dual-type registry**: Auto-detects judge type from file extension rather than requiring explicit type markers. Supports flat names and FQN (`category/name`).
+3. **`arguments` as `**kwargs`**: Renamed from `config` to `arguments`. Passed as `**kwargs` to Python judges, as Jinja template variable to LLM judges, as local variable to `check` judges. Works uniformly across all judge types.
+4. **Jinja2 for all LLM judges**: Provides conditionals, loops, and filters (especially `tojson`) for flexible prompt construction. Applies to both builtin `.md` files and inline `prompt_file` judges when `arguments` is present.
+5. **Lazy registry instantiation**: Only scan `agent_eval/judges/` on first encounter of a `builtin` field in the judge list. Avoids filesystem overhead for configs that don't use builtins.
 
 ## Complexity Tracking
 

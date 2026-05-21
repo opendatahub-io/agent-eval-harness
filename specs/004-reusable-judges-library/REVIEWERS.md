@@ -96,6 +96,31 @@ No open questions identified. All ambiguities were resolved during clarification
 - quickstart.md: regenerated (new syntax, added LLM judge example)
 - REVIEWERS.md: Key Decisions, What Changes, How It Works, Areas Needing Attention sections updated
 
+### Rev 2 (2026-05-20) - PR #66 review round 2 from @astefanutti
+
+**Trigger**: PR review feedback on brainstorm and contracts, 7 comments on parameter naming, judge type choices, and API symmetry
+
+**Spec changes**:
+- Renamed `config` to `arguments` throughout (eval.yaml field, dataclass field, all docs)
+- Changed Python judge signature from `judge(outputs, config=None)` to `judge(outputs, **kwargs)` where kwargs come from `arguments`
+- Made `arguments` work for ALL judge types: `**kwargs` for Python (builtin, module/function), Jinja variable for LLM (builtin, prompt_file), local variable for inline `check`
+- Moved `no_harmful_content` from Python to LLM judge (harmful content detection benefits from nuanced LLM evaluation over pattern matching)
+- Added FQN reference support: `builtin: safety/no_harmful_content` alongside flat `builtin: no_harmful_content`
+- Fixed `model` field description: applies to all LLM judges, not just builtins
+- Unified LLM judge contract: Jinja2 rendering with `arguments` applies to both builtin `.md` and inline `prompt_file` judges
+- Added FR-014 (arguments for all judge types)
+- Initial judge set now 2 Python + 2 LLM (was 3 + 1)
+
+**Quality gates**:
+- review-spec: pending
+- review-plan: pending
+
+**Cascade impact**:
+- plan.md: updated (arguments, FQN, no_harmful_content type change)
+- tasks.md: updated (arguments, **kwargs, LLM judge changes)
+- quickstart.md: regenerated (arguments examples for all judge types)
+- REVIEWERS.md: revision history appended
+
 ---
 
 <!-- Code phase sections are appended below this line by the phase-manager command -->

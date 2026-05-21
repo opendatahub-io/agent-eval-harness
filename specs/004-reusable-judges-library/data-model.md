@@ -1,6 +1,6 @@
 # Data Model: Reusable Judges Library
 
-**Date**: 2026-05-17 (revised 2026-05-19) | **Feature**: 004-reusable-judges-library
+**Date**: 2026-05-17 (revised 2026-05-20) | **Feature**: 004-reusable-judges-library
 
 ## Entities
 
@@ -21,8 +21,8 @@ Existing dataclass in `agent_eval/config.py`. New fields marked with `[NEW]`.
 | model | str | "" | Per-judge model override |
 | module | str | "" | External code judge module path |
 | function | str | "" | External code judge function name |
-| **builtin** | str | "" | **[NEW]** Builtin judge name. Resolves to a bundled judge file via the registry. Mutually exclusive with `check`, `prompt`, `prompt_file`, `module`, `function`. |
-| **config** | dict | `field(default_factory=dict)` | **[NEW]** Arbitrary config dict. Passed as second argument to Python judges, or as Jinja template variable to LLM judges. Uses factory default to avoid shared mutable state. |
+| **builtin** | str | "" | **[NEW]** Builtin judge name (flat or FQN like `safety/no_harmful_content`). Resolves to a bundled judge file via the registry. Mutually exclusive with `check`, `prompt`, `prompt_file`, `module`, `function`. |
+| **arguments** | dict | `field(default_factory=dict)` | **[NEW]** Arbitrary arguments dict. Passed as `**kwargs` to Python judges, or as Jinja template variable to LLM judges. Works for all judge types (builtin, module/function, check, prompt/prompt_file). Uses factory default to avoid shared mutable state. |
 
 **Type determination logic** (updated):
 1. If `builtin` is set: resolve via builtin registry. All other type-discriminating fields (`check`, `prompt`, `prompt_file`, `module`, `function`) MUST be empty, otherwise raise a validation error.
@@ -51,7 +51,7 @@ Runtime-only object (not persisted). Built by scanning `agent_eval/judges/` pack
 
 **Operations**:
 - `discover()`: Scan category subdirectories. For `.py` files: import module, extract judge function, store as Python entry. For `.md` files: record prompt path, store as LLM entry. Detect name collisions across categories.
-- `get(name) -> BuiltinJudgeEntry`: Look up entry in `_judges`. Raises `ValueError` listing all available names if not found.
+- `get(name) -> BuiltinJudgeEntry`: Look up entry in `_judges` by flat name or FQN (`category/name`). Raises `ValueError` listing all available names if not found.
 - `list_names()`: Return sorted list of all available judge names
 
 ### Python Judge File Convention
@@ -61,7 +61,7 @@ Each `.py` file in `agent_eval/judges/<category>/` follows this convention:
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `__version__` | str | Version string for documentation (e.g., "1.0") |
-| `judge(outputs, config=None)` | callable | Scoring function returning `(bool, str)` |
+| `judge(outputs, **kwargs)` | callable | Scoring function returning `(bool, str)`. `**kwargs` receives values from `arguments` dict in eval.yaml. |
 | module docstring | str | Describes the check, required fields, and failure meaning |
 
 ### LLM Judge File Convention
@@ -72,7 +72,7 @@ Each `.md` file in `agent_eval/judges/<category>/` follows this convention:
 |---------|-------------|
 | YAML frontmatter | Contains `__version__` and optional metadata |
 | Preamble section | Describes the check, required fields, and failure meaning |
-| Jinja2 template body | Prompt template with `{{ config }}` and `{{ outputs }}` variables |
+| Jinja2 template body | Prompt template with `{{ arguments }}` and `{{ outputs }}` variables |
 
 Example structure:
 ```markdown
@@ -84,7 +84,7 @@ __version__: "1.0"
 
 Evaluate the following agent output for completeness.
 
-Strictness: {{ config.strictness | default('medium') }}
+Strictness: {{ arguments.strictness | default('medium') }}
 
 {{ outputs | tojson }}
 
@@ -116,7 +116,7 @@ agent_eval/
 │   ├── __init__.py          # BuiltinJudgeRegistry class
 │   ├── safety/
 │   │   ├── __init__.py
-│   │   └── no_harmful_content.py
+│   │   └── no_harmful_content.md
 │   ├── process/
 │   │   ├── __init__.py
 │   │   └── tool_call_validation.py
@@ -126,7 +126,7 @@ agent_eval/
 │   └── quality/
 │       ├── __init__.py
 │       └── output_completeness.md
-└── config.py                # JudgeConfig extended with builtin + config fields
+└── config.py                # JudgeConfig extended with builtin + arguments fields
 ```
 
 ## Validation Rules
@@ -135,4 +135,4 @@ agent_eval/
 2. Builtin judge names MUST be unique across all category subdirectories (enforced in `BuiltinJudgeRegistry.discover()`)
 3. `builtin` field requires its value to match a registered builtin judge name (error lists available names)
 4. `builtin` is mutually exclusive with `check`, `prompt`, `prompt_file`, `module`, `function`
-5. `config` dict is optional for all judge types but only meaningful for builtin and code judges
+5. `arguments` dict is optional and works for all judge types: `**kwargs` for Python, Jinja variable for LLM, local variable for `check`
