@@ -9,7 +9,7 @@ Last updated: 2026-05-23
 | 02 | 2026-05-06 | event-powered-judges | active | - |
 | 03 | 2026-05-13 | trajectory-standardization | active | - |
 
-Implemented brainstorms are moved to `attic/`.
+Implemented brainstorms are moved to `brainstorm/attic/`.
 
 ## Open Threads
 - Should the framework ship with built-in judge templates for common patterns? (from #02)

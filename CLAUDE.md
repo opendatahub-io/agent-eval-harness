@@ -125,6 +125,10 @@ E2E tests invoke real Claude API calls against a fake Jira skill fixture to veri
 3. **Three judge types** — inline `check` scripts, LLM `prompt`/`prompt_file`, external `module`/`function`
 4. **MLflow as separate skill** — `/eval-mlflow` handles dataset sync, result logging, trace feedback; eval-run works without it
 
+## Brainstorms
+
+The `brainstorm/` directory contains exploratory ideas and design thinking. These are just ideas, not reflected in the code. Do not treat brainstorm content as implemented features or current architecture. Implemented brainstorms are moved to `brainstorm/attic/`.
+
 ## Remaining Work
 
 - CI integration patterns and examples
