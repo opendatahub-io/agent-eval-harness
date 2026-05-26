@@ -108,7 +108,7 @@ class TestBuiltinJudgeRegistry:
         original_file = judges_module.__file__
         judges_module.__file__ = str(test_judges / "__init__.py")
         try:
-            with pytest.raises(ValueError, match="name collision.*cost_budget"):
+            with pytest.raises(ValueError, match=r"name collision.*cost_budget"):
                 registry.discover()
         finally:
             judges_module.__file__ = original_file

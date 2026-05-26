@@ -349,6 +349,18 @@ class EvalConfig:
 
         # Judges
         for j in raw.get("judges", []):
+            builtin_val = j.get("builtin", "")
+            if builtin_val is None:
+                builtin_val = ""
+            if not isinstance(builtin_val, str):
+                raise ValueError(
+                    f"Judge '{j.get('name', '')}': 'builtin' must be a string")
+            args_val = j.get("arguments")
+            if args_val is None:
+                args_val = {}
+            elif not isinstance(args_val, dict):
+                raise ValueError(
+                    f"Judge '{j.get('name', '')}': 'arguments' must be a mapping")
             config.judges.append(JudgeConfig(
                 name=j.get("name", ""),
                 description=j.get("description", ""),
@@ -361,8 +373,8 @@ class EvalConfig:
                 model=j.get("model", ""),
                 module=j.get("module", ""),
                 function=j.get("function", ""),
-                builtin=j.get("builtin", ""),
-                arguments=j.get("arguments") or {},
+                builtin=builtin_val,
+                arguments=args_val,
             ))
 
         # Thresholds
