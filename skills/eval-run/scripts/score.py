@@ -172,16 +172,18 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
 
     # --- Events (structured event stream) ---
     events_path = case_dir / "events.json"
+    if not events_path.exists() and run_id and runs_dir:
+        events_path = runs_dir / run_id / "events.json"
     if events_path.exists():
         try:
             with open(events_path) as f:
                 record["events"] = json.load(f)
             if not isinstance(record["events"], list):
-                print(f"  Warning: events.json is not a list in {case_dir}",
+                print(f"  Warning: events.json is not a list in {events_path}",
                       file=sys.stderr)
                 record["events"] = []
         except (json.JSONDecodeError, OSError) as e:
-            print(f"  Warning: malformed events.json in {case_dir}: {e}",
+            print(f"  Warning: malformed events.json in {events_path}: {e}",
                   file=sys.stderr)
             record["events"] = []
     else:
@@ -196,6 +198,15 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
 
     # --- Logs (if traces config enables them) ---
     if run_id:
+        if config.traces.stdout:
+            stdout_path = case_dir / "stdout.log"
+            if not stdout_path.exists():
+                stdout_path = runs_dir / run_id / "stdout.log"
+            if stdout_path.exists():
+                try:
+                    record["stdout"] = stdout_path.read_text()
+                except OSError:
+                    pass
         if config.traces.stderr:
             stderr_path = case_dir / "stderr.log"
             if not stderr_path.exists():
