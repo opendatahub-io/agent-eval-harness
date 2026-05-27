@@ -7,9 +7,16 @@ Use this template when generating eval.yaml. Fill in every field from what you o
 ```yaml
 name: <project-name>
 description: <one line: what is being evaluated>
-skill: <skill-name>
 
-# Execution — how the skill processes test cases (runner-agnostic)
+# Execution — how to invoke the eval target (skill or prompt)
+#
+# MODE (how many invocations):
+# - case: one invocation per test case (default)
+# - batch: one invocation for all cases via batch.yaml
+#
+# WHAT TO EXECUTE (mutually exclusive):
+# - skill: skill name for '/skill-name' invocations
+# - prompt: direct prompt template for prompt-based evaluation
 #
 # How to choose the mode — look at the skill's INTERNAL LOGIC:
 #
@@ -30,15 +37,41 @@ skill: <skill-name>
 #   Examples: /test-plan.create RHAISTRAT-1520, /rfe.create "problem..."
 #
 # When in doubt, ask the user — don't silently default to case.
+#
+# EXAMPLES:
+#
+# ── Skill mode: case ──
 execution:
   mode: case
-  arguments: <argument template with {field} placeholders from input.yaml>
-  # Case examples: "{prompt}", "{strat_key} {adr_file?}"
-  # Batch example: "--input batch.yaml --headless --dry-run"
+  skill: rfe.create
+  arguments: '--priority {{ input.priority }} "{{ input.prompt }}"'
+  # → sends: /rfe.create --priority High "Add signature verification"
+
+# ── Skill mode: batch ──
+# execution:
+#   mode: batch
+#   skill: rfe.speedrun
+#   arguments: '--input batch.yaml --headless --dry-run'
+#   # → sends: /rfe.speedrun --input batch.yaml --headless --dry-run
+
+# ── Prompt mode: case (common for doc testing) ──
+# execution:
+#   mode: case
+#   prompt: "{{ input.prompt }}"
+#   # → sends: Add signature verification
+#   # Same input.yaml feeds both (prompt, priority); one Jinja2 dialect; mode stays case/batch.
+
+# ── Prompt mode: batch (uncommon, but structurally valid) ──
+# execution:
+#   mode: batch
+#   prompt: "{{ input.prompt }}"
+#   # → batch.yaml contains all prompts; agent processes sequentially in one conversation
+
+# Additional execution options:
   # timeout: 3600           # Per-invocation wall-clock timeout (seconds)
   # max_budget_usd: 5.0     # Per-invocation cost cap
-  # parallelism: 3           # Run up to N cases concurrently (case mode only)
-  # env:                     # Inject env vars into workspace .claude/settings.json
+  # parallelism: 3          # Run up to N cases concurrently (case mode only)
+  # env:                    # Inject env vars into workspace .claude/settings.json
   #   JIRA_SERVER: http://localhost:8080   # Literal value
   #   JIRA_TOKEN: $JIRA_TOKEN              # $VAR resolved from caller's environment
 
@@ -64,9 +97,26 @@ models:
 # If the skill under test invokes sub-skills via the Skill tool
 # (check its allowed-tools frontmatter for "Skill"), add "Skill"
 # to the allow list — otherwise nested skill calls silently fail.
+#
+# IMPORTANT: Add deny blocks for test isolation. Agents should not be able to
+# read test infrastructure (eval/, eval.yaml, eval.md, tmp/) which contains
+# answer keys, expected outputs, domain knowledge, and other agents' results.
 permissions:
   allow: []     # Tool patterns to allow (e.g., "Skill", "Write(artifacts/**)")
-  deny: []      # Tool patterns to block (e.g., "mcp__*")
+  deny:
+    # Standard test isolation blocks (prevent cheating)
+    - path: "eval/"
+      tools: ["Read", "Glob", "Bash"]
+      reason: "Test cases contain answer keys and run results from other agents"
+    - path: "eval.yaml"
+      tools: ["Read", "Bash"]
+      reason: "Eval config contains domain knowledge and expected schemas"
+    - path: "eval.md"
+      tools: ["Read", "Bash"]
+      reason: "Analysis cache contains skill/documentation structure maps"
+    - path: "tmp/"
+      tools: ["Read", "Glob", "Bash"]
+      reason: "Harness state files not relevant to skill execution"
 
 # MLflow logging target (optional)
 mlflow:

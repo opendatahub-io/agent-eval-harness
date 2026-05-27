@@ -27,7 +27,15 @@ def validate_config(path="eval.yaml"):
         sys.exit(1)
 
     with open(p) as f:
-        config = yaml.safe_load(f) or {}
+        try:
+            config = yaml.safe_load(f) or {}
+        except yaml.scanner.ScannerError as e:
+            print(f"YAML_SYNTAX_ERROR: {path}")
+            print(f"  {e}")
+            print("\nTip: Look for unquoted strings in lists, especially with '()', '-', or ':'")
+            print("  Bad:  - field (type)")
+            print("  Good: - \"field (type)\"")
+            sys.exit(1)
 
     config_dir = p.resolve().parent
 
@@ -35,10 +43,18 @@ def validate_config(path="eval.yaml"):
     warnings = []
 
     # --- Structure checks ---
-    if not config.get("skill"):
-        errors.append("Missing 'skill' field")
     if not config.get("name"):
         errors.append("Missing 'name' field")
+
+    # Either execution.skill or execution.prompt must be set (with top-level skill as fallback)
+    execution = config.get("execution", {})
+    has_exec_skill = bool(execution.get("skill", "").strip())
+    has_exec_prompt = bool(execution.get("prompt", "").strip())
+    has_top_level_skill = bool(config.get("skill", "").strip())
+
+    # This check is now redundant with the ExecutionConfig validation but kept for backward compat
+    if not has_exec_skill and not has_exec_prompt and not has_top_level_skill:
+        errors.append("Either execution.skill or execution.prompt must be set (or top-level 'skill' for backward compat)")
 
     dataset = config.get("dataset", {})
     outputs = config.get("outputs", [])
@@ -54,18 +70,28 @@ def validate_config(path="eval.yaml"):
         warnings.append("No judges — scoring step will have nothing to run")
 
     # --- Skill reference check ---
-    skill_name = config.get("skill", "")
+    # Check execution.skill first, then fall back to top-level skill
+    skill_name = execution.get("skill", "") or config.get("skill", "")
     if skill_name and not find_skill(skill_name):
         warnings.append(f"skill '{skill_name}' not found in project")
+
+    # --- Documentation structure check ---
+    domain = dataset.get("domain", {})
+    doc_structure = domain.get("documentation_structure", {})
+    entry_point = doc_structure.get("entry_point", "")
+    if entry_point:
+        ep = Path(entry_point)
+        if not ep.exists():
+            errors.append(f"dataset.domain.documentation_structure.entry_point '{entry_point}' does not exist")
 
     # --- File reference checks (resolve relative to config file location) ---
     dataset_path = dataset.get("path", "")
     if dataset_path:
         dp = Path(dataset_path) if Path(dataset_path).is_absolute() else config_dir / dataset_path
         if not dp.exists():
-            errors.append(f"dataset.path '{dataset_path}' does not exist")
+            warnings.append(f"dataset.path '{dataset_path}' does not exist (run /eval-dataset to generate)")
         elif not any(p for p in dp.iterdir() if not p.name.startswith(".")):
-            warnings.append(f"dataset.path '{dataset_path}' is empty")
+            warnings.append(f"dataset.path '{dataset_path}' is empty (run /eval-dataset to generate cases)")
 
     for i, o in enumerate(outputs):
         out_path = o.get("path", "")
@@ -100,8 +126,34 @@ def validate_config(path="eval.yaml"):
     exec_mode = execution.get("mode", "case")
     if exec_mode not in ("case", "batch"):
         errors.append(f"execution.mode must be 'case' or 'batch', got '{exec_mode}'")
-    if not execution.get("arguments"):
+
+    # Check mutual exclusivity of skill and prompt
+    has_skill = bool(execution.get("skill", "").strip())
+    has_prompt = bool(execution.get("prompt", "").strip())
+    top_level_skill = bool(config.get("skill", "").strip())
+
+    if has_skill and has_prompt:
+        errors.append(
+            "execution.skill and execution.prompt are mutually exclusive. "
+            "Use execution.skill for '/skill-name' invocations or execution.prompt for direct prompts."
+        )
+
+    # At least one of skill/prompt must be set (with top-level skill as fallback)
+    if not has_skill and not has_prompt and not top_level_skill:
+        errors.append(
+            "Either execution.skill or execution.prompt must be set. "
+            "Use execution.skill for skill invocations, execution.prompt for direct prompt mode."
+        )
+
+    # Warn if arguments missing for skill mode
+    if (has_skill or top_level_skill) and not has_prompt and not execution.get("arguments"):
         warnings.append("No execution.arguments — skill will be invoked with no arguments")
+
+    # For prompt mode, the prompt template should be valid
+    if has_prompt:
+        prompt = execution.get("prompt", "")
+        if not prompt.strip():
+            errors.append("execution.prompt is set but empty")
 
     # --- Inputs (tool interception) ---
     for t in (config.get("inputs", {}).get("tools") or []):
@@ -153,7 +205,8 @@ def validate_config(path="eval.yaml"):
         status = "INCOMPLETE"
 
     mlflow = config.get("mlflow") or {}
-    print(f"{status}: {config.get('name')} (skill={config.get('skill')})")
+    skill_display = config.get("skill") or f"mode={exec_mode}"
+    print(f"{status}: {config.get('name')} (skill={skill_display})")
     print(f"  execution: mode={exec_mode}, arguments={'yes' if execution.get('arguments') else 'no'}")
     print(f"  runner: {runner.get('type', 'claude-code')}")
     print(f"  models: skill={models.get('skill', 'unset')}, judge={models.get('judge', 'unset')}")
@@ -171,7 +224,7 @@ def validate_config(path="eval.yaml"):
 
 
 def validate_memory(path="eval.md"):
-    """Check if eval.md is fresh (skill hasn't changed)."""
+    """Check if eval.md is fresh (skill or documentation hasn't changed)."""
     p = Path(path)
     if not p.exists():
         print("STALE: eval.md does not exist")
@@ -188,6 +241,30 @@ def validate_memory(path="eval.md"):
         sys.exit(1)
 
     fm = yaml.safe_load(parts[1]) or {}
+    eval_type = fm.get("type", "")
+
+    # Handle documentation-based evals
+    if eval_type == "documentation-eval":
+        stored_hash = fm.get("documentation_hash", "")
+        if not stored_hash:
+            print("STALE: missing documentation_hash in frontmatter")
+            sys.exit(1)
+
+        # Check CLAUDE.md or AGENTS.md (prefer CLAUDE.md)
+        doc_path = Path("CLAUDE.md") if Path("CLAUDE.md").exists() else Path("AGENTS.md")
+        if not doc_path.exists():
+            print("STALE: no CLAUDE.md or AGENTS.md found")
+            sys.exit(1)
+
+        current_hash = hashlib.sha256(doc_path.read_bytes()).hexdigest()[:12]
+        if current_hash == stored_hash:
+            print(f"FRESH: documentation-eval (hash={stored_hash})")
+        else:
+            print(f"STALE: documentation changed ({stored_hash} -> {current_hash})")
+            sys.exit(1)
+        return
+
+    # Handle skill-based evals
     skill_name = fm.get("skill", "")
     stored_hash = fm.get("skill_hash", "")
 

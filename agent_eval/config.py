@@ -126,6 +126,7 @@ class DatasetConfig:
 
     path: str = ""
     schema: str = ""
+    domain: dict = field(default_factory=dict)  # Repository-specific knowledge
     workspace: WorkspaceConfig = field(default_factory=WorkspaceConfig)
 
 
@@ -155,7 +156,6 @@ class OutputConfig:
 @dataclass
 class TracesConfig:
     """What execution traces to capture and make available to judges."""
-
     stdout: bool = True  # Capture stdout.log
     stderr: bool = True  # Capture stderr.log
     events: bool = True  # Parse JSONL into events.json
@@ -205,12 +205,22 @@ class HooksConfig:
 
 @dataclass
 class ExecutionConfig:
-    """How the skill is invoked against test cases.
+    """How the eval target is invoked against test cases.
 
-    Modes:
-    - case (default): one skill invocation per case, with case-specific
+    Modes (orthogonal to skill/prompt):
+    - case (default): one invocation per test case, with case-specific
       arguments resolved from input.yaml fields via {field} placeholders.
     - batch: all cases in one invocation via batch.yaml.
+
+    What to execute (mutually exclusive):
+    - skill: skill name to invoke (e.g., 'rfe.create'). Pairs with arguments.
+    - prompt: direct prompt template (e.g., '{{ input.prompt }}'). No skill wrapper.
+
+    Examples:
+    - Skill mode (case): skill: 'rfe.create', arguments: '--priority {{ input.priority }}'
+    - Skill mode (batch): skill: 'rfe.speedrun', arguments: '--input batch.yaml'
+    - Prompt mode (case): prompt: '{{ input.prompt }}', arguments: ''
+    - Prompt mode (batch): prompt: '{{ input.prompt }}', arguments: '' (uncommon)
 
     Arguments template placeholders:
     - {field} → substitutes the value of 'field' from input.yaml
@@ -229,11 +239,31 @@ class ExecutionConfig:
     """
 
     mode: str = "case"
+    skill: str = ""       # Skill name for skill mode (mutually exclusive with prompt)
+    prompt: str = ""      # Prompt template for prompt mode (mutually exclusive with skill)
     arguments: str = ""
     timeout: Optional[int] = None
     max_budget_usd: Optional[float] = None
     parallelism: Optional[int] = None
     env: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        # Validate mode
+        valid_modes = ["case", "batch"]
+        if self.mode not in valid_modes:
+            raise ValueError(
+                f"execution.mode must be one of {valid_modes}, got: {self.mode}"
+            )
+
+        # Validate skill/prompt mutual exclusivity
+        has_skill = bool(self.skill and self.skill.strip())
+        has_prompt = bool(self.prompt and self.prompt.strip())
+
+        if has_skill and has_prompt:
+            raise ValueError(
+                "execution.skill and execution.prompt are mutually exclusive. "
+                "Use skill for '/skill-name' invocations or prompt for direct prompts."
+            )
 
 
 @dataclass
@@ -241,6 +271,7 @@ class RunnerConfig:
     """Which agent harness runs the skill, and runner-specific knobs.
 
     type: discriminator selecting the runner implementation (e.g. claude-code).
+    workspace_mode: execution context (repo = run in repository, default = isolated workspace).
     Other fields are runner-specific; unused fields are harmless for runners
     that don't read them.
 
@@ -252,6 +283,7 @@ class RunnerConfig:
 
     type: str = "claude-code"
     command: Optional[Union[str, list]] = None  # CLI runner: command template
+    workspace_mode: Optional[str] = None  # repo | None (default: isolated workspace)
     settings: dict = field(default_factory=dict)
     plugin_dirs: list = field(default_factory=list)
     env: dict = field(default_factory=dict)
@@ -295,13 +327,47 @@ class ModelsConfig:
 
 
 @dataclass
+class TestCategory:
+    """One test category in a taxonomy-based dataset.
+
+    Categories define groups of tests that validate specific capabilities.
+    Each category references a template that defines how to generate test cases.
+    """
+    name: str
+    template: str  # Template reference: "builtin:name" or path/to/template.md
+    count: int
+    description: str = ""
+
+
+@dataclass
 class JudgeConfig:
     """Configuration for a single judge.
 
     Judge types (determined by which fields are set):
     - Inline check: `check` contains a Python snippet
-    - LLM judge: `prompt` or `prompt_file` contains evaluation instructions
+    - LLM judge: `prompt`, `prompt_file`, or `llm_rubric` contains evaluation instructions
     - External code: `module` and `function` reference a Python callable
+    - Builtin: `builtin` references a registered judge from agent_eval/judges/
+
+    LLM judge fields (all compile to same internal prompt before rendering):
+
+    Priority order: llm_rubric > prompt > prompt_file
+
+    1. llm_rubric — Syntactic sugar for simple evaluation criteria.
+       Automatically appends "{{ conversation }}" template if not present.
+       Use for concise, criteria-focused judges in taxonomy-based configs.
+       Example: llm_rubric: "Agent cited relevant documentation sources"
+
+    2. prompt — Full Jinja2 template with manual control over structure.
+       Use when you need multiple placeholders or complex prompt logic.
+       Example: prompt: "{{ description }}\n\nCase: {{ outputs.case_id }}\n\n{{ conversation }}"
+
+    3. prompt_file — External file path (absolute or relative to project root).
+       Use for sharing prompts across multiple judges or configs.
+       File can contain either rubric-style (auto-wrapped) or full template.
+
+    All three compile to the same internal prompt variable: llm_rubric gets
+    wrapped, prompt_file gets loaded, then Jinja2 renders with case data.
     """
 
     name: str = ""
@@ -312,9 +378,10 @@ class JudgeConfig:
     condition: str = ""
     # Inline code check (returns (bool, str))
     check: str = ""
-    # LLM judge / pairwise
+    # LLM judge fields (see docstring above for equivalence and priority)
     prompt: str = ""
     prompt_file: str = ""
+    llm_rubric: str = ""
     context: list = field(
         default_factory=list
     )  # File paths loaded as supplementary context
@@ -379,7 +446,7 @@ class EvalConfig:
 
     name: str = ""
     description: str = ""
-    skill: str = ""
+    skill: Optional[str] = None  # Deprecated: use execution.skill instead. Fallback for backward compat.
     permissions: dict = field(default_factory=dict)
 
     # Lifecycle hooks — shell commands at defined pipeline points
@@ -399,6 +466,9 @@ class EvalConfig:
 
     # Dataset — location, schema, and workspace file provisioning
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
+
+    # Taxonomy-based dataset (optional)
+    test_categories: list = field(default_factory=list)  # List of TestCategory
 
     # Outputs — file artifacts and/or tool calls
     outputs: list = field(default_factory=list)
@@ -458,6 +528,8 @@ class EvalConfig:
         exec_raw = raw.get("execution", {})
         execution = ExecutionConfig(
             mode=exec_raw.get("mode", "case"),
+            skill=exec_raw.get("skill", ""),
+            prompt=exec_raw.get("prompt", ""),
             arguments=exec_raw.get("arguments", ""),
             timeout=exec_raw.get("timeout"),
             max_budget_usd=exec_raw.get("max_budget_usd"),
@@ -474,9 +546,16 @@ class EvalConfig:
             )
             if not (isinstance(command, str) or valid_list):
                 raise ValueError("runner.command must be a string or list of strings")
+        # Validate workspace_mode (prevent typos that silently change behavior)
+        workspace_mode = runner_raw.get("workspace_mode")
+        if workspace_mode is not None and workspace_mode not in ("repo",):
+            raise ValueError(
+                f"runner.workspace_mode must be None or 'repo', got: {workspace_mode!r}")
+
         runner = RunnerConfig(
             type=runner_raw.get("type", "claude-code"),
             command=command,
+            workspace_mode=workspace_mode,
             settings=runner_raw.get("settings", {}) or {},
             plugin_dirs=runner_raw.get("plugin_dirs", []) or [],
             env=runner_raw.get("env", {}) or {},
@@ -526,13 +605,38 @@ class EvalConfig:
                 dataset.get("path", ""), "dataset.path", allow_absolute=True
             ),
             schema=dataset.get("schema", ""),
+            domain=dataset.get("domain", {}),
             workspace=WorkspaceConfig(files=ws_files),
         )
+        # Test categories (taxonomy-based dataset) with validation
+        test_categories = []
+        for i, tc in enumerate(dataset.get("test_categories") or []):
+            name = tc.get("name", "")
+            template = tc.get("template", "")
+            count = tc.get("count", 1)
+
+            # Validate required fields
+            if not name or not isinstance(name, str):
+                raise ValueError(
+                    f"dataset.test_categories[{i}].name must be a non-empty string, got: {name!r}")
+            if not template or not isinstance(template, str):
+                raise ValueError(
+                    f"dataset.test_categories[{i}].template must be a non-empty string, got: {template!r}")
+            if not isinstance(count, int) or count < 1:
+                raise ValueError(
+                    f"dataset.test_categories[{i}].count must be an integer >= 1, got: {count!r}")
+
+            test_categories.append(TestCategory(
+                name=name,
+                template=template,
+                count=count,
+                description=tc.get("description", ""),
+            ))
 
         config = cls(
             name=raw.get("name", path.stem),
             description=raw.get("description", ""),
-            skill=raw.get("skill", ""),
+            skill=raw.get("skill") or None,  # Convert empty string to None
             permissions=raw.get("permissions", {}),
             execution=execution,
             runner=runner,
@@ -540,6 +644,7 @@ class EvalConfig:
             mlflow=mlflow,
             config_dir=path.resolve().parent,
             dataset=dataset_config,
+            test_categories=test_categories,
         )
 
         # Outputs (path or tool)
@@ -575,6 +680,7 @@ class EvalConfig:
                 stderr=traces.get("stderr", True),
                 events=traces.get("events", True),
                 metrics=traces.get("metrics", True),
+                documentation_tracking=traces.get("documentation_tracking", False),
             )
 
         # Judges
@@ -601,6 +707,7 @@ class EvalConfig:
                     check=j.get("check", ""),
                     prompt=j.get("prompt", ""),
                     prompt_file=j.get("prompt_file", ""),
+                    llm_rubric=j.get("llm_rubric", ""),
                     context=j.get("context", []),
                     feedback_type=j.get("feedback_type", ""),
                     model=j.get("model", ""),
