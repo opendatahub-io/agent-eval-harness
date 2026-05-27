@@ -235,8 +235,8 @@ class AgentEvalAdapter(FrameworkAdapter):
             timeout = eval_config.execution.timeout or 600
             budget = eval_config.execution.max_budget_usd or 5.0
 
-            result = runner.run_skill(
-                skill_name=eval_config.skill or "",
+            result = runner.execute(
+                target=eval_config.skill or "",
                 args=args,
                 workspace=case_dir,
                 model=model_name,

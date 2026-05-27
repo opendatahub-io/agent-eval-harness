@@ -94,9 +94,9 @@ class ClaudeCodeRunner(EvalRunner):
         except Exception:
             return ""
 
-    def run_skill(
+    def execute(
         self,
-        skill_name: str,
+        target: Optional[str],
         args: str,
         workspace: Path,
         model: str,
@@ -125,24 +125,114 @@ class ClaudeCodeRunner(EvalRunner):
         for plugin_dir in self._plugin_dirs:
             cmd.extend(["--plugin-dir", str(plugin_dir)])
 
-        if settings_path:
-            cmd.extend(["--settings", str(settings_path)])
-
         effective_prompt = system_prompt or self._system_prompt
         if effective_prompt:
             cmd.extend(["--append-system-prompt", effective_prompt])
 
-        # Permissions: allow/deny tool patterns
+        # Permissions: handle both simple and path-based formats
+        # If path-based (list of dicts), create a temporary settings file
         deny = self._permissions.get("deny", [])
-        if deny:
-            cmd.extend(["--disallowed-tools", ",".join(deny)])
         allow = self._permissions.get("allow", [])
-        if allow:
-            cmd.extend(["--allowed-tools", ",".join(allow)])
 
-        # Build the skill invocation prompt (passed via stdin)
-        if skill_name:
-            prompt = f"/{skill_name}"
+        temp_settings_file = None
+        # Check if ANY element is path-based (dict), not just the first
+        has_path_based = (
+            any(isinstance(item, dict) for item in deny) if deny else False
+        ) or (
+            any(isinstance(item, dict) for item in allow) if allow else False
+        )
+
+        if has_path_based:
+            # Generate temporary settings file with path-based permissions.
+            # Write to the same directory as settings_path (case workspace) to avoid
+            # modifying the repo when workspace is the repo root (in-repo mode).
+            if settings_path and Path(settings_path).exists():
+                # Write next to settings file in case workspace (case_ws/.claude/)
+                temp_settings_file = Path(settings_path).parent / ".eval-permissions.json"
+            else:
+                # No settings file - use workspace (safe when workspace != repo root)
+                temp_settings_file = workspace / ".eval-permissions.json"
+            settings_config = {}
+
+            # If there's an existing settings file, load it first
+            if settings_path and Path(settings_path).exists():
+                try:
+                    with open(settings_path) as f:
+                        settings_config = json.load(f)
+                except Exception:
+                    settings_config = {}
+
+            # Ensure permissions section exists
+            if "permissions" not in settings_config:
+                settings_config["permissions"] = {}
+
+            # Convert path-based deny rules to Claude Code permission patterns
+            # Format: "Tool(path/pattern*)"
+            # Handle mixed lists: ["Read", {"path": "eval/", "tools": ["Grep"]}]
+            if deny:
+                # Start with existing deny rules (preserve repo-protection rules from workspace settings)
+                deny_patterns = settings_config["permissions"].get("deny", []).copy() if isinstance(settings_config["permissions"].get("deny"), list) else []
+                for rule in deny:
+                    if isinstance(rule, dict):
+                        # Path-based rule
+                        path_pattern = rule.get("path", "")
+                        tools = rule.get("tools", [])
+                        for tool in tools:
+                            # Convert path pattern to Claude Code format
+                            # "eval/" → "Tool(eval/*)"
+                            # "eval.yaml" → "Tool(eval.yaml)"
+                            if path_pattern.endswith("/"):
+                                pattern = f"{tool}({path_pattern}*)"
+                            else:
+                                pattern = f"{tool}({path_pattern})"
+                            deny_patterns.append(pattern)
+                    else:
+                        # Simple string rule - tool name only
+                        deny_patterns.append(rule)
+                settings_config["permissions"]["deny"] = deny_patterns
+
+            # Convert path-based allow rules similarly
+            # Handle mixed lists: ["Read", {"path": "docs/", "tools": ["Grep"]}]
+            if allow:
+                # Start with existing allow rules (preserve case-workspace permissions from workspace settings)
+                allow_patterns = settings_config["permissions"].get("allow", []).copy() if isinstance(settings_config["permissions"].get("allow"), list) else []
+                for rule in allow:
+                    if isinstance(rule, dict):
+                        # Path-based rule
+                        path_pattern = rule.get("path", "")
+                        tools = rule.get("tools", [])
+                        for tool in tools:
+                            if path_pattern.endswith("/"):
+                                pattern = f"{tool}({path_pattern}*)"
+                            else:
+                                pattern = f"{tool}({path_pattern})"
+                            allow_patterns.append(pattern)
+                    else:
+                        # Simple string rule - tool name only
+                        allow_patterns.append(rule)
+                settings_config["permissions"]["allow"] = allow_patterns
+
+            # Write temporary settings file
+            temp_settings_file.write_text(json.dumps(settings_config, indent=2))
+
+            # Override with temporary settings file to ensure path-based rules apply
+            settings_path = temp_settings_file
+        else:
+            # Simple format - use CLI flags directly
+            if deny:
+                cmd.extend(["--disallowed-tools", ",".join(deny)])
+            if allow:
+                cmd.extend(["--allowed-tools", ",".join(allow)])
+
+        # Add --settings flag after all permission mutations
+        if settings_path:
+            cmd.extend(["--settings", str(settings_path)])
+
+        # Build the prompt (passed via stdin)
+        # For case/batch mode: /{skill} {args}
+        # For prompt mode: {args} (direct prompt, no skill wrapper)
+        if target:
+            prompt = f"/{target}"
             if args:
                 prompt += f" {args}"
         else:
@@ -152,6 +242,9 @@ class ClaudeCodeRunner(EvalRunner):
         stdout_lines = []
         deadline = start + timeout_s
         timed_out = False
+
+        # Track temp settings file for cleanup
+        cleanup_settings = temp_settings_file if has_path_based and temp_settings_file else None
 
         try:
             proc = subprocess.Popen(
@@ -241,6 +334,14 @@ class ClaudeCodeRunner(EvalRunner):
             if denial_list:
                 timeout_stderr += (f"\nWARNING: {len(denial_list)} permission "
                                    f"denial(s) detected during execution")
+
+            # Clean up temporary settings file if created
+            if cleanup_settings and cleanup_settings.exists():
+                try:
+                    cleanup_settings.unlink()
+                except Exception:
+                    pass  # Best effort cleanup
+
             return RunResult(
                 exit_code=-1,
                 stdout="\n".join(stdout_lines),
@@ -257,6 +358,14 @@ class ClaudeCodeRunner(EvalRunner):
             )
         except Exception as e:
             duration = time.monotonic() - start
+
+            # Clean up temporary settings file if created
+            if cleanup_settings and cleanup_settings.exists():
+                try:
+                    cleanup_settings.unlink()
+                except Exception:
+                    pass  # Best effort cleanup
+
             return RunResult(
                 exit_code=-1, stdout="", stderr=str(e), duration_s=duration,
             )
@@ -297,6 +406,13 @@ class ClaudeCodeRunner(EvalRunner):
             denial_msg = (f"\nWARNING: {len(denial_list)} permission "
                           f"denial(s) detected during execution")
             stderr = (stderr or "") + denial_msg
+
+        # Clean up temporary settings file if created
+        if cleanup_settings and cleanup_settings.exists():
+            try:
+                cleanup_settings.unlink()
+            except Exception:
+                pass  # Best effort cleanup
 
         return RunResult(
             exit_code=proc.returncode,

@@ -351,7 +351,7 @@ def main():
     # Build synthetic traces from stdout.log for cases not already covered
     # by existing execution traces.
     exec_mode = run_result.get("execution_mode", "batch")
-    if exec_mode == "case":
+    if exec_mode in ("case", "prompt"):
         cases_dir = run_dir / "cases"
         if cases_dir.exists():
             for case_dir in sorted(d for d in cases_dir.iterdir() if d.is_dir()):

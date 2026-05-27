@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -33,6 +34,8 @@ from agent_eval.hooks import (
     HookError, build_hook_env, collect_hook_outputs,
     run_hooks, run_hooks_safe, save_hook_data,
 )
+
+GIT_BIN = shutil.which("git")
 
 _HARNESS_SYSTEM_PROMPT = (
     "You are running inside an evaluation harness. Tool interception hooks "
@@ -50,7 +53,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--workspace", required=True)
-    parser.add_argument("--skill", required=True)
+    parser.add_argument("--skill", default=None,
+                        help="Skill name for case/batch mode (required for case/batch, omit for prompt mode)")
     parser.add_argument("--skill-args", default=None,
                         help="Skill arguments (default: from eval.yaml execution.arguments)")
     parser.add_argument("--model", default=None,
@@ -76,6 +80,23 @@ def main():
     from agent_eval.config import EvalConfig
     config = EvalConfig.from_yaml(args.config)
 
+    # Determine if prompt mode (execution.prompt is set)
+    is_prompt_mode = bool(config.execution.prompt and config.execution.prompt.strip())
+
+    # Resolve target (skill name or None for prompt mode)
+    # Priority: CLI --skill > execution.skill > top-level skill (backward compat)
+    target = args.skill or config.execution.skill or config.skill
+
+    # For prompt mode, force target=None (direct prompt execution, no skill wrapper)
+    if is_prompt_mode:
+        target = None
+    elif not target:
+        # Not prompt mode and no skill specified
+        print("ERROR: skill required when execution.prompt is not set. "
+              "Set --skill, execution.skill, or execution.prompt in eval.yaml.",
+              file=sys.stderr)
+        sys.exit(1)
+
     # Resolve model: CLI > config; required to be set somewhere.
     model = args.model or config.models.skill
     if not model:
@@ -88,7 +109,8 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Resolve skill args: CLI override > config > empty
-    skill_args = args.skill_args if args.skill_args is not None else config.execution.arguments
+    # Treat empty/whitespace-only strings as unset (normalize before fallback)
+    skill_args = (args.skill_args or "").strip() or config.execution.arguments
 
     # Resolve {prompt} placeholder from batch.yaml
     if skill_args and "{prompt}" in skill_args:
@@ -145,7 +167,9 @@ def main():
     # Capture user-facing eval parameters that defined this run, for the report.
     eval_params = _build_eval_params(args, config, skill_args, max_budget, timeout_s, effort)
 
-    # ── Per-case execution ───────────────────────────────────────
+    # ── Per-case execution (case mode) ────────────────
+    # Case mode executes once per case with separate workspaces
+    # (Works for both skill and prompt execution)
     if config.execution.mode == "case":
         parallelism = (args.parallelism if args.parallelism is not None
                        else config.execution.parallelism)
@@ -156,11 +180,13 @@ def main():
                           eval_params=eval_params,
                           parallelism=parallelism,
                           effort=effort,
-                          subagent_model=subagent_model)
+                          subagent_model=subagent_model,
+                          target=target)
         return
 
-    # ── Batch execution (below) ──────────────────────────────────
-    print(f"Executing: /{args.skill} {skill_args}", file=sys.stderr)
+    # ── Batch execution (below) ──────────────────────────────────────
+    exec_label = f"/{target} {skill_args}" if target else skill_args
+    print(f"Executing: {exec_label}", file=sys.stderr)
     print(f"Agent: {runner.name} | Model: {model}", file=sys.stderr)
     print(f"Workspace: {args.workspace}", file=sys.stderr)
 
@@ -197,8 +223,8 @@ def main():
         workspace_settings = Path(args.workspace) / ".claude" / "settings.json"
         settings_path = workspace_settings if workspace_settings.exists() else None
 
-        result = runner.run_skill(
-            skill_name=args.skill,
+        result = runner.execute(
+            target=target,
             args=skill_args,
             workspace=Path(args.workspace),
             model=model,
@@ -224,7 +250,22 @@ def main():
 
 
 def _resolve_arguments(template, case_data):
-    """Resolve {field} and {field?} placeholders from case input data."""
+    """Resolve {field} and {field?} placeholders from case input data.
+
+    In prompt mode, execution.arguments typically contains "{prompt}" which gets
+    replaced with the test question from input.yaml's 'prompt' field. This allows
+    the same eval.yaml to work across all test cases.
+
+    Args:
+        template: String with {field} or {field?} placeholders
+        case_data: Dict from input.yaml with field values
+
+    Returns:
+        String with all placeholders replaced
+
+    Raises:
+        ValueError: If required (non-optional) fields are missing
+    """
     import re
 
     missing = []
@@ -265,17 +306,177 @@ def _build_eval_params(args, config, skill_args, max_budget, timeout_s, effort=N
     timeout) are passed in so the snapshot reflects what actually ran, not
     just what was overridden via CLI."""
     params = {
-        "skill": args.skill,
-        "skill_args": skill_args or "",
         "execution_mode": config.execution.mode,
         "max_budget_usd": max_budget,
         "timeout_s": timeout_s,
     }
+    # skill is optional for prompt mode
+    target = args.skill or config.skill
+    if target:
+        params["skill"] = target
+    if skill_args:
+        params["skill_args"] = skill_args
     if effort:
         params["effort"] = effort
     if getattr(args, "mlflow_experiment", None):
         params["mlflow_experiment"] = args.mlflow_experiment
     return params
+
+
+def _run_single_case_in_repo(runner, skill_name, case_ws, output_dir,
+                              skill_args_template, model, mlflow_experiment,
+                              mlflow_tracking_uri, system_prompt, max_budget,
+                              timeout_s, total_cases, index):
+    """Execute in-repo mode: agent runs in repo root, I/O in case_ws.
+
+    Thread-safe: case_ws is case-specific.
+    Returns (case_id, result_dict) or (case_id, None) if workspace missing.
+    """
+    import yaml as _yaml
+    import subprocess
+
+    if not case_ws.exists():
+        print(f"  [{index}/{total_cases}] {case_ws.name}: SKIP (workspace missing)",
+              file=sys.stderr)
+        return case_ws.name, None
+
+    # Read metadata
+    meta_file = case_ws / "_metadata.yaml"
+    if not meta_file.exists():
+        print(f"  [{index}/{total_cases}] {case_ws.name}: SKIP (metadata missing)",
+              file=sys.stderr)
+        return case_ws.name, None
+
+    meta = _yaml.safe_load(meta_file.read_text())
+    case_id = meta["case_id"]
+    repo_cwd = Path(meta["repo_cwd"])
+
+    # Resolve git (raises RuntimeError if not found)
+    git_bin = _resolve_git()
+
+    # Snapshot repo state before execution
+    repo_before = subprocess.run(
+        [git_bin, "status", "--porcelain"],
+        cwd=repo_cwd,
+        capture_output=True,
+        text=True,
+        check=True
+    ).stdout
+
+    # Resolve arguments
+    case_args = skill_args_template
+    input_path = case_ws / "input.yaml"
+    if input_path.exists() and case_args:
+        case_data = _yaml.safe_load(input_path.read_text()) or {}
+        if isinstance(case_data, dict):
+            case_args = _resolve_arguments(case_args, case_data)
+
+    if mlflow_experiment:
+        from agent_eval.mlflow.experiment import inject_tracing_env
+        inject_tracing_env(str(case_ws), project_root=repo_cwd,
+                           tracking_uri=mlflow_tracking_uri,
+                           experiment_name=mlflow_experiment)
+
+    case_settings = case_ws / ".claude" / "settings.json"
+    settings_path = case_settings if case_settings.exists() else None
+
+    exec_label = f"/{skill_name} {case_args}" if skill_name else case_args
+    print(f"  [{index}/{total_cases}] {case_id}: {exec_label}",
+          file=sys.stderr)
+
+    # Execute in repo with case_ws-based settings
+    result = runner.execute(
+        target=skill_name,
+        args=case_args,
+        workspace=repo_cwd,  # Agent runs in REPO
+        model=model,
+        settings_path=settings_path,  # Settings from case_ws
+        system_prompt=system_prompt,
+        max_budget_usd=max_budget,
+        timeout_s=timeout_s,
+    )
+
+    # Verify repo wasn't modified
+    repo_after = subprocess.run(
+        [git_bin, "status", "--porcelain"],
+        cwd=repo_cwd,
+        capture_output=True,
+        text=True,
+        check=True
+    ).stdout
+
+    repo_dirty = repo_before != repo_after
+    if repo_dirty:
+        modified_files = [line for line in repo_after.split('\n')
+                          if line and line not in repo_before.split('\n')]
+        print(f"    ERROR: {case_id} modified repo:", file=sys.stderr)
+        for line in modified_files[:5]:
+            print(f"      {line}", file=sys.stderr)
+        # Save evidence
+        (case_ws / "repo_modifications.txt").write_text(
+            f"BEFORE:\n{repo_before}\n\nAFTER:\n{repo_after}\n"
+        )
+        raise RuntimeError(
+            f"Test case '{case_id}' modified the repository. "
+            f"This violates the read-only repository constraint. "
+            f"See {case_ws / 'repo_modifications.txt'} for details."
+        )
+
+    # Write stdout/stderr to workspace output (for collect.py and judges)
+    ws_output = case_ws / "output"
+    ws_output.mkdir(parents=True, exist_ok=True)
+
+    if result.stdout:
+        (ws_output / "stdout.log").write_text(result.stdout)
+    if result.stderr:
+        (ws_output / "stderr.log").write_text(result.stderr)
+
+    # Collect outputs to run directory
+    case_output = output_dir / "cases" / case_id
+    case_output.mkdir(parents=True, exist_ok=True)
+
+    # Copy input.yaml, rejecting symlinks to prevent CWE-59 (path traversal)
+    if input_path.exists() and not input_path.is_symlink():
+        shutil.copy2(input_path, case_output / "input.yaml")
+
+    # Copy all outputs from case workspace (including stdout/stderr we just wrote)
+    # Reject symlinks to prevent CWE-59 (arbitrary file disclosure)
+    if ws_output.exists():
+        for item in ws_output.iterdir():
+            if item.is_file() and not item.is_symlink():
+                shutil.copy2(item, case_output / item.name)
+
+    # Copy subagent transcripts (reject symlinks to prevent CWE-59)
+    ws_subagents = case_ws / "subagents"
+    if ws_subagents.exists() and ws_subagents.is_dir():
+        out_subagents = case_output / "subagents"
+        out_subagents.mkdir(exist_ok=True)
+        for f in ws_subagents.iterdir():
+            if f.is_file() and not f.is_symlink() and f.suffix == ".jsonl":
+                shutil.copy2(f, out_subagents / f.name)
+
+    case_result = {
+        "exit_code": max(result.exit_code, 1) if repo_dirty else result.exit_code,
+        "duration_s": round(result.duration_s, 1),
+        "token_usage": result.token_usage,
+        "cost_usd": result.cost_usd,
+        "num_turns": result.num_turns,
+        "per_model_usage": result.per_model_usage,
+        "per_model_turns": result.per_model_turns,
+        "repo_modified": repo_dirty,
+    }
+
+    with open(case_output / "run_result.json", "w") as f:
+        json.dump(case_result, f, indent=2)
+        f.write("\n")
+
+    status = "OK" if result.exit_code == 0 else f"FAIL (exit {result.exit_code})"
+    if repo_before != repo_after:
+        status += " [REPO MODIFIED]"
+    print(f"    → {case_id}: {status} | {result.duration_s:.0f}s | "
+          f"${result.cost_usd or 0:.2f}", file=sys.stderr)
+
+    return case_id, case_result
 
 
 def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
@@ -311,7 +512,8 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
     case_settings = case_ws / ".claude" / "settings.json"
     settings_path = case_settings if case_settings.exists() else None
 
-    print(f"  [{index}/{total_cases}] {case_id}: /{skill_name} {case_args}",
+    exec_label = f"/{skill_name} {case_args}" if skill_name else case_args
+    print(f"  [{index}/{total_cases}] {case_id}: {exec_label}",
           file=sys.stderr)
 
     # Per-case hooks: build case-specific env, run before_each/after_each.
@@ -352,8 +554,8 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
             case_data_out = case_outputs.get("data", {})
             merged_hook_data = {**global_data, **case_data_out}
 
-        result = runner.run_skill(
-            skill_name=skill_name,
+        result = runner.execute(
+            target=skill_name,
             args=case_args,
             workspace=case_ws,
             model=model,
@@ -393,8 +595,19 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
             f.write("\n")
         return case_id, failed_result
 
+    # Write stdout/stderr to workspace output (for collect.py and judges)
+    ws_output = case_ws / "output"
+    ws_output.mkdir(parents=True, exist_ok=True)
+
+    if result.stdout:
+        (ws_output / "stdout.log").write_text(result.stdout)
+    if result.stderr:
+        (ws_output / "stderr.log").write_text(result.stderr)
+
+    # Also write immediately to case output for instant access
     case_output = output_dir / "cases" / case_id
     case_output.mkdir(parents=True, exist_ok=True)
+
     if result.stdout:
         (case_output / "stdout.log").write_text(result.stdout)
     if result.stderr:
@@ -435,11 +648,51 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
     return case_id, case_result
 
 
+def _resolve_git():
+    """Lazily resolve git executable path.
+
+    Raises RuntimeError if git is not found. Only called when repo
+    verification is actually needed (in-repo mode), not for all executions.
+    """
+    git_bin = shutil.which("git")
+    if not git_bin:
+        raise RuntimeError(
+            "git executable not found in PATH. In-repo execution mode requires git "
+            "for repository state verification."
+        )
+    return git_bin
+
+
+def _snapshot_repo_state(repo_root):
+    """Capture git status output as baseline for verification."""
+    git_bin = _resolve_git()
+    result = subprocess.run(
+        [git_bin, "status", "--porcelain"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=True
+    )
+    return result.stdout
+
+
+def _verify_repo_unchanged(repo_root, initial_state):
+    """Verify repo is in same state as initial snapshot."""
+    current_state = _snapshot_repo_state(repo_root)
+    if current_state != initial_state:
+        print("WARNING: Repository state changed during execution", file=sys.stderr)
+        print(f"Initial state:\n{initial_state}", file=sys.stderr)
+        print(f"Current state:\n{current_state}", file=sys.stderr)
+        return False
+    return True
+
+
 def _execute_per_case(args, config, runner, runner_cls,
                       output_dir, max_budget, timeout_s,
                       model, mlflow_experiment, system_prompt="",
                       skill_args_template=None, eval_params=None,
-                      parallelism=None, effort=None, subagent_model=None):
+                      parallelism=None, effort=None, subagent_model=None,
+                      target=None):
     """Execute the skill once per case with case-specific arguments."""
     import yaml as _yaml
 
@@ -455,9 +708,36 @@ def _execute_per_case(args, config, runner, runner_cls,
     with open(case_order_path) as f:
         case_order = _yaml.safe_load(f) or []
 
-    effective_parallelism = min(parallelism, len(case_order)) if parallelism and parallelism > 1 else 1
+    # Detect in-repo mode: check if first case has _metadata.yaml with mode: in-repo
+    in_repo_mode = False
+    initial_repo_state = None
+    repo_root = None
+
+    if case_order:
+        first_case_id = case_order[0] if isinstance(case_order[0], str) else case_order[0]["case_id"]
+        first_case_ws = workspace / "cases" / first_case_id
+        metadata_path = first_case_ws / "_metadata.yaml"
+
+        if metadata_path.exists():
+            with open(metadata_path) as f:
+                meta = _yaml.safe_load(f) or {}
+                if meta.get("mode") == "in-repo":
+                    in_repo_mode = True
+                    repo_root = Path(meta.get("repo_cwd", Path.cwd()))
+                    initial_repo_state = _snapshot_repo_state(repo_root)
+                    print(f"In-repo mode detected | Repo: {repo_root}", file=sys.stderr)
+
+    # Force sequential execution for in-repo mode to prevent cross-case contamination
+    # (all agents share the same repo root, so parallel writes would corrupt state)
+    if in_repo_mode:
+        effective_parallelism = 1
+        if parallelism and parallelism > 1:
+            print("WARNING: Forcing parallelism=1 for in-repo mode (shared repo state)", file=sys.stderr)
+    else:
+        effective_parallelism = min(parallelism, len(case_order)) if parallelism and parallelism > 1 else 1
     parallel_label = f", parallelism={effective_parallelism}" if effective_parallelism > 1 else ""
-    print(f"Executing: /{args.skill} (per-case, {len(case_order)} cases{parallel_label})",
+    skill_label = f"/{target}" if target else "prompt"
+    print(f"Executing: {skill_label} (per-case, {len(case_order)} cases{parallel_label})",
           file=sys.stderr)
     print(f"Agent: {runner.name} | Model: {model}", file=sys.stderr)
 
@@ -517,10 +797,10 @@ def _execute_per_case(args, config, runner, runner_cls,
                         case_results[case_id] = result
         else:
             for i, entry in enumerate(case_order, 1):
-                case_id = entry["case_id"] if isinstance(entry, dict) else entry
+                case_id = entry if isinstance(entry, str) else entry["case_id"]
                 case_ws = workspace / "cases" / case_id
                 case_id, result = _run_single_case(
-                    runner, args.skill, case_id, case_ws, output_dir,
+                    runner, target, case_id, case_ws, output_dir,
                     skill_args_template, model, mlflow_experiment,
                     config.mlflow.tracking_uri, system_prompt,
                     max_budget, timeout_s, len(case_order), i,
@@ -537,11 +817,26 @@ def _execute_per_case(args, config, runner, runner_cls,
 
     wall_clock_s = round(time.monotonic() - wall_clock_start, 1)
 
+    # Final repo verification for in-repo mode
+    # Use 'is not None' check to handle empty string baseline (clean repo)
+    repo_verification_failed = False
+    if in_repo_mode and repo_root and initial_repo_state is not None:
+        repo_clean = _verify_repo_unchanged(repo_root, initial_repo_state)
+        if not repo_clean:
+            print("ERROR: Repository was modified during in-repo execution", file=sys.stderr)
+            print("This violates the in-repo mode contract - no repo files should change", file=sys.stderr)
+            repo_verification_failed = True
+        else:
+            print("✓ Repository state verified: no changes detected", file=sys.stderr)
+
     # Aggregate metrics across cases
     total_duration = sum(r["duration_s"] for r in case_results.values())
     total_cost = sum(r.get("cost_usd") or 0 for r in case_results.values())
     total_turns = sum(r.get("num_turns") or 0 for r in case_results.values())
     worst_exit = max((r["exit_code"] for r in case_results.values()), default=0)
+    # Ensure exit code reflects repo verification failure
+    if repo_verification_failed:
+        worst_exit = max(worst_exit, 1)
 
     agg_tokens = {}
     for r in case_results.values():
@@ -580,7 +875,7 @@ def _execute_per_case(args, config, runner, runner_cls,
         "model": model,
         "agent": runner.name,
         "agent_version": getattr(runner, "version", ""),
-        "execution_mode": "case",
+        "execution_mode": config.execution.mode,
         "eval_params": eval_params or {},
         "per_case": case_results,
     }

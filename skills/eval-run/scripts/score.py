@@ -387,6 +387,24 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
             except OSError:
                 pass
 
+    # --- Documentation tracking (Read tool calls) ---
+    if config.traces.documentation_tracking:
+        read_calls_path = case_dir / "read_calls.json"
+        if read_calls_path.exists():
+            try:
+                with open(read_calls_path) as f:
+                    record["read_calls"] = json.load(f)
+                if not isinstance(record["read_calls"], list):
+                    print(f"  Warning: read_calls.json is not a list in {case_dir}",
+                          file=sys.stderr)
+                    record["read_calls"] = []
+            except (json.JSONDecodeError, OSError) as e:
+                print(f"  Warning: malformed read_calls.json in {case_dir}: {e}",
+                      file=sys.stderr)
+                record["read_calls"] = []
+        else:
+            record["read_calls"] = []
+
     # --- Logs (if traces config enables them) ---
     if run_id:
         if config.traces.stdout:
@@ -617,14 +635,14 @@ def load_judges(config, project_root=None):
         elif jc.check:
             scorer = _make_inline_check(jc)
             judge_type = "check"
-        elif jc.prompt or jc.prompt_file:
+        elif jc.prompt or jc.prompt_file or jc.llm_rubric:
             scorer = _load_llm_judge(jc, config, project_root)
             judge_type = "llm"
         elif jc.module and jc.function:
             scorer = _load_code_judge(jc, project_root)
             judge_type = "code"
         else:
-            print(f"  Warning: judge '{jc.name}' has no check, prompt, or module",
+            print(f"  Warning: judge '{jc.name}' has no check, prompt, llm_rubric, or module",
                   file=sys.stderr)
             continue
         if scorer:
@@ -1113,7 +1131,11 @@ def _resolve_judge_model(jc, config):
 
 def _load_llm_judge(jc, config, project_root=None):
     root = Path(project_root).resolve() if project_root else Path.cwd().resolve()
-    prompt = jc.prompt
+    # Check llm_rubric first (preferred in taxonomy configs), then prompt
+    prompt = jc.llm_rubric or jc.prompt
+    if jc.llm_rubric and "{{ conversation }}" not in prompt:
+        # Auto-wrap llm_rubric with conversation template
+        prompt += "\n\n# Agent Response to Evaluate\n\n{{ conversation }}"
     if not prompt and jc.prompt_file:
         prompt_path = Path(jc.prompt_file)
         if not prompt_path.is_absolute():
@@ -1123,7 +1145,7 @@ def _load_llm_judge(jc, config, project_root=None):
             raise FileNotFoundError(f"Judge prompt not found: {prompt_path}")
         prompt = prompt_path.read_text()
     if not prompt:
-        raise ValueError(f"LLM judge '{jc.name}' requires prompt or prompt_file")
+        raise ValueError(f"LLM judge '{jc.name}' requires prompt, llm_rubric, or prompt_file")
     # Append context files to the prompt
     for ctx_path in jc.context:
         path = Path(ctx_path)
@@ -1566,7 +1588,7 @@ def detect_regressions(current_results, thresholds, baseline_results=None):
             continue
         if "min_pass_rate" in threshold:
             rate = current.get("pass_rate", 1.0)
-            if rate < threshold["min_pass_rate"]:
+            if rate is not None and rate < threshold["min_pass_rate"]:
                 regressions.append(Regression(judge_name, "pass_rate",
                                               f">= {threshold['min_pass_rate']}", str(rate)))
         if "min_mean" in threshold:
@@ -1576,7 +1598,7 @@ def detect_regressions(current_results, thresholds, baseline_results=None):
                                               f">= {threshold['min_mean']}", str(mean)))
         if "min_win_rate" in threshold:
             win_rate = current.get("win_rate", 0)
-            if win_rate < threshold["min_win_rate"]:
+            if win_rate is not None and win_rate < threshold["min_win_rate"]:
                 regressions.append(Regression(judge_name, "win_rate",
                                               f">= {threshold['min_win_rate']}", str(win_rate)))
         if baseline_results:

@@ -122,8 +122,10 @@ def main():
             try:
                 from agent_eval.config import EvalConfig
                 config = EvalConfig.from_yaml(args.config)
-                config_detail = f"valid: {config.name} (skill={config.skill})"
-                config_ok = bool(config.skill)
+                mode = config.execution.mode
+                target = f"skill={config.skill}" if config.skill else f"mode={mode}"
+                config_detail = f"valid: {config.name} ({target})"
+                config_ok = True  # Valid if it loads without error
             except Exception as e:
                 config_detail = f"invalid: {e}"
                 config_ok = False
