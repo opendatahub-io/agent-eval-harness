@@ -10,6 +10,54 @@ from pathlib import Path
 DEFAULT_RESULT_CAP = 50000
 
 
+def extract_read_calls(events):
+    """Extract Read tool calls from parsed events for documentation tracking.
+
+    Args:
+        events: List of event dicts from parse_stream_events().
+
+    Returns:
+        List of dicts with {file_path, timestamp, offset, limit, pages} for each Read call.
+        Only includes top-level Read calls (not those made by subagents).
+    """
+    if not events:
+        return []
+
+    read_calls = []
+
+    for event in events:
+        if event.get("type") != "assistant":
+            continue
+
+        # Skip subagent tool calls (parent_tool_use_id indicates delegation)
+        if event.get("parent_tool_use_id"):
+            continue
+
+        timestamp = event.get("timestamp")
+
+        for tool in event.get("tools", []):
+            if tool.get("name") != "Read":
+                continue
+
+            tool_input = tool.get("input", {})
+            file_path = tool_input.get("file_path", "")
+
+            if not file_path:
+                continue
+
+            read_call = {
+                "file_path": file_path,
+                "timestamp": timestamp,
+                "offset": tool_input.get("offset"),
+                "limit": tool_input.get("limit"),
+                "pages": tool_input.get("pages"),
+            }
+
+            read_calls.append(read_call)
+
+    return read_calls
+
+
 def parse_stream_events(stdout_text, result_cap=DEFAULT_RESULT_CAP):
     """Parse JSONL stream-json text into structured event dicts.
 
