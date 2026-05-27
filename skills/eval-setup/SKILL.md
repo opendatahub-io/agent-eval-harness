@@ -177,6 +177,24 @@ else:
 
 If eval.yaml doesn't exist, skip this step — it will be created by `/eval-analyze`.
 
+## Step 6b: Harness Overview
+
+Scan the project for all configuration artifacts to give the user a baseline view of their setup:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/harness_inventory.py --root . --format text
+```
+
+Present the inventory summary to the user:
+- Number of skills, commands, hooks found
+- Total token budget across all skills
+- Top skills by token count
+- Any structural warnings (missing CLAUDE.md, skills without descriptions)
+
+If no skills are found (or only one skill is found), note that and keep it brief: "Single-skill configuration detected. Cross-component analysis is not applicable." Move on to Step 7 without further harness analysis.
+
+If multiple skills are found, this overview helps the user understand their configuration landscape before diving into individual skill evaluation. Mention that `/eval-analyze` can provide deeper per-skill analysis.
+
 ## Step 7: Final Verification
 
 Run the preflight checks again to confirm everything is set up:

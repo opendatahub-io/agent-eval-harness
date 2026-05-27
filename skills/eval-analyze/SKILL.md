@@ -109,6 +109,48 @@ This is what you'll describe in `dataset.schema`. If you didn't read the actual 
 
 If no test cases exist, note this clearly and suggest running `/eval-dataset` to generate them. Describe the expected case structure in `dataset.schema` anyway — eval-dataset uses that description to create matching cases.
 
+## Step 4b: Harness Context Discovery
+
+Before generating the eval config, understand the skill's environment by scanning for peer skills:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/find_skills.py
+```
+
+If only one skill is found (the target skill), set `harness_context: null` in the generated eval.yaml and skip to Step 5. Note: "Single-skill configuration. No peer analysis applicable."
+
+If multiple skills exist:
+
+1. For each peer skill (excluding the target and eval harness skills), read its full SKILL.md to understand its content, trigger description, and domain coverage
+2. Compare each peer's description and domain with the target skill. Look for:
+   - Overlapping trigger descriptions (both activate for similar tasks)
+   - Similar content domains (both cover Python, both cover testing, etc.)
+   - Duplicated rules or instructions between the two skills
+3. Scan all CLAUDE.md files that may exist in the project for rules that overlap with the target skill's content. Check these locations:
+   - `./CLAUDE.md` (project-level)
+   - `./.claude/CLAUDE.md` (project config directory)
+   - `~/.claude/CLAUDE.md` (user-level global instructions)
+4. Include a `harness_context` section in eval.yaml:
+
+```yaml
+harness_context:
+  total_skills: 9
+  peer_skills:
+    - name: security-check
+      overlap: "Both reference credential scanning patterns"
+    - name: python-conventions
+      overlap: "Both cover error handling in Python"
+  claude_md_overlaps:
+    - source: "./CLAUDE.md"
+      content: "Always use raise from for exception chaining"
+      overlap: "Duplicated in skill's error handling section"
+    - source: "~/.claude/CLAUDE.md"
+      content: "Never use em dashes"
+      overlap: "Writing rule also present in skill's formatting section"
+```
+
+This context is informational. It helps the user and judges understand whether the skill adds unique value vs. duplicating existing configuration. Judges can reference `harness_context` to assess whether the skill's contribution is distinctive.
+
 ## Step 5: Generate eval.yaml
 
 Combine the skill analysis (Step 3) and dataset exploration (Step 4) into a complete eval.yaml. Read the full template and writing guidance at `${CLAUDE_SKILL_DIR}/references/eval-yaml-template.md`.
