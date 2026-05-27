@@ -149,6 +149,8 @@ harness_context:
       overlap: "Writing rule also present in skill's formatting section"
 ```
 
+If no overlaps are found, use empty lists: `peer_skills: []` and `claude_md_overlaps: []`. This distinguishes "checked but found nothing" from "didn't check."
+
 This context is informational. It helps the user and judges understand whether the skill adds unique value vs. duplicating existing configuration. Judges can reference `harness_context` to assess whether the skill's contribution is distinctive.
 
 ## Step 5: Generate eval.yaml

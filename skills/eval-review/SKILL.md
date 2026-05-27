@@ -117,9 +117,9 @@ After proposing skill-level changes, provide cross-component context if peer ski
 2. If only one skill is found (the one being evaluated), skip this section entirely and note: "Single-skill configuration. No cross-component analysis applicable."
 
 3. If multiple skills exist:
-   a. For each peer skill, read its SKILL.md frontmatter description (first 10 lines only) and compare with the evaluated skill's domain
+   a. For each peer skill, read its SKILL.md YAML frontmatter (between the `---` delimiters) to get the description field, and compare with the evaluated skill's domain
    b. Flag any peers with overlapping trigger descriptions or similar content domains
-   c. Read CLAUDE.md (if it exists) and check if any of its rules duplicate what this skill teaches
+   c. Scan all CLAUDE.md files that exist in the project for rules that overlap with this skill. Check: `./CLAUDE.md`, `./.claude/CLAUDE.md`, and `~/.claude/CLAUDE.md`
    d. Present findings to the user:
       - "Skill '[peer-name]' has a similar trigger description covering [area]. Both may load for the same tasks, doubling the token cost."
       - "CLAUDE.md contains a rule on line [N] that overlaps with this skill's [section]. The CLAUDE.md version loads every session regardless of whether this skill activates."

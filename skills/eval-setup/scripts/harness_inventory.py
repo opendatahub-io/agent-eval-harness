@@ -6,6 +6,15 @@ import json
 import sys
 from pathlib import Path
 
+MAX_FILE_SIZE = 1_000_000  # 1MB limit per file read
+
+
+def _read_text_safe(path: Path) -> str:
+    """Read file text with size limit to avoid memory issues on corrupted projects."""
+    if path.stat().st_size > MAX_FILE_SIZE:
+        return ""
+    return path.read_text()
+
 
 def count_tokens_approx(text: str) -> int:
     """Approximate token count using whitespace splitting (rough but fast)."""
@@ -37,7 +46,7 @@ def find_skills(root: Path) -> list[dict]:
             if skill_dir in seen:
                 continue
             seen.add(skill_dir)
-            content = skill_md.read_text()
+            content = _read_text_safe(skill_md)
             tokens = count_tokens_approx(content)
             name = skill_dir.name
             description = ""
@@ -70,7 +79,7 @@ def find_commands(root: Path) -> list[dict]:
             if name in seen:
                 continue
             seen.add(name)
-            tokens = count_tokens_approx(md_file.read_text())
+            tokens = count_tokens_approx(_read_text_safe(md_file))
             commands.append({"name": name, "path": str(md_file.relative_to(root)), "tokens": tokens})
     return commands
 
@@ -79,7 +88,7 @@ def find_claude_md(root: Path) -> dict | None:
     """Find the project CLAUDE.md."""
     for candidate in [root / "CLAUDE.md", root / ".claude" / "CLAUDE.md"]:
         if candidate.exists():
-            content = candidate.read_text()
+            content = _read_text_safe(candidate)
             return {
                 "path": str(candidate.relative_to(root)),
                 "tokens": count_tokens_approx(content),
@@ -95,7 +104,7 @@ def find_hooks(root: Path) -> list[dict]:
     if not settings_path.exists():
         return hooks
     try:
-        settings = json.loads(settings_path.read_text())
+        settings = json.loads(_read_text_safe(settings_path))
         for hook_type, hook_list in settings.get("hooks", {}).items():
             if isinstance(hook_list, list):
                 for hook in hook_list:
@@ -139,7 +148,11 @@ def main():
     total_tokens = total_skill_tokens + total_command_tokens + claude_md_tokens
 
     if args.format == "yaml":
-        import yaml
+        try:
+            import yaml
+        except ImportError:
+            print("Error: PyYAML is required for --format yaml. Install it with: pip install pyyaml", file=sys.stderr)
+            return 1
         output = {
             "summary": {
                 "skills": len(skills),
