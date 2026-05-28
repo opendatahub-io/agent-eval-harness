@@ -75,6 +75,11 @@ skills/eval-mlflow/      # Skill: MLflow integration
 
 skills/eval-optimize/    # Skill: automated refinement loop
   SKILL.md               # Composes with /eval-run via Skill tool
+
+skills/eval-harness-check/ # Skill: full-harness configuration health check
+  SKILL.md               # Scans all skills, commands, CLAUDE.md, hooks for overlap and issues
+  scripts/
+    harness_inventory.py # Project artifact discovery and word counting
 ```
 
 ## How It Works
