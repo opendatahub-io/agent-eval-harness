@@ -155,29 +155,6 @@ If max iterations reached with failures remaining:
 In all cases (include `--config <config>` if a non-default config was used):
 - Suggest `/eval-mlflow --run-id <final-id>` to log the optimization results to MLflow for tracking.
 
-## Step 7b: Cross-Component Suggestions
-
-After completing the SKILL.md optimization loop, provide harness-level restructuring suggestions. These are informational only and are never auto-applied.
-
-1. List all project skills:
-   ```bash
-   python3 ${CLAUDE_SKILL_DIR}/../eval-analyze/scripts/find_skills.py
-   ```
-
-2. If only one skill is found, skip this section entirely.
-
-3. If multiple skills exist, evaluate the following and report relevant suggestions:
-
-   a. **Merge candidates**: Read each peer skill's SKILL.md description. If this skill and a peer share a significant portion of their content domain, suggest merging. Example: "Skills 'python-conventions' and 'clean-code-guide' both cover Python code quality patterns. Consider merging them to reduce token overhead."
-
-   b. **Move to CLAUDE.md**: If any rule in this skill should apply every session without exception (it is deterministic, not probabilistic), suggest moving it to CLAUDE.md. Example: "The rule 'always use uv for Python execution' is deterministic and project-wide. Moving it to CLAUDE.md ensures it loads every session regardless of which skills activate."
-
-   c. **Convert to hook**: If any rule is a mechanical check that should block an action rather than guide behavior, suggest converting it to a PreToolUse or PostToolUse hook. Example: "The secret detection pattern could be a PreToolUse hook on git commit instead of a skill instruction, ensuring deterministic enforcement."
-
-   d. **Narrow trigger**: If this skill's description is broad and overlaps with a peer's, suggest narrowing the trigger. Example: "This skill's description 'Python development' overlaps with 'python-conventions'. Consider narrowing to 'Python API client and data pipeline patterns'."
-
-4. Present all suggestions with the caveat: "These are cross-component suggestions that go beyond SKILL.md edits. They require manual review and restructuring."
-
 ## Rules
 
 - **Never make broad, generic changes** — every edit must be grounded in a specific failure with evidence from judges and transcripts

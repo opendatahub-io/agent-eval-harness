@@ -10,14 +10,30 @@ MAX_FILE_SIZE = 1_000_000  # 1MB limit per file read
 
 
 def _read_text_safe(path: Path) -> str:
-    """Read file text with size limit to avoid memory issues on corrupted projects."""
-    if path.stat().st_size > MAX_FILE_SIZE:
+    """Read file text with size limit to avoid memory issues."""
+    try:
+        if path.stat().st_size > MAX_FILE_SIZE:
+            return ""
+        return path.read_text()
+    except (OSError, PermissionError):
         return ""
-    return path.read_text()
 
 
-def count_tokens_approx(text: str) -> int:
-    """Approximate token count using whitespace splitting (rough but fast)."""
+def _parse_frontmatter_description(content: str) -> str:
+    """Extract description from YAML frontmatter (between --- delimiters)."""
+    lines = content.splitlines()
+    if not lines or lines[0] != "---":
+        return ""
+    for i, line in enumerate(lines[1:], 1):
+        if line == "---":
+            break
+        if line.startswith("description:"):
+            return line.split(":", 1)[1].strip().strip("'\"")[:80]
+    return ""
+
+
+def count_words(text: str) -> int:
+    """Count words using whitespace splitting."""
     return len(text.split())
 
 
@@ -31,7 +47,7 @@ def find_skills(root: Path) -> list[dict]:
     plugin_json = root / ".claude-plugin" / "plugin.json"
     if plugin_json.exists():
         try:
-            plugin = json.loads(plugin_json.read_text())
+            plugin = json.loads(_read_text_safe(plugin_json))
             for path in plugin.get("skills", []):
                 search_dirs.append(root / path)
         except (json.JSONDecodeError, KeyError):
@@ -47,20 +63,18 @@ def find_skills(root: Path) -> list[dict]:
                 continue
             seen.add(skill_dir)
             content = _read_text_safe(skill_md)
-            tokens = count_tokens_approx(content)
+            if not content:
+                continue
+            words = count_words(content)
             name = skill_dir.name
-            description = ""
-            for line in content.splitlines():
-                if line.startswith("description:"):
-                    description = line.split(":", 1)[1].strip().strip("'\"")[:80]
-                    break
+            description = _parse_frontmatter_description(content)
             skills.append({
                 "name": name,
                 "path": str(skill_md.relative_to(root)),
-                "tokens": tokens,
+                "words": words,
                 "description": description,
             })
-    return sorted(skills, key=lambda s: s["tokens"], reverse=True)
+    return sorted(skills, key=lambda s: s["words"], reverse=True)
 
 
 def find_commands(root: Path) -> list[dict]:
@@ -79,8 +93,9 @@ def find_commands(root: Path) -> list[dict]:
             if name in seen:
                 continue
             seen.add(name)
-            tokens = count_tokens_approx(_read_text_safe(md_file))
-            commands.append({"name": name, "path": str(md_file.relative_to(root)), "tokens": tokens})
+            content = _read_text_safe(md_file)
+            words = count_words(content) if content else 0
+            commands.append({"name": name, "path": str(md_file.relative_to(root)), "words": words})
     return commands
 
 
@@ -89,9 +104,11 @@ def find_claude_md(root: Path) -> dict | None:
     for candidate in [root / "CLAUDE.md", root / ".claude" / "CLAUDE.md"]:
         if candidate.exists():
             content = _read_text_safe(candidate)
+            if not content:
+                continue
             return {
                 "path": str(candidate.relative_to(root)),
-                "tokens": count_tokens_approx(content),
+                "words": count_words(content),
                 "lines": len(content.splitlines()),
             }
     return None
@@ -103,8 +120,11 @@ def find_hooks(root: Path) -> list[dict]:
     settings_path = root / ".claude" / "settings.json"
     if not settings_path.exists():
         return hooks
+    content = _read_text_safe(settings_path)
+    if not content:
+        return hooks
     try:
-        settings = json.loads(_read_text_safe(settings_path))
+        settings = json.loads(content)
         for hook_type, hook_list in settings.get("hooks", {}).items():
             if isinstance(hook_list, list):
                 for hook in hook_list:
@@ -142,16 +162,16 @@ def main():
     hooks = find_hooks(root)
     warnings = check_structural_issues(skills, claude_md)
 
-    total_skill_tokens = sum(s["tokens"] for s in skills)
-    total_command_tokens = sum(c["tokens"] for c in commands)
-    claude_md_tokens = claude_md["tokens"] if claude_md else 0
-    total_tokens = total_skill_tokens + total_command_tokens + claude_md_tokens
+    total_skill_words = sum(s["words"] for s in skills)
+    total_command_words = sum(c["words"] for c in commands)
+    claude_md_words = claude_md["words"] if claude_md else 0
+    total_words = total_skill_words + total_command_words + claude_md_words
 
     if args.format == "yaml":
         try:
             import yaml
         except ImportError:
-            print("Error: PyYAML is required for --format yaml. Install it with: pip install pyyaml", file=sys.stderr)
+            print("Error: PyYAML is required for --format yaml. Install with: pip install pyyaml", file=sys.stderr)
             return 1
         output = {
             "summary": {
@@ -159,7 +179,7 @@ def main():
                 "commands": len(commands),
                 "hooks": len(hooks),
                 "claude_md": bool(claude_md),
-                "total_token_budget": total_tokens,
+                "total_word_count": total_words,
             },
             "skills": skills,
             "commands": commands,
@@ -174,17 +194,17 @@ def main():
         print(f"Commands:   {len(commands)}")
         print(f"Hooks:      {len(hooks)}")
         print(f"CLAUDE.md:  {'Yes' if claude_md else 'No'}")
-        print(f"Total tokens: {total_tokens}")
+        print(f"Total words (approx): {total_words}")
         if skills:
-            print("\nTop skills by token count:")
-            for s in skills[:5]:
-                print(f"  {s['name']:30s} {s['tokens']:>5d} tokens")
+            print("\nSkills by word count:")
+            for s in skills[:10]:
+                print(f"  {s['name']:30s} {s['words']:>5d} words")
         if warnings:
             print(f"\nWarnings ({len(warnings)}):")
             for w in warnings:
                 print(f"  - {w}")
         if not skills:
-            print("\nNo skills found. Single-skill or no-skill configuration.")
+            print("\nNo skills found.")
 
     return 0
 
