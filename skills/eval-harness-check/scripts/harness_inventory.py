@@ -15,7 +15,7 @@ def _read_text_safe(path: Path) -> str:
         if path.stat().st_size > MAX_FILE_SIZE:
             return ""
         return path.read_text()
-    except (OSError, PermissionError):
+    except (OSError, PermissionError, UnicodeDecodeError):
         return ""
 
 
@@ -49,7 +49,9 @@ def find_skills(root: Path) -> list[dict]:
         try:
             plugin = json.loads(_read_text_safe(plugin_json))
             for path in plugin.get("skills", []):
-                search_dirs.append(root / path)
+                resolved = (root / path).resolve()
+                if resolved.is_relative_to(root):
+                    search_dirs.append(resolved)
         except (json.JSONDecodeError, KeyError):
             pass
 
