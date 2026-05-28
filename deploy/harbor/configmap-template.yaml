@@ -1,0 +1,84 @@
+# AUTO-GENERATED — do not edit directly.
+# Regenerate: bash deploy/harbor/generate-configmap.sh > deploy/harbor/configmap-template.yaml
+#
+# Source: deploy/harbor/provider.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: evalhub-provider-harbor-bench
+  namespace: redhat-ods-applications
+  labels:
+    app.kubernetes.io/part-of: trustyai
+    app.opendatahub.io/trustyai: "true"
+    trustyai.opendatahub.io/evalhub-provider-type: system
+    trustyai.opendatahub.io/evalhub-provider-name: harbor-bench
+    opendatahub.io/managed: "true"
+data:
+  provider.yaml: |
+    name: harbor-bench
+    id: harbor-bench
+    title: Harbor Benchmark Evaluation
+    description: >
+      Run Harbor agentic coding benchmarks and report results to EvalHub.
+      Supports any Harbor task dataset with configurable agents and models.
+      Measures reward (pass/fail), execution time, token usage, and cost.
+    version: "0.1.0"
+
+    benchmarks:
+      - id: harbor-task
+        name: harbor-task
+        description: "Run Harbor benchmark tasks with two-stage verification"
+        category: agent-evaluation
+        parameters:
+          task_path:
+            type: string
+            required: true
+            description: "Path to Harbor task or dataset directory"
+          task_image:
+            type: string
+            required: true
+            description: "Pre-built task container image (registry/repo:tag)"
+          execution_mode:
+            type: string
+            default: kubernetes
+            description: "Execution mode: kubernetes (K8s Jobs) or harbor (local Docker)"
+          agent:
+            type: string
+            default: oracle
+            description: "Harbor agent name (oracle, claude-code, etc.)"
+          model:
+            type: string
+            description: "Model identifier (e.g. anthropic/claude-sonnet-4-6)"
+          namespace:
+            type: string
+            default: evalhub
+            description: "Namespace for K8s Job execution"
+          timeout_sec:
+            type: integer
+            default: 600
+            description: "Task timeout in seconds"
+        metrics:
+          - reward
+          - mean_reward
+          - duration_seconds
+          - env_build_seconds
+          - agent_exec_seconds
+          - verifier_seconds
+          - cost_usd
+          - input_tokens
+          - output_tokens
+        primary_score:
+          metric: mean_reward
+          lower_is_better: false
+    runtime:
+      k8s:
+        image: image-registry.openshift-image-registry.svc:5000/evalhub/harbor-bench-provider:latest
+        entrypoint:
+          - python3
+          - entrypoint.py
+        cpu_request: "1"
+        memory_request: "2Gi"
+        cpu_limit: "4"
+        memory_limit: "8Gi"
+      local:
+        command: python3 deploy/harbor/entrypoint.py
