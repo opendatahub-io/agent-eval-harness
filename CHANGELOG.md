@@ -1,3 +1,10 @@
+## [1.2.2](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.2.1...v1.2.2) (2026-05-29)
+
+
+### Bug Fixes
+
+* **eval-analyze:** replace {{ stdout }} with {{ conversation }} in template ([#81](https://github.com/opendatahub-io/agent-eval-harness/issues/81)) ([50ab3cb](https://github.com/opendatahub-io/agent-eval-harness/commit/50ab3cb1e6bf2877ccbdc98501793a4454f8b466))
+
 ## [1.2.1](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.2.0...v1.2.1) (2026-05-29)
 
 
