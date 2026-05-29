@@ -14,6 +14,7 @@ You generate evaluation test cases for a skill. You read the skill analysis (eva
 | `--config <path>` | no | `eval.yaml` | Path to eval config |
 | `--count <N>` | no | 5 | Number of cases to generate |
 | `--strategy <type>` | no | `bootstrap` | Generation strategy (see Step 3) |
+| `--run-id <id>` | no | — | Previous eval run to learn from (used with `expand`) |
 
 ## Step 1: Read Context
 
@@ -23,7 +24,8 @@ Read eval.yaml and eval.md to understand:
 - **The dataset schema** — `dataset.schema` describes the case structure (files, fields, formats)
 - **The dataset path** — where cases should be created
 - **The output schema** — `outputs[*].schema` describes what the skill produces (informs what reference outputs look like)
-- **The judges** — extract the evaluation criteria from each judge:
+- **The judges** — extract the evaluation criteria from each judge. The approach depends on the judge type:
+  - `builtin` judges have predefined criteria — list them with `python3 ${CLAUDE_SKILL_DIR}/../eval-analyze/scripts/list_builtins.py`. Use the builtin's known behavior to inform case design (e.g., `cost_budget` → include a large-input case that tests cost scaling; `output_completeness` → include a case with many requirements)
   - `check` snippets reveal exact validation logic — what fields are accessed, what thresholds are used, what conditions trigger pass/fail
   - `prompt` / `prompt_file` text describes quality dimensions (completeness, accuracy, etc.)
   - `description` summarizes what each judge evaluates
@@ -43,6 +45,10 @@ Use the Skill tool to invoke /eval-analyze --skill <skill-name>
 Wait for the analysis to complete, then re-read eval.yaml. If /eval-analyze fails or the user skips it, you cannot generate meaningful cases — stop and explain why.
 
 If eval.md doesn't exist, you can still work from eval.yaml's schema descriptions, but the cases will be less targeted.
+
+### Assess recommended case count
+
+After reading the skill analysis and judges, estimate whether `--count` is sufficient. Count the skill's distinct execution paths (branches, modes, optional steps), the number of judges, and the number of conditional judges. A rough guideline: you need at least one case per execution path, plus enough variety for each judge to have both passing and failing examples. If the skill has 4 execution paths and 6 judges, 5 cases may be thin — suggest a higher count to the user ("This skill has N distinct paths and M judges — consider `--count 12` for better coverage").
 
 ## Step 2: Parse Schema into Generation Template
 
@@ -90,6 +96,17 @@ Read each existing case's input file to understand what's already covered. Then 
 - The judges' criteria (from eval.yaml — what do judges check that no case tests?)
 - Edge cases mentioned in the skill analysis
 - Input variety (all cases similar? need different lengths, complexities, topics)
+
+If `--run-id` was provided, also read the eval results to target empirical failure patterns:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py read $AGENT_EVAL_RUNS_DIR/<run-id>/summary.yaml
+```
+
+Use the results to prioritize new cases:
+- If a judge consistently fails across cases, add cases that isolate its specific criterion
+- If a judge scores low on simple inputs but passes on complex ones (or vice versa), add cases that explore that boundary
+- If certain case types have no failures, don't add more of the same — focus on the weak spots
 
 Avoid duplicating existing scenarios — each new case should test something distinct that isn't already covered. Number new cases continuing from the highest existing case number.
 
@@ -151,7 +168,9 @@ known_issues:
   - dedup should flag this as overlapping with RHAIRFE-1001
 ```
 
-Check the eval.yaml `judges` section for any `check` snippets that access `outputs.get("annotations", {})` — those fields must exist in annotations.yaml for the judge to work correctly.
+Check the eval.yaml `judges` section for:
+- Any `check` snippets that access `outputs.get("annotations", {})` — those fields must exist in annotations.yaml for the judge to work correctly.
+- Any `if` conditions (e.g., `if: "annotations.get('dedup_is_duplicate')"`) — these control which judges run per case based on annotation values. Create cases that exercise **both branches** of each conditional judge: some cases where the condition is true (judge runs) and some where it's false (judge is skipped). If all cases have the same annotation value, a conditional judge either always runs or never runs — both are gaps in coverage.
 
 **Companion files**: If eval.md lists `companion_files` (files the skill reads from disk at runtime — e.g., `strategy.md`, `adr.md`), each test case must include them. In `case` mode, the harness copies all case files into the workspace, so the skill will find them at their expected relative paths. Generate realistic content for these files appropriate to each case's scenario.
 
@@ -166,6 +185,7 @@ After generating, verify the cases:
 3. If `execution.mode` is `case`, verify that input.yaml contains all fields referenced by `{field}` placeholders in `execution.arguments`
 4. If companion files are expected, verify they exist in each case directory
 5. Check for obvious issues (empty files, placeholder text, wrong field names)
+6. If judges have `if` conditions referencing annotations, verify that the generated cases cover both branches — at least one case where the condition is true and one where it's false. Warn if any conditional judge would never run (or always run) across the entire dataset.
 
 ```bash
 ls <dataset_path>/case-001-*/ 
