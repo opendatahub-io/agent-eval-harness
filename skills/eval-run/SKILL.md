@@ -188,7 +188,7 @@ Report per-case counts. If any case has 0 artifacts, warn — the skill may not 
 
 ## Step 6: Score
 
-Run all configured judges against the collected outputs. Skip this step if `--no-judge` was specified.
+Run all configured judges against the collected outputs. Skip this step if `--no-judge` was specified. Four judge types are supported: `builtin` (reusable from the harness library), inline `check` (Python snippets), LLM `prompt`/`prompt_file` (Jinja2 rendered), and external `module`/`function`. All support optional `arguments:` for parameterization.
 
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/score.py judges \

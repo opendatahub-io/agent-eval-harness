@@ -92,7 +92,7 @@ ls <dataset_path>/ 2>/dev/null | head -20
 If not set or doesn't exist, search the project for test case directories using the Glob tool:
 
 ```
-Glob: **/cases/ or **/test-cases/ or **/fixtures/ or **/examples/
+Glob: **/cases/ or **/test-cases/ or **/fixtures/ or **/examples/ or **/dataset/ or **/eval/ or **/tests/data/
 ```
 
 Exclude `.venv/`, `.git/`, `node_modules/` from results.
@@ -125,8 +125,10 @@ Key points:
 - **Environment variables**: if the skill needs external service credentials (e.g., `JIRA_SERVER` for a jira-emulator, API keys for test instances), add `execution.env` entries. Use `$VAR` syntax for values that should be resolved from the caller's environment (e.g., `$JIRA_TOKEN`), or literal values for test-only endpoints (e.g., `http://localhost:8080`).
 - If the skill uses AskUserQuestion, calls external services (MCP tools), or runs scripts that interact with APIs, add `inputs.tools` entries. Use `match` to describe what to intercept in natural language (e.g., "any Jira interaction via MCP or scripts"), and `prompt` for how to handle it. The AskUserQuestion hook uses 3-tier answer resolution: exact match from `case_overrides`, then an LLM call (using `models.hook`) with the case's `input.yaml` and `answers.yaml` as context, then fallback to the first option. If the skill asks domain-specific questions (e.g., "is this a duplicate?"), suggest the user create `answers.yaml` files per case with guidance for the LLM answerer.
 - **Annotation-aware judges**: judges receive `outputs["annotations"]` — the parsed `annotations.yaml` from the dataset case. Use this for outcome-aware scoring where the expected result depends on the test case (e.g., `annotations.get("dedup_is_duplicate")` determines whether producing no output is correct).
-- Aim for 2-4 inline `check` judges + 1-2 LLM `prompt` judges. Start lean.
-- If `--update`: preserve everything already in the file, only add missing top-level keys (e.g., add a `models:` block if the user is upgrading from an older config that lacked it)
+- **Prefer builtin judges for common patterns** — the harness ships reusable judges in `agent_eval/judges/`. Use `builtin:` instead of writing inline code. Discover available builtins: `python3 ${CLAUDE_SKILL_DIR}/scripts/list_builtins.py`. See the template for examples.
+- **Parameterize with `arguments:`** — all judge types support an `arguments:` dict. Use it instead of hardcoding values in check code or prompt text. For inline checks, `arguments` is passed as the second parameter. For LLM prompts, use `{{ arguments.key }}` (Jinja2 rendered).
+- Aim for 1-2 `builtin` judges + 2-3 inline `check` judges + 1-2 LLM `prompt` judges. Start lean.
+- If `--update`: preserve everything already in the file, only add missing top-level keys (e.g., add a `models:` block if the user is upgrading from an older config that lacked it). Check existing inline check judges — if any use the old `(outputs)` signature (single parameter), update them to `(outputs, arguments)` (the current contract). Also check LLM judge prompts for literal `{{ }}` that isn't a template variable — all prompts are now Jinja2 rendered.
 
 ## Step 5b: Validate Generated Config
 

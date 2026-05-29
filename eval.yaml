@@ -97,7 +97,18 @@ traces:
   metrics: true   # Capture exit code, tokens, cost, duration
 
 # Judges — evaluate output quality
+# Four types: builtin (library), check (inline Python), prompt/prompt_file (LLM),
+# module/function (external code). All support arguments: for parameterization.
 judges:
+  # Builtin judge (ships with the harness — no inline code needed)
+  # - name: budget_check
+  #   builtin: cost_budget
+  #   arguments:
+  #     max_cost_usd: 5.0
+
+  # - name: safety_check
+  #   builtin: no_harmful_content
+
   # Inline code check
   - name: has_content
     description: |

@@ -160,7 +160,7 @@ In all cases (include `--config <config>` if a non-default config was used):
 - **Never make broad, generic changes** — every edit must be grounded in a specific failure with evidence from judges and transcripts
 - **Check for regressions after every edit** — a fix that breaks other cases is not a fix
 - **Stop after max iterations** — don't loop forever. Report what couldn't be fixed.
-- **Don't modify test cases or judges** — the eval harness is the ground truth. If you think a judge is wrong, report it but don't change it.
+- **Don't modify test cases or judges** — the eval harness is the ground truth. If you think a judge is wrong, report it but don't change it. Builtin judges (from `agent_eval/judges/`) are versioned and shared — never edit their code. If a builtin judge's behavior needs adjustment, suggest changing its `arguments:` in eval.yaml instead.
 - **Don't modify eval.yaml** — your job is to improve the skill, not the evaluation config. If judges need updating, suggest it to the user.
 - **Try different approaches** — if the same type of edit fails twice, try a fundamentally different framing. Explain why instead of adding more rules.
 

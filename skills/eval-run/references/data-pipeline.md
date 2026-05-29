@@ -184,34 +184,45 @@ Skills that modify input files using the Edit tool (rather than writing to an ou
 }
 ```
 
-**Note on `{{ outputs }}` in LLM judges**: The `{{ outputs }}` template variable renders ALL entries in `files`, including `_modified/` entries. Each file appears as a markdown section with its path as the heading. Modified files will appear as `### _modified/source.md` followed by the edited content.
+**Template variables in LLM judges**: All LLM judge prompts (both `prompt`/`prompt_file` and `builtin` LLM judges) are rendered with Jinja2. Available variables:
+- `{{ outputs }}` — renders ALL file entries including `_modified/` as markdown sections
+- `{{ conversation }}` — root-level assistant text from the JSONL event stream (excludes subagent text)
+- `{{ annotations }}` — dataset annotations from `annotations.yaml`
+- `{{ arguments }}` — judge arguments from eval.yaml's `arguments:` field (dict)
 
-**Note on `{{ stdout }}` in LLM judges**: The `{{ stdout }}` template variable extracts assistant conversation text from the JSONL stdout log. It filters for top-level assistant text blocks (skipping subagent messages, tool calls, system events, and user input), then concatenates the extracted text. For non-JSONL stdout (e.g., from non-Claude runners), the raw content is passed through. If stdout is empty or missing, it renders as `(no stdout captured)`. Use `{{ stdout }}` for skills that produce their primary output via conversation text rather than file artifacts.
+Use `{{ arguments.key }}` to parameterize prompts without editing the prompt text. For example, `{{ arguments.strictness | default('medium') }}` lets users control judge behavior via eval.yaml.
 
 **Key naming convention for convenience keys**: for an output with `path: "artifacts/rfe-tasks"`, the convenience key is `rfe-tasks_content` (the last directory component + `_content`). For `path: "."`, the key is `main_content`.
 
 ## 5. Scoring → Judges
 
-### Three judge types
+### Four judge types
+
+**Builtin judge** (`builtin` field in eval.yaml):
+- Resolves via `BuiltinJudgeRegistry` from `agent_eval/judges/` package
+- Python builtins (`.py`): receive `(outputs, **arguments)`, return `(bool|number, str)`
+- LLM builtins (`.md`): Jinja2 prompt templates, rendered with `arguments` and `outputs`
+- Auto-discovered from `agent_eval/judges/{category}/` directories
+- Parameterized via `arguments:` field in eval.yaml
 
 **Inline check** (`check` field in eval.yaml):
 - Python snippet wrapped in a function by `score.py`
-- Receives the full record dict as `outputs` parameter
-- Must return `(bool, str)` — pass/fail + rationale
+- Receives `(outputs, arguments)` — full record dict + arguments from eval.yaml
+- Must return `(bool|number, str)` — pass/fail + rationale, or score + rationale
 - Example accessing file content: `outputs["artifacts_content"]`
 - Example accessing traces: `outputs.get("cost_usd", 0)`
-- Example accessing tool calls: `outputs.get("tool_calls", [])`
+- Example with arguments: `limit = arguments.get("max_chars", 10000)`
 
 **LLM judge** (`prompt` or `prompt_file` field):
-- Created via `mlflow.genai.judges.make_judge()`
-- Receives the record as `outputs` kwarg
+- All prompts are Jinja2 rendered with variables: `{{ outputs }}`, `{{ conversation }}`, `{{ annotations }}`, `{{ arguments }}`
 - `context` files are appended to the prompt
-- `feedback_type` is optional — MLflow infers from response
+- `arguments:` field makes prompts parameterizable without editing the prompt text
+- Returns `{"score": N, "rationale": "..."}` or `{"passed": bool, "rationale": "..."}`
 
 **External code judge** (`module` + `function` field):
 - Imported via `importlib` from the project
-- Receives the record as `outputs` kwarg
-- Can return `Feedback` object, `(bool, str)` tuple, or primitive
+- Receives `(outputs=dict, **arguments)` when `arguments:` is set
+- Must return `(bool|number, str)` tuple
 
 ### How aggregation works
 

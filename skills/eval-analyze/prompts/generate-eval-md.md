@@ -29,8 +29,9 @@ dry_run: <true/false>
 # Suggested judges (summary from analysis)
 suggested_judges:
   - name: <judge_name>
-    type: <check|llm>
+    type: <builtin|check|llm>
     description: "<what this judge checks>"
+    # arguments: {key: value}   # if parameterized
 ---
 ```
 

@@ -35,12 +35,18 @@ outputs:
   # IMPORTANT: path must be a named subdirectory (e.g., "output", "artifacts"),
   # never "." — the harness cleans output dirs between runs.
   # For stdout-only skills, use "output" as a conventional empty directory.
+  #
+  # Stdout-only skills: if the skill produces output via conversation text
+  # rather than files, note this explicitly. Judges for stdout-only skills
+  # should use {{ conversation }} (root-level assistant text) instead of
+  # {{ outputs }} (file artifacts). The outputs entry should describe what
+  # the conversation output contains rather than file structure.
   - path: "<named subdirectory for outputs, e.g. 'output' or 'artifacts'>"
     schema: |
       <what is produced here — file types, naming patterns, content
        structure. Describe what you actually observed, not generic patterns.
-       If the skill writes to stdout rather than files, note that judges
-       should read outputs["stdout"] instead of outputs["files"].>
+       For stdout-only skills: describe the conversation output structure
+       and note that judges should use {{ conversation }} template variable.>
   # Tool call side effects (if the skill calls external APIs)
   # - tool: "<tool name pattern, e.g. mcp__atlassian__create_issue>"
   #   schema: |
@@ -102,18 +108,26 @@ quality_criteria:
     - "<things that need LLM assessment — quality, completeness, accuracy>"
 
 suggested_judges:
+  # Prefer builtin judges for common patterns — they're tested, versioned,
+  # and require no inline code. Each is a .py or .md file in agent_eval/judges/{category}/.
+  # List available: python3 ${CLAUDE_SKILL_DIR}/scripts/list_builtins.py
   - name: "<judge name>"
-    type: "<check|llm>"
+    type: "<builtin|check|llm>"
     description: |
       <what this judge evaluates and how>
+    # For builtin type, reference a builtin judge by name:
+    builtin: "<builtin name>"
+    arguments:              # optional parameterization
+      <key>: <value>
     # For check type, include a working inline script:
     check: |
-      <python snippet that takes outputs dict, returns (bool, str)>
+      <python snippet — receives (outputs, arguments) dicts, returns (bool|number, str)>
     # For llm type, include evaluation instructions.
-    # Template variables available in LLM judge prompts:
-    #   {{ outputs }} — renders file artifacts and modified files as markdown
-    #   {{ conversation }} — renders root-level assistant text (excludes subagent text)
-    #   {{ annotations }} — renders dataset annotations
+    # All LLM prompts are Jinja2 templates. Available variables:
+    #   {{ outputs }} — file artifacts and modified files as markdown
+    #   {{ conversation }} — root-level assistant text (excludes subagent text)
+    #   {{ annotations }} — dataset annotations
+    #   {{ arguments }} — judge arguments from eval.yaml
     prompt: |
       <what to evaluate and how to score>
 ```
@@ -128,5 +142,6 @@ After the YAML block, explain:
 5. Which sub-skill's outputs are the ones that matter for scoring
 6. Whether the skill edits input files in-place (e.g., uses the Edit tool on `source.md`) rather than writing to an output directory. If so, note this explicitly. The harness automatically collects in-place edits into `outputs["modified_files"]`, so judges should be written against that dict (e.g., `outputs.get("modified_files", {}).get("source.md")`) rather than expecting files in an output directory.
 7. Which tools and scripts interact with external services — look for AskUserQuestion (needs auto-answers), MCP tools calling external APIs (Jira, Slack, etc.), AND Python scripts that import API clients or call external URLs. These all need `inputs.tools` entries in eval.yaml so headless eval can intercept them. Also identify which **input fields** reference real external state (e.g., a Jira project key that must exist on the target instance, a GitHub repo URL that must be accessible, a Slack channel ID). These fields cannot be synthesized by eval-dataset — list them so eval-analyze can mark them with `[EXTERNAL: System]` in the dataset schema.
+8. Whether the skill reads files from specific paths in its working directory (not from arguments) — e.g., source code files at `src/main.py`, config files at `config/settings.json`. These files need to be present in each test case directory so the harness can copy them into the workspace. List the expected paths and what they should contain.
 
 Be thorough but concise. Reference actual file paths and field names you observed — don't invent generic examples.

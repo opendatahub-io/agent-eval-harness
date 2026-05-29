@@ -158,19 +158,45 @@ traces:
   metrics: true          # Capture exit code, tokens, cost, duration
 
 # Judges — evaluate output quality
+# Four judge types (determined by which field is set):
+#   builtin:     reusable judge from the harness library
+#   check:       inline Python snippet
+#   prompt/prompt_file: LLM judge (Jinja2 rendered)
+#   module/function:   external Python module
+# All judge types support optional `arguments:` for parameterization.
 judges:
+  # Builtin judge: reusable judge from the harness library
+  # List available: python3 ${CLAUDE_SKILL_DIR}/scripts/list_builtins.py
+  # Each builtin is a .py (Python) or .md (LLM) file in agent_eval/judges/{category}/
+  - name: budget_check
+    builtin: cost_budget
+    arguments:
+      max_cost_usd: 5.0
+
+  # - name: safety_check
+  #   builtin: no_harmful_content
+
+  # - name: completeness
+  #   builtin: output_completeness
+  #   model: claude-sonnet-4-6        # optional model override
+  #   arguments:
+  #     strictness: high              # low, medium, high
+
   # Inline check: validate structure with code
   - name: <descriptive_name>
     description: |
       <what this judge checks and why it matters>
     check: |
-      <python snippet — receives outputs dict, returns (bool, str)>
+      <python snippet — receives (outputs, arguments) dicts, returns (bool|number, str)>
+    # arguments:                      # optional, available as arguments dict in check
+    #   max_chars: 10000
 
   # LLM judge: assess quality with a prompt
-  # Template variables:
-  #   {{ outputs }} — renders file artifacts and modified files as markdown
-  #   {{ conversation }} — renders root-level assistant text (excludes subagent text)
-  #   {{ annotations }} — renders dataset annotations
+  # All LLM prompts are rendered with Jinja2. Available template variables:
+  #   {{ outputs }}      — file artifacts and modified files as markdown
+  #   {{ conversation }} — root-level assistant text (excludes subagent text)
+  #   {{ annotations }}  — dataset annotations
+  #   {{ arguments }}    — judge arguments from eval.yaml (dict)
   - name: <descriptive_name>
     description: |
       <what this judge evaluates>
@@ -179,14 +205,17 @@ judges:
       {{ outputs }}
       {{ conversation }}
       <scoring criteria — define what each score level means>
-    # Optional: supplementary context files
-    # context:
+    # arguments:                      # optional, available as {{ arguments }} in prompt
+    #   focus: completeness
+    # context:                        # optional supplementary files
     #   - eval/prompts/scoring-rubric.md
 
-  # LLM judge with external prompt file
+  # LLM judge with external prompt file (Jinja2 rendered)
   # - name: <name>
   #   description: <what it checks>
   #   prompt_file: eval/prompts/quality-judge.md
+  #   arguments:
+  #     strictness: high
   #   context:
   #     - eval/prompts/domain-guidelines.md
 
@@ -195,6 +224,8 @@ judges:
   #   description: <what it checks>
   #   module: eval.judges.my_checker
   #   function: check_quality
+  #   arguments:                      # optional, passed as **kwargs to function
+  #     threshold: 0.8
 
   # Pairwise comparison (used with score.py pairwise --baseline <id>)
   # - name: pairwise
@@ -205,7 +236,7 @@ judges:
 # Thresholds for regression detection
 thresholds:
   <judge_name>:
-    min_pass_rate: 1.0     # for boolean judges (check)
+    min_pass_rate: 1.0     # for boolean judges (check, builtin)
     # min_mean: 3.5        # for numeric judges (llm)
 ```
 
