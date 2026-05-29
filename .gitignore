@@ -42,3 +42,5 @@ credentials/
 .claude/skills/
 .claude/settings.local.json
 .specify/
+!.specify/memory/
+!.specify/memory/constitution.md
