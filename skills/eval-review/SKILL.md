@@ -13,7 +13,7 @@ You are an interactive reviewer. You present evaluation results to the user, col
 |----------|----------|---------|-------------|
 | `--run-id <id>` | **yes** | — | Which eval run to review |
 | `--config <path>` | no | `eval.yaml` | Path to eval config |
-| `--case <filter>` | no | all | Substring match to select specific cases |
+| `--cases <name> [<name> ...]` | no | all | Exact case directory names to review |
 
 ## Step 1: Load Results
 
@@ -23,13 +23,15 @@ Read the scoring summary and per-case results:
 python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py read $AGENT_EVAL_RUNS_DIR/<id>/summary.yaml
 ```
 
-Also read eval.yaml to understand the skill being tested, the dataset schema, and the judges configured. Note which judges are inline checks vs LLM judges — check failures are structural, LLM failures are qualitative.
+Also read eval.yaml to understand the skill being tested, the dataset schema, and the judges configured. Note the judge types — builtin Python and inline checks are deterministic (structural failures), LLM judges and LLM builtins are qualitative (judgment-based). The `judge_type` field is available in results.
 
 ## Step 2: Present Overview
 
-If an HTML report exists at `$AGENT_EVAL_RUNS_DIR/<id>/report.html`, tell the user — they can open it in a browser for a visual overview with per-case details, diffs, and judge scores.
+If `$AGENT_EVAL_RUNS_DIR/<id>/analysis.md` exists, read it — it contains the automated analysis from `/eval-run` with recommendations, failure patterns, and root causes. Present its key recommendation to the user as context before starting the case walkthrough.
 
-Then show a high-level summary:
+If an HTML report exists at `$AGENT_EVAL_RUNS_DIR/<id>/report.html`, mention it. If the user just ran `/eval-run` (which opens the report automatically), they've likely already seen it — skip the overview and ask which cases they want to discuss.
+
+Show a high-level summary:
 - Overall pass rates per judge
 - How many cases passed all judges vs had failures
 - If a pairwise comparison was run, show the win/loss/tie counts
@@ -40,9 +42,10 @@ Ask: "Want to review all cases, only failures, or specific cases?"
 
 For each case the user wants to review, present:
 
-1. **Judge scores** — which judges passed/failed, with rationale
-2. **Output summary** — read the key output files from `$AGENT_EVAL_RUNS_DIR/<id>/cases/<case>/` and summarize what the skill produced. Don't dump full file contents — describe what's there and let the user ask to see specifics.
-3. **Ask for feedback** — "How does this look? Anything the judges missed?"
+1. **Judge scores** — which judges passed/failed, with rationale. Note the judge type (builtin/check/llm/code) for context.
+2. **Pairwise results** — if a baseline comparison was run, show which version won for this case and the comparison rationale.
+3. **Output summary** — read the key output files from `$AGENT_EVAL_RUNS_DIR/<id>/cases/<case>/` and summarize what the skill produced. Don't dump full file contents — describe what's there and let the user ask to see specifics.
+4. **Ask for feedback** — "How does this look? Anything the judges missed?"
 
 Collect the user's feedback for each case. Keep notes on what they flagged — these are the signals that judges can't capture.
 
@@ -75,10 +78,12 @@ reviewed_cases: <count>
 feedback_cases: <count_with_feedback>
 reviewer: "human"
 feedback:
-  case-001-name: "User's comment about this case"
-  case-002-name: "Another comment"
-  case-003-name: ""  # empty = acceptable
+  case-001-simple-null-pointer-fix: "User's comment about this case"
+  case-002-complex-refactor: "Another comment"
+  case-003-edge-case: ""  # empty = acceptable
 ```
+
+Feedback keys must match the case directory names exactly (the same values accepted by `--cases`) — `/eval-optimize` uses these keys to look up which cases had human feedback.
 
 Use the Write tool to create the file directly — do NOT use `state.py` commands (they produce a different format). This file is read by `/eval-optimize` to ground changes in human judgment, and by `/eval-mlflow` to push feedback to MLflow traces.
 
@@ -103,7 +108,7 @@ Based on the feedback patterns:
 
 Ask the user to approve before applying changes. Don't edit the SKILL.md without explicit approval.
 
-If feedback suggests new judges, propose additions to eval.yaml as well.
+If feedback suggests new judges, propose additions to eval.yaml. Prefer builtins (`python3 ${CLAUDE_SKILL_DIR}/../eval-analyze/scripts/list_builtins.py`) with `arguments:` for parameterization over writing inline code.
 
 ## Step 8: Next Steps
 
