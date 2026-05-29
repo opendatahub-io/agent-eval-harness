@@ -20,11 +20,11 @@ Parse `$ARGUMENTS`:
 | `--subagent-model <model>` | no | `models.subagent` → falls back to skill model | Model for subagents (e.g., `claude-sonnet-4-6` while main is `claude-opus-4-7`) |
 | `--skill <name>` | no | from config | Override the skill to test |
 | `--run-id <id>` | no | `YYYY-MM-DD-<model>` | Identifier for this run |
-| `--case <filter>` | no | all cases | Substring match to select cases |
+| `--cases <id> [<id> ...]` | no | all cases | Exact case IDs to run |
 | `--baseline <run-id>` | no | — | Previous run to compare against |
-| `--no-judge` | no | false | Skip LLM judges, run inline checks only |
+| `--no-llm-judges` | no | false | Skip LLM judges (prompt, prompt_file, LLM builtins). Run deterministic judges (check, Python builtins, external code). |
 | `--gold` | no | false | Save outputs as gold references after run |
-| `--effort <level>` | no | `runner.effort` from config | Claude Code reasoning effort (`low`/`medium`/`high`/`xhigh`/`max`) |
+| `--effort <level>` | no | `runner.effort` from config | Claude Code reasoning effort (Claude Code only; ignored by other runners) |
 
 Check if the config file exists (use the parsed config path, not hardcoded `eval.yaml`):
 
@@ -48,7 +48,7 @@ Persist parsed flags:
 mkdir -p tmp ${AGENT_EVAL_RUNS_DIR:-eval/runs}
 python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py init tmp/eval-config.yaml \
   model=<model> skill=<skill> run_id=<id> baseline=<baseline> \
-  gold=<true/false> no_judge=<true/false>
+  gold=<true/false> no_llm_judges=<true/false>
 ```
 
 ## Step 1: Find Dataset
@@ -59,7 +59,7 @@ Read `dataset.path` from eval.yaml. Verify the directory exists and contains at 
 ls <dataset_path>/ | head -20
 ```
 
-If `--case` filter was specified, note it for the workspace step.
+If `--cases` was specified, pass the IDs to workspace.py as `--cases <id> <id> ...`.
 
 If no cases found, stop and tell the user clearly:
 - What path was checked
@@ -92,7 +92,7 @@ Create an isolated workspace with the test cases and output directories:
 python3 ${CLAUDE_SKILL_DIR}/scripts/workspace.py \
   --config <config> \
   --run-id <id> \
-  [--case-filter <filter>]
+  [--cases <id> [<id> ...]]
 ```
 
 The script prints `WORKSPACE: <path>`, `CASES: <count>`, `BATCH: <path>`. Report these to the user. If `inputs.tools` is configured, it also prints `HOOKS: N tool interceptors configured`.
@@ -103,9 +103,13 @@ If the case count is 0, stop — the filter matched nothing.
 
 If eval.yaml has `inputs.tools` entries, this step is **mandatory**. `workspace.py` emits a skeleton in `tool_handlers.yaml`; you must resolve each handler's `prompt` into concrete runtime checks (`input_filters`, `env_checks`, `case_overrides`). Do not skip this even when the eval.yaml is unchanged — the workspace is created fresh each time.
 
-Read `${CLAUDE_SKILL_DIR}/references/tool-interception.md` for the full format, field reference, and resolution examples. Then read `<workspace>/tool_handlers.yaml`, resolve every handler, and write it back.
+Read `${CLAUDE_SKILL_DIR}/references/tool-interception.md` for the full format, field reference, and resolution examples. Then read `<workspace>/tool_handlers.yaml` and for each handler:
 
-**Critical**: any handler with `patterns: [Bash, ...]` and no `input_filters` is non-functional and will pass through unchecked.
+1. **Identify type**: AskUserQuestion, Bash, or MCP tool
+2. **Add required fields**: `input_filters` for Bash, `env_checks` for services, `case_overrides` for deterministic answers
+3. **Verify**: every Bash handler has `input_filters` — without them the handler is non-functional
+
+Write the resolved handlers back to `tool_handlers.yaml`.
 
 ## Step 4: Execute Skill
 
@@ -159,7 +163,7 @@ Look for phase markers (`## Phase`, `## Step`, `Batch N/M`), agent counts (`N ag
 
 When you spot an issue, report it to the user with the relevant output lines rather than waiting for completion.
 
-After execution, check `run_result.json` for `exit_code`, `duration_s`, `wall_clock_s`, `cost_usd`, `num_turns`, and per-model token usage. `duration_s` is the sum of per-case durations; `wall_clock_s` is the actual elapsed time (lower when parallelism is used). Read it with `cat` (it's JSON — `state.py` would corrupt it to YAML).
+After execution, check `run_result.json` for `exit_code`, `duration_s`, `wall_clock_s`, `cost_usd`, `num_turns`, and per-model token usage. `duration_s` is the sum of per-case durations; `wall_clock_s` is the actual elapsed time (lower when parallelism is used). Read it with `cat` (JSON — do not use `state.py`).
 
 ```bash
 cat $AGENT_EVAL_RUNS_DIR/<id>/run_result.json
@@ -188,7 +192,9 @@ Report per-case counts. If any case has 0 artifacts, warn — the skill may not 
 
 ## Step 6: Score
 
-Run all configured judges against the collected outputs. Skip this step if `--no-judge` was specified. Four judge types are supported: `builtin` (reusable from the harness library), inline `check` (Python snippets), LLM `prompt`/`prompt_file` (Jinja2 rendered), and external `module`/`function`. All support optional `arguments:` for parameterization.
+Run all configured judges against the collected outputs. Four judge types are supported: `builtin` (reusable from the harness library), inline `check` (Python snippets), LLM `prompt`/`prompt_file` (Jinja2 rendered), and external `module`/`function`. All support optional `arguments:` for parameterization.
+
+If `--no-llm-judges` was specified, skip judges that make LLM API calls (prompt, prompt_file, and LLM builtins). Run deterministic judges only (check, Python builtins, external code).
 
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/score.py judges \
@@ -225,6 +231,8 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py read $AGENT_EVAL_RUNS_DI
 ## Step 7: Interpret and Report
 
 Read the summary and analyze the results. Read `${CLAUDE_SKILL_DIR}/prompts/analyze-results.md` for the full analysis framework — it covers aggregate assessment, failure patterns, root causes, regressions, cost attribution, and recommendations. Lead with the **Recommendation** so the call-to-action is the first thing the reader sees. Be decisive — state assessments, not hedges.
+
+When analyzing failures, note the judge type — builtin judges have fixed, versioned behavior (suggest adjusting `arguments:` in eval.yaml), while inline checks and LLM prompts can be edited directly.
 
 **Save analysis to file** so it persists in the report. Prepend YAML frontmatter recording the agent and model that wrote the analysis, plus the UTC timestamp — the report uses these to attribute the analysis in its subtitle:
 

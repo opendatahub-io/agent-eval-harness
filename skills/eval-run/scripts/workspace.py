@@ -9,7 +9,7 @@ Usage:
     python3 ${CLAUDE_SKILL_DIR}/scripts/workspace.py \\
         --config eval.yaml \\
         --run-id test-001 \\
-        [--case-filter case-001] \\
+        [--cases case-001] \\
         [--symlinks scripts,.claude,CLAUDE.md]
 """
 
@@ -34,7 +34,7 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", default="eval.yaml")
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--case-filter", nargs="*", default=None)
+    parser.add_argument("--cases", nargs="*", default=None)
     parser.add_argument("--symlinks", default=None,
                         help="Comma-separated dirs/files to symlink into workspace "
                              "(default: scripts,.claude,CLAUDE.md,.context,skills)")
@@ -49,9 +49,9 @@ def main():
 
     # Find cases (each subdirectory is a case)
     case_dirs = sorted(d for d in cases_dir.iterdir() if d.is_dir())
-    if args.case_filter:
-        case_dirs = [c for c in case_dirs
-                     if any(f in c.name for f in args.case_filter)]
+    if args.cases:
+        filter_set = set(args.cases)
+        case_dirs = [c for c in case_dirs if c.name in filter_set]
 
     if not case_dirs:
         print("ERROR: no cases found", file=sys.stderr)
