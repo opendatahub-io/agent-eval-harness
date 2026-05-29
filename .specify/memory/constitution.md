@@ -32,9 +32,7 @@ MLflow handles dataset sync, result logging, and trace feedback via a separate s
 
 - Conventional commits for semantic versioning
 - Feature branches with spec-driven development (spec -> plan -> tasks -> implement)
-- Brainstorm documents in `brainstorm/` for exploratory ideas (not reflected in code)
-- Implemented brainstorms moved to `brainstorm/attic/`
-- Brainstorm changes belong on `main` only, never in feature branch PRs
+- Brainstorm documents in `brainstorm/` are local working files and must never be committed to git
 
 ## Governance
 
