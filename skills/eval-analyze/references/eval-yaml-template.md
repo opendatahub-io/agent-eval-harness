@@ -376,7 +376,7 @@ Example check judge for in-place edits (skills that edit input files via Edit to
 **IMPORTANT**: LLM judges only see what's in their prompt text. Use template variables to include skill output:
 
 - `{{ outputs }}` renders all collected file contents (from `outputs[*].path` directories and `_modified/` in-place edits), formatted as markdown sections with file paths as headers.
-- `{{ stdout }}` renders extracted assistant conversation text from the JSONL stdout log. It filters out subagent messages, tool calls, and non-text events. For stdout-only skills (no file artifacts), this is the primary way to give judges the skill's output.
+- `{{ conversation }}` renders root-level assistant conversation text extracted from the event stream. It filters out subagent messages, tool calls, and non-text events. For stdout-only skills (no file artifacts), this is the primary way to give judges the skill's output.
 - `{{ annotations }}` renders dataset annotations from the case's `annotations.yaml`.
 
 All three can be used in the same prompt. Without any template variables, the LLM receives only the raw prompt text and cannot see any output.
@@ -393,13 +393,13 @@ Example with file artifacts:
       ...
 ```
 
-Example for stdout-only skills:
+Example for conversation-only skills:
 ```yaml
   - name: response_quality
     prompt: |
       Evaluate this skill's response:
 
-      {{ stdout }}
+      {{ conversation }}
 
       Score on a 1-5 scale:
       ...
@@ -415,7 +415,7 @@ Example with both file artifacts and conversation output:
 
       And this conversation output:
 
-      {{ stdout }}
+      {{ conversation }}
 
       Score on a 1-5 scale:
       ...
