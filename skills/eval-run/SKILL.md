@@ -182,7 +182,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/collect.py \
   --output $AGENT_EVAL_RUNS_DIR/<id>
 ```
 
-Read the collection summary (JSON file — do not use `state.py` on it):
+Read the collection summary (JSON file — read it with `cat` or `jq`, not `state.py`):
 
 ```bash
 cat $AGENT_EVAL_RUNS_DIR/<id>/collection.json

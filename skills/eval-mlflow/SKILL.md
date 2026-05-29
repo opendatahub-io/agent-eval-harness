@@ -33,7 +33,7 @@ print(f'MLFLOW_TRACKING_URI={os.environ.get(\"MLFLOW_TRACKING_URI\", \"not set\"
 "
 ```
 
-If not configured, suggest running `/eval-setup` first. The scripts resolve the tracking URI from `mlflow.tracking_uri` in eval.yaml first, then `MLFLOW_TRACKING_URI` env var, then default to `http://127.0.0.1:5000`. If the server is unreachable but a remote URI is set, proceed — the scripts handle connectivity errors gracefully.
+If not configured, suggest running `/eval-setup` first. The scripts resolve the tracking URI from `mlflow.tracking_uri` in eval.yaml first, then `MLFLOW_TRACKING_URI` env var, then default to `http://127.0.0.1:5000`. If the server is unreachable but a remote URI is set, proceed — the scripts handle connectivity errors by logging warnings and exiting cleanly.
 
 ## Step 2: Read Configuration
 
@@ -161,10 +161,10 @@ Suggest next steps (include `--config <config>` if a non-default config was used
 
 ## Rules
 
-- **Read the schema** — understand `dataset.schema` to build the mapping correctly. The mapping is the critical step — everything downstream depends on it.
+- **Read the schema** — understand `dataset.schema` to build the mapping accurately. The mapping is the critical step — everything downstream depends on it.
 - **No hardcoded fields** — determine inputs vs expectations by reading the schema descriptions, not by assuming field names.
 - **Graceful degradation** — if MLflow is not available, scripts exit 0 and the skill reports "MLflow not available, skipping."
 - **Idempotent** — safe to run multiple times. `merge_records` deduplicates, `log_feedback` overwrites.
-- **Don't block on traces** — trace feedback is optional. If no traces exist, skip and note that tracing is configured automatically by `/eval-run`.
+- **Don't block on traces** — trace feedback is optional. If no traces exist, skip and state that tracing is configured automatically by `/eval-run`.
 
 $ARGUMENTS

@@ -169,7 +169,7 @@ known_issues:
 ```
 
 Check the eval.yaml `judges` section for:
-- Any `check` snippets that access `outputs.get("annotations", {})` — those fields must exist in annotations.yaml for the judge to work correctly.
+- Any `check` snippets that access `outputs.get("annotations", {})` — those fields must exist in annotations.yaml for the judge to work.
 - Any `if` conditions (e.g., `if: "annotations.get('dedup_is_duplicate')"`) — these control which judges run per case based on annotation values. Create cases that exercise **both branches** of each conditional judge: some cases where the condition is true (judge runs) and some where it's false (judge is skipped). If all cases have the same annotation value, a conditional judge either always runs or never runs — both are gaps in coverage.
 
 **Companion files**: If eval.md lists `companion_files` (files the skill reads from disk at runtime — e.g., `strategy.md`, `adr.md`), each test case must include them. In `case` mode, the harness copies all case files into the workspace, so the skill will find them at their expected relative paths. Generate realistic content for these files appropriate to each case's scenario.
