@@ -1,7 +1,7 @@
 # Brainstorm: Builtin Field and LLM Judge Support
 
 **Date:** 2026-05-19
-**Status:** active
+**Status:** implemented
 **Origin:** Antonin's review comments on PR #66 (spec for 004-reusable-judges-library)
 
 ## Problem Framing

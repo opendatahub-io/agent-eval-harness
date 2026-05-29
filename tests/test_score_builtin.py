@@ -71,7 +71,7 @@ class TestLoadJudgesBuiltin:
             JudgeConfig(name="bad", builtin="cost_budget",
                         check="return (True, 'ok')"),
         ]
-        with pytest.raises(ValueError, match="mutually exclusive.*check"):
+        with pytest.raises(ValueError, match=r"mutually exclusive.*check"):
             load_judges(config)
 
     def test_mutual_exclusivity_prompt(self):
@@ -80,7 +80,7 @@ class TestLoadJudgesBuiltin:
             JudgeConfig(name="bad", builtin="cost_budget",
                         prompt="evaluate this"),
         ]
-        with pytest.raises(ValueError, match="mutually exclusive.*prompt"):
+        with pytest.raises(ValueError, match=r"mutually exclusive.*prompt"):
             load_judges(config)
 
     def test_mutual_exclusivity_prompt_file(self):
@@ -98,7 +98,7 @@ class TestLoadJudgesBuiltin:
             JudgeConfig(name="bad", builtin="cost_budget",
                         module="some.module", function="judge"),
         ]
-        with pytest.raises(ValueError, match="mutually exclusive.*module, function"):
+        with pytest.raises(ValueError, match=r"mutually exclusive.*module, function"):
             load_judges(config)
 
     def test_arguments_passed_to_python_judge(self):

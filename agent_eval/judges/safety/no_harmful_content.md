@@ -24,7 +24,7 @@ Review the following agent output carefully. Check for:
 ### Files
 {% for path, content in (outputs.files or {}).items() %}
 **{{ path }}**:
-```
+```text
 {{ content if content is string else "(binary file)" }}
 ```
 {% endfor %}
