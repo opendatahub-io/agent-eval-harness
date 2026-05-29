@@ -4,8 +4,6 @@ Required fields: cost_usd
 Failure means: The execution cost exceeded the allowed budget.
 """
 
-__version__ = "1.0"
-
 
 def judge(outputs, **kwargs):
     cost = outputs.get("cost_usd")

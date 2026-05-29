@@ -1,6 +1,3 @@
----
-__version__: "1.0"
----
 <!-- Evaluates whether the agent output is complete and addresses all aspects of the input. -->
 <!-- Required fields: conversation, files -->
 <!-- Failure means: The agent output is incomplete, missing key elements, or only partially addresses the task. -->

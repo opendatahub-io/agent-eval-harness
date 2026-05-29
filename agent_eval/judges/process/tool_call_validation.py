@@ -4,8 +4,6 @@ Required fields: tool_calls, events
 Failure means: One or more tool calls had error results or missing responses.
 """
 
-__version__ = "1.0"
-
 
 def judge(outputs, **kwargs):
     tool_calls = outputs.get("tool_calls", [])
