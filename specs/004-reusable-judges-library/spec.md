@@ -130,7 +130,7 @@ When evaluation results are reported, library judges are visually distinguishabl
 
 - **SC-001**: A skill author can add a built-in safety judge to their eval.yaml in under 30 seconds (two lines of config: name and builtin).
 - **SC-002**: The initial library ships with four judges: `no_harmful_content` (safety, LLM), `tool_call_validation` (process, Python), `cost_budget` (efficiency, Python), and `output_completeness` (quality, LLM), covering the most common evaluation patterns across both judge types.
-- **SC-003**: 100% of library judge files include a module docstring that describes the check, required fields, and failure meaning.
+- **SC-003**: 100% of library judge files include documentation (Python: module docstring, LLM: Markdown preamble) that describes the check, required fields, and failure meaning.
 - **SC-004**: All library judges handle missing event data without raising unhandled exceptions.
 - **SC-005**: Score reports clearly distinguish library judge results from custom judge results for any eval run using both types.
 
