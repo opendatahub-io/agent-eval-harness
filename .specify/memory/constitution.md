@@ -34,6 +34,7 @@ MLflow handles dataset sync, result logging, and trace feedback via a separate s
 - Feature branches with spec-driven development (spec -> plan -> tasks -> implement)
 - Brainstorm documents in `brainstorm/` for exploratory ideas (not reflected in code)
 - Implemented brainstorms moved to `brainstorm/attic/`
+- Brainstorm changes belong on `main` only, never in feature branch PRs
 
 ## Governance
 
