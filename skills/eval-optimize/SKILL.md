@@ -63,9 +63,15 @@ If `review.yaml` exists, read its `feedback` section (human feedback from `/eval
 
 If `--target-judge` was specified, focus only on that judge's failures.
 
-Build a failure map:
+Build a failure map, noting each judge's type (`judge_type` in results: `builtin`, `check`, `llm`, `code`) — the type determines what you can do about it:
+
+- **builtin**: versioned, shared judges from `agent_eval/judges/`. Don't edit their code — suggest adjusting `arguments:` in eval.yaml (e.g., raising `max_cost_usd` for `cost_budget`)
+- **check**: inline Python in eval.yaml. Read the snippet to understand exactly what's checked — failures are deterministic and reproducible
+- **llm**: LLM prompt judges. Read the prompt to understand scoring criteria — the failure may be in the skill output or in an overly strict prompt
+- **code**: external Python module. Read the function to understand the validation logic
+
 ```
-judge_name → [case_id, case_id, ...] → rationale for each
+judge_name (type) → [case_id, case_id, ...] → rationale for each
 human_review → [case_id, ...] → user comment for each
 ```
 
@@ -79,18 +85,27 @@ For each failure pattern, investigate why the skill produces bad output:
    ```
 
 2. **Read transcripts** (if available) — transcripts can be very large, so delegate to an Agent. Check `run_result.json` for `execution_mode`: in `case` mode, each case has its own transcript at `$AGENT_EVAL_RUNS_DIR/<id>/cases/<case>/stdout.log`; in `batch` mode, there's one at `$AGENT_EVAL_RUNS_DIR/<id>/stdout.log`. Focus on the failing cases.
+
+   Include the specific judge failure in the prompt so the agent traces the causal chain rather than producing a generic summary:
    ```text
-   Agent tool, subagent_type="Explore": "Read the transcript at <path> and report:
-   - Did the skill follow its own instructions? Which were unclear?
-   - Did it take roundabout paths or try multiple approaches?
-   - Did sub-skills behave unexpectedly?
-   - Were there errors that were silently recovered?"
+   Agent tool, subagent_type="Explore": "Read the transcript at <path>.
+   The judge '<judge_name>' (<judge_type>) failed this case with rationale:
+   '<rationale from summary.yaml>'
+
+   Find evidence explaining WHY this failure happened:
+   - Where in the transcript did the skill handle (or skip) the relevant task?
+   - What instructions from SKILL.md led to this behavior?
+   - Did the skill attempt the right thing but produce wrong output, or skip it entirely?
+   - If it tried multiple approaches, which one stuck and why?"
    ```
 
-3. **Read failing case outputs** — use an Explore agent to examine the actual output files for failing cases. Don't read them all into your context — delegate:
+   In `batch` mode, failures across cases may interact — ask the agent to check whether earlier cases' processing affected later ones.
+
+3. **Read failing case outputs** — use an Explore agent to examine the actual output files. Include what the judge expected so the comparison is targeted:
    ```text
-   Agent tool, subagent_type="Explore": "Read the outputs in $AGENT_EVAL_RUNS_DIR/<id>/cases/<failing_case>/
-   and compare against what the judges expected. What went wrong?"
+   Agent tool, subagent_type="Explore": "Read the outputs in $AGENT_EVAL_RUNS_DIR/<id>/cases/<failing_case>/.
+   The judge '<judge_name>' failed with: '<rationale>'.
+   Compare the actual output against this expectation — what specifically is missing or wrong?"
    ```
 
 4. **Form hypotheses** — connect the judge rationale + transcript evidence + output examination to specific parts of the SKILL.md. Be specific: "The judge says the output is missing acceptance criteria. The transcript shows the skill skipped Step 4 of the pipeline. Step 4 in SKILL.md says 'optionally add acceptance criteria' — the word 'optionally' is the problem."
@@ -110,9 +125,15 @@ Show each edit before applying. If the change is risky (could affect passing cas
 
 ## Step 5: Re-Run and Verify
 
-Run eval again with the baseline flag to detect regressions:
+Re-run eval with the baseline flag. If only a subset of cases failed, target them with `--cases` for faster verification. Once targeted cases pass, do a final full run (all cases) to check for regressions.
+
+Consider `--no-llm-judges` when you only need to verify structural fixes — it skips LLM API calls and runs only deterministic judges (check, Python builtins), which is faster and cheaper.
 
 ```text
+# Targeted re-run (failing cases only)
+Use the Skill tool to invoke /eval-run --run-id <id>-iter-<N> --cases <failing-case-id> [<failing-case-id> ...] --baseline <id>-iter-<N-1> --config <config> [--model <model>]
+
+# Full re-run (all cases) — use for final verification
 Use the Skill tool to invoke /eval-run --run-id <id>-iter-<N> --baseline <id>-iter-<N-1> --config <config> [--model <model>]
 ```
 
@@ -160,8 +181,8 @@ In all cases (include `--config <config>` if a non-default config was used):
 - **Never make broad, generic changes** — every edit must be grounded in a specific failure with evidence from judges and transcripts
 - **Check for regressions after every edit** — a fix that breaks other cases is not a fix
 - **Stop after max iterations** — don't loop forever. Report what couldn't be fixed.
-- **Don't modify test cases or judges** — the eval harness is the ground truth. If you think a judge is wrong, report it but don't change it. Builtin judges (from `agent_eval/judges/`) are versioned and shared — never edit their code. If a builtin judge's behavior needs adjustment, suggest changing its `arguments:` in eval.yaml instead.
-- **Don't modify eval.yaml** — your job is to improve the skill, not the evaluation config. If judges need updating, suggest it to the user.
+- **Don't modify test cases or judges** — the eval harness is the ground truth. If you think a judge is wrong, report it but don't change it. Builtin judges (from `agent_eval/judges/`) are versioned and shared — never edit their code. If a builtin judge's behavior needs adjustment, suggest changing its `arguments:` in eval.yaml instead. For inline check or LLM prompt judges, suggest improvements to the user but don't edit eval.yaml yourself.
+- **Don't modify eval.yaml** — your job is to improve the skill, not the evaluation config. If judges or arguments need updating, suggest it to the user.
 - **Try different approaches** — if the same type of edit fails twice, try a fundamentally different framing. Explain why instead of adding more rules.
 
 $ARGUMENTS
