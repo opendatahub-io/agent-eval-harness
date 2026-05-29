@@ -1,50 +1,42 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+# Agent Eval Harness Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. Schema-Driven Design
+Dataset and output structures are described in natural language in eval.yaml. Agents and judges interpret these descriptions. Scripts operate on file paths from eval.yaml directly, with no extraction spec and no hardcoded field names.
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+### II. Agent-Agnostic Runner
+The `EvalRunner` ABC supports multiple agent backends via the `--agent` flag. Claude Code is included as the default. The runner interface is extensible to OpenCode, Agent SDK, and other backends without changing the scoring or reporting pipeline.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+### III. Jinja2 for All Templating
+All template rendering uses Jinja2 consistently. No manual `str.replace()` or custom template engines. This applies to LLM judge prompts (builtin and inline), prompt files, and any future template-based features. Template variables (`outputs`, `arguments`, `annotations`, `conversation`) are available uniformly across all template contexts.
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+### IV. Trusted Configuration
+eval.yaml is a repository-controlled, trusted configuration file. Security boundaries (restricted `eval()`, Jinja2 environment) are designed for defense-in-depth, not for sandboxing untrusted input. eval.yaml must not be accepted from untrusted sources.
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+### V. Extend, Don't Replace
+New features extend existing dataclasses and functions rather than replacing them. `JudgeConfig`, `load_judges()`, and the scoring pipeline grow incrementally. Existing eval.yaml configurations must continue to work without modification.
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+### VI. MLflow as Optional Integration
+MLflow handles dataset sync, result logging, and trace feedback via a separate skill (`/eval-mlflow`). The core eval pipeline (analyze, dataset, run, review, optimize) works without MLflow. No implicit experiment creation on shared tracking servers.
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+## Technology Stack
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+- **Language**: Python 3.11+
+- **Dependencies**: PyYAML, Jinja2 (core); MLflow, Anthropic SDK (optional)
+- **Testing**: pytest, with E2E tests gated behind markers
+- **Package management**: uv (not pip)
+- **Virtual environments**: `~/.venvs/agent-eval/` (not project-local .venv)
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+## Development Workflow
+
+- Conventional commits for semantic versioning
+- Feature branches with spec-driven development (spec -> plan -> tasks -> implement)
+- Brainstorm documents in `brainstorm/` for exploratory ideas (not reflected in code)
+- Implemented brainstorms moved to `brainstorm/attic/`
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+Constitution supersedes default practices. Amendments require documentation and review.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Version**: 1.0.0 | **Ratified**: 2026-05-29
