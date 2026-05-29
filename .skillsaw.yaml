@@ -1,0 +1,19 @@
+# skillsaw configuration
+# https://github.com/stbenjam/skillsaw
+
+version: "0.11.4"
+
+rules:
+  context-budget:
+    enabled: true
+    severity: warning
+    limits:
+      skill:
+        warn: 4500
+        error: 8000
+
+  content-critical-position:
+    enabled: true
+    severity: info
+
+strict: true
