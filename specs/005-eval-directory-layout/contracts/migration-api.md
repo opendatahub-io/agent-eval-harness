@@ -26,7 +26,7 @@ Moves a root-level `eval.yaml` and its companion artifacts to the target convent
 
 3. Updates internal paths in the moved eval.yaml:
    - `dataset.path`: rewritten relative to new config location
-   - `outputs[].path`: rewritten relative to new config location
+   - `outputs[].path`: NOT rewritten (workspace-relative, not config-relative)
 
 4. Returns a `MigrationResult` with moved files and any warnings.
 

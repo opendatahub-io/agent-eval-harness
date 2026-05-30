@@ -6,14 +6,14 @@
 
 ## Phase 1: Setup
 
-- [ ] T001 Add `eval/*/runs/` and `eval/.eval-convention` to `.gitignore`
+- [ ] T001 Add `eval/runs/` and `eval/.eval-convention` to `.gitignore`
 
 ## Phase 2: Foundational (Path Resolution + Discovery)
 
 These tasks are blocking prerequisites for all user stories.
 
 - [ ] T002 Add `config_dir: Path` field to `EvalConfig` and set it from the config file's parent in `from_yaml()` in `agent_eval/config.py`
-- [ ] T003 Update `project_root` property to return `config_dir` when available (fallback to `Path.cwd()`) in `agent_eval/config.py`
+- [ ] T003 Add `resolve_path(relative: Path) -> Path` method to `EvalConfig` that resolves against `config_dir` (fallback to `Path.cwd()`) in `agent_eval/config.py`. `project_root` remains unchanged.
 - [ ] T004 [P] Add `DiscoveryResult` dataclass (`path`, `skill_name`, `is_deprecated`) to `agent_eval/config.py`
 - [ ] T005 Implement `discover_configs(project_root: Path) -> list[DiscoveryResult]` scanning `eval/*/eval.yaml`, `eval/*.yaml`, root `eval.yaml` in `agent_eval/config.py`
 - [ ] T006 [P] Implement `resolve_convention(project_root: Path) -> str | None` reading `eval/.eval-convention` in `agent_eval/config.py`
@@ -60,7 +60,7 @@ These tasks are blocking prerequisites for all user stories.
 
 - [ ] T027 [US5] Update `workspace.py` to resolve `config.dataset_path` relative to `config.config_dir` instead of cwd in `skills/eval-run/scripts/workspace.py`
 - [ ] T028 [US5] Update `score.py` to resolve `dataset_root` relative to `config.config_dir` in `skills/eval-run/scripts/score.py`
-- [ ] T029 [P] [US5] Update output path resolution in `collect.py` to use `config.config_dir` in `skills/eval-run/scripts/collect.py`
+- [ ] T029 [P] [US5] Verify output path resolution in `collect.py` remains workspace-relative (no change needed, `outputs[].path` is already workspace-relative) in `skills/eval-run/scripts/collect.py`
 - [ ] T030 [US5] Add unit test for path resolution with config in subdirectory in `tests/test_config.py`
 
 ## Phase 6: User Story 4 - Per-Skill Run Isolation (P2)

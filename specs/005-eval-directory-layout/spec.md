@@ -122,7 +122,7 @@ A skill author edits their eval config and sets `dataset.path: cases/`. The syst
 
 **Path Resolution**
 
-- **FR-011**: All relative paths in `eval.yaml` (dataset path, output paths) MUST resolve relative to the eval.yaml file location, not the project root
+- **FR-011**: The `dataset.path` in `eval.yaml` MUST resolve relative to the eval.yaml file location, not the project root. Note: `outputs[].path` values are workspace-relative (resolved against the execution workspace by `workspace.py` and `collect.py`) and MUST NOT be changed by this requirement.
 - **FR-012**: Run results MUST be stored in `$AGENT_EVAL_RUNS_DIR/<skill-name>/`, where `AGENT_EVAL_RUNS_DIR` defaults to `eval/runs` and acts as a base path under which per-skill run directories are created. The skill name MUST be derived from the `skill` field inside the eval.yaml content. The skill name MUST be validated as a single path segment (no path separators, `..`, or control characters) before use in path construction.
 
 **Backward Compatibility and Migration**
@@ -135,7 +135,7 @@ A skill author edits their eval config and sets `dataset.path: cases/`. The syst
 
 **Housekeeping**
 
-- **FR-018**: A single `.gitignore` pattern MUST cover run output for the default per-skill nested convention (`eval/*/runs/`)
+- **FR-018**: A single `.gitignore` pattern MUST cover run output directories (`eval/runs/`)
 
 ### Key Entities
 

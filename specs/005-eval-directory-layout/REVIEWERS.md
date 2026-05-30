@@ -18,7 +18,7 @@ A `discover_configs()` function in `agent_eval/config.py` scans three patterns: 
 
 Convention persistence is a single-line text file at `eval/.eval-convention` (either `nested` or `flat`), read/written by two helper functions.
 
-Migration logic lives in `agent_eval/migrate.py`, handling file moves and path reference updates in `dataset.path` and `outputs[].path`.
+Migration logic lives in `agent_eval/migrate.py`, handling file moves and `dataset.path` rewriting. `outputs[].path` is NOT rewritten (workspace-relative, not config-relative).
 
 The SKILL.md files for all 7 eval skills get updated instructions to use discovery instead of defaulting to `eval.yaml`.
 

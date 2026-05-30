@@ -22,7 +22,7 @@ Seven work areas, ordered by dependency:
 
 **Files**: `agent_eval/config.py`
 
-Add `config_dir: Path` field to `EvalConfig`. Set it in `from_yaml()` from the config file's parent directory. Update the `project_root` property to return `config_dir` when available, falling back to `Path.cwd()`.
+Add `config_dir: Optional[Path]` field to `EvalConfig`. Set it in `from_yaml()` from the config file's parent directory. Used as base for resolving `dataset.path`. `project_root` remains unchanged (returns `Path.cwd()`) since it serves repo-level concerns (symlinks, judge modules, settings).
 
 This is the foundation: all other changes depend on paths resolving correctly relative to the config file.
 
@@ -82,7 +82,7 @@ Update each SKILL.md to use the same discovery pattern as eval-run: if `--config
 
 **Files**: New `agent_eval/migrate.py` or inline in eval-analyze SKILL.md
 
-Implement migration logic per [migration-api.md](contracts/migration-api.md). Called from eval-analyze SKILL.md when a root-level config is detected. Updates `dataset.path` and `outputs[].path` references, moves companion files.
+Implement migration logic per [migration-api.md](contracts/migration-api.md). Called from eval-analyze SKILL.md when a root-level config is detected. Updates `dataset.path` references, moves companion files. `outputs[].path` is NOT rewritten (workspace-relative).
 
 ### Area 9: Housekeeping
 
@@ -149,7 +149,7 @@ Area 9 (gitignore) ← independent
 - `test_run_dir_with_skill_name`: verify runs go to `$AGENT_EVAL_RUNS_DIR/<skill>/`
 - `test_migration_nested`: migrate root config to nested convention
 - `test_migration_flat`: migrate root config to flat convention
-- `test_migration_path_fixup`: verify dataset.path and outputs[].path are rewritten
+- `test_migration_path_fixup`: verify dataset.path is rewritten and outputs[].path is preserved
 
 ### E2E Tests
 

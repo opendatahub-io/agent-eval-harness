@@ -49,9 +49,9 @@
 
 ## Decision 5: Migration Scope
 
-**Decision**: Migration updates `dataset.path` and all `outputs[].path` entries, plus moves companion files (`eval.md`, `cases/` directory, `runs/` directory).
+**Decision**: Migration updates `dataset.path` only, plus moves companion files (`eval.md`, `cases/` directory, `runs/` directory). `outputs[].path` values are workspace-relative (resolved against the execution workspace by `workspace.py` and `collect.py`) and are NOT rewritten.
 
-**Rationale**: FR-016 says "update internal path references." The fields that contain relative paths are `dataset.path` and `outputs[].path`. Other fields (`judges[].prompt_file`, `judges[].context`) reference skill-internal files, not eval artifacts, so they don't move. The companion directories (`cases/`, `runs/`) are eval-specific and must follow.
+**Rationale**: FR-016 says "update internal path references." The field that contains config-relative paths is `dataset.path`. `outputs[].path` is workspace-relative (used by the runner, not resolved against config location). Other fields (`judges[].prompt_file`, `judges[].context`) reference skill-internal files, not eval artifacts, so they don't move. The companion directories (`cases/`, `runs/`) are eval-specific and must follow.
 
 **Alternatives considered**:
 - Move everything: would break references to skill files
