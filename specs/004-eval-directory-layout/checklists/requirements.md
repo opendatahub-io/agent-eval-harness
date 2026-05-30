@@ -1,7 +1,8 @@
-# Specification Quality Checklist: Per-Skill Eval Directory Layout
+# Specification Quality Checklist: Flexible Eval Directory Layout
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
 **Created**: 2026-05-28
+**Updated**: 2026-05-29
 **Feature**: [spec.md](../spec.md)
 
 ## Content Quality
@@ -31,6 +32,7 @@
 
 ## Notes
 
-- All items pass validation. Spec is ready for `/speckit-clarify` or `/speckit-plan`.
-- The brainstorm document provided clear decisions and requirements, reducing ambiguity.
-- Path resolution behavior (FR-008) is the most critical requirement as it underpins all other features.
+- All items pass. Re-specified on 2026-05-29 to incorporate flexibility feedback from Antonin Stefanutti (Slack #wg-agent-eval-harness, 2026-05-28).
+- Key change: layout is user-configurable at scaffolding time, not a fixed convention.
+- Suite execution (running all configs as a batch, per issue #3) is explicitly deferred as a future feature.
+- Path resolution (FR-010) remains the most critical foundational requirement.
