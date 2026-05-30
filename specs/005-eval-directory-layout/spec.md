@@ -59,7 +59,7 @@ A developer has an existing project with `eval.yaml` at the project root. They a
 **Acceptance Scenarios**:
 
 1. **Given** `eval.yaml` exists at the project root and the user runs `/eval-analyze` for a different eval target, **When** the system detects the naming conflict, **Then** it offers to reorganize into `eval/` layout
-2. **Given** the user accepts reorganization, **When** the system migrates, **Then** it moves the existing config, its `eval.md`, and dataset files to `eval/<name>/`
+2. **Given** the user accepts reorganization, **When** the system migrates, **Then** it moves the existing config and its `eval.md` to `eval/<name>/`, and co-located dataset files if applicable
 3. **Given** the user accepts reorganization, **When** the system migrates, **Then** it updates `dataset.path` within `eval.yaml` to reflect the new location
 4. **Given** the user declines reorganization, **When** they provide `--config` explicitly, **Then** the system places the new config at the specified path without moving anything
 
@@ -156,7 +156,7 @@ A developer has two eval configs that share the same dataset (e.g., one evaluate
 
 - **FR-013**: Root-level `eval.yaml` MUST remain a fully supported, first-class location for single-eval projects (no deprecation warnings)
 - **FR-014**: When a second eval config is needed, the system MUST offer to reorganize into an `eval/` layout, moving the existing root config
-- **FR-015**: Reorganization MUST move `eval.yaml`, `eval.md`, and dataset files to the new location. Run history is NOT moved (runs are stored under `$AGENT_EVAL_RUNS_DIR` which is independent of config location).
+- **FR-015**: Reorganization MUST move `eval.yaml` and `eval.md` to the new location. Dataset files are only moved if co-located with the config (relative `dataset.path` within the project root); shared or absolute dataset paths are left in place. Run history is NOT moved (runs are stored under `$AGENT_EVAL_RUNS_DIR` which is independent of config location).
 - **FR-016**: Reorganization MUST update `dataset.path` within `eval.yaml` to reflect the new location
 - **FR-017**: The system MUST continue to operate with root-level `eval.yaml` if the user declines reorganization
 

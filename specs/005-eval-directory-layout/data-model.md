@@ -62,6 +62,7 @@ DiscoveryResult   *──1  EvalConfig    (discovery finds configs, each wraps o
 
 ```
 [no eval/ dir] ──(discovery finds root eval.yaml)──> [single-eval, root layout]
-[eval/ dir with configs] ──(discovery finds eval/*/eval.yaml)──> [multi-eval, nested layout]
-[mixed] ──(discovery finds both)──> [all configs included, no layout assumption]
+[eval/ dir with nested configs] ──(discovery finds eval/*/eval.yaml)──> [multi-eval, nested layout]
+[eval/ dir with flat configs] ──(discovery finds eval/*.yaml)──> [multi-eval, flat layout]
+[mixed] ──(discovery finds configs in multiple patterns)──> [all configs included, no layout assumption]
 ```

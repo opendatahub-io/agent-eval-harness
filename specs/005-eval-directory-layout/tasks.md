@@ -16,7 +16,7 @@ These tasks are blocking prerequisites for all user stories.
 - [ ] T003 Add `resolve_path(relative: Path) -> Path` method to `EvalConfig` that resolves against `config_dir` (fallback to `Path.cwd()`), passing through absolute paths as-is, in `agent_eval/config.py`. Update `_validate_relative_path` to allow absolute `dataset.path` (FR-011 requires it). `project_root` remains unchanged.
 - [ ] T004 [P] Add `DiscoveryResult` dataclass (`path`, `eval_name`, `is_root`) to `agent_eval/config.py`
 - [ ] T005 Implement `discover_configs(project_root: Path) -> list[DiscoveryResult]` scanning `eval/*/eval.yaml`, `eval/*.yaml`, root `eval.yaml` in `agent_eval/config.py`
-- [ ] T006 [P] Implement `infer_layout(configs: list[DiscoveryResult]) -> str` that returns `"nested"` if configs exist under `eval/`, `"root"` if only root config, `"none"` if empty, in `agent_eval/config.py`
+- [ ] T006 [P] Implement `infer_layout(configs: list[DiscoveryResult]) -> str` that returns `"nested"` if configs match `eval/*/eval.yaml`, `"flat"` if configs match `eval/*.yaml`, `"root"` if only root config, `"mixed"` if multiple patterns, `"none"` if empty, in `agent_eval/config.py`
 - [ ] T008 Update `_find_eval_yaml()` in `scripts/ensure_deps.py` to use `discover_configs()` instead of hardcoded two-path check
 - [ ] T009 Add unit tests for `config_dir` path resolution and `resolve_path()` in `tests/test_config.py`
 - [ ] T010 [P] Add unit tests for `discover_configs()` (nested, flat, root, mixed, empty) in `tests/test_discovery.py`
