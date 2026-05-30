@@ -24,7 +24,7 @@
 - A registry file listing config paths: requires maintenance, defeats the "smart discovery" goal
 - Walking the entire project tree: too slow for large projects, may find unrelated YAML files
 
-**Implementation**: `discover_configs(project_root: Path) -> list[Path]` returns all found configs sorted by path. Callers decide on auto-select vs. prompt behavior.
+**Implementation**: `discover_configs(project_root: Path) -> list[DiscoveryResult]` returns all found configs sorted by path. Callers decide on auto-select vs. prompt behavior.
 
 ## Decision 3: Convention Persistence
 

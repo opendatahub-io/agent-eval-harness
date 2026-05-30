@@ -35,4 +35,4 @@
 - All items pass. Re-specified on 2026-05-29 to incorporate flexibility feedback from Antonin Stefanutti (Slack #wg-agent-eval-harness, 2026-05-28).
 - Key change: layout is user-configurable at scaffolding time, not a fixed convention.
 - Suite execution (running all configs as a batch, per issue #3) is explicitly deferred as a future feature.
-- Path resolution (FR-010) remains the most critical foundational requirement.
+- Path resolution (FR-011) remains the most critical foundational requirement.
