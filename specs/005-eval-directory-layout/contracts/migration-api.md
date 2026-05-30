@@ -22,7 +22,7 @@ Moves a root-level `eval.yaml` and its companion artifacts to the target convent
    - `eval.yaml` to target config path
    - `eval.md` to alongside new config path
    - `eval/cases/` (or whatever `dataset.path` pointed to) to target dataset path
-   - Run history: not moved (runs stay under `$AGENT_EVAL_RUNS_DIR` which already uses `<skill>/` namespacing)
+   - Run history: moved to `$AGENT_EVAL_RUNS_DIR/<skill>/` (per FR-015)
 
 3. Updates internal paths in the moved eval.yaml:
    - `dataset.path`: rewritten relative to new config location

@@ -2,7 +2,7 @@
 
 ## Decision 1: Path Resolution Strategy
 
-**Decision**: Track `config_path` on `EvalConfig` and resolve all relative paths against it.
+**Decision**: Track `config_dir` on `EvalConfig` and resolve all relative paths against it.
 
 **Rationale**: Currently `EvalConfig.project_root` returns `Path.cwd()`, which means relative paths in `eval.yaml` resolve against wherever the user invokes the command. FR-011 requires paths to resolve relative to the eval.yaml location. Storing the config file's parent directory on the dataclass and using it as the base for all relative path resolution is the minimal change that fixes this correctly.
 
