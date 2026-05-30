@@ -24,32 +24,32 @@ Seven work areas, ordered by dependency:
 
 Add `config_dir: Optional[Path]` field to `EvalConfig`. Set it in `from_yaml()` from the config file's parent directory. Used as base for resolving `dataset.path`. `project_root` remains unchanged (returns `Path.cwd()`) since it serves repo-level concerns (symlinks, judge modules, settings).
 
-This is the foundation: all other changes depend on paths resolving correctly relative to the config file.
+This is the foundation: all other changes depend on `dataset.path` resolving correctly relative to the config file.
 
 ### Area 2: Auto-Discovery (FR-007 to FR-010)
 
 **Files**: `agent_eval/config.py` (new `discover_configs` function), `scripts/ensure_deps.py` (update `_find_eval_yaml`)
 
-Implement `discover_configs(project_root)` per [discovery-api.md](contracts/discovery-api.md). Scans `eval/*/eval.yaml`, `eval/*.yaml`, root `eval.yaml`. Returns list of `DiscoveryResult` with path, skill name, deprecation flag.
+Implement `discover_configs(project_root)` per [discovery-api.md](contracts/discovery-api.md). Scans `eval/*/eval.yaml`, `eval/*.yaml`, root `eval.yaml`. Returns list of `DiscoveryResult` with path, eval name, root flag.
 
 Update `_find_eval_yaml()` in `ensure_deps.py` to use the same discovery logic.
 
-### Area 3: Convention Persistence (FR-006)
+### Area 3: Layout Persistence (FR-006, FR-018)
 
-**Files**: `agent_eval/config.py` (new `resolve_convention`, `save_convention` functions)
+**Files**: `agent_eval/config.py` (new `resolve_layout`, `save_layout` functions)
 
-Simple read/write of `eval/.eval-convention` text file. Called by eval-analyze SKILL.md during scaffolding.
+Simple read/write of `eval/.eval-layout` text file. Called by eval-analyze SKILL.md during scaffolding when organizing into `eval/`.
 
-### Area 4: Eval-Analyze Scaffolding Updates (FR-001 to FR-005)
+### Area 4: Smart Scaffolding (FR-001 to FR-005)
 
 **Files**: `skills/eval-analyze/SKILL.md`
 
 Update the skill instructions to:
-1. Check for existing convention via `resolve_convention()`
-2. If no convention set: present layout options (nested as recommended default), save choice
-3. Scaffold eval.yaml, eval.md, and cases directory at the convention-appropriate path
-4. Support `--config <path>` to bypass convention selection
-5. Detect root-level `eval.yaml` and offer migration (FR-013, FR-014)
+1. Check how many eval configs exist via `discover_configs()`
+2. If no configs exist: scaffold `eval.yaml` at project root (simple default)
+3. If root config exists and a new eval target is requested: offer to reorganize into `eval/` layout
+4. Support `--config <path>` to bypass layout selection
+5. Create `eval.md` alongside the config
 
 This is primarily SKILL.md instruction changes, not Python code. The LLM follows the instructions to create directories and files.
 
@@ -64,13 +64,13 @@ Update eval-run SKILL.md to:
 
 Update `workspace.py` default: remove `default="eval.yaml"` from `--config` argparse, require it explicitly (the SKILL.md will always pass it after discovery).
 
-Update `preflight.py` to resolve runs directory using `AGENT_EVAL_RUNS_DIR/<skill>/`.
+Update `preflight.py` to resolve runs directory using `AGENT_EVAL_RUNS_DIR/<eval-name>/`.
 
 ### Area 6: Run Isolation (FR-012)
 
 **Files**: `skills/eval-run/scripts/score.py`, `skills/eval-run/scripts/report.py`, `skills/eval-mlflow/scripts/log_results.py`, `skills/eval-mlflow/scripts/attach_feedback.py`
 
-Update all scripts that read `AGENT_EVAL_RUNS_DIR` to append the skill name: `runs_dir / config.skill`. The skill name comes from the `EvalConfig.skill` field loaded from eval.yaml.
+Update all scripts that read `AGENT_EVAL_RUNS_DIR` to append the eval name: `runs_dir / config.skill`. The eval name comes from the `EvalConfig.skill` field loaded from eval.yaml.
 
 ### Area 7: Other Eval Commands (FR-007, SC-007)
 
@@ -78,82 +78,84 @@ Update all scripts that read `AGENT_EVAL_RUNS_DIR` to append the skill name: `ru
 
 Update each SKILL.md to use the same discovery pattern as eval-run: if `--config` not provided, discover and select. These are lighter touches since they share the same discovery function.
 
-### Area 8: Migration (FR-013 to FR-017)
+### Area 8: Reorganization (FR-014 to FR-017)
 
-**Files**: New `agent_eval/migrate.py` or inline in eval-analyze SKILL.md
+**Files**: New `agent_eval/reorganize.py`
 
-Implement migration logic per [migration-api.md](contracts/migration-api.md). Called from eval-analyze SKILL.md when a root-level config is detected. Updates `dataset.path` references, moves companion files. `outputs[].path` is NOT rewritten (workspace-relative).
+Implement reorganization logic per [migration-api.md](contracts/migration-api.md). Called from eval-analyze SKILL.md when a root-level config exists and a second eval is being added. Updates `dataset.path` references, moves companion files. `outputs[].path` is NOT rewritten (workspace-relative).
 
 ### Area 9: Housekeeping
 
 **Files**: `.gitignore`
 
-Add `eval/runs/` and `eval/.eval-convention` patterns.
+Add `eval/runs/` and `eval/.eval-layout` patterns.
 
 ## File Structure Map
 
 | File | Action | Responsibility |
 |------|--------|----------------|
-| `agent_eval/config.py` | Modify | Add `config_dir`, `DiscoveryResult`, `discover_configs()`, `resolve_convention()`, `save_convention()` |
-| `agent_eval/migrate.py` | Create | `migrate_root_config()` for root-level config migration |
+| `agent_eval/config.py` | Modify | Add `config_dir`, `DiscoveryResult`, `discover_configs()`, `resolve_layout()`, `save_layout()` |
+| `agent_eval/reorganize.py` | Create | `reorganize_root_config()` for root-level config reorganization |
 | `scripts/discover.py` | Create | CLI wrapper for `discover_configs()`, shared across all skills |
 | `scripts/ensure_deps.py` | Modify | Update `_find_eval_yaml()` to use `discover_configs()` |
-| `skills/eval-analyze/SKILL.md` | Modify | Convention selection, per-skill scaffolding, migration offer |
-| `skills/eval-analyze/scripts/migrate.py` | Create | CLI wrapper for `migrate_root_config()` |
-| `skills/eval-run/SKILL.md` | Modify | Auto-discovery integration, deprecation notices |
-| `skills/eval-run/scripts/workspace.py` | Modify | Path resolution via `config_dir`, require `--config` |
-| `skills/eval-run/scripts/preflight.py` | Modify | Require `--config`, per-skill runs dir |
-| `skills/eval-run/scripts/score.py` | Modify | Path resolution, per-skill runs dir |
-| `skills/eval-run/scripts/report.py` | Modify | Per-skill runs dir |
+| `skills/eval-analyze/SKILL.md` | Modify | Smart scaffolding, reorganization offer |
+| `skills/eval-analyze/scripts/reorganize.py` | Create | CLI wrapper for `reorganize_root_config()` |
+| `skills/eval-run/SKILL.md` | Modify | Auto-discovery integration |
+| `skills/eval-run/scripts/workspace.py` | Modify | Require `--config` explicitly |
+| `skills/eval-run/scripts/preflight.py` | Modify | Require `--config`, per-eval runs dir |
+| `skills/eval-run/scripts/score.py` | Modify | Per-eval runs dir |
+| `skills/eval-run/scripts/report.py` | Modify | Per-eval runs dir |
 | `skills/eval-run/scripts/execute.py` | Modify | Require `--config` |
-| `skills/eval-run/scripts/collect.py` | Modify | Path resolution via `config_dir`, require `--config` |
+| `skills/eval-run/scripts/collect.py` | Modify | Require `--config` |
 | `skills/eval-dataset/SKILL.md` | Modify | Auto-discovery integration |
 | `skills/eval-optimize/SKILL.md` | Modify | Auto-discovery integration |
 | `skills/eval-review/SKILL.md` | Modify | Auto-discovery integration |
 | `skills/eval-mlflow/SKILL.md` | Modify | Auto-discovery integration |
-| `skills/eval-mlflow/scripts/log_results.py` | Modify | Per-skill runs dir |
-| `skills/eval-mlflow/scripts/attach_feedback.py` | Modify | Per-skill runs dir |
-| `skills/eval-setup/scripts/check_env.py` | Modify | Report per-skill run directories |
-| `.gitignore` | Modify | Add `eval/runs/`, `eval/.eval-convention` |
+| `skills/eval-mlflow/scripts/log_results.py` | Modify | Per-eval runs dir |
+| `skills/eval-mlflow/scripts/attach_feedback.py` | Modify | Per-eval runs dir |
+| `skills/eval-setup/scripts/check_env.py` | Modify | Report per-eval run directories |
+| `.gitignore` | Modify | Add `eval/runs/`, `eval/.eval-layout` |
 | `tests/test_config.py` | Modify | Path resolution tests |
 | `tests/test_discovery.py` | Create | Discovery unit tests |
-| `tests/test_convention.py` | Create | Convention persistence tests |
+| `tests/test_layout.py` | Create | Layout persistence tests |
 | `tests/test_run_isolation.py` | Create | Run isolation tests |
-| `tests/test_migration.py` | Create | Migration tests |
+| `tests/test_reorganization.py` | Create | Reorganization tests |
 
 ## Dependency Order
 
 ```
 Area 1 (path resolution)
-  └── Area 2 (discovery)
-       ├── Area 5 (eval-run integration)
-       ├── Area 7 (other commands)
-       └── Area 3 (convention persistence)
-            └── Area 4 (eval-analyze scaffolding)
-                 └── Area 8 (migration)
-Area 6 (run isolation) ← depends on Area 1
-Area 9 (gitignore) ← independent
+  +-- Area 2 (discovery)
+  |    +-- Area 5 (eval-run integration)
+  |    +-- Area 7 (other commands)
+  |    +-- Area 3 (layout persistence)
+  |         +-- Area 4 (smart scaffolding)
+  |              +-- Area 8 (reorganization)
+  +-- Area 6 (run isolation)
+Area 9 (gitignore) -- independent
 ```
 
 ## Test Strategy
 
 ### Unit Tests
 
-- `test_config_path_resolution`: verify `config_dir` is set and paths resolve relative to it
+- `test_config_dir_resolution`: verify `config_dir` is set and `dataset.path` resolves relative to it
+- `test_config_dir_none_fallback`: verify `Path.cwd()` fallback when `config_dir` is `None`
 - `test_discover_configs_nested`: place configs in `eval/*/eval.yaml`, verify discovery
 - `test_discover_configs_flat`: place configs as `eval/*.yaml`, verify discovery
-- `test_discover_configs_mixed`: mixed conventions discovered together
-- `test_discover_configs_root_deprecated`: root config found with `is_deprecated=True`
+- `test_discover_configs_root`: root config found with `is_root=True`
+- `test_discover_configs_mixed`: mixed layouts discovered together
 - `test_discover_configs_empty`: no configs returns empty list
-- `test_convention_persistence`: write and read back convention
-- `test_run_dir_with_skill_name`: verify runs go to `$AGENT_EVAL_RUNS_DIR/<skill>/`
-- `test_migration_nested`: migrate root config to nested convention
-- `test_migration_flat`: migrate root config to flat convention
-- `test_migration_path_fixup`: verify dataset.path is rewritten and outputs[].path is preserved
+- `test_layout_persistence`: write and read back layout
+- `test_run_dir_with_eval_name`: verify runs go to `$AGENT_EVAL_RUNS_DIR/<eval-name>/`
+- `test_reorganize_nested`: reorganize root config into nested layout
+- `test_reorganize_path_fixup`: verify `dataset.path` is rewritten and `outputs[].path` is preserved
+- `test_shared_dataset`: two configs pointing to same dataset directory
 
 ### E2E Tests
 
-- Run `/eval-analyze --skill <test-skill>` in a multi-skill fixture, verify convention prompt and correct directory creation
+- Run `/eval-analyze` in a fresh project, verify root-level config creation (no layout prompt)
+- Run `/eval-analyze` again for a different target, verify reorganization offer
 - Run `/eval-run` without `--config` in a single-config project, verify auto-select
 - Run `/eval-run` without `--config` in a multi-config project, verify prompt
 
@@ -161,7 +163,7 @@ Area 9 (gitignore) ← independent
 
 | Risk | Mitigation |
 |------|------------|
-| Breaking existing root-level configs | FR-017 ensures root configs keep working; deprecation is a warning, not an error |
+| Breaking existing root-level configs | FR-013/FR-017: root configs are first-class, no deprecation |
 | SKILL.md changes misinterpreted by LLM | Test via e2e runs; SKILL.md instructions are explicit with code snippets |
 | Path resolution change breaks existing scripts | `config_dir` falls back to `Path.cwd()` when unset, preserving current behavior |
-| Convention file committed accidentally | Add `eval/.eval-convention` to `.gitignore` (it's a local preference) |
+| Layout file committed accidentally | Add `eval/.eval-layout` to `.gitignore` |

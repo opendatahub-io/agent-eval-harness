@@ -1,34 +1,35 @@
-# Contract: Migration API
+# Contract: Reorganization API
 
-Internal Python API for migrating root-level eval configs to a layout convention.
+Internal Python API for reorganizing root-level eval configs into an `eval/` directory layout.
 
-## `migrate_root_config(project_root: Path, convention: str, skill_name: str) -> MigrationResult`
+## `reorganize_root_config(project_root: Path, eval_name: str) -> ReorganizationResult`
 
-Moves a root-level `eval.yaml` and its companion artifacts to the target convention layout.
+Moves a root-level `eval.yaml` and its companion artifacts into the nested layout under `eval/`.
 
 ### Parameters
 
 - `project_root`: project root directory (where root-level `eval.yaml` lives)
-- `convention`: target convention (`"nested"` or `"flat"`)
-- `skill_name`: skill name (read from `eval.yaml`'s `skill` field)
+- `eval_name`: eval name (read from `eval.yaml`'s `skill` field)
 
 ### Behavior
 
-1. Computes target paths based on convention:
-   - **nested**: config to `eval/<skill>/eval.yaml`, dataset to `eval/<skill>/cases/`
-   - **flat**: config to `eval/<skill>.yaml`, dataset to `eval/cases/<skill>/`
+1. Computes target paths:
+   - Config to `eval/<eval_name>/eval.yaml`
+   - `eval.md` to `eval/<eval_name>/eval.md`
 
 2. Moves files:
    - `eval.yaml` to target config path
    - `eval.md` to alongside new config path
-   - `eval/cases/` (or whatever `dataset.path` pointed to) to target dataset path
-   - Run history: moved to `$AGENT_EVAL_RUNS_DIR/<skill>/` (per FR-015)
+   - Dataset directory (whatever `dataset.path` pointed to) to target location if co-located with config
 
 3. Updates internal paths in the moved eval.yaml:
    - `dataset.path`: rewritten relative to new config location
    - `outputs[].path`: NOT rewritten (workspace-relative, not config-relative)
 
-4. Returns a `MigrationResult` with moved files and any warnings.
+4. Saves layout persistence:
+   - Writes `nested` to `eval/.eval-layout`
+
+5. Returns a `ReorganizationResult` with moved files and any warnings.
 
 ### Error Handling
 

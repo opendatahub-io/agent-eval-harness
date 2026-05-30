@@ -1,21 +1,21 @@
 # Contract: Config Discovery API
 
-Internal Python API for auto-discovering eval configs across layout conventions.
+Internal Python API for auto-discovering eval configs across layouts.
 
 ## `discover_configs(project_root: Path) -> list[DiscoveryResult]`
 
 Scans the project for eval.yaml files in this order:
-1. `eval/*/eval.yaml` (nested convention)
-2. `eval/*.yaml` (flat convention, excluding non-eval YAML files)
-3. `eval.yaml` at project root (deprecated)
+1. `eval/*/eval.yaml` (nested layout)
+2. `eval/*.yaml` (flat layout, excluding non-eval YAML files)
+3. `eval.yaml` at project root
 
-Returns a list of `DiscoveryResult` objects sorted by path. Each result includes the config path, the skill name (read from the `skill` field inside the YAML), and whether the config is at a deprecated location.
+Returns a list of `DiscoveryResult` objects sorted by path. Each result includes the config path, the eval name (read from the `skill` field inside the YAML), and whether the config is at the project root.
 
 ### Filtering
 
 - Files that fail YAML parsing are skipped with a warning to stderr
 - Files without a `skill` field are skipped (not valid eval configs)
-- Non-eval YAML files in `eval/` (e.g., `eval/.eval-convention`) are excluded by checking for the `skill` field
+- Non-eval YAML files in `eval/` (e.g., `eval/.eval-layout`) are excluded by checking for the `skill` field
 
 ### Usage Pattern
 
@@ -32,13 +32,13 @@ elif len(configs) == 1:
 else:
     # Prompt user to select
     for i, c in enumerate(configs):
-        print(f"  {i+1}. {c.skill_name} ({c.path})")
+        print(f"  {i+1}. {c.eval_name} ({c.path})")
 ```
 
-## `resolve_convention(project_root: Path) -> str | None`
+## `resolve_layout(project_root: Path) -> str | None`
 
-Reads `eval/.eval-convention` if it exists. Returns `"nested"`, `"flat"`, or `None`.
+Reads `eval/.eval-layout` if it exists. Returns `"nested"` or `None`.
 
-## `save_convention(project_root: Path, convention: str) -> None`
+## `save_layout(project_root: Path, layout: str) -> None`
 
-Writes the convention name to `eval/.eval-convention`.
+Writes the layout name to `eval/.eval-layout`.

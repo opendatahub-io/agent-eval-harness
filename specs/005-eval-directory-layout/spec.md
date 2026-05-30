@@ -2,83 +2,87 @@
 
 **Feature Branch**: `005-eval-directory-layout`
 **Created**: 2026-05-28
-**Updated**: 2026-05-29
+**Updated**: 2026-05-30
 **Status**: Draft
-**Input**: Flexible eval directory layout for multi-skill plugin projects. Offer layout conventions during scaffolding, with smart auto-discovery that adapts to whichever layout the user chose.
+**Input**: Flexible eval directory layout for multi-eval projects. Smart defaults based on project complexity, with auto-discovery that adapts to whichever layout the user chose.
 
 ## User Scenarios & Testing *(mandatory)*
 
-### User Story 1 - Scaffold Eval Config with Layout Choice (Priority: P1)
+### User Story 1 - Smart Scaffolding Based on Project Complexity (Priority: P1)
 
-A skill author runs `/eval-analyze --skill eval-run` in a plugin project containing six skills. The system asks which layout convention they prefer, offering per-skill nested (`eval/eval-run/eval.yaml`) as the recommended default. The author picks the default. The system creates the config in the chosen location with correct relative paths for datasets and run output.
+A developer runs `/eval-analyze` in a project. The system detects how many eval configs already exist and adapts its behavior:
+- **First eval in the project**: creates `eval.yaml` at the project root (simple, zero-friction default).
+- **Second eval onward**: detects that a root-level config already exists, offers to organize into an `eval/` directory layout, and scaffolds the new config there.
 
-**Why this priority**: This is the entry point for the entire eval workflow. The layout choice happens here and determines where all downstream artifacts land.
+The developer can always override with `--config <path>` to place the config anywhere.
 
-**Independent Test**: Run `/eval-analyze --skill <name>` in a fresh project, verify the layout choice prompt appears, select the default, and confirm files are created at `eval/<skill-name>/eval.yaml`.
+**Why this priority**: This is the entry point for the entire eval workflow. Getting the default right for both simple and complex projects avoids unnecessary friction.
+
+**Independent Test**: Run `/eval-analyze` in a fresh project, verify the config is created at the root. Then run `/eval-analyze` again for a different eval target, verify it offers to organize into `eval/`.
 
 **Acceptance Scenarios**:
 
-1. **Given** a plugin project with multiple skills and no existing eval config, **When** the user runs `/eval-analyze --skill eval-run`, **Then** the system presents layout convention options with per-skill nested as the recommended default
-2. **Given** the user selects the per-skill nested convention, **When** scaffolding completes, **Then** the system creates `eval/eval-run/eval.yaml`, `eval/eval-run/eval.md`, and `eval/eval-run/cases/`
-3. **Given** the user selects the flat convention, **When** scaffolding completes, **Then** the system creates `eval/eval-run.yaml` and `eval/cases/eval-run/`
-4. **Given** the user provides `--config eval/custom/path.yaml`, **When** scaffolding completes, **Then** the system creates the config at the explicitly specified path, bypassing convention selection
+1. **Given** a project with no existing eval config, **When** the user runs `/eval-analyze`, **Then** the system creates `eval.yaml` at the project root
+2. **Given** a project with one root-level eval config, **When** the user runs `/eval-analyze` for a different eval target, **Then** the system detects the conflict and offers to organize into an `eval/` directory layout
+3. **Given** the user accepts the layout offer, **When** scaffolding completes, **Then** the system moves the existing root config and creates the new config under `eval/`
+4. **Given** the user provides `--config eval/custom/path.yaml`, **When** scaffolding completes, **Then** the system creates the config at the explicitly specified path, bypassing layout selection
 
 ---
 
-### User Story 2 - Auto-Discover and Run Eval for a Skill (Priority: P1)
+### User Story 2 - Auto-Discover and Run Eval (Priority: P1)
 
-A skill author runs `/eval-run` without specifying `--config`. The system scans for eval configs using smart discovery (checking known convention patterns and any `eval.yaml` files under `eval/`), finds one or more configs, and either auto-selects (when only one exists) or prompts the user to choose which skill to evaluate.
+A developer runs `/eval-run` without specifying `--config`. The system scans for eval configs using smart discovery (checking `eval/` subdirectories, `eval/*.yaml`, and root `eval.yaml`), finds one or more configs, and either auto-selects (when only one exists) or prompts the user to choose which eval to run.
 
 **Why this priority**: Developers should not need to remember or type config paths. Smart discovery makes the layout choice transparent after initial scaffolding.
 
-**Independent Test**: Create eval configs using different layout conventions, then run `/eval-run` without `--config` and verify discovery finds all configs regardless of layout.
+**Independent Test**: Create eval configs using different layouts, then run `/eval-run` without `--config` and verify discovery finds all configs regardless of layout.
 
 **Acceptance Scenarios**:
 
 1. **Given** exactly one eval config exists (in any supported location), **When** the user runs `/eval-run` without `--config`, **Then** the system auto-selects that config and proceeds
-2. **Given** multiple eval configs exist (possibly in different layout conventions), **When** the user runs `/eval-run` without `--config`, **Then** the system lists all discovered configs with their skill names and prompts for selection
+2. **Given** multiple eval configs exist (possibly in different layouts), **When** the user runs `/eval-run` without `--config`, **Then** the system lists all discovered configs with their eval names and prompts for selection
 3. **Given** no eval configs exist, **When** the user runs `/eval-run` without `--config`, **Then** the system reports no config found and suggests running `/eval-analyze` first
 4. **Given** the user provides `--config path/to/eval.yaml`, **When** the user runs `/eval-run`, **Then** the system uses that explicit path and skips auto-discovery
-5. **Given** configs exist in both root-level and per-skill locations, **When** the system discovers configs, **Then** it includes all of them in the selection list (with a deprecation notice for root-level ones)
+5. **Given** configs exist in both root-level and `eval/` locations, **When** the system discovers configs, **Then** it includes all of them in the selection list
 
 ---
 
-### User Story 3 - Migrate Root-Level Eval Config (Priority: P2)
+### User Story 3 - Organize When Outgrowing Root Layout (Priority: P2)
 
-A skill author has an existing project with `eval.yaml` at the project root (created before the layout conventions). When they run `/eval-analyze`, the system detects the root-level config, warns about the deprecated location, and offers to migrate it to the user's chosen convention.
+A developer has an existing project with `eval.yaml` at the project root. They add a second eval target. The system detects the conflict and offers to reorganize into an `eval/` directory structure, moving the existing config and creating the new one.
 
-**Why this priority**: Backward compatibility matters for existing users, but this is a one-time transition, not a daily workflow.
+**Why this priority**: Smooth transition from simple to organized layout matters for growing projects, but most projects start with a single eval and may never need this.
 
-**Independent Test**: Place an `eval.yaml` at the project root, run `/eval-analyze`, and verify the deprecation warning appears with a migration offer.
+**Independent Test**: Start with a root-level `eval.yaml`, run `/eval-analyze` for a second eval target, verify the reorganization offer and correct file moves.
 
 **Acceptance Scenarios**:
 
-1. **Given** `eval.yaml` exists at the project root, **When** the user runs `/eval-analyze`, **Then** the system displays a deprecation warning suggesting migration
-2. **Given** the user accepts migration, **When** the system migrates, **Then** it moves `eval.yaml`, `eval.md`, dataset files, and run history to the chosen convention location
-3. **Given** the user accepts migration, **When** the system migrates, **Then** it updates internal path references within `eval.yaml` to reflect the new location
-4. **Given** the user declines migration, **When** they continue working, **Then** the system operates with the root-level config without errors
-5. **Given** `eval.yaml` exists at the project root, **When** the user runs any eval command without `--config`, **Then** the system finds the root-level config but shows a deprecation notice
+1. **Given** `eval.yaml` exists at the project root and the user runs `/eval-analyze` for a different eval target, **When** the system detects the naming conflict, **Then** it offers to reorganize into `eval/` layout
+2. **Given** the user accepts reorganization, **When** the system migrates, **Then** it moves the existing config, its `eval.md`, and dataset files to `eval/<name>/`
+3. **Given** the user accepts reorganization, **When** the system migrates, **Then** it updates `dataset.path` within `eval.yaml` to reflect the new location
+4. **Given** the user declines reorganization, **When** they provide `--config` explicitly, **Then** the system places the new config at the specified path without moving anything
+5. **Given** a single root-level `eval.yaml` exists, **When** the user runs any eval command without `--config`, **Then** the system uses it directly without any warnings
 
 ---
 
-### User Story 4 - Per-Skill Run Isolation (Priority: P2)
+### User Story 4 - Per-Eval Run Isolation (Priority: P2)
 
-A skill author runs evaluations for two different skills. Each skill's run output is stored under `$AGENT_EVAL_RUNS_DIR/<skill-name>/`, keeping results separate and preventing cross-contamination.
+A developer runs evaluations for two different eval targets. Each target's run output is stored under `$AGENT_EVAL_RUNS_DIR/<eval-name>/`, keeping results separate and preventing cross-contamination.
 
-**Why this priority**: Run isolation prevents confusion when comparing results across skills, but the system still functions if results are mixed (just harder to navigate).
+**Why this priority**: Run isolation prevents confusion when comparing results across eval targets, but the system still functions if results are mixed (just harder to navigate).
 
-**Independent Test**: Run evaluations for two skills and verify each skill's runs appear only in its respective output directory.
+**Independent Test**: Run evaluations for two targets and verify each target's runs appear only in its respective output directory.
 
 **Acceptance Scenarios**:
 
-1. **Given** eval configs exist for `skill-a` and `skill-b`, **When** the user runs evaluations for both, **Then** results are stored in separate directories determined by each config's location and `AGENT_EVAL_RUNS_DIR`
-2. **Given** eval configs exist for a skill, **When** the user runs multiple evaluations, **Then** each run creates a new timestamped directory under the skill's run output path
+1. **Given** eval configs exist for `eval-a` and `eval-b`, **When** the user runs evaluations for both, **Then** results are stored in separate directories under `AGENT_EVAL_RUNS_DIR`
+2. **Given** eval configs exist for a target, **When** the user runs multiple evaluations, **Then** each run creates a new timestamped directory under the target's run output path
 
 ---
 
 ### User Story 5 - Dataset Path Resolution (Priority: P1)
 
-A skill author edits their eval config and sets `dataset.path: cases/`. The system resolves this path relative to the eval.yaml location, not relative to the project root.
+A developer edits their eval config and sets `dataset.path: cases/`. The system resolves this path relative to the eval.yaml location, not relative to the project root.
 
 **Why this priority**: Incorrect path resolution would break every eval run. This is a foundational behavior that other features depend on.
 
@@ -91,93 +95,116 @@ A skill author edits their eval config and sets `dataset.path: cases/`. The syst
 
 ---
 
+### User Story 6 - Shared Datasets Across Evals (Priority: P3)
+
+A developer has two eval configs that share the same dataset (e.g., one evaluates a skill, another evaluates a prompt-based agent, both using the same test cases). Each config's `dataset.path` points to a shared location.
+
+**Why this priority**: Dataset independence from eval configs is important for flexibility but is already supported via `dataset.path`. This story validates that the layout system does not break shared datasets.
+
+**Independent Test**: Create two eval configs each pointing `dataset.path` to a shared `eval/cases/shared/` directory. Run both evals and verify they use the same test cases.
+
+**Acceptance Scenarios**:
+
+1. **Given** two eval configs both reference `dataset.path: ../cases/shared/`, **When** the system resolves dataset paths, **Then** both configs find the same test cases
+2. **Given** a dataset directory is not co-located with any eval config, **When** the user specifies an absolute or relative path, **Then** the system resolves it correctly
+
+---
+
 ### Edge Cases
 
-- What happens when a skill name contains special characters (e.g., dots, underscores) in directory names?
+- What happens when an eval name contains special characters (e.g., dots, underscores) in directory names?
 - How does the system behave when `eval/` directory exists but contains non-eval subdirectories?
-- What happens if two skills produce the same config filename in flat convention?
+- What happens if two eval targets produce the same config filename in flat layout?
 - How does `--config` interact with auto-discovery (explicit config should always win)?
-- What happens when root-level `eval.yaml` references `eval/cases/` and the migration moves it (path fixup needed)?
-- How does discovery handle a mix of layout conventions in the same project?
+- What happens when root-level `eval.yaml` references `eval/cases/` and the reorganization moves it (path fixup needed)?
+- How does discovery handle a mix of layouts in the same project?
 
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
 
-**Layout Convention Selection (Scaffolding)**
+**Smart Scaffolding**
 
-- **FR-001**: `/eval-analyze` MUST offer the user a choice of layout conventions when creating a new eval config, with per-skill nested (`eval/<skill-name>/eval.yaml`) as the recommended default
-- **FR-002**: `/eval-analyze` MUST support at minimum two conventions: per-skill nested (`eval/<skill>/eval.yaml` with `eval/<skill>/cases/`) and flat (`eval/<skill>.yaml` with `eval/cases/<skill>/`)
-- **FR-003**: `/eval-analyze` MUST accept `--config <path>` to bypass convention selection and scaffold at an explicit location
-- **FR-004**: `/eval-analyze` MUST create the eval documentation (`eval.md`) alongside the config file, regardless of convention
-- **FR-005**: `/eval-analyze` MUST create the dataset directory relative to the config file location when generating the initial config
-- **FR-006**: `/eval-analyze` MUST persist the chosen layout convention at the project level so subsequent runs for other skills reuse it without re-prompting
+- **FR-001**: `/eval-analyze` MUST create `eval.yaml` at the project root when no other eval config exists (single-eval default)
+- **FR-002**: `/eval-analyze` MUST detect when a root-level eval config already exists and offer to organize into an `eval/` directory layout when creating a second eval config
+- **FR-003**: `/eval-analyze` MUST accept `--config <path>` to bypass layout selection and scaffold at an explicit location
+- **FR-004**: `/eval-analyze` MUST create the eval documentation (`eval.md`) alongside the config file
+- **FR-005**: When organizing into `eval/`, the system MUST support a per-eval nested layout (`eval/<name>/eval.yaml` with dataset path as configured in `dataset.path`)
+- **FR-006**: `/eval-analyze` MUST persist the chosen layout at the project level so subsequent runs reuse it without re-prompting
 
 **Auto-Discovery**
 
-- **FR-007**: All eval commands MUST auto-discover eval configs when `--config` is not provided, by scanning known convention patterns (`eval/*/eval.yaml`, `eval/*.yaml`, root `eval.yaml`)
+- **FR-007**: All eval commands MUST auto-discover eval configs when `--config` is not provided, by scanning: `eval/*/eval.yaml`, `eval/*.yaml`, root `eval.yaml`
 - **FR-008**: Auto-discovery MUST auto-select the config when exactly one is found
-- **FR-009**: Auto-discovery MUST prompt for skill selection when multiple configs are found
+- **FR-009**: Auto-discovery MUST prompt for selection when multiple configs are found
 - **FR-010**: The `--config` flag MUST override auto-discovery and use the specified path directly
 
 **Path Resolution**
 
 - **FR-011**: The `dataset.path` in `eval.yaml` MUST resolve relative to the eval.yaml file location, not the project root. Note: `outputs[].path` values are workspace-relative (resolved against the execution workspace by `workspace.py` and `collect.py`) and MUST NOT be changed by this requirement.
-- **FR-012**: Run results MUST be stored in `$AGENT_EVAL_RUNS_DIR/<skill-name>/`, where `AGENT_EVAL_RUNS_DIR` defaults to `eval/runs` and acts as a base path under which per-skill run directories are created. The skill name MUST be derived from the `skill` field inside the eval.yaml content. The skill name MUST be validated as a single path segment (no path separators, `..`, or control characters) before use in path construction.
+- **FR-012**: Run results MUST be stored in `$AGENT_EVAL_RUNS_DIR/<eval-name>/`, where `AGENT_EVAL_RUNS_DIR` defaults to `eval/runs` and acts as a base path under which per-eval run directories are created. The eval name MUST be derived from the `skill` field inside the eval.yaml content. The eval name MUST be validated as a single path segment (no path separators, `..`, or control characters) before use in path construction.
 
-**Backward Compatibility and Migration**
+**Backward Compatibility**
 
-- **FR-013**: The system MUST display a deprecation warning when a root-level `eval.yaml` is detected
-- **FR-014**: The system MUST offer to migrate root-level eval artifacts to the user's chosen convention
-- **FR-015**: Migration MUST move `eval.yaml`, `eval.md`, dataset files, and run history to the new location
-- **FR-016**: Migration MUST update internal path references within `eval.yaml` to reflect the new location
-- **FR-017**: The system MUST continue to operate with root-level `eval.yaml` if the user declines migration
+- **FR-013**: Root-level `eval.yaml` MUST remain a fully supported, first-class location for single-eval projects (no deprecation warnings)
+- **FR-014**: When a second eval config is needed, the system MUST offer to reorganize into an `eval/` layout, moving the existing root config
+- **FR-015**: Reorganization MUST move `eval.yaml`, `eval.md`, and dataset files to the new location
+- **FR-016**: Reorganization MUST update `dataset.path` within `eval.yaml` to reflect the new location
+- **FR-017**: The system MUST continue to operate with root-level `eval.yaml` if the user declines reorganization
 
-**Housekeeping**
+**Layout Persistence**
 
-- **FR-018**: A single `.gitignore` pattern MUST cover run output directories (`eval/runs/`)
+- **FR-018**: The chosen layout MUST be persisted in a project-scope eval metadata file under `eval/` (e.g., `eval/.eval-layout`), not a narrowly scoped dot-file at the project root
+- **FR-019**: A single `.gitignore` pattern MUST cover run output directories (`eval/runs/`)
 
 ### Key Entities
 
-- **Layout Convention**: A named directory structure pattern for organizing eval artifacts. Each convention defines where config, documentation, datasets, and runs are stored relative to the project root.
-- **Eval Config**: The `eval.yaml` file containing skill evaluation configuration (dataset path, judges, thresholds, execution settings). Location determined by the chosen layout convention.
-- **Eval Directory**: The directory (or set of paths) containing all eval artifacts for one skill: config, documentation, test cases, and run results.
-- **Dataset**: Test cases for evaluation, stored at a path resolved relative to the eval.yaml location.
-- **Run Output**: Timestamped evaluation results, stored under `$AGENT_EVAL_RUNS_DIR/<skill-name>/`.
+- **Eval Layout**: A directory structure pattern for organizing eval artifacts. Determines where config, documentation, and runs are stored relative to the project root. Datasets are located independently via `dataset.path`.
+- **Eval Config**: The `eval.yaml` file containing evaluation configuration (dataset path, judges, thresholds, execution settings). Can be at the project root (single-eval) or under `eval/` (multi-eval).
+- **Dataset**: Test cases for evaluation, stored at a path resolved relative to the eval.yaml location. Datasets are independent of eval configs and can be shared across multiple evals.
+- **Run Output**: Timestamped evaluation results, stored under `$AGENT_EVAL_RUNS_DIR/<eval-name>/`.
 
 ## Success Criteria *(mandatory)*
 
 ### Measurable Outcomes
 
-- **SC-001**: Skill authors can set up and run evaluations for any skill in a multi-skill project without config file conflicts
-- **SC-002**: New eval configs are created using the user's chosen convention on the first attempt, without manual directory creation
-- **SC-003**: Users can choose their preferred eval directory layout during scaffolding, with a sensible default requiring no extra thought
-- **SC-004**: Existing projects with root-level eval.yaml can migrate to their chosen convention in a single step
+- **SC-001**: Developers can set up and run evaluations for multiple eval targets in the same project without config file conflicts
+- **SC-002**: Single-eval projects work with root-level `eval.yaml` with zero additional configuration or warnings
+- **SC-003**: The system adapts its scaffolding behavior based on project complexity (single vs. multi-eval)
+- **SC-004**: Projects outgrowing root-level layout can reorganize into `eval/` in a single step
 - **SC-005**: Users can run evaluations without specifying config paths for the common case (single-config auto-select, multi-config prompted selection)
-- **SC-006**: Run results for different skills never appear in the same output directory
-- **SC-007**: All eval-related commands (`/eval-analyze`, `/eval-run`, `/eval-dataset`, `/eval-optimize`, `/eval-review`, `/eval-mlflow`) work correctly with any supported layout convention
-- **SC-008**: Auto-discovery finds eval configs regardless of which layout convention was used, including mixed conventions within a single project
+- **SC-006**: Run results for different eval targets never appear in the same output directory
+- **SC-007**: All eval-related commands (`/eval-analyze`, `/eval-run`, `/eval-dataset`, `/eval-optimize`, `/eval-review`, `/eval-mlflow`) work correctly with any supported layout
+- **SC-008**: Auto-discovery finds eval configs regardless of which layout was used, including mixed layouts within a single project
+- **SC-009**: Datasets can be shared across multiple eval configs without duplication
 
 ## Clarifications
 
 ### Session 2026-05-28
 
-- Q: How should `AGENT_EVAL_RUNS_DIR` behave with per-skill run directories? -> A: Redefine as base path: `$AGENT_EVAL_RUNS_DIR/<skill>/` for each skill's runs
-- Q: Should the eval directory layout be a fixed convention or user-configurable? -> A: Configurable at scaffolding time. `/eval-analyze` should offer layout conventions (per-skill nested being the default) and let the user choose. Feedback from Antonin Stefanutti: projects should decide their own layout; the LLM agent can be smart about discovery regardless of structure. (Slack thread: #wg-agent-eval-harness, 2026-05-28)
+- Q: How should `AGENT_EVAL_RUNS_DIR` behave with per-eval run directories? -> A: Redefine as base path: `$AGENT_EVAL_RUNS_DIR/<eval-name>/` for each eval target's runs
+- Q: Should the eval directory layout be a fixed convention or user-configurable? -> A: Configurable at scaffolding time. `/eval-analyze` should offer layout options and let the user choose. Feedback from Antonin Stefanutti: projects should decide their own layout; the LLM agent can be smart about discovery regardless of structure. (Slack thread: #wg-agent-eval-harness, 2026-05-28)
 
 ### Session 2026-05-29
 
-- Q: Should subsequent `/eval-analyze` runs remember the layout convention or ask again? -> A: Remember at project level. Ask once, reuse for all subsequent skills.
-- Q: In flat convention, where do datasets and runs go? -> A: Datasets at `eval/cases/<skill>/`, runs at `$AGENT_EVAL_RUNS_DIR/<skill>/`. Flat top-level, skill-namespaced inside shared parent directories.
-- Q: How is skill name derived for run isolation with custom `--config` paths? -> A: Read the `skill` field from inside the eval.yaml content. This is authoritative regardless of file location.
+- Q: Should subsequent `/eval-analyze` runs remember the layout or ask again? -> A: Remember at project level. Ask once, reuse for all subsequent evals.
+- Q: In flat layout, where do datasets and runs go? -> A: Datasets are user-specified via `dataset.path` (not derived from eval name). Runs at `$AGENT_EVAL_RUNS_DIR/<eval-name>/`.
+- Q: How is eval name derived for run isolation with custom `--config` paths? -> A: Read the `skill` field from inside the eval.yaml content. This is authoritative regardless of file location.
+
+### Session 2026-05-30
+
+- Q: Should root-level `eval.yaml` be deprecated? -> A: No. Root-level is the natural default for single-eval projects. No deprecation warnings. Migration only offered when adding a second eval creates a conflict. (Feedback: Antonin Stefanutti, PR #85 review)
+- Q: Should datasets be coupled to eval names in the directory layout? -> A: No. Datasets are independently located via `dataset.path`. They can be shared across multiple eval configs. The layout should not force per-eval dataset directories. (Feedback: Antonin Stefanutti, PR #85 review)
+- Q: Should the layout persistence file be a narrow dot-file or a broader eval metadata file? -> A: A project-scope eval metadata file under `eval/` (e.g., `eval/.eval-layout`) is more extensible than a single-purpose dot-file. "Layout" preferred over "convention" as terminology. (Feedback: Antonin Stefanutti, PR #85 review)
+- Q: Should the spec assume "skill" as the only unit of testing? -> A: No. Issue #77 introduces prompt-based evaluation without skill wrappers. The directory layout should work for any eval target. The `skill` field in eval.yaml remains the source for the eval name used in directory paths, but the spec language should not assume all evals test skills. (Feedback: Antonin Stefanutti, PR #85 review)
 
 ## Assumptions
 
-- Skill names are unique within a plugin project (derived from skill directory names)
+- Eval names (from the `skill` field in eval.yaml) are unique within a project
 - The `eval/` directory is reserved for evaluation artifacts; other project content does not reside there
-- Existing root-level `eval.yaml` files reference a single skill (the project's primary or only skill)
-- `AGENT_EVAL_RUNS_DIR` is redefined as a base path (default `eval/runs`); per-skill runs are stored at `$AGENT_EVAL_RUNS_DIR/<skill-name>/`
-- Users are comfortable with one additional level of directory nesting for the default convention
-- The LLM agent can intelligently discover eval configs across different layout conventions without requiring a registry file
+- Existing root-level `eval.yaml` files reference a single eval target
+- `AGENT_EVAL_RUNS_DIR` is redefined as a base path (default `eval/runs`); per-eval runs are stored at `$AGENT_EVAL_RUNS_DIR/<eval-name>/`
+- The LLM agent can intelligently discover eval configs across different layouts without requiring a registry file
 - PR #74 (harness-level context) will compose with this layout, with each eval config carrying its own `harness_context`
 - Suite execution (running all discovered configs in sequence, per issue #3) is a future feature that builds on the discovery mechanism defined here
+- Prompt-based evaluation (issue #77) will use the same directory layout and discovery mechanism, with the `skill` field serving as the eval identifier

@@ -13,16 +13,17 @@ Existing dataclass at `agent_eval/config.py:192`. New and modified fields:
 
 No changes to existing fields. All existing fields remain backward compatible.
 
-### LayoutConvention (new)
+### EvalLayout (new)
 
-A lightweight enum-like concept (not necessarily a Python class). Two values:
+A lightweight concept representing the directory structure for eval artifacts. Currently one supported layout:
 
-| Convention | Config Path | Dataset Path | Description |
-|------------|-------------|--------------|-------------|
-| `nested` | `eval/<skill>/eval.yaml` | `eval/<skill>/cases/` | Default. Each skill gets its own subdirectory. |
-| `flat` | `eval/<skill>.yaml` | `eval/cases/<skill>/` | Configs at eval root, data namespaced inside shared parents. |
+| Layout | Config Path | Dataset Path | Description |
+|--------|-------------|--------------|-------------|
+| `nested` | `eval/<name>/eval.yaml` | User-specified via `dataset.path` | Each eval target gets its own subdirectory under `eval/`. |
 
-Persisted as a single-line text file at `eval/.eval-convention`.
+Datasets are NOT derived from the layout. They are independently located via `dataset.path` in each eval.yaml.
+
+Persisted as a single-line text file at `eval/.eval-layout`.
 
 ### DiscoveryResult (new, internal)
 
@@ -31,15 +32,15 @@ Returned by `discover_configs()`. Not persisted.
 | Field | Type | Description |
 |-------|------|-------------|
 | `path` | `Path` | Absolute path to the eval.yaml file |
-| `skill_name` | `str` | Value of the `skill` field from the eval.yaml |
-| `is_deprecated` | `bool` | `True` if this config is at the project root |
+| `eval_name` | `str` | Value of the `skill` field from the eval.yaml (serves as eval identifier) |
+| `is_root` | `bool` | `True` if this config is at the project root |
 
 ## Relationships
 
 ```
-LayoutConvention  1──*  EvalConfig    (a convention determines where configs are scaffolded)
-EvalConfig        1──1  Dataset       (each config points to one dataset directory)
-EvalConfig        1──*  RunOutput     (each config produces runs under AGENT_EVAL_RUNS_DIR/<skill>/)
+EvalLayout    1──*  EvalConfig    (a layout determines where configs are scaffolded in multi-eval projects)
+EvalConfig    1──1  Dataset       (each config points to one dataset via dataset.path; datasets can be shared)
+EvalConfig    1──*  RunOutput     (each config produces runs under AGENT_EVAL_RUNS_DIR/<eval-name>/)
 DiscoveryResult   *──1  EvalConfig    (discovery finds configs, each wraps one EvalConfig)
 ```
 
@@ -48,16 +49,17 @@ DiscoveryResult   *──1  EvalConfig    (discovery finds configs, each wraps o
 ### Eval Config Lifecycle
 
 ```
-[absent] ──(/eval-analyze scaffold)──> [created at convention path]
-[root-level] ──(migration accepted)──> [moved to convention path]
-[root-level] ──(migration declined)──> [root-level, deprecated]
-[any location] ──(--config explicit)──> [used directly, no convention]
+[absent] ──(first /eval-analyze)──> [created at project root]
+[root-level, single] ──(second /eval-analyze)──> [offer to reorganize into eval/]
+[root-level] ──(reorganization accepted)──> [moved to eval/<name>/]
+[root-level] ──(reorganization declined + --config)──> [new config at explicit path]
+[any location] ──(--config explicit)──> [used directly, no layout]
 ```
 
-### Convention Persistence
+### Layout Persistence
 
 ```
-[absent] ──(first /eval-analyze)──> [user selects, written to eval/.eval-convention]
+[absent] ──(reorganization into eval/)──> [written to eval/.eval-layout]
 [persisted] ──(subsequent /eval-analyze)──> [read and reused, no prompt]
 [persisted] ──(--config override)──> [ignored for this run]
 ```
