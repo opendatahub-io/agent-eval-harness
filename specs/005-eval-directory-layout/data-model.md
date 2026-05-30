@@ -15,11 +15,13 @@ No changes to existing fields. All existing fields remain backward compatible.
 
 ### EvalLayout (new)
 
-A lightweight concept representing the directory structure for eval artifacts. Currently one supported layout:
+A lightweight concept representing the directory structure for eval artifacts. Supported layouts:
 
 | Layout | Config Path | Dataset Path | Description |
 |--------|-------------|--------------|-------------|
-| `nested` | `eval/<name>/eval.yaml` | User-specified via `dataset.path` | Each eval target gets its own subdirectory under `eval/`. |
+| `root` | `eval.yaml` | User-specified via `dataset.path` | Single-eval default. Config at project root. |
+| `nested` | `eval/<name>/eval.yaml` | User-specified via `dataset.path` | Multi-eval. Each eval target gets its own subdirectory under `eval/`. |
+| `flat` | `eval/<name>.yaml` | User-specified via `dataset.path` | Multi-eval. Configs at eval root level. Discovered but not scaffolded by default. |
 
 Datasets are NOT derived from the layout. They are independently located via `dataset.path` in each eval.yaml.
 

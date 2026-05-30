@@ -13,7 +13,7 @@
 These tasks are blocking prerequisites for all user stories.
 
 - [ ] T002 Add `config_dir: Optional[Path]` field to `EvalConfig` (default `None`) and set it from the config file's parent in `from_yaml()` in `agent_eval/config.py`
-- [ ] T003 Add `resolve_path(relative: Path) -> Path` method to `EvalConfig` that resolves against `config_dir` (fallback to `Path.cwd()`) in `agent_eval/config.py`. `project_root` remains unchanged.
+- [ ] T003 Add `resolve_path(relative: Path) -> Path` method to `EvalConfig` that resolves against `config_dir` (fallback to `Path.cwd()`), passing through absolute paths as-is, in `agent_eval/config.py`. Update `_validate_relative_path` to allow absolute `dataset.path` (FR-011 requires it). `project_root` remains unchanged.
 - [ ] T004 [P] Add `DiscoveryResult` dataclass (`path`, `eval_name`, `is_root`) to `agent_eval/config.py`
 - [ ] T005 Implement `discover_configs(project_root: Path) -> list[DiscoveryResult]` scanning `eval/*/eval.yaml`, `eval/*.yaml`, root `eval.yaml` in `agent_eval/config.py`
 - [ ] T006 [P] Implement `infer_layout(configs: list[DiscoveryResult]) -> str` that returns `"nested"` if configs exist under `eval/`, `"root"` if only root config, `"none"` if empty, in `agent_eval/config.py`
