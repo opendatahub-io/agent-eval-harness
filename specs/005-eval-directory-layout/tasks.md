@@ -6,7 +6,7 @@
 
 ## Phase 1: Setup
 
-- [ ] T001 Add `eval/runs/` and `eval/.eval-layout` to `.gitignore`
+- [ ] T001 Add `eval/runs/` to `.gitignore`
 
 ## Phase 2: Foundational (Path Resolution + Discovery)
 
@@ -16,12 +16,11 @@ These tasks are blocking prerequisites for all user stories.
 - [ ] T003 Add `resolve_path(relative: Path) -> Path` method to `EvalConfig` that resolves against `config_dir` (fallback to `Path.cwd()`) in `agent_eval/config.py`. `project_root` remains unchanged.
 - [ ] T004 [P] Add `DiscoveryResult` dataclass (`path`, `eval_name`, `is_root`) to `agent_eval/config.py`
 - [ ] T005 Implement `discover_configs(project_root: Path) -> list[DiscoveryResult]` scanning `eval/*/eval.yaml`, `eval/*.yaml`, root `eval.yaml` in `agent_eval/config.py`
-- [ ] T006 [P] Implement `resolve_layout(project_root: Path) -> str | None` reading `eval/.eval-layout` in `agent_eval/config.py`
-- [ ] T007 [P] Implement `save_layout(project_root: Path, layout: str) -> None` writing `eval/.eval-layout` in `agent_eval/config.py`
+- [ ] T006 [P] Implement `infer_layout(configs: list[DiscoveryResult]) -> str` that returns `"nested"` if configs exist under `eval/`, `"root"` if only root config, `"none"` if empty, in `agent_eval/config.py`
 - [ ] T008 Update `_find_eval_yaml()` in `scripts/ensure_deps.py` to use `discover_configs()` instead of hardcoded two-path check
 - [ ] T009 Add unit tests for `config_dir` path resolution and `resolve_path()` in `tests/test_config.py`
 - [ ] T010 [P] Add unit tests for `discover_configs()` (nested, flat, root, mixed, empty) in `tests/test_discovery.py`
-- [ ] T011 [P] Add unit tests for `resolve_layout()` and `save_layout()` in `tests/test_layout.py`
+- [ ] T011 [P] Add unit tests for `infer_layout()` in `tests/test_layout.py`
 
 **Checkpoint**: Foundation ready. All user stories can now proceed.
 
@@ -36,7 +35,7 @@ These tasks are blocking prerequisites for all user stories.
 - [ ] T012 [US1] Update Step 0 in `skills/eval-analyze/SKILL.md` to call `discover_configs()` before scaffolding to detect existing configs
 - [ ] T013 [US1] Update scaffolding in `skills/eval-analyze/SKILL.md`: if no configs exist, create `eval.yaml` at project root (FR-001)
 - [ ] T014 [US1] Update scaffolding in `skills/eval-analyze/SKILL.md`: if root config exists and new target requested, offer to organize into `eval/` layout (FR-002)
-- [ ] T015 [US1] Update scaffolding in `skills/eval-analyze/SKILL.md`: when organizing, save layout via `save_layout()` (FR-006)
+- [ ] T015 [US1] Update scaffolding in `skills/eval-analyze/SKILL.md`: when organizing, use `infer_layout()` to detect current state before placing new config (FR-006)
 - [ ] T016 [US1] Update `--config` handling in `skills/eval-analyze/SKILL.md` to bypass layout selection and scaffold at the explicit path (FR-003)
 - [ ] T017 [US1] Update `skills/eval-analyze/SKILL.md` to create `eval.md` alongside the config file at whichever location was chosen (FR-004)
 - [ ] T018 [US1] Update Step 5b validate_eval.py invocation in `skills/eval-analyze/SKILL.md` to pass the resolved config path
@@ -150,7 +149,7 @@ These tasks are blocking prerequisites for all user stories.
 ```
 T002, T003 (path resolution) <- T027-T030 (US5), T031-T036 (US4)
 T004, T005 (discovery) <- T019-T026 (US2), T043-T046 (SC-007)
-T006, T007 (layout persistence) <- T012-T018 (US1)
+T006 (layout inference) <- T012-T018 (US1)
 T005 (discovery) <- T008 (ensure_deps), T012 (US1 detection)
 T012-T018 (US1 scaffolding) <- T037-T040 (US3 reorganization)
 T001 (gitignore) <- none (independent)

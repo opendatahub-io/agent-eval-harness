@@ -16,7 +16,7 @@ The core change is adding a `config_dir` field to `EvalConfig` (set from the con
 
 A `discover_configs()` function in `agent_eval/config.py` scans three patterns: `eval/*/eval.yaml` (nested), `eval/*.yaml` (flat), and root `eval.yaml`. It returns `DiscoveryResult` objects with the config path, eval name (read from the YAML's `skill` field), and whether it's at the project root.
 
-Layout persistence is a single-line text file at `eval/.eval-layout`, read/written by two helper functions.
+Layout is inferred from existing file structure (discovery patterns). No persistence file needed. In single-eval mode there's no `eval/` directory.
 
 Reorganization logic lives in `agent_eval/reorganize.py`, handling file moves and `dataset.path` rewriting. `outputs[].path` is NOT rewritten (workspace-relative, not config-relative).
 
@@ -43,7 +43,7 @@ The SKILL.md files for all 7 eval skills get updated instructions to use discove
 
 4. **`AGENT_EVAL_RUNS_DIR` redefined as base path.** Instead of deprecating the env var, it becomes the parent directory under which per-eval run folders are created. Default remains `eval/runs`, actual runs at `eval/runs/<eval-name>/`.
 
-5. **Layout stored in `eval/.eval-layout`.** A project-scope file under `eval/`, using "layout" terminology instead of "convention". More extensible than a narrow dot-file at the project root.
+5. **Layout inferred, not persisted.** No `.eval-layout` file. Layout is detected from existing file structure via discovery patterns. In single-eval mode there's no `eval/` directory, so a persistence file there can't exist anyway.
 
 6. **Discovery in shared `scripts/discover.py`.** A single CLI wrapper callable by all skills via `${CLAUDE_SKILL_DIR}/../../scripts/discover.py`, following the same pattern as the existing `scripts/ensure_deps.py`.
 
@@ -66,7 +66,7 @@ No open questions identified. All critical decisions were resolved during the cl
 - [ ] No unstated assumptions
 - [ ] Path resolution changes are backward compatible (root-level configs still work)
 - [ ] Discovery patterns cover all supported layouts
-- [ ] Layout persistence doesn't interfere with git workflows
+- [ ] No layout persistence files needed (inferred from file structure)
 - [ ] Datasets are independent of eval config layout
 
 ---

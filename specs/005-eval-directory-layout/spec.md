@@ -125,7 +125,6 @@ A developer has two eval configs that share the same dataset (e.g., one evaluate
 
 - YAML files that fail parsing during discovery MUST be skipped with a warning to stderr
 - YAML files without a `skill` field MUST be skipped (not valid eval configs)
-- If `eval/.eval-layout` is corrupted or contains an unrecognized value, treat as absent (no layout persisted)
 - If reorganization target path already exists, abort with an error (don't overwrite)
 - If source files are missing during reorganization (e.g., no eval.md), warn but continue with what exists
 - If eval.yaml has no `skill` field during reorganization, abort (can't determine target path)
@@ -139,7 +138,7 @@ A developer has two eval configs that share the same dataset (e.g., one evaluate
 - **FR-003**: `/eval-analyze` MUST accept `--config <path>` to bypass layout selection and scaffold at an explicit location
 - **FR-004**: `/eval-analyze` MUST create the eval documentation (`eval.md`) alongside the config file
 - **FR-005**: When organizing into `eval/`, the system MUST support a per-eval nested layout (`eval/<name>/eval.yaml` with dataset path as configured in `dataset.path`)
-- **FR-006**: `/eval-analyze` MUST persist the chosen layout at the project level so subsequent runs reuse it without re-prompting
+- **FR-006**: `/eval-analyze` MUST infer the current layout from existing file structure (discovery patterns) rather than persisting layout state in a separate file
 
 **Auto-Discovery**
 
@@ -161,14 +160,13 @@ A developer has two eval configs that share the same dataset (e.g., one evaluate
 - **FR-016**: Reorganization MUST update `dataset.path` within `eval.yaml` to reflect the new location
 - **FR-017**: The system MUST continue to operate with root-level `eval.yaml` if the user declines reorganization
 
-**Layout Persistence**
+**Housekeeping**
 
-- **FR-018**: The chosen layout MUST be persisted in a project-scope eval metadata file under `eval/` (e.g., `eval/.eval-layout`), not a narrowly scoped dot-file at the project root
-- **FR-019**: A single `.gitignore` pattern MUST cover run output directories (`eval/runs/`)
+- **FR-018**: A single `.gitignore` pattern MUST cover run output directories (`eval/runs/`)
 
 ### Key Entities
 
-- **Eval Layout**: A directory structure pattern for organizing eval artifacts. Determines where config, documentation, and runs are stored relative to the project root. Datasets are located independently via `dataset.path`.
+- **Eval Layout**: A directory structure pattern for organizing eval artifacts, inferred from existing file structure (not persisted). Determines where config, documentation, and runs are stored relative to the project root. Datasets are located independently via `dataset.path`.
 - **Eval Config**: The `eval.yaml` file containing evaluation configuration (dataset path, judges, thresholds, execution settings). Can be at the project root (single-eval) or under `eval/` (multi-eval).
 - **Dataset**: Test cases for evaluation, stored at a path resolved relative to the eval.yaml location. Datasets are independent of eval configs and can be shared across multiple evals.
 - **Run Output**: Timestamped evaluation results, stored under `$AGENT_EVAL_RUNS_DIR/<eval-name>/`.
@@ -196,7 +194,7 @@ A developer has two eval configs that share the same dataset (e.g., one evaluate
 
 ### Session 2026-05-29
 
-- Q: Should subsequent `/eval-analyze` runs remember the layout or ask again? -> A: Remember at project level. Ask once, reuse for all subsequent evals.
+- Q: Should subsequent `/eval-analyze` runs remember the layout or ask again? -> A: Infer from existing file structure. Discovery already scans the patterns, so the layout is implicit in what's on disk. No persistence file needed.
 - Q: In flat layout, where do datasets and runs go? -> A: Datasets are user-specified via `dataset.path` (not derived from eval name). Runs at `$AGENT_EVAL_RUNS_DIR/<eval-name>/`.
 - Q: How is eval name derived for run isolation with custom `--config` paths? -> A: Read the `skill` field from inside the eval.yaml content. This is authoritative regardless of file location.
 
@@ -204,7 +202,7 @@ A developer has two eval configs that share the same dataset (e.g., one evaluate
 
 - Q: Should root-level `eval.yaml` be deprecated? -> A: No. Root-level is the natural default for single-eval projects. No deprecation warnings. Migration only offered when adding a second eval creates a conflict. (Feedback: Antonin Stefanutti, PR #85 review)
 - Q: Should datasets be coupled to eval names in the directory layout? -> A: No. Datasets are independently located via `dataset.path`. They can be shared across multiple eval configs. The layout should not force per-eval dataset directories. (Feedback: Antonin Stefanutti, PR #85 review)
-- Q: Should the layout persistence file be a narrow dot-file or a broader eval metadata file? -> A: A project-scope eval metadata file under `eval/` (e.g., `eval/.eval-layout`) is more extensible than a single-purpose dot-file. "Layout" preferred over "convention" as terminology. (Feedback: Antonin Stefanutti, PR #85 review)
+- Q: Should the layout persistence file be a narrow dot-file or a broader eval metadata file? -> A: Neither. Layout is inferred from existing file structure via discovery patterns. No persistence file needed. In single-eval mode there's no `eval/` directory, so a file there can't exist anyway. "Layout" preferred over "convention" as terminology. (Feedback: Antonin Stefanutti, PR #85 review)
 - Q: Should the spec assume "skill" as the only unit of testing? -> A: No. Issue #77 introduces prompt-based evaluation without skill wrappers. The directory layout should work for any eval target. The `skill` field in eval.yaml remains the source for the eval name used in directory paths, but the spec language should not assume all evals test skills. (Feedback: Antonin Stefanutti, PR #85 review)
 
 ## Assumptions

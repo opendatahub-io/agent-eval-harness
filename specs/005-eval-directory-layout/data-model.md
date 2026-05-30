@@ -23,7 +23,7 @@ A lightweight concept representing the directory structure for eval artifacts. C
 
 Datasets are NOT derived from the layout. They are independently located via `dataset.path` in each eval.yaml.
 
-Persisted as a single-line text file at `eval/.eval-layout`.
+Not persisted. Inferred from existing file structure via discovery patterns.
 
 ### DiscoveryResult (new, internal)
 
@@ -56,10 +56,10 @@ DiscoveryResult   *──1  EvalConfig    (discovery finds configs, each wraps o
 [any location] ──(--config explicit)──> [used directly, no layout]
 ```
 
-### Layout Persistence
+### Layout Inference
 
 ```
-[absent] ──(reorganization into eval/)──> [written to eval/.eval-layout]
-[persisted] ──(subsequent /eval-analyze)──> [read and reused, no prompt]
-[persisted] ──(--config override)──> [ignored for this run]
+[no eval/ dir] ──(discovery finds root eval.yaml)──> [single-eval, root layout]
+[eval/ dir with configs] ──(discovery finds eval/*/eval.yaml)──> [multi-eval, nested layout]
+[mixed] ──(discovery finds both)──> [all configs included, no layout assumption]
 ```

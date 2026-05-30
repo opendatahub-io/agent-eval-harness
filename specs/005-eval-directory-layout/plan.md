@@ -34,11 +34,9 @@ Implement `discover_configs(project_root)` per [discovery-api.md](contracts/disc
 
 Update `_find_eval_yaml()` in `ensure_deps.py` to use the same discovery logic.
 
-### Area 3: Layout Persistence (FR-006, FR-018)
+### Area 3: Layout Inference (FR-006)
 
-**Files**: `agent_eval/config.py` (new `resolve_layout`, `save_layout` functions)
-
-Simple read/write of `eval/.eval-layout` text file. Called by eval-analyze SKILL.md during scaffolding when organizing into `eval/`.
+Layout is inferred from the discovery results, not persisted. If `discover_configs()` finds configs under `eval/*/eval.yaml`, the project uses nested layout. No separate persistence file needed.
 
 ### Area 4: Smart Scaffolding (FR-001 to FR-005)
 
@@ -88,13 +86,13 @@ Implement reorganization logic per [migration-api.md](contracts/migration-api.md
 
 **Files**: `.gitignore`
 
-Add `eval/runs/` and `eval/.eval-layout` patterns.
+Add `eval/runs/` pattern.
 
 ## File Structure Map
 
 | File | Action | Responsibility |
 |------|--------|----------------|
-| `agent_eval/config.py` | Modify | Add `config_dir`, `DiscoveryResult`, `discover_configs()`, `resolve_layout()`, `save_layout()` |
+| `agent_eval/config.py` | Modify | Add `config_dir`, `DiscoveryResult`, `discover_configs()` |
 | `agent_eval/reorganize.py` | Create | `reorganize_root_config()` for root-level config reorganization |
 | `scripts/discover.py` | Create | CLI wrapper for `discover_configs()`, shared across all skills |
 | `scripts/ensure_deps.py` | Modify | Update `_find_eval_yaml()` to use `discover_configs()` |
@@ -114,7 +112,7 @@ Add `eval/runs/` and `eval/.eval-layout` patterns.
 | `skills/eval-mlflow/scripts/log_results.py` | Modify | Per-eval runs dir |
 | `skills/eval-mlflow/scripts/attach_feedback.py` | Modify | Per-eval runs dir |
 | `skills/eval-setup/scripts/check_env.py` | Modify | Report per-eval run directories |
-| `.gitignore` | Modify | Add `eval/runs/`, `eval/.eval-layout` |
+| `.gitignore` | Modify | Add `eval/runs/` |
 | `tests/test_config.py` | Modify | Path resolution tests |
 | `tests/test_discovery.py` | Create | Discovery unit tests |
 | `tests/test_layout.py` | Create | Layout persistence tests |
@@ -128,7 +126,7 @@ Area 1 (path resolution)
   +-- Area 2 (discovery)
   |    +-- Area 5 (eval-run integration)
   |    +-- Area 7 (other commands)
-  |    +-- Area 3 (layout persistence)
+  |    +-- Area 3 (layout inference)
   |         +-- Area 4 (smart scaffolding)
   |              +-- Area 8 (reorganization)
   +-- Area 6 (run isolation)
@@ -146,7 +144,7 @@ Area 9 (gitignore) -- independent
 - `test_discover_configs_root`: root config found with `is_root=True`
 - `test_discover_configs_mixed`: mixed layouts discovered together
 - `test_discover_configs_empty`: no configs returns empty list
-- `test_layout_persistence`: write and read back layout
+- `test_layout_inference`: infer layout from existing file structure
 - `test_run_dir_with_eval_name`: verify runs go to `$AGENT_EVAL_RUNS_DIR/<eval-name>/`
 - `test_reorganize_nested`: reorganize root config into nested layout
 - `test_reorganize_path_fixup`: verify `dataset.path` is rewritten and `outputs[].path` is preserved
@@ -166,4 +164,4 @@ Area 9 (gitignore) -- independent
 | Breaking existing root-level configs | FR-013/FR-017: root configs are first-class, no deprecation |
 | SKILL.md changes misinterpreted by LLM | Test via e2e runs; SKILL.md instructions are explicit with code snippets |
 | Path resolution change breaks existing scripts | `config_dir` falls back to `Path.cwd()` when unset, preserving current behavior |
-| Layout file committed accidentally | Add `eval/.eval-layout` to `.gitignore` |
+| Layout inference wrong for edge cases | Discovery scans concrete patterns; ambiguity only in mixed layouts (acceptable) |

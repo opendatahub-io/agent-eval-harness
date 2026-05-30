@@ -26,16 +26,16 @@
 
 **Implementation**: `discover_configs(project_root: Path) -> list[DiscoveryResult]` returns all found configs sorted by path. Callers decide on auto-select vs. prompt behavior.
 
-## Decision 3: Layout Persistence
+## Decision 3: Layout Inference (No Persistence File)
 
-**Decision**: Store the chosen directory layout in `eval/.eval-layout` (a single-line text file containing the layout name, e.g., `nested`).
+**Decision**: Infer the current layout from existing file structure. No persistence file needed.
 
-**Rationale**: FR-006/FR-018 require the layout to persist project-wide. Using a file under `eval/` keeps it co-located with eval artifacts and avoids polluting the project root. "Layout" is preferred over "convention" per reviewer feedback. A project-scope file under `eval/` is more extensible than a dot-file at the project root.
+**Rationale**: Discovery already scans `eval/*/eval.yaml`, `eval/*.yaml`, and root `eval.yaml`. The layout is implicit in what's on disk. In single-eval mode there's no `eval/` directory, so a persistence file there can't exist anyway. Removing the file eliminates an artifact to manage, a gitignore entry, and an error handling case. "Layout" is preferred over "convention" per reviewer feedback.
 
-**Alternatives considered**:
-- Store in `.specify/feature.json`: couples layout to the speckit workflow, not portable
-- Store in a top-level `.evalrc`: adds a dot-file to the project root
-- Infer from existing layout: unreliable for new projects with no eval artifacts yet
+**Alternatives rejected**:
+- `eval/.eval-layout` file: can't exist in single-eval mode (no `eval/` dir), adds an artifact to manage
+- `.evalrc` at project root: pollutes root, unnecessary given discovery
+- Store in `.specify/feature.json`: couples to speckit workflow
 
 ## Decision 4: Eval Name Derivation
 

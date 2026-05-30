@@ -35,10 +35,4 @@ else:
         print(f"  {i+1}. {c.eval_name} ({c.path})")
 ```
 
-## `resolve_layout(project_root: Path) -> str | None`
-
-Reads `eval/.eval-layout` if it exists. Returns `"nested"` or `None`.
-
-## `save_layout(project_root: Path, layout: str) -> None`
-
-Writes the layout name to `eval/.eval-layout`.
+Layout is inferred from the discovery results (no persistence file). If `discover_configs()` finds configs under `eval/*/eval.yaml`, the project uses nested layout. If only a root `eval.yaml` exists, the project uses root layout.
