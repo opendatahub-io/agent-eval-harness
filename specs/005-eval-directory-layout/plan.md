@@ -64,7 +64,7 @@ Update eval-run SKILL.md to:
 
 Update `workspace.py` default: remove `default="eval.yaml"` from `--config` argparse, require it explicitly (the SKILL.md will always pass it after discovery).
 
-Update `preflight.py` to resolve runs directory using `config.config_dir` and `AGENT_EVAL_RUNS_DIR/<skill>/`.
+Update `preflight.py` to resolve runs directory using `AGENT_EVAL_RUNS_DIR/<skill>/`.
 
 ### Area 6: Run Isolation (FR-012)
 

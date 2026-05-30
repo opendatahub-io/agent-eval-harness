@@ -11,7 +11,7 @@
 - Require absolute paths in eval.yaml: poor UX, breaks existing configs
 - Resolve relative to a `.evalrc` or registry: over-engineered, adds a new artifact
 
-**Implementation**: Add a `config_dir: Path` field to `EvalConfig`, set it from the config file's parent in `from_yaml()`. Update `project_root` property or add a `resolve_path(relative)` method. All downstream scripts already receive `--config`, so they can pass the path through.
+**Implementation**: Add a `config_dir: Optional[Path]` field to `EvalConfig`, set it from the config file's parent in `from_yaml()`. Add a `resolve_path(relative)` method that uses `config_dir` (falling back to `Path.cwd()`). `project_root` remains unchanged. All downstream scripts already receive `--config`, so they can pass the path through.
 
 ## Decision 2: Auto-Discovery Implementation
 

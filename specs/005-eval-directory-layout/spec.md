@@ -63,7 +63,7 @@ A skill author has an existing project with `eval.yaml` at the project root (cre
 
 ### User Story 4 - Per-Skill Run Isolation (Priority: P2)
 
-A skill author runs evaluations for two different skills. Each skill's run output is stored relative to its own eval config location, keeping results separate and preventing cross-contamination.
+A skill author runs evaluations for two different skills. Each skill's run output is stored under `$AGENT_EVAL_RUNS_DIR/<skill-name>/`, keeping results separate and preventing cross-contamination.
 
 **Why this priority**: Run isolation prevents confusion when comparing results across skills, but the system still functions if results are mixed (just harder to navigate).
 

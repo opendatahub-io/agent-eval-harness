@@ -12,7 +12,7 @@ Right now, `/eval-analyze` drops `eval.yaml` and `eval.md` at the project root. 
 
 ## How It Works
 
-The core change is adding a `config_dir` field to `EvalConfig` (set from the config file's parent during `from_yaml()`). All relative path resolution shifts from `Path.cwd()` to `config_dir`, which is the foundation everything else builds on.
+The core change is adding a `config_dir` field to `EvalConfig` (set from the config file's parent during `from_yaml()`). `dataset.path` resolution shifts from `Path.cwd()` to `config_dir`. Other paths (`outputs[].path`, run directories, `project_root`) remain unchanged.
 
 A `discover_configs()` function in `agent_eval/config.py` scans three patterns: `eval/*/eval.yaml` (nested), `eval/*.yaml` (flat), and root `eval.yaml` (deprecated). It returns `DiscoveryResult` objects with the config path, skill name (read from the YAML's `skill` field), and deprecation flag.
 
@@ -49,7 +49,7 @@ The SKILL.md files for all 7 eval skills get updated instructions to use discove
 
 ## Areas Needing Attention
 
-- **Path resolution backward compatibility.** Changing `project_root` from `Path.cwd()` to `config_dir` could affect scripts that rely on the current behavior. The fallback to `Path.cwd()` when `config_dir` is unset mitigates this, but worth verifying no edge cases slip through.
+- **Path resolution backward compatibility.** `config_dir` is used only for `dataset.path` resolution. `project_root` remains `Path.cwd()`. When `config_dir` is unset, dataset path resolution falls back to `Path.cwd()`, preserving current behavior.
 - **SKILL.md instruction quality.** Most of the user-facing changes are in SKILL.md files (LLM-interpreted instructions, not Python code). These are harder to test mechanically and depend on the LLM following instructions correctly.
 - **Mixed convention discovery.** A project could end up with configs in both nested and flat layouts. The discovery function handles this, but the UX of presenting mixed results to the user hasn't been deeply explored.
 

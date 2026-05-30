@@ -12,7 +12,7 @@
 
 These tasks are blocking prerequisites for all user stories.
 
-- [ ] T002 Add `config_dir: Path` field to `EvalConfig` and set it from the config file's parent in `from_yaml()` in `agent_eval/config.py`
+- [ ] T002 Add `config_dir: Optional[Path]` field to `EvalConfig` (default `None`) and set it from the config file's parent in `from_yaml()` in `agent_eval/config.py`
 - [ ] T003 Add `resolve_path(relative: Path) -> Path` method to `EvalConfig` that resolves against `config_dir` (fallback to `Path.cwd()`) in `agent_eval/config.py`. `project_root` remains unchanged.
 - [ ] T004 [P] Add `DiscoveryResult` dataclass (`path`, `skill_name`, `is_deprecated`) to `agent_eval/config.py`
 - [ ] T005 Implement `discover_configs(project_root: Path) -> list[DiscoveryResult]` scanning `eval/*/eval.yaml`, `eval/*.yaml`, root `eval.yaml` in `agent_eval/config.py`
