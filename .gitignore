@@ -45,9 +45,6 @@ credentials/
 *.db
 .beads-credential-key
 
-# brainstorm: local working files
-brainstorm/
-
 # spex: generated/local files
 .claude/skills/
 .claude/settings.local.json
