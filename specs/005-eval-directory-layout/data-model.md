@@ -4,7 +4,7 @@
 
 ### EvalConfig (modified)
 
-Existing dataclass at `agent_eval/config.py:192`. New and modified fields:
+Existing dataclass in `agent_eval/config.py` (`class EvalConfig`). New and modified fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
