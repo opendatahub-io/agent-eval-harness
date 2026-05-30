@@ -8,7 +8,7 @@ Existing dataclass at `agent_eval/config.py:192`. New and modified fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `config_dir` | `Optional[Path]` | **NEW**. Parent directory of the loaded eval.yaml. Set during `from_yaml()`. Used as base for resolving `dataset.path` only. Defaults to `None` (unset for programmatic construction). |
+| `config_dir` | `Optional[Path]` | **NEW**. Parent directory of the loaded eval.yaml. Set during `from_yaml()`. Used as base for resolving `dataset.path` only. Defaults to `None` (unset for programmatic construction). When `None`, path resolution falls back to `Path.cwd()`. |
 | `project_root` | `Path` (property) | **UNCHANGED**. Returns `Path.cwd()`. Used for repo-level concerns (symlinks, judge modules, settings). NOT redefined to `config_dir`. |
 
 No changes to existing fields. All existing fields remain backward compatible.
