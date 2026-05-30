@@ -146,20 +146,20 @@ These tasks are blocking prerequisites for all user stories.
 
 ## Dependencies
 
-```
-T002, T003 (path resolution) <- T027-T030 (US5), T031-T036 (US4)
-T004, T005 (discovery) <- T019-T026 (US2), T043-T046 (SC-007)
-T006 (layout inference) <- T012-T018 (US1)
-T005 (discovery) <- T008 (ensure_deps), T012 (US1 detection)
-T012-T018 (US1 scaffolding) <- T037-T040 (US3 reorganization)
-T001 (gitignore) <- none (independent)
+```text
+T027-T030 (US5), T031-T036 (US4) depend on T002, T003 (path resolution)
+T019-T026 (US2), T043-T046 (SC-007) depend on T004, T005 (discovery)
+T012-T018 (US1) depend on T006 (layout inference)
+T008 (ensure_deps), T012 (US1 detection) depend on T005 (discovery)
+T037-T040 (US3 reorganization) depend on T012-T018 (US1 scaffolding)
+T001 (gitignore) has no dependencies
 ```
 
 **User Story Independence**: US1 (scaffolding), US2 (discovery), US4 (run isolation), and US5 (path resolution) can proceed in parallel after Phase 2 completes. US3 (reorganization) depends on US1 scaffolding being done. US6 (shared datasets) depends on US5 path resolution. SC-007 (other commands) depends on US2 discovery.
 
 ## Parallel Execution Opportunities
 
-**Phase 2**: T004+T006+T007 are independent of each other, all parallelizable after T002+T003. T009+T010+T011 (tests) are all parallelizable.
+**Phase 2**: T004+T006 are independent of each other, all parallelizable after T002+T003. T009+T010+T011 (tests) are all parallelizable.
 
 **Phase 4**: T022+T023+T024+T025+T026 are all parallelizable (independent script updates).
 

@@ -16,7 +16,7 @@
 
 ## Change Summary
 
-Seven work areas, ordered by dependency:
+Nine work areas, ordered by dependency:
 
 ### Area 1: Path Resolution Foundation (FR-011)
 
@@ -104,7 +104,7 @@ Add `eval/runs/` pattern.
 | `skills/eval-run/scripts/score.py` | Modify | Per-eval runs dir |
 | `skills/eval-run/scripts/report.py` | Modify | Per-eval runs dir |
 | `skills/eval-run/scripts/execute.py` | Modify | Require `--config` |
-| `skills/eval-run/scripts/collect.py` | Modify | Require `--config` |
+| `skills/eval-run/scripts/collect.py` | Modify | Require `--config` (outputs[].path stays workspace-relative) |
 | `skills/eval-dataset/SKILL.md` | Modify | Auto-discovery integration |
 | `skills/eval-optimize/SKILL.md` | Modify | Auto-discovery integration |
 | `skills/eval-review/SKILL.md` | Modify | Auto-discovery integration |
@@ -115,7 +115,7 @@ Add `eval/runs/` pattern.
 | `.gitignore` | Modify | Add `eval/runs/` |
 | `tests/test_config.py` | Modify | Path resolution tests |
 | `tests/test_discovery.py` | Create | Discovery unit tests |
-| `tests/test_layout.py` | Create | Layout persistence tests |
+| `tests/test_layout.py` | Create | Layout inference tests |
 | `tests/test_run_isolation.py` | Create | Run isolation tests |
 | `tests/test_reorganization.py` | Create | Reorganization tests |
 

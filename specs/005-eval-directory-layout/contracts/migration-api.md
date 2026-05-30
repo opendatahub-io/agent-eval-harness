@@ -26,10 +26,7 @@ Moves a root-level `eval.yaml` and its companion artifacts into the nested layou
    - `dataset.path`: rewritten relative to new config location
    - `outputs[].path`: NOT rewritten (workspace-relative, not config-relative)
 
-4. Saves layout persistence:
-   - Writes `nested` to `eval/.eval-layout`
-
-5. Returns a `ReorganizationResult` with moved files and any warnings.
+4. Returns a `ReorganizationResult` with moved files and any warnings.
 
 ### Error Handling
 
