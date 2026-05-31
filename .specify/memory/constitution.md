@@ -1,3 +1,18 @@
+<!-- Sync Impact Report
+Version change: 1.0.0 → 1.1.0 (MINOR: three principles added)
+Modified principles: none renamed
+Added sections:
+  - VII. Backward Compatibility by Default
+  - VIII. Infer State, Don't Persist It
+  - Generalized language from "skills" to "eval targets" throughout
+Removed sections: none
+Templates requiring updates:
+  - .specify/templates/plan-template.md: ✅ no constitution references
+  - .specify/templates/spec-template.md: ✅ no constitution references
+  - .specify/templates/tasks-template.md: ✅ no constitution references
+Follow-up TODOs: none
+-->
+
 # Agent Eval Harness Constitution
 
 ## Core Principles
@@ -20,6 +35,21 @@ New features extend existing dataclasses and functions rather than replacing the
 ### VI. MLflow as Optional Integration
 MLflow handles dataset sync, result logging, and trace feedback via a separate skill (`/eval-mlflow`). The core eval pipeline (analyze, dataset, run, review, optimize) works without MLflow. No implicit experiment creation on shared tracking servers.
 
+### VII. Backward Compatibility by Default
+Existing configurations must keep working when new features are added. Root-level `eval.yaml` remains a first-class location for single-eval projects with no deprecation warnings. New organizational features (directory layouts, discovery) adapt to project complexity rather than forcing migration. Breaking changes require explicit user action, not automatic conversion.
+
+### VIII. Infer State, Don't Persist It
+Prefer inferring system state from existing file structure over creating persistence files. Discovery patterns, layout detection, and convention resolution should derive from what's on disk rather than maintaining separate metadata files. This eliminates artifacts to manage, gitignore entries, and error handling for corrupted state.
+
+## Eval Target Generality
+
+The harness evaluates multiple target types, not just skills. The `skill` field in eval.yaml serves as the eval identifier for backward compatibility, but the framework supports:
+- **Skill evaluation** (case/batch mode): invoke a skill and score output
+- **Prompt evaluation** (prompt mode): send prompts directly, score agent capability
+- **Activation evaluation** (future): test whether skills trigger correctly for natural language intent
+
+Specs, code, and documentation should use "eval target" or "eval name" when the context is not skill-specific.
+
 ## Technology Stack
 
 - **Language**: Python 3.11+
@@ -38,4 +68,4 @@ MLflow handles dataset sync, result logging, and trace feedback via a separate s
 
 Constitution supersedes default practices. Amendments require documentation and review.
 
-**Version**: 1.0.0 | **Ratified**: 2026-05-29
+**Version**: 1.1.0 | **Ratified**: 2026-05-29 | **Last Amended**: 2026-05-31
