@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented
+Proposed
 
 ## Problem
 
