@@ -20,15 +20,25 @@ def _read_text_safe(path: Path) -> str:
 
 
 def _parse_frontmatter_description(content: str) -> str:
-    """Extract description from YAML frontmatter (between --- delimiters)."""
+    """Extract description from YAML frontmatter using yaml.safe_load."""
     lines = content.splitlines()
     if not lines or lines[0] != "---":
         return ""
+    end = None
     for i, line in enumerate(lines[1:], 1):
         if line == "---":
+            end = i
             break
-        if line.startswith("description:"):
-            return line.split(":", 1)[1].strip().strip("'\"")[:80]
+    if end is None:
+        return ""
+    frontmatter_text = "\n".join(lines[1:end])
+    try:
+        import yaml
+        parsed = yaml.safe_load(frontmatter_text)
+        if isinstance(parsed, dict) and "description" in parsed:
+            return str(parsed["description"])
+    except Exception:
+        pass
     return ""
 
 
@@ -117,26 +127,34 @@ def find_claude_md(root: Path) -> dict | None:
 
 
 def find_hooks(root: Path) -> list[dict]:
-    """Find hooks from settings.json."""
+    """Find hooks from settings.json and plugin.json."""
     hooks = []
-    settings_path = root / ".claude" / "settings.json"
-    if not settings_path.exists():
-        return hooks
-    content = _read_text_safe(settings_path)
-    if not content:
-        return hooks
-    try:
-        settings = json.loads(content)
-        for hook_type, hook_list in settings.get("hooks", {}).items():
-            if isinstance(hook_list, list):
-                for hook in hook_list:
-                    hooks.append({
-                        "type": hook_type,
-                        "matcher": hook.get("matcher", ""),
-                        "command": hook.get("command", "")[:60],
-                    })
-    except (json.JSONDecodeError, KeyError):
-        pass
+    sources = [
+        root / ".claude" / "settings.json",
+        root / ".claude-plugin" / "plugin.json",
+    ]
+    for source_path in sources:
+        if not source_path.exists():
+            continue
+        content = _read_text_safe(source_path)
+        if not content:
+            continue
+        try:
+            data = json.loads(content)
+            for hook_type, matchers in data.get("hooks", {}).items():
+                if not isinstance(matchers, list):
+                    continue
+                for matcher in matchers:
+                    inner_hooks = matcher.get("hooks", [])
+                    if isinstance(inner_hooks, list):
+                        for hook in inner_hooks:
+                            hooks.append({
+                                "type": hook_type,
+                                "matcher": matcher.get("matcher", ""),
+                                "command": hook.get("command", "")[:60],
+                            })
+        except (json.JSONDecodeError, KeyError):
+            pass
     return hooks
 
 
