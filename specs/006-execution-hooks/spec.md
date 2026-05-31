@@ -157,6 +157,13 @@ When `condition` is set, the harness runs `bash -c "<condition>"` first. If it e
 6. **No harness file mutation.** Hooks must not modify `.claude/settings.json`, `batch.yaml`, `case_order.yaml`, or other harness-managed files. They may freely create, extract, or modify other files in the workspace.
 7. **Timeout enforcement.** Hooks are killed (SIGTERM, then SIGKILL after 5s) if they exceed `timeout`. Timed-out hooks are treated as failures.
 
+### Security
+
+1. **Trust model.** Hooks in `eval.yaml` are trusted developer input — the same trust level as the `skill` field or judge definitions. The harness does not sandbox or restrict hook commands. Untrusted third parties should not be able to modify `eval.yaml` or dataset case directories.
+2. **Privilege level.** Hooks run with the full permissions of the harness process. There is no privilege separation between hooks and the rest of the pipeline.
+3. **Path validation.** Hook log filenames are sanitized to prevent path traversal (CWE-22). `case_id` values used in log paths are restricted to alphanumeric characters, dots, hyphens, and underscores.
+4. **Data flow risks.** Hooks that execute commands against external systems (databases, APIs) using dataset files (e.g., `psql < seed.sql`) assume those files are trusted. If datasets are sourced from untrusted origins, hook authors should validate inputs or use parameterized tooling rather than passing raw files to interpreters.
+
 ### Implementation
 
 Changes are localized to three files:
@@ -273,6 +280,8 @@ hooks:
       on_failure: continue
       description: "Tear down services"
 ```
+
+> **Note:** Database seeding from case files (`seed.sql`) assumes the dataset is trusted. If datasets are sourced externally, validate SQL files or use a parameterized seeding script rather than raw `psql`.
 
 ### Network Shims (PATH Manipulation)
 

@@ -174,14 +174,14 @@ def main():
     )
     log_dir = output_dir / "hooks"
 
-    # Run before_all hooks
-    if config.hooks.before_all:
-        print("Running before_all hooks...", file=sys.stderr)
-        run_hooks(config.hooks.before_all, env=hook_env,
-                  cwd=Path.cwd(), log_dir=log_dir,
-                  phase_name="before_all")
-
     try:
+        # Run before_all hooks
+        if config.hooks.before_all:
+            print("Running before_all hooks...", file=sys.stderr)
+            run_hooks(config.hooks.before_all, env=hook_env,
+                      cwd=Path.cwd(), log_dir=log_dir,
+                      phase_name="before_all")
+
         # Set MLflow environment in the workspace settings
         if mlflow_experiment:
             from agent_eval.mlflow.experiment import inject_tracing_env
@@ -419,17 +419,17 @@ def _execute_per_case(args, config, runner, runner_cls,
     )
     log_dir = output_dir / "hooks"
 
-    # Run before_all hooks
-    if config.hooks.before_all:
-        print("Running before_all hooks...", file=sys.stderr)
-        run_hooks(config.hooks.before_all, env=hook_env,
-                  cwd=Path.cwd(), log_dir=log_dir,
-                  phase_name="before_all")
-
     case_results = {}
     wall_clock_start = time.monotonic()
 
     try:
+        # Run before_all hooks (inside try so after_all runs on failure)
+        if config.hooks.before_all:
+            print("Running before_all hooks...", file=sys.stderr)
+            run_hooks(config.hooks.before_all, env=hook_env,
+                      cwd=Path.cwd(), log_dir=log_dir,
+                      phase_name="before_all")
+
         if effective_parallelism > 1:
             from concurrent.futures import ThreadPoolExecutor, as_completed
 

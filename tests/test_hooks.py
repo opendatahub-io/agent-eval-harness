@@ -243,6 +243,52 @@ def test_empty_entries_returns_empty(tmp_path):
 # run_hooks_safe
 # ---------------------------------------------------------------------------
 
+def test_invalid_on_failure_rejected(tmp_path):
+    with pytest.raises(ValueError, match="on_failure must be"):
+        EvalConfig.from_yaml(_write(tmp_path, textwrap.dedent("""\
+            name: t
+            skill: s
+            hooks:
+              before_all:
+                - command: "echo x"
+                  on_failure: fial
+        """)))
+
+
+def test_negative_timeout_rejected(tmp_path):
+    with pytest.raises(ValueError, match="timeout must be a positive"):
+        EvalConfig.from_yaml(_write(tmp_path, textwrap.dedent("""\
+            name: t
+            skill: s
+            hooks:
+              before_all:
+                - command: "echo x"
+                  timeout: -1
+        """)))
+
+
+def test_zero_timeout_rejected(tmp_path):
+    with pytest.raises(ValueError, match="timeout must be a positive"):
+        EvalConfig.from_yaml(_write(tmp_path, textwrap.dedent("""\
+            name: t
+            skill: s
+            hooks:
+              before_all:
+                - command: "echo x"
+                  timeout: 0
+        """)))
+
+
+def test_case_id_sanitized_in_log_filename(tmp_path):
+    log_dir = tmp_path / "hooks"
+    entries = [HookEntry(command="echo safe")]
+    results = run_hooks(entries, dict(os.environ), tmp_path, log_dir,
+                        "before_each", case_id="../../etc/passwd")
+    # Log file must stay inside log_dir regardless of malicious case_id
+    assert results[0].log_file.resolve().parent == log_dir.resolve()
+    assert "/" not in results[0].log_file.name
+
+
 def test_run_hooks_safe_never_raises(tmp_path):
     log_dir = tmp_path / "hooks"
     entries = [

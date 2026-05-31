@@ -524,11 +524,21 @@ class EvalConfig:
         for phase in phases:
             entries = []
             for h in (hooks_raw.get(phase) or []):
+                on_failure_val = h.get("on_failure", "fail")
+                if on_failure_val not in ("fail", "continue"):
+                    raise ValueError(
+                        f"hooks.{phase}: on_failure must be 'fail' or "
+                        f"'continue', got '{on_failure_val}'")
+                timeout_val = h.get("timeout", 120)
+                if not isinstance(timeout_val, int) or timeout_val <= 0:
+                    raise ValueError(
+                        f"hooks.{phase}: timeout must be a positive "
+                        f"integer, got {timeout_val}")
                 entries.append(HookEntry(
                     command=h.get("command", ""),
-                    timeout=h.get("timeout", 120),
+                    timeout=timeout_val,
                     description=h.get("description", ""),
-                    on_failure=h.get("on_failure", "fail"),
+                    on_failure=on_failure_val,
                     condition=h.get("condition", ""),
                 ))
             setattr(config.hooks, phase, entries)

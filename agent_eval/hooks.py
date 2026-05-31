@@ -45,13 +45,13 @@ class HookResult:
 
 
 def _kill_process(proc: subprocess.Popen):
-    """Send SIGTERM, wait 5s, then SIGKILL if still alive."""
+    """Send SIGTERM to the process group, then SIGKILL if needed."""
     try:
-        proc.terminate()
+        os.killpg(proc.pid, signal.SIGTERM)
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            os.killpg(proc.pid, signal.SIGKILL)
             proc.wait()
     except OSError:
         pass
@@ -69,6 +69,11 @@ def _run_condition(condition: str, env: dict, cwd: Path) -> bool:
         return result.returncode == 0
     except (subprocess.TimeoutExpired, OSError):
         return False
+
+
+def _safe_log_component(value: str) -> str:
+    """Sanitize a string for use in log filenames (CWE-22)."""
+    return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in value)
 
 
 def run_hooks(
@@ -103,7 +108,7 @@ def run_hooks(
 
     for i, hook in enumerate(entries):
         label = hook.description or hook.command.split("\n")[0][:60]
-        suffix = f".{case_id}" if case_id else ""
+        suffix = f".{_safe_log_component(case_id)}" if case_id else ""
         log_file = log_dir / f"{phase_name}{suffix}.{i}.log"
 
         if hook.condition:
