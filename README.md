@@ -501,7 +501,7 @@ Automated refinement loop: run eval, identify failures, read traces + judge rati
 
 Scan the full configuration (skills, commands, CLAUDE.md, hooks) as a system. Finds content overlap, trigger collisions, CLAUDE.md duplication, and type misclassification. Produces an informational report with restructuring suggestions.
 
-```
+```bash
 /eval-harness-check                        # Scan and report to harness-report.md
 /eval-harness-check --include-global       # Also scan ~/.claude/CLAUDE.md
 /eval-harness-check --output my-report.md  # Custom output path
