@@ -41,15 +41,6 @@ Existing configurations must keep working when new features are added. Root-leve
 ### VIII. Infer State, Don't Persist It
 Prefer inferring system state from existing file structure over creating persistence files. Discovery patterns, layout detection, and convention resolution should derive from what's on disk rather than maintaining separate metadata files. This eliminates artifacts to manage, gitignore entries, and error handling for corrupted state. Exception: persist computed state when it is expensive to recompute (e.g., `eval.md` from skill deep analysis).
 
-## Eval Target Generality
-
-The harness evaluates multiple target types, not just skills. The `skill` field in eval.yaml serves as the eval identifier for backward compatibility, but the framework supports:
-- **Skill evaluation** (case/batch mode): invoke a skill and score output
-- **Prompt evaluation** (prompt mode): send prompts directly, score agent capability
-- **Activation evaluation** (future): test whether skills trigger correctly for natural language intent
-
-Specs, code, and documentation should use "eval target" or "eval name" when the context is not skill-specific.
-
 ## Technology Stack
 
 - **Language**: Python 3.11+
