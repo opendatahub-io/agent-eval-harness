@@ -1,5 +1,5 @@
 <!-- Sync Impact Report
-Version change: 1.0.0 → 1.1.0 (MINOR: three principles added)
+Version change: 1.0.0 → 1.1.0 → 1.1.1 (PATCH: refined VII and VIII per reviewer feedback)
 Modified principles: none renamed
 Added sections:
   - VII. Backward Compatibility by Default
@@ -36,10 +36,10 @@ New features extend existing dataclasses and functions rather than replacing the
 MLflow handles dataset sync, result logging, and trace feedback via a separate skill (`/eval-mlflow`). The core eval pipeline (analyze, dataset, run, review, optimize) works without MLflow. No implicit experiment creation on shared tracking servers.
 
 ### VII. Backward Compatibility by Default
-Existing configurations must keep working when new features are added. Root-level `eval.yaml` remains a first-class location for single-eval projects with no deprecation warnings. New organizational features (directory layouts, discovery) adapt to project complexity rather than forcing migration. Breaking changes require explicit user action, not automatic conversion.
+Existing configurations must keep working when new features are added. Root-level `eval.yaml` remains a first-class location for single-eval projects with no deprecation warnings. New organizational features (directory layouts, discovery) adapt to project complexity. When migration is needed, the harness should automate it (offer to reorganize, move files, update paths) rather than leaving manual steps to the user.
 
 ### VIII. Infer State, Don't Persist It
-Prefer inferring system state from existing file structure over creating persistence files. Discovery patterns, layout detection, and convention resolution should derive from what's on disk rather than maintaining separate metadata files. This eliminates artifacts to manage, gitignore entries, and error handling for corrupted state.
+Prefer inferring system state from existing file structure over creating persistence files. Discovery patterns, layout detection, and convention resolution should derive from what's on disk rather than maintaining separate metadata files. This eliminates artifacts to manage, gitignore entries, and error handling for corrupted state. Exception: persist computed state when it is expensive to recompute (e.g., `eval.md` from skill deep analysis).
 
 ## Eval Target Generality
 
@@ -68,4 +68,4 @@ Specs, code, and documentation should use "eval target" or "eval name" when the 
 
 Constitution supersedes default practices. Amendments require documentation and review.
 
-**Version**: 1.1.0 | **Ratified**: 2026-05-29 | **Last Amended**: 2026-05-31
+**Version**: 1.1.1 | **Ratified**: 2026-05-29 | **Last Amended**: 2026-05-31

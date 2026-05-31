@@ -15,7 +15,7 @@ Returns a list of `DiscoveryResult` objects sorted by path. Each result includes
 
 - Files that fail YAML parsing are skipped with a warning to stderr
 - Files without a `skill` field are skipped (not valid eval configs)
-- Non-eval YAML files in `eval/` (e.g., `eval/.eval-layout`) are excluded by checking for the `skill` field
+- Non-eval YAML files in `eval/` are excluded by checking for the `skill` field
 
 ### Usage Pattern
 
