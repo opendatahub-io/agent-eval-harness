@@ -351,6 +351,10 @@ hooks:
 
 No breaking changes. `hooks:` is a new optional top-level key in eval.yaml. Existing configs without it behave identically. The eval-run skill instructions would add hook execution calls at each lifecycle point, and `preflight.py` would validate hook commands are syntactically valid.
 
+## Open Questions
+
+**Per-case hook overrides.** Should individual cases be able to define their own `before_each`/`after_each` hooks (e.g., via a `hooks.yaml` in the case directory)? Currently, per-case variation is handled by the `condition` field and `CASE_SOURCE_DIR` — hooks run or skip based on what files exist in the case directory. This covers the common pattern ("extract if snapshot exists", "seed if SQL present") but requires the eval author to anticipate all variations upfront in eval.yaml. Per-case hooks would let cases bring their own setup without touching the global config, at the cost of another file to discover/validate and harder reasoning about what runs for a given case. Deferred for now — revisit if the conditional approach proves insufficient.
+
 ## Future Extensions
 
 - **Hook outputs as judge inputs**: `before_scoring` hooks could write structured data that judges receive via a new `{{ hook_outputs }}` template variable.
