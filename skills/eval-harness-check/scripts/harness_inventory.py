@@ -62,7 +62,7 @@ def find_skills(root: Path) -> list[dict]:
                 resolved = (root / path).resolve()
                 if resolved.is_relative_to(root):
                     search_dirs.append(resolved)
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, KeyError, AttributeError):
             pass
 
     seen = set()
@@ -153,7 +153,7 @@ def find_hooks(root: Path) -> list[dict]:
                                 "matcher": matcher.get("matcher", ""),
                                 "command": hook.get("command", "")[:60],
                             })
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, KeyError, AttributeError):
             pass
     return hooks
 
