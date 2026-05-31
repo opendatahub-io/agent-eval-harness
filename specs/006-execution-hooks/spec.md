@@ -2,18 +2,18 @@
 
 ## Status
 
-Proposed
+Implemented
 
 ## Problem
 
-Eval cases often depend on resources that the harness doesn't manage today — compressed archives, running services, generated fixtures, OCI image volumes, seed data, network shims. Users work around this with manual scripts and env vars external to the harness:
+Eval cases often depend on resources that the harness doesn't manage today — running services, database seeding, generated fixtures, environment provisioning, or pre-/post-processing steps. Users work around this with manual scripts and env vars external to the harness:
 
 ```bash
 # Current workaround — external to the harness, fragile, not reproducible
-export EVAL_SNAPSHOT_DIR=$(./evals/scripts/extract-snapshots.sh 5.0.0-0.nightly-...)
-docker run -d --name eval-jira -p 8080:8080 quay.io/stbenjam/jira-emulator:latest
-/eval-run --config eval-payload-analysis.yaml --model sonnet
-docker rm -f eval-jira
+docker run -d --name eval-db -p 5432:5432 postgres:16
+psql -h localhost -U eval -f seed.sql eval_db
+/eval-run --config eval.yaml --model sonnet
+docker rm -f eval-db
 ```
 
 This has several problems:
