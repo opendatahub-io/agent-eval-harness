@@ -133,6 +133,8 @@ Write the resolved handlers back to `tool_handlers.yaml`.
 
 Run the skill headlessly against test cases. In `case` mode (default), execute.py runs the skill once per case with case-specific arguments and workspace — each case gets its own stdout.log and subagent transcripts. In `batch` mode, all cases run in a single invocation via batch.yaml.
 
+If `hooks:` is configured in eval.yaml, execute.py automatically runs lifecycle hooks at the appropriate points: `before_all` before any case executes, `before_each`/`after_each` around each case execution, and `after_all` after all cases complete (guaranteed, even on failure). Hook logs are written to `$AGENT_EVAL_RUNS_DIR/<id>/hooks/`.
+
 The execute script handles CLI construction, streaming progress, and result capture:
 
 ```bash
@@ -143,6 +145,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/execute.py \
   --skill-args "<skill arguments>" \
   --model <model> \
   --output $AGENT_EVAL_RUNS_DIR/<eval-name>/<id> \
+  --run-id <id> \
   [--agent <runner>] \
   [--subagent-model <model>] \
   [--mlflow-experiment <name>] \
@@ -217,8 +220,12 @@ If `--no-llm-judges` was specified, skip judges that make LLM API calls (prompt,
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/score.py judges \
   --run-id <id> \
-  --config <config>
+  --config <config> \
+  --workspace <workspace_path> \
+  --model <model>
 ```
+
+If `hooks.before_scoring` is configured in eval.yaml, score.py runs those hooks before judge execution. Pass `--workspace` and `--model` so hook environment variables are populated.
 
 Judges receive a record dict with:
 - **File contents**: `outputs["files"]`, `outputs["<dir>_content"]`

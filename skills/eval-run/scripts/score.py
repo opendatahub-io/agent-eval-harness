@@ -1449,6 +1449,22 @@ def cmd_judges(args):
         samples_override = max(1, samples_override)
         if samples_override == 1:
             samples_override = None
+
+    # Run before_scoring hooks
+    if config.hooks.before_scoring:
+        from agent_eval.hooks import build_hook_env, run_hooks
+        hook_env = build_hook_env(
+            workspace=args.workspace or "",
+            run_id=args.run_id,
+            config_path=str(Path(args.config).resolve()),
+            project_root=str(project_root),
+            model=args.model or "",
+        )
+        log_dir = runs_dir / args.run_id / "hooks"
+        print("Running before_scoring hooks...", file=sys.stderr)
+        run_hooks(config.hooks.before_scoring, env=hook_env,
+                  cwd=project_root, log_dir=log_dir,
+                  phase_name="before_scoring")
     judges = load_judges(config, project_root)
     n_llm = sum(1 for _, _, _, jt, _ in judges if jt == "llm")
     sampled = [n for n, _, _, jt, s in judges
@@ -1639,6 +1655,10 @@ def main():
                             "judge N times per case; median (score) / majority "
                             "(bool) becomes the value, spread recorded for "
                             "stability reporting")
+    jdg_p.add_argument("--workspace", default=None,
+                       help="Workspace path (for before_scoring hook env vars)")
+    jdg_p.add_argument("--model", default=None,
+                       help="Skill model (for before_scoring hook env vars)")
 
     # pairwise
     pw_p = subparsers.add_parser("pairwise", help="Pairwise comparison")

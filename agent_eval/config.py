@@ -125,6 +125,26 @@ class InputsConfig:
 
 
 @dataclass
+class HookEntry:
+    """A single lifecycle hook command."""
+    command: str = ""
+    timeout: int = 120
+    description: str = ""
+    on_failure: str = "fail"  # "fail" | "continue"
+    condition: str = ""
+
+
+@dataclass
+class HooksConfig:
+    """Lifecycle hooks that run at defined points in the eval pipeline."""
+    before_all: list = field(default_factory=list)
+    before_each: list = field(default_factory=list)
+    after_each: list = field(default_factory=list)
+    before_scoring: list = field(default_factory=list)
+    after_all: list = field(default_factory=list)
+
+
+@dataclass
 class ExecutionConfig:
     """How the skill is invoked against test cases.
 
@@ -266,6 +286,9 @@ class EvalConfig:
     description: str = ""
     skill: str = ""
     permissions: dict = field(default_factory=dict)
+
+    # Lifecycle hooks — shell commands at defined pipeline points
+    hooks: HooksConfig = field(default_factory=HooksConfig)
 
     # Execution — how the skill is invoked (mode, arguments, timeout, budget)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
@@ -493,6 +516,22 @@ class EvalConfig:
 
         # Thresholds
         config.thresholds = raw.get("thresholds", {})
+
+        # Hooks
+        hooks_raw = raw.get("hooks", {}) or {}
+        phases = ["before_all", "before_each", "after_each",
+                  "before_scoring", "after_all"]
+        for phase in phases:
+            entries = []
+            for h in (hooks_raw.get(phase) or []):
+                entries.append(HookEntry(
+                    command=h.get("command", ""),
+                    timeout=h.get("timeout", 120),
+                    description=h.get("description", ""),
+                    on_failure=h.get("on_failure", "fail"),
+                    condition=h.get("condition", ""),
+                ))
+            setattr(config.hooks, phase, entries)
 
         if config.skill and not _is_valid_eval_name(config.skill):
             raise ValueError(
