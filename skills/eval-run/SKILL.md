@@ -40,6 +40,8 @@ python3 ${CLAUDE_SKILL_DIR}/../../scripts/discover.py
 - **Multiple configs found**: present the list and ask the user which to run
 - **No configs found**: proceed to the bootstrap flow below
 
+After selecting a config, read its `skill` field to set `<eval-name>` (used in `$AGENT_EVAL_RUNS_DIR/<eval-name>/<id>` paths below).
+
 Check if the resolved config file exists:
 
 ```bash

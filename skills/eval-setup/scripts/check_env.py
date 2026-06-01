@@ -100,10 +100,13 @@ def main():
     runs_base = Path(runs_dir)
     per_eval_dirs = []
     if runs_base.is_dir():
-        per_eval_dirs = sorted(
-            d.name for d in runs_base.iterdir()
-            if d.is_dir() and any(d.iterdir())
-        )
+        try:
+            per_eval_dirs = sorted(
+                d.name for d in runs_base.iterdir()
+                if d.is_dir() and any(d.iterdir())
+            )
+        except OSError:
+            pass
     dir_detail = "all present" if dirs_ok else f"missing: {', '.join(missing_dirs)}"
     if per_eval_dirs:
         dir_detail += f"; per-eval runs: {', '.join(per_eval_dirs)}"

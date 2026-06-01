@@ -27,6 +27,8 @@ python3 ${CLAUDE_SKILL_DIR}/../../scripts/discover.py
 - **Multiple configs found**: present the list and ask the user which eval's results to review
 - **No configs found**: error, suggest running `/eval-analyze` first
 
+After selecting a config, read its `skill` field to set `<eval-name>` (used in `$AGENT_EVAL_RUNS_DIR/<eval-name>/<id>` paths below).
+
 ## Step 1: Load Results
 
 Read the scoring summary and per-case results:

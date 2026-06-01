@@ -2239,6 +2239,10 @@ def main():
 
     config = _load_yaml(Path(args.config))
     eval_name = config.get("skill", "") if config else ""
+    if eval_name and ("/" in eval_name or "\\" in eval_name
+                      or eval_name in (".", "..") or "\x00" in eval_name):
+        print(f"ERROR: invalid skill name: {eval_name!r}", file=sys.stderr)
+        sys.exit(1)
     runs_base = Path(os.environ.get("AGENT_EVAL_RUNS_DIR", "eval/runs"))
     runs_dir = runs_base / eval_name if eval_name else runs_base
     run_dir = runs_dir / args.run_id

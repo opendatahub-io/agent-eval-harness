@@ -432,7 +432,7 @@ class EvalConfig:
 
     @property
     def project_root(self) -> Path:
-        """Project root (where eval.yaml lives)."""
+        """Project root directory (always CWD, not the eval.yaml location)."""
         return Path.cwd()
 
 
