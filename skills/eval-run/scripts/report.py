@@ -2242,14 +2242,17 @@ def main():
 
     # Resolve dataset.path relative to config file location so downstream
     # functions get an absolute path (not CWD-relative).
-    ds = config.get("dataset", {}) if config else {}
-    ds_path = ds.get("path", "")
-    if ds_path and not Path(ds_path).is_absolute():
-        ds["path"] = str((config_dir / ds_path).resolve())
+    ds = config.get("dataset") if config else None
+    if isinstance(ds, dict):
+        ds_path = ds.get("path", "")
+        if ds_path and not Path(ds_path).is_absolute():
+            ds["path"] = str((config_dir / ds_path).resolve())
 
     eval_name = config.get("skill", "") if config else ""
-    if eval_name and ("/" in eval_name or "\\" in eval_name
-                      or eval_name in (".", "..") or "\x00" in eval_name):
+    if eval_name and (not isinstance(eval_name, str)
+                      or "/" in eval_name or "\\" in eval_name
+                      or eval_name in (".", "..")
+                      or any(ord(c) < 32 for c in eval_name)):
         print(f"ERROR: invalid skill name: {eval_name!r}", file=sys.stderr)
         sys.exit(1)
     runs_base = Path(os.environ.get("AGENT_EVAL_RUNS_DIR", "eval/runs"))

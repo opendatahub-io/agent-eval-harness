@@ -470,11 +470,11 @@ def discover_configs(project_root: Path) -> list[DiscoveryResult]:
             return
         eval_name = raw["skill"]
         if not _is_valid_eval_name(eval_name):
-            print(f"Warning: skipping {yaml_path}: invalid eval name '{eval_name}'",
+            print(f"Warning: skipping {yaml_path}: invalid eval name {eval_name!r}",
                   file=sys.stderr)
             return
         if eval_name in seen_names:
-            print(f"Warning: duplicate eval name '{eval_name}' in "
+            print(f"Warning: duplicate eval name {eval_name!r} in "
                   f"{yaml_path} (already seen in {seen_names[eval_name]})",
                   file=sys.stderr)
         seen_names[eval_name] = resolved
