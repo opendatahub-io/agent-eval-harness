@@ -125,7 +125,14 @@ class ClaudeCodeRunner(EvalRunner):
             cmd.extend(["--plugin-dir", str(plugin_dir)])
 
         if settings_path:
-            cmd.extend(["--settings", str(settings_path)])
+            # Only pass --settings for non-standard locations. When the
+            # settings file is at .claude/settings.json relative to the
+            # workspace, let Claude Code discover it via CWD so hooks
+            # load as project settings (--settings can interfere with
+            # hook discovery in --print mode).
+            ws_default = workspace / ".claude" / "settings.json"
+            if settings_path.resolve() != ws_default.resolve():
+                cmd.extend(["--settings", str(settings_path)])
 
         effective_prompt = system_prompt or self._system_prompt
         if effective_prompt:

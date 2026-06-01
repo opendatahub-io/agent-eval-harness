@@ -196,12 +196,20 @@ def _create_per_case_workspace(workspace, case_dirs, config, args):
         case_ws.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "init", "-q", str(case_ws)], check=True)
 
-        # Copy only the input file from the dataset case directory.
-        # Everything else (gold standards, reference docs, annotations)
-        # is evaluation material that the skill must not see.
-        input_src = _find_input_file(case_dir)
-        if input_src:
-            shutil.copy2(input_src, case_ws / input_src.name)
+        # Copy all case files into the workspace. The skill needs input
+        # files, companion files (e.g., target-skill/SKILL.md), and
+        # answers.yaml for hook answering. Annotations are read by
+        # collect/score from the original dataset dir, not the workspace.
+        _EVAL_ONLY = {"annotations.yaml", "annotations.yml", "gold",
+                      "reference", "expected"}
+        for item in case_dir.iterdir():
+            if item.name.startswith(".") or item.name in _EVAL_ONLY:
+                continue
+            dst = case_ws / item.name
+            if item.is_dir():
+                shutil.copytree(item, dst, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, dst)
 
         # Create output directories
         for output in config.outputs:
