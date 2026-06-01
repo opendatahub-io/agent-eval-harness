@@ -29,6 +29,8 @@ def validate_config(path="eval.yaml"):
     with open(p) as f:
         config = yaml.safe_load(f) or {}
 
+    config_dir = p.resolve().parent
+
     errors = []
     warnings = []
 
@@ -56,10 +58,10 @@ def validate_config(path="eval.yaml"):
     if skill_name and not find_skill(skill_name):
         warnings.append(f"skill '{skill_name}' not found in project")
 
-    # --- File reference checks ---
+    # --- File reference checks (resolve relative to config file location) ---
     dataset_path = dataset.get("path", "")
     if dataset_path:
-        dp = Path(dataset_path)
+        dp = Path(dataset_path) if Path(dataset_path).is_absolute() else config_dir / dataset_path
         if not dp.exists():
             errors.append(f"dataset.path '{dataset_path}' does not exist")
         elif not any(p for p in dp.iterdir() if not p.name.startswith(".")):
@@ -77,10 +79,13 @@ def validate_config(path="eval.yaml"):
     for j in judges:
         name = j.get("name", "unnamed")
         prompt_file = j.get("prompt_file", "")
-        if prompt_file and not Path(prompt_file).exists():
-            errors.append(f"judges.{name}.prompt_file '{prompt_file}' not found")
+        if prompt_file:
+            pf = Path(prompt_file) if Path(prompt_file).is_absolute() else config_dir / prompt_file
+            if not pf.exists():
+                errors.append(f"judges.{name}.prompt_file '{prompt_file}' not found")
         for ctx_file in j.get("context", []):
-            if not Path(ctx_file).exists():
+            cf = Path(ctx_file) if Path(ctx_file).is_absolute() else config_dir / ctx_file
+            if not cf.exists():
                 warnings.append(f"judges.{name}.context '{ctx_file}' not found")
         module = j.get("module", "")
         if module:
@@ -105,13 +110,17 @@ def validate_config(path="eval.yaml"):
         if not t.get("prompt") and not t.get("prompt_file"):
             warnings.append(f"inputs.tools entry '{t.get('match', '?')[:30]}' has no prompt")
         prompt_file = t.get("prompt_file", "")
-        if prompt_file and not Path(prompt_file).exists():
-            errors.append(f"inputs.tools prompt_file '{prompt_file}' not found")
+        if prompt_file:
+            pf = Path(prompt_file) if Path(prompt_file).is_absolute() else config_dir / prompt_file
+            if not pf.exists():
+                errors.append(f"inputs.tools prompt_file '{prompt_file}' not found")
 
     runner = config.get("runner") or {}
     settings = runner.get("settings")
-    if isinstance(settings, str) and settings and not Path(settings).exists():
-        errors.append(f"runner.settings '{settings}' not found")
+    if isinstance(settings, str) and settings:
+        sp = Path(settings) if Path(settings).is_absolute() else config_dir / settings
+        if not sp.exists():
+            errors.append(f"runner.settings '{settings}' not found")
 
     # --- Models ---
     models = config.get("models") or {}
