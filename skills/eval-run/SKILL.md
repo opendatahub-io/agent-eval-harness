@@ -15,7 +15,7 @@ Parse `$ARGUMENTS`:
 
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `--config <path>` | no | `eval.yaml` | Path to eval config |
+| `--config <path>` | no | auto-discover | Path to eval config |
 | `--model <model>` | no | `models.skill` from config | Skill model. Required if `models.skill` is unset in eval.yaml. |
 | `--subagent-model <model>` | no | `models.subagent` → falls back to skill model | Model for subagents (e.g., `claude-sonnet-4-6` while main is `claude-opus-4-7`) |
 | `--skill <name>` | no | from config | Override the skill to test |
@@ -26,7 +26,21 @@ Parse `$ARGUMENTS`:
 | `--gold` | no | false | Save outputs as gold references after run |
 | `--effort <level>` | no | `runner.effort` from config | Claude Code reasoning effort (Claude Code only; ignored by other runners) |
 
-Check if the config file exists (use the parsed config path, not hardcoded `eval.yaml`):
+### Config Discovery
+
+If `--config` was explicitly provided, use that path directly.
+
+Otherwise, auto-discover eval configs:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/../../scripts/discover.py
+```
+
+- **1 config found**: auto-select it as `<config>`
+- **Multiple configs found**: present the list and ask the user which to run
+- **No configs found**: proceed to the bootstrap flow below
+
+Check if the resolved config file exists:
 
 ```bash
 test -f <config> && echo "CONFIG_EXISTS" || echo "NO_CONFIG"

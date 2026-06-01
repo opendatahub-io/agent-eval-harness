@@ -51,7 +51,7 @@ def main():
     parser.add_argument("--model", default=None,
                         help="Skill model (default: from eval.yaml models.skill)")
     parser.add_argument("--output", required=True)
-    parser.add_argument("--config", default="eval.yaml",
+    parser.add_argument("--config", required=True,
                         help="Path to eval.yaml")
     parser.add_argument("--agent", default=None,
                         help="Agent runner override (default: from runner.type)")

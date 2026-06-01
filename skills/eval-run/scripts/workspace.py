@@ -32,7 +32,7 @@ from agent_eval.config import EvalConfig
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--config", default="eval.yaml")
+    parser.add_argument("--config", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--cases", nargs="*", default=None)
     parser.add_argument("--symlinks", default=None,
@@ -42,7 +42,7 @@ def main():
 
     config = EvalConfig.from_yaml(args.config)
 
-    cases_dir = Path(config.dataset_path)
+    cases_dir = config.resolve_path(config.dataset_path)
     if not cases_dir.exists():
         print(f"ERROR: dataset path not found: {cases_dir}", file=sys.stderr)
         sys.exit(1)

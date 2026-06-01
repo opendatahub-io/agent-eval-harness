@@ -2230,22 +2230,23 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--config", default="eval.yaml")
+    parser.add_argument("--config", required=True)
     parser.add_argument("--baseline", default=None,
                         help="Baseline run ID for comparison")
     parser.add_argument("--open", action="store_true",
                         help="Open report in browser")
     args = parser.parse_args()
 
-    runs_dir = Path(os.environ.get("AGENT_EVAL_RUNS_DIR", "eval/runs"))
+    config = _load_yaml(Path(args.config))
+    eval_name = config.get("skill", "") if config else ""
+    runs_base = Path(os.environ.get("AGENT_EVAL_RUNS_DIR", "eval/runs"))
+    runs_dir = runs_base / eval_name if eval_name else runs_base
     run_dir = runs_dir / args.run_id
     baseline_dir = runs_dir / args.baseline if args.baseline else None
 
     if not run_dir.exists():
         print(f"ERROR: run directory not found: {run_dir}", file=sys.stderr)
         sys.exit(1)
-
-    config = _load_yaml(Path(args.config))
     summary = _load_yaml(run_dir / "summary.yaml")
     run_result = _load_json(run_dir / "run_result.json")
     review = _load_yaml(run_dir / "review.yaml") or None

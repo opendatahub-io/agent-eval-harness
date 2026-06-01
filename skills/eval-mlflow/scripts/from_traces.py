@@ -118,7 +118,7 @@ def _attach_input_artifacts(extracted, experiment_id):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--config", default="eval.yaml")
+    parser.add_argument("--config", required=True)
     parser.add_argument("--experiment", default=None,
                         help="Experiment name (default: from eval.yaml)")
     parser.add_argument("--count", type=int, default=10,

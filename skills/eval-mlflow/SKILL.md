@@ -14,8 +14,20 @@ Parse `$ARGUMENTS` for:
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `--action <action>` | no | `all` | One of: `sync-dataset`, `log-results`, `push-feedback`, `pull-feedback`, `all` |
-| `--config <path>` | no | `eval.yaml` | Path to eval config |
+| `--config <path>` | no | auto-discover | Path to eval config |
 | `--run-id <id>` | for log/push/pull | — | Which eval run to log or attach feedback to |
+
+### Config Discovery
+
+If `--config` was explicitly provided, use that path directly. Otherwise, auto-discover:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/../../scripts/discover.py
+```
+
+- **1 config found**: auto-select it as `<config>`
+- **Multiple configs found**: present the list and ask the user which eval to operate on
+- **No configs found**: error, suggest running `/eval-analyze` first
 
 ## Step 1: Verify MLflow
 

@@ -12,8 +12,20 @@ You are an interactive reviewer. You present evaluation results to the user, col
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `--run-id <id>` | **yes** | — | Which eval run to review |
-| `--config <path>` | no | `eval.yaml` | Path to eval config |
+| `--config <path>` | no | auto-discover | Path to eval config |
 | `--cases <name> [<name> ...]` | no | all | Exact case directory names to review |
+
+### Config Discovery
+
+If `--config` was explicitly provided, use that path directly. Otherwise, auto-discover:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/../../scripts/discover.py
+```
+
+- **1 config found**: auto-select it as `<config>`
+- **Multiple configs found**: present the list and ask the user which eval's results to review
+- **No configs found**: error, suggest running `/eval-analyze` first
 
 ## Step 1: Load Results
 

@@ -11,10 +11,22 @@ You generate evaluation test cases for a skill. You read the skill analysis (eva
 
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `--config <path>` | no | `eval.yaml` | Path to eval config |
+| `--config <path>` | no | auto-discover | Path to eval config |
 | `--count <N>` | no | 5 | Number of cases to generate |
 | `--strategy <type>` | no | `bootstrap` | Generation strategy (see Step 3) |
 | `--run-id <id>` | no | — | Previous eval run to learn from (used with `expand`) |
+
+### Config Discovery
+
+If `--config` was explicitly provided, use that path directly. Otherwise, auto-discover:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/../../scripts/discover.py
+```
+
+- **1 config found**: auto-select it as `<config>`
+- **Multiple configs found**: present the list and ask the user which eval's dataset to populate
+- **No configs found**: suggest running `/eval-analyze` first
 
 ## Step 1: Read Context
 

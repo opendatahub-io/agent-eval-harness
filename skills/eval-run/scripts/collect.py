@@ -49,7 +49,7 @@ def _safe_path_component(value, field):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--config", default="eval.yaml")
+    parser.add_argument("--config", required=True)
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()

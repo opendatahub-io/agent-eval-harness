@@ -9,12 +9,12 @@ You analyze a target skill and produce `eval.yaml` — the configuration that `/
 
 The core principle: **observe, don't assume**. Every field name, file pattern, and directory path in the generated eval.yaml must come from reading actual files. If you can't point to a specific file or field you observed, don't put it in the config.
 
-## Step 0: Parse Arguments
+## Step 0: Parse Arguments and Discover Layout
 
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `--skill <name>` | no | auto-detect | Which skill to analyze |
-| `--config <path>` | no | `eval.yaml` | Output path for the config |
+| `--config <path>` | no | auto-discover | Output path for the config |
 | `--update` | no | false | Fill in missing sections only, preserve user edits |
 
 ```bash
@@ -22,6 +22,24 @@ mkdir -p tmp
 python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py init tmp/analyze-config.yaml \
   skill=<skill> config=<config> update=<true/false>
 ```
+
+### Config Location Discovery
+
+If `--config` was explicitly provided, use that path directly (skip discovery).
+
+Otherwise, discover existing eval configs:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/../../scripts/discover.py
+```
+
+Based on discovery results:
+- **No configs found**: scaffold `eval.yaml` at the project root (simple default for first eval)
+- **One root config exists** and `--skill` targets a different eval than the existing one: offer to reorganize into `eval/` layout. If the user accepts, run the reorganization script (see Phase 7). If declined, ask where to put the new config.
+- **Nested/flat layout already exists**: place the new config at `eval/<skill-name>/eval.yaml` (nested) or alongside existing flat configs
+- **`--config` provided**: use the explicit path, bypass layout logic
+
+Set the resolved config path as `<config>` for all subsequent steps. Set `<eval_md_path>` to the same directory as `<config>`, with filename `eval.md`.
 
 ## Step 1: Find the Target Skill
 
@@ -43,7 +61,7 @@ This reads `.claude-plugin/plugin.json` for custom skill paths, falls back to `.
 
 ## Step 2: Check If Analysis Is Needed
 
-If eval.yaml already exists and `--update` was not set:
+If the resolved `<config>` already exists and `--update` was not set:
 
 ```bash
 test -f <config> && echo "CONFIG_EXISTS" || echo "NO_CONFIG"
@@ -58,7 +76,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/validate_eval.py config <config>
 Then check if eval.md (the cached analysis) is still fresh — meaning the SKILL.md hasn't changed since the last analysis:
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/validate_eval.py memory eval.md
+python3 ${CLAUDE_SKILL_DIR}/scripts/validate_eval.py memory <eval_md_path>
 ```
 
 If FRESH and eval.yaml has a non-empty `dataset.schema`, at least one `outputs` entry with a schema, at least one judge, and `models.skill` set, report that config is up to date and exit. No work needed. (An INCOMPLETE config — empty sections, or missing `models.skill` from a pre-restructure eval.yaml — still needs analysis.)
@@ -89,7 +107,7 @@ First check if eval.yaml already has a `dataset.path` (from a previous run or `-
 ls <dataset_path>/ 2>/dev/null | head -20
 ```
 
-If not set or doesn't exist, search the project for test case directories using the Glob tool:
+If not set or doesn't exist, search the project (relative to `<config>` directory) for test case directories using the Glob tool:
 
 ```
 Glob: **/cases/ or **/test-cases/ or **/fixtures/ or **/examples/ or **/dataset/ or **/eval/ or **/tests/data/
@@ -132,13 +150,13 @@ Key points:
 
 ## Step 5b: Validate Generated Config
 
-After writing eval.yaml, validate that all references are correct:
+After writing eval.yaml to the resolved `<config>` path, validate that all references are correct:
 
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/validate_eval.py config <config>
 ```
 
-This checks dataset path exists, output paths are relative, judge prompt_file/context/module references resolve, and runner.settings exists.
+This checks dataset path exists (resolved relative to the config file's directory), output paths are relative, judge prompt_file/context/module references resolve, and runner.settings exists.
 
 **Errors** (exit code 1): fix before proceeding — broken file references, absolute paths, missing modules.
 
@@ -146,7 +164,7 @@ This checks dataset path exists, output paths are relative, judge prompt_file/co
 
 ## Step 6: Generate eval.md
 
-The eval.md caches the skill analysis so it doesn't need to be repeated. The hash tracks only the top-level SKILL.md — if sub-skills change, the user should run `/eval-analyze --update` to refresh. Compute the skill hash:
+The eval.md caches the skill analysis so it doesn't need to be repeated. Write it to `<eval_md_path>` (same directory as the config file). The hash tracks only the top-level SKILL.md — if sub-skills change, the user should run `/eval-analyze --update` to refresh. Compute the skill hash:
 
 ```bash
 python3 -c "import hashlib; from pathlib import Path; print(hashlib.sha256(Path('<skill-path>/SKILL.md').read_bytes()).hexdigest()[:12])"

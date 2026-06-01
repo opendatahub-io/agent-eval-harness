@@ -13,11 +13,23 @@ The key difference from `/eval-review`: you act autonomously. You read judge rat
 
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `--config <path>` | no | `eval.yaml` | Path to eval config |
+| `--config <path>` | no | auto-discover | Path to eval config |
 | `--model <model>` | no | `models.skill` from eval.yaml | Model to use for eval runs (overrides config default) |
 | `--max-iterations <N>` | no | 3 | Stop after N improvement cycles |
 | `--run-id <id>` | no | auto-generated | Base run ID (iterations append `-iter-N`) |
 | `--target-judge <name>` | no | all judges | Focus on a specific failing judge |
+
+### Config Discovery
+
+If `--config` was explicitly provided, use that path directly. Otherwise, auto-discover:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/../../scripts/discover.py
+```
+
+- **1 config found**: auto-select it as `<config>`
+- **Multiple configs found**: present the list and ask the user which eval to optimize
+- **No configs found**: suggest running `/eval-analyze` first
 
 ```bash
 mkdir -p tmp

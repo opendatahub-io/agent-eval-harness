@@ -50,7 +50,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--config", default="eval.yaml")
+    parser.add_argument("--config", required=True)
     parser.add_argument("--action", choices=["push", "pull"], default="push")
     parser.add_argument("--source", choices=["judge", "human", "all"], default="judge",
                         help="What feedback to push (push mode only)")
@@ -60,7 +60,8 @@ def main():
 
     config = EvalConfig.from_yaml(args.config)
     mlflow.set_tracking_uri(resolve_tracking_uri(config))
-    runs_dir = Path(os.environ.get("AGENT_EVAL_RUNS_DIR", "eval/runs"))
+    runs_base = Path(os.environ.get("AGENT_EVAL_RUNS_DIR", "eval/runs"))
+    runs_dir = runs_base / config.skill if config.skill else runs_base
     run_dir = runs_dir / args.run_id
 
     experiment_name = config.mlflow.experiment or config.name

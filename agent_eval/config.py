@@ -3,30 +3,46 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Union
+import sys
 
 import yaml
 
 
 def _validate_relative_path(value: str, field_name: str,
-                            reject_root: bool = False) -> str:
-    """Reject absolute or parent-traversing paths.
+                            reject_root: bool = False,
+                            allow_absolute: bool = False) -> str:
+    """Reject parent-traversing paths (and optionally absolute paths).
 
     Args:
         reject_root: If True, also reject "." (current directory).
             Used for output paths where "." would mean the project root
             and cleaning it would delete the entire project.
+        allow_absolute: If True, allow absolute paths (pass through as-is).
+            Used for dataset.path which may be an absolute shared path.
     """
     if not value:
         return value
     p = Path(value)
-    if p.is_absolute() or ".." in p.parts:
-        raise ValueError(f"{field_name} must be a relative path without '..': {value}")
+    if ".." in p.parts:
+        raise ValueError(f"{field_name} must not contain '..': {value}")
+    if p.is_absolute():
+        if not allow_absolute:
+            raise ValueError(f"{field_name} must be a relative path: {value}")
+        return value
     if reject_root and str(p) == ".":
         raise ValueError(
             f"{field_name} cannot be '.' (project root) — use a subdirectory. "
             f"Outputs must be in a named subdirectory so the harness can "
             f"identify, collect, and clean them without affecting the project.")
     return value
+
+
+@dataclass
+class DiscoveryResult:
+    """A discovered eval config file."""
+    path: Path
+    eval_name: str
+    is_root: bool
 
 
 @dataclass
@@ -237,11 +253,28 @@ class EvalConfig:
     # Regression thresholds
     thresholds: dict = field(default_factory=dict)
 
+    # Directory containing the eval.yaml that created this config.
+    # Used as base for resolving dataset.path. None when constructed
+    # programmatically (falls back to Path.cwd()).
+    config_dir: Optional[Path] = None
+
     # Runtime overrides (set by CLI or skill, not config file)
     model: str = ""
     subagent_model: str = ""
     run_id: str = ""
     baseline: str = ""
+
+    def resolve_path(self, relative: Path | str) -> Path:
+        """Resolve a path relative to the config file's directory.
+
+        Absolute paths are returned as-is. Relative paths resolve against
+        config_dir (falling back to cwd when config_dir is None).
+        """
+        p = Path(relative)
+        if p.is_absolute():
+            return p
+        base = self.config_dir if self.config_dir is not None else Path.cwd()
+        return base / p
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "EvalConfig":
@@ -320,8 +353,10 @@ class EvalConfig:
             runner=runner,
             models=models,
             mlflow=mlflow,
+            config_dir=path.resolve().parent,
             dataset_path=_validate_relative_path(
-                dataset.get("path", ""), "dataset.path"),
+                dataset.get("path", ""), "dataset.path",
+                allow_absolute=True),
             dataset_schema=dataset.get("schema", ""),
         )
 
@@ -389,9 +424,110 @@ class EvalConfig:
         # Thresholds
         config.thresholds = raw.get("thresholds", {})
 
+        if config.skill and not _is_valid_eval_name(config.skill):
+            raise ValueError(
+                f"Invalid skill name in {path}: {config.skill!r}")
+
         return config
 
     @property
     def project_root(self) -> Path:
         """Project root (where eval.yaml lives)."""
         return Path.cwd()
+
+
+def _is_valid_eval_name(name: str) -> bool:
+    """Check that an eval name is a valid single path segment."""
+    if not name:
+        return False
+    if "/" in name or "\\" in name or name in (".", "..") or "\x00" in name:
+        return False
+    return all(ord(c) >= 32 for c in name)
+
+
+def discover_configs(project_root: Path) -> list[DiscoveryResult]:
+    """Scan the project for eval.yaml files across all supported layouts.
+
+    Scan order: eval/*/eval.yaml (nested), eval/*.yaml (flat), root eval.yaml.
+    Files without a ``skill`` field or that fail YAML parsing are skipped.
+    Eval names with path separators or control characters are rejected.
+    """
+    results: list[DiscoveryResult] = []
+    seen: set[Path] = set()
+    seen_names: dict[str, Path] = {}
+
+    def _try_add(yaml_path: Path, is_root: bool) -> None:
+        resolved = yaml_path.resolve()
+        if resolved in seen:
+            return
+        try:
+            with open(resolved) as f:
+                raw = yaml.safe_load(f) or {}
+        except Exception as exc:
+            print(f"Warning: skipping {yaml_path}: {exc}", file=sys.stderr)
+            return
+        if not isinstance(raw, dict) or not raw.get("skill"):
+            return
+        eval_name = raw["skill"]
+        if not _is_valid_eval_name(eval_name):
+            print(f"Warning: skipping {yaml_path}: invalid eval name '{eval_name}'",
+                  file=sys.stderr)
+            return
+        if eval_name in seen_names:
+            print(f"Warning: duplicate eval name '{eval_name}' in "
+                  f"{yaml_path} (already seen in {seen_names[eval_name]})",
+                  file=sys.stderr)
+        seen_names[eval_name] = resolved
+        seen.add(resolved)
+        results.append(DiscoveryResult(
+            path=resolved,
+            eval_name=eval_name,
+            is_root=is_root,
+        ))
+
+    eval_dir = project_root / "eval"
+    if eval_dir.is_dir():
+        for subdir in sorted(eval_dir.iterdir()):
+            if subdir.is_dir():
+                candidate = subdir / "eval.yaml"
+                if candidate.is_file():
+                    _try_add(candidate, is_root=False)
+        for candidate in sorted(eval_dir.glob("*.yaml")):
+            if candidate.is_file() and candidate.name != "eval.yaml":
+                _try_add(candidate, is_root=False)
+
+    root_config = project_root / "eval.yaml"
+    if root_config.is_file():
+        _try_add(root_config, is_root=True)
+
+    return sorted(results, key=lambda r: r.path)
+
+
+def infer_layout(configs: list[DiscoveryResult]) -> str:
+    """Infer the project's eval layout from discovery results.
+
+    Returns one of: "nested", "flat", "root", "mixed", "none".
+    """
+    if not configs:
+        return "none"
+
+    has_nested = False
+    has_flat = False
+    has_root = False
+
+    for c in configs:
+        if c.is_root:
+            has_root = True
+        elif c.path.name == "eval.yaml":
+            has_nested = True
+        else:
+            has_flat = True
+
+    patterns = sum([has_nested, has_flat, has_root])
+    if patterns > 1:
+        return "mixed"
+    if has_nested:
+        return "nested"
+    if has_flat:
+        return "flat"
+    return "root"

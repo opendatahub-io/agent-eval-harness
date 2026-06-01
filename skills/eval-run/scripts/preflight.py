@@ -58,7 +58,7 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--config", default="eval.yaml")
+    parser.add_argument("--config", required=True)
     parser.add_argument("--clean", action="store_true",
                         help="Remove stale state files and previous run output")
     parser.add_argument("--force", action="store_true",
@@ -69,7 +69,8 @@ def main():
 
     config = EvalConfig.from_yaml(args.config)
     project_root = Path.cwd()
-    runs_dir = Path(os.environ.get("AGENT_EVAL_RUNS_DIR", "eval/runs"))
+    runs_base = Path(os.environ.get("AGENT_EVAL_RUNS_DIR", "eval/runs"))
+    runs_dir = runs_base / config.skill if config.skill else runs_base
 
     dirty = {}  # path_label -> list of files
 

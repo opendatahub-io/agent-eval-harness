@@ -96,8 +96,20 @@ def main():
             Path(d).mkdir(parents=True, exist_ok=True)
         dirs_ok = True
         missing_dirs = []
+
+    runs_base = Path(runs_dir)
+    per_eval_dirs = []
+    if runs_base.is_dir():
+        per_eval_dirs = sorted(
+            d.name for d in runs_base.iterdir()
+            if d.is_dir() and any(d.iterdir())
+        )
+    dir_detail = "all present" if dirs_ok else f"missing: {', '.join(missing_dirs)}"
+    if per_eval_dirs:
+        dir_detail += f"; per-eval runs: {', '.join(per_eval_dirs)}"
+
     checks.append(("directories", dirs_ok,
-                    "all present" if dirs_ok else f"missing: {', '.join(missing_dirs)}",
+                    dir_detail,
                     f"mkdir -p {runs_dir} tmp" + (" (use --fix to create)" if not args.fix else "")))
 
     # 9. eval.yaml (if --config provided)

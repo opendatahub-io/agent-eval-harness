@@ -28,12 +28,17 @@ from typing import Optional
 
 import yaml
 
-from agent_eval.config import EvalConfig
+from agent_eval.config import EvalConfig, _is_valid_eval_name
 
 
-def _get_runs_dir():
-    """Get runs directory from env or default."""
-    return Path(os.environ.get("AGENT_EVAL_RUNS_DIR", "eval/runs"))
+def _get_runs_dir(eval_name: str = ""):
+    """Get runs directory from env or default, optionally scoped by eval name."""
+    base = Path(os.environ.get("AGENT_EVAL_RUNS_DIR", "eval/runs"))
+    if eval_name:
+        if not _is_valid_eval_name(eval_name):
+            raise ValueError(f"Invalid eval name for path: {eval_name!r}")
+        return base / eval_name
+    return base
 
 
 def _resolve_under(root: Path, candidate: Path) -> Path:
@@ -57,7 +62,8 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
     - Execution metadata: exit_code, duration_s, token_usage, cost_usd, num_turns
     - Logs: stdout, stderr (if traces config enables them)
     """
-    runs_dir = Path(runs_dir) if runs_dir else _get_runs_dir()
+    runs_dir = Path(runs_dir) if runs_dir else _get_runs_dir(
+        config.skill if config else "")
     case_dir = Path(case_dir).resolve()
     record = {"files": {}, "tool_calls": [], "case_dir": str(case_dir)}
 
@@ -65,7 +71,7 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
     record["annotations"] = {}
     case_id = case_dir.name
     if config.dataset_path:
-        dataset_root = Path(config.dataset_path).resolve()
+        dataset_root = config.resolve_path(config.dataset_path).resolve()
         annotations_path = (dataset_root / case_id / "annotations.yaml").resolve()
         if (annotations_path.is_relative_to(dataset_root)
                 and annotations_path.is_file()
@@ -1062,7 +1068,7 @@ def compute_run_metrics(run_result):
 
 def cmd_judges(args):
     config = EvalConfig.from_yaml(args.config)
-    runs_dir = _get_runs_dir()
+    runs_dir = _get_runs_dir(config.skill)
     case_dirs = _get_case_dirs(args.run_id, runs_dir)
     project_root = Path.cwd()
 
@@ -1122,7 +1128,7 @@ def cmd_judges(args):
 
 def cmd_pairwise(args):
     config = EvalConfig.from_yaml(args.config)
-    runs_dir = _get_runs_dir()
+    runs_dir = _get_runs_dir(config.skill)
     case_dirs = _get_case_dirs(args.run_id, runs_dir)
     case_ids = [d.name for d in case_dirs]
 
@@ -1177,7 +1183,7 @@ def cmd_pairwise(args):
 
 def cmd_regression(args):
     config = EvalConfig.from_yaml(args.config)
-    runs_dir = _get_runs_dir()
+    runs_dir = _get_runs_dir(config.skill)
     summary_path = runs_dir / args.run_id / "summary.yaml"
     if not summary_path.exists():
         print(f"No summary found. Run judges first.", file=sys.stderr)
@@ -1215,13 +1221,13 @@ def main():
     # judges
     jdg_p = subparsers.add_parser("judges", help="Run all judges")
     jdg_p.add_argument("--run-id", required=True)
-    jdg_p.add_argument("--config", default="eval.yaml")
+    jdg_p.add_argument("--config", required=True)
 
     # pairwise
     pw_p = subparsers.add_parser("pairwise", help="Pairwise comparison")
     pw_p.add_argument("--run-id", required=True)
     pw_p.add_argument("--baseline", required=True)
-    pw_p.add_argument("--config", default="eval.yaml")
+    pw_p.add_argument("--config", required=True)
     pw_p.add_argument("--judge", default=None,
                       help="Name of judge from eval.yaml to use")
     pw_p.add_argument("--prompt-file", default=None,
@@ -1232,7 +1238,7 @@ def main():
     # regression
     reg_p = subparsers.add_parser("regression", help="Threshold checks")
     reg_p.add_argument("--run-id", required=True)
-    reg_p.add_argument("--config", default="eval.yaml")
+    reg_p.add_argument("--config", required=True)
     reg_p.add_argument("--baseline", default=None)
 
     args = parser.parse_args()

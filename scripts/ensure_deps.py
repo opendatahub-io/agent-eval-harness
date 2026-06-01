@@ -166,6 +166,14 @@ def _all_importable(venv_python, deps):
 
 def _find_eval_yaml(plugin_root):
     cwd = Path.cwd()
+    try:
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from agent_eval.config import discover_configs
+        configs = discover_configs(cwd)
+        if configs:
+            return configs[0].path
+    except Exception:
+        pass
     for candidate in [cwd / "eval.yaml", plugin_root / "eval.yaml"]:
         if candidate.exists():
             return candidate
