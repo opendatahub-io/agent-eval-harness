@@ -123,12 +123,33 @@ def get_skill_dirs():
 def find_skill(name):
     """Find a skill's SKILL.md by name.
 
+    Handles multiple naming conventions:
+    - Directory name: "enhancer" -> skills/enhancer/SKILL.md
+    - Plugin invocation: "skill:enhance" -> strip prefix, match directory or frontmatter name
+
     Returns the Path to SKILL.md or None if not found.
     """
+    candidates = [name]
+    if ":" in name:
+        candidates.append(name.split(":", 1)[1])
+
     for skills_dir in get_skill_dirs():
-        skill_path = Path(skills_dir) / name / "SKILL.md"
-        if skill_path.exists():
-            return skill_path
+        for candidate in candidates:
+            skill_path = Path(skills_dir) / candidate / "SKILL.md"
+            if skill_path.exists():
+                return skill_path
+
+        for path in sorted(glob(f"{skills_dir}/*/SKILL.md")):
+            try:
+                with open(path) as f:
+                    content = f.read()
+                if content.startswith("---"):
+                    fm = yaml.safe_load(content.split("---")[1])
+                    fm_name = (fm or {}).get("name", "")
+                    if fm_name == name or fm_name in candidates:
+                        return Path(path)
+            except Exception:
+                continue
     return None
 
 
@@ -140,19 +161,24 @@ def list_skills():
     skills = []
     for skills_dir in get_skill_dirs():
         for path in sorted(glob(f"{skills_dir}/*/SKILL.md")):
-            name = Path(path).parent.name
-            if name in HARNESS_SKILLS:
+            dir_name = Path(path).parent.name
+            if dir_name in HARNESS_SKILLS:
                 continue
             desc = ""
+            display_name = dir_name
             try:
                 with open(path) as f:
                     content = f.read()
                 if content.startswith("---"):
                     fm = yaml.safe_load(content.split("---")[1])
                     desc = (fm or {}).get("description", "")[:80]
+                    fm_name = (fm or {}).get("name", "")
+                    if fm_name:
+                        display_name = fm_name
             except Exception as e:
                 print(f"  WARNING: failed to parse {path}: {e}", file=sys.stderr)
-            skills.append({"name": name, "path": path, "description": desc})
+            skills.append({"name": display_name, "dir_name": dir_name,
+                           "path": path, "description": desc})
     return skills
 
 
