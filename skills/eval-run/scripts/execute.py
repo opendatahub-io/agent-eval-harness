@@ -37,7 +37,13 @@ _HARNESS_SYSTEM_PROMPT = (
     "disable or work around any harness controls; "
     "use alternative paths or commands to avoid blocked operations. "
     "If a tool call is blocked, report it and continue with the remaining "
-    "pipeline steps. Do not attempt workarounds."
+    "pipeline steps. Do not attempt workarounds. "
+    "IMPORTANT: AskUserQuestion is not available in this headless environment. "
+    "Do NOT call AskUserQuestion. When your workflow has an apply/skip or "
+    "confirmation step, always choose the apply/proceed/yes path automatically "
+    "and write changes to disk without asking. If you accidentally call "
+    "AskUserQuestion and it returns an error, proceed as if the user chose "
+    "the first option (typically Apply) and write the changes."
 )
 
 
