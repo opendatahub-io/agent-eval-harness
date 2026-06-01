@@ -156,7 +156,7 @@ A developer has two eval configs that share the same dataset (e.g., one evaluate
 
 - **FR-013**: Root-level `eval.yaml` MUST remain a fully supported, first-class location for single-eval projects (no deprecation warnings)
 - **FR-014**: When a second eval config is needed, the system MUST offer to reorganize into an `eval/` layout, moving the existing root config
-- **FR-015**: Reorganization MUST move `eval.yaml` and `eval.md` to the new location. Dataset files are only moved if co-located with the config (relative `dataset.path` within the project root); shared or absolute dataset paths are left in place. Run history is NOT moved (runs are stored under `$AGENT_EVAL_RUNS_DIR` which is independent of config location).
+- **FR-015**: Reorganization MUST move `eval.yaml` and `eval.md` to the new location. Dataset directories are NOT moved; instead, `dataset.path` is rewritten to remain valid from the new config location (see FR-016). Absolute dataset paths are left unchanged. Run history is NOT moved (runs are stored under `$AGENT_EVAL_RUNS_DIR` which is independent of config location).
 - **FR-016**: Reorganization MUST update `dataset.path` within `eval.yaml` to reflect the new location
 - **FR-017**: The system MUST continue to operate with root-level `eval.yaml` if the user declines reorganization
 

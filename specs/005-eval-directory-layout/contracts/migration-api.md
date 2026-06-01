@@ -20,10 +20,9 @@ Moves a root-level `eval.yaml` and its companion artifacts into the nested layou
 2. Moves files:
    - `eval.yaml` to target config path
    - `eval.md` to alongside new config path
-   - Dataset directory (whatever `dataset.path` pointed to) to target location if co-located with config
 
 3. Updates internal paths in the moved eval.yaml:
-   - `dataset.path`: rewritten relative to new config location
+   - `dataset.path`: rewritten relative to new config location (dataset directory is NOT moved, only the path reference is updated)
    - `outputs[].path`: NOT rewritten (workspace-relative, not config-relative)
 
 4. Returns a `ReorganizationResult` with moved files and any warnings.
