@@ -191,13 +191,13 @@ class AgentEvalAdapter(FrameworkAdapter):
         log.info("Loading eval config from %s", self._eval_config_path)
         eval_config = EvalConfig.from_yaml(self._eval_config_path)
         log.info("Eval config loaded: skill=%s, dataset_path=%s, %d judges",
-                 eval_config.skill, eval_config.dataset_path, len(eval_config.judges))
+                 eval_config.skill, eval_config.dataset.path, len(eval_config.judges))
 
         # 2. Load dataset — use local path if it exists, otherwise download from S3
         #    Always copy to a writable temp dir (baked-in container paths are read-only)
         params = config.parameters or {}
         eval_config_dir = Path(self._eval_config_path).parent
-        local_dataset = eval_config_dir / eval_config.dataset_path
+        local_dataset = eval_config_dir / eval_config.dataset.path
         _tmp_dir = tempfile.TemporaryDirectory()
         tmp_root = Path(_tmp_dir.name)
         if local_dataset.is_dir() and any(local_dataset.iterdir()):

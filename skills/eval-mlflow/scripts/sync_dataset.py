@@ -79,7 +79,7 @@ def main():
         sys.exit(1)
 
     # Find case directories
-    cases_dir = config.resolve_path(config.dataset_path)
+    cases_dir = config.resolve_path(config.dataset.path)
     if not cases_dir.exists():
         print(f"ERROR: dataset path not found: {cases_dir}", file=sys.stderr)
         sys.exit(1)

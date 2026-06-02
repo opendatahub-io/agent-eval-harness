@@ -70,8 +70,8 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
     # --- Annotations (from dataset case directory) ---
     record["annotations"] = {}
     case_id = case_dir.name
-    if config.dataset_path:
-        dataset_root = config.resolve_path(config.dataset_path).resolve()
+    if config.dataset.path:
+        dataset_root = config.resolve_path(config.dataset.path).resolve()
         annotations_path = (dataset_root / case_id / "annotations.yaml").resolve()
         if (annotations_path.is_relative_to(dataset_root)
                 and annotations_path.is_file()

@@ -8,9 +8,12 @@ import sys
 import yaml
 
 
-def _validate_relative_path(value: str, field_name: str,
-                            reject_root: bool = False,
-                            allow_absolute: bool = False) -> str:
+def _validate_relative_path(
+    value: str,
+    field_name: str,
+    reject_root: bool = False,
+    allow_absolute: bool = False,
+) -> str:
     """Reject parent-traversing paths (and optionally absolute paths).
 
     Args:
@@ -33,7 +36,8 @@ def _validate_relative_path(value: str, field_name: str,
         raise ValueError(
             f"{field_name} cannot be '.' (project root) — use a subdirectory. "
             f"Outputs must be in a named subdirectory so the harness can "
-            f"identify, collect, and clean them without affecting the project.")
+            f"identify, collect, and clean them without affecting the project."
+        )
     return value
 
 
@@ -43,6 +47,27 @@ class DiscoveryResult:
     path: Path
     eval_name: str
     is_root: bool
+
+
+@dataclass
+class WorkspaceConfig:
+    """Workspace file provisioning for evaluation cases.
+
+    ``files`` is a whitelist of relative paths inside each case directory
+    to copy into the agent workspace.  Directory entries copy recursively;
+    file entries copy the single file.  Paths not listed are left behind.
+    """
+
+    files: list = field(default_factory=list)
+
+
+@dataclass
+class DatasetConfig:
+    """Dataset location, schema, and workspace provisioning."""
+
+    path: str = ""
+    schema: str = ""
+    workspace: WorkspaceConfig = field(default_factory=WorkspaceConfig)
 
 
 @dataclass
@@ -60,20 +85,22 @@ class OutputConfig:
       name starts with the expanded prefix are assigned to that case.
       Use "*" for shared directories (copied to every case).
     """
-    path: str = ""       # File artifacts directory
-    tool: str = ""       # Tool call name/pattern to capture
+
+    path: str = ""  # File artifacts directory
+    tool: str = ""  # Tool call name/pattern to capture
     schema: str = ""
     batch_pattern: str = ""  # Batch collection pattern (empty = auto-detect)
-    types: dict = None   # Semantic types for artifacts (filename or glob → type)
+    types: dict = None  # Semantic types for artifacts (filename or glob → type)
 
 
 @dataclass
 class TracesConfig:
     """What execution traces to capture and make available to judges."""
-    stdout: bool = True    # Capture stdout.log
-    stderr: bool = True    # Capture stderr.log
-    events: bool = True    # Parse JSONL into events.json
-    metrics: bool = True   # Capture run_result.json metrics
+
+    stdout: bool = True  # Capture stdout.log
+    stderr: bool = True  # Capture stderr.log
+    events: bool = True  # Parse JSONL into events.json
+    metrics: bool = True  # Capture run_result.json metrics
 
 
 @dataclass
@@ -84,14 +111,16 @@ class ToolInputConfig:
     eval-analyze populates this based on skill analysis. eval-run resolves
     it to concrete patterns at workspace setup time.
     """
-    match: str = ""           # Natural language: what to intercept (tools, scripts, APIs)
-    prompt: str = ""          # Natural language instruction for how to handle
-    prompt_file: str = ""     # External file with detailed instructions
+
+    match: str = ""  # Natural language: what to intercept (tools, scripts, APIs)
+    prompt: str = ""  # Natural language instruction for how to handle
+    prompt_file: str = ""  # External file with detailed instructions
 
 
 @dataclass
 class InputsConfig:
     """Tool interception configuration for headless execution."""
+
     tools: list = field(default_factory=list)  # List of ToolInputConfig
 
 
@@ -119,6 +148,7 @@ class ExecutionConfig:
       (e.g., ``$JIRA_TOKEN`` → ``os.environ["JIRA_TOKEN"]``).  Missing
       vars are silently omitted.  Literal values are passed through as-is.
     """
+
     mode: str = "case"
     arguments: str = ""
     timeout: Optional[int] = None
@@ -140,6 +170,7 @@ class RunnerConfig:
     references resolved from the caller's environment.  Additive to the
     runner's built-in safe defaults (Claude Code allowlist).
     """
+
     type: str = "claude-code"
     command: Optional[Union[str, list]] = None  # CLI runner: command template
     settings: dict = field(default_factory=dict)
@@ -161,6 +192,7 @@ class MlflowConfig:
         MLFLOW_TRACKING_URI env var.
     tags: tags applied to every run logged for this eval.
     """
+
     experiment: str = ""
     tracking_uri: Optional[str] = None
     tags: dict = field(default_factory=dict)
@@ -176,6 +208,7 @@ class ModelsConfig:
     - judge: per-judge JudgeConfig.model > models.judge > EVAL_JUDGE_MODEL
       env var (must resolve to non-empty for LLM judges)
     """
+
     skill: Optional[str] = None
     subagent: Optional[str] = None
     judge: Optional[str] = None
@@ -191,6 +224,7 @@ class JudgeConfig:
     - LLM judge: `prompt` or `prompt_file` contains evaluation instructions
     - External code: `module` and `function` reference a Python callable
     """
+
     name: str = ""
     description: str = ""  # What this judge checks (context for LLM judges)
     # Condition — Python expression evaluated against the outputs dict.
@@ -202,7 +236,9 @@ class JudgeConfig:
     # LLM judge / pairwise
     prompt: str = ""
     prompt_file: str = ""
-    context: list = field(default_factory=list)  # File paths loaded as supplementary context
+    context: list = field(
+        default_factory=list
+    )  # File paths loaded as supplementary context
     feedback_type: str = ""  # Optional: int, float, bool, str. Inferred if omitted.
     model: str = ""  # Override model for this judge (pairwise, LLM)
     # External code judge
@@ -222,6 +258,7 @@ class EvalConfig:
     in natural language. The harness interprets these descriptions via LLM
     (once, cached) to drive prepare, collect, and score steps.
     """
+
     name: str = ""
     description: str = ""
     skill: str = ""
@@ -239,10 +276,8 @@ class EvalConfig:
     # MLflow logging target
     mlflow: MlflowConfig = field(default_factory=MlflowConfig)
 
-    # Dataset — natural language schema + path
-    dataset_path: str = ""
-    dataset_schema: str = ""
-    dataset_input_files_dir: str = "files"
+    # Dataset — location, schema, and workspace file provisioning
+    dataset: DatasetConfig = field(default_factory=DatasetConfig)
 
     # Outputs — file artifacts and/or tool calls
     outputs: list = field(default_factory=list)
@@ -311,10 +346,10 @@ class EvalConfig:
         command = runner_raw.get("command")
         if command is not None:
             valid_list = isinstance(command, list) and all(
-                isinstance(x, str) for x in command)
+                isinstance(x, str) for x in command
+            )
             if not (isinstance(command, str) or valid_list):
-                raise ValueError(
-                    "runner.command must be a string or list of strings")
+                raise ValueError("runner.command must be a string or list of strings")
         runner = RunnerConfig(
             type=runner_raw.get("type", "claude-code"),
             command=command,
@@ -350,6 +385,26 @@ class EvalConfig:
             tags=mlflow_raw.get("tags", {}) or {},
         )
 
+        # Dataset — path, schema, and workspace file provisioning
+        ws_raw = dataset.get("workspace", {}) or {}
+        ws_files_raw = ws_raw.get("files", []) or []
+        ws_files = []
+        for i, f in enumerate(ws_files_raw):
+            if not isinstance(f, str):
+                raise ValueError(
+                    f"dataset.workspace.files[{i}] must be a string, got {type(f).__name__}"
+                )
+            ws_files.append(
+                _validate_relative_path(f.rstrip("/"), "dataset.workspace.files")
+            )
+        dataset_config = DatasetConfig(
+            path=_validate_relative_path(
+                dataset.get("path", ""), "dataset.path", allow_absolute=True
+            ),
+            schema=dataset.get("schema", ""),
+            workspace=WorkspaceConfig(files=ws_files),
+        )
+
         config = cls(
             name=raw.get("name", path.stem),
             description=raw.get("description", ""),
@@ -360,35 +415,33 @@ class EvalConfig:
             models=models,
             mlflow=mlflow,
             config_dir=path.resolve().parent,
-            dataset_path=_validate_relative_path(
-                dataset.get("path", ""), "dataset.path",
-                allow_absolute=True),
-            dataset_schema=dataset.get("schema", ""),
-            dataset_input_files_dir=_validate_relative_path(
-                dataset.get("input_files_dir", "files"),
-                "dataset.input_files_dir"),
+            dataset=dataset_config,
         )
 
         # Outputs (path or tool)
         for i, o in enumerate(raw.get("outputs", [])):
-            config.outputs.append(OutputConfig(
-                path=_validate_relative_path(
-                    o.get("path", ""), f"outputs[{i}].path",
-                    reject_root=True),
-                tool=o.get("tool", ""),
-                schema=o.get("schema", ""),
-                batch_pattern=o.get("batch_pattern", ""),
-                types=o.get("types") or None,
-            ))
+            config.outputs.append(
+                OutputConfig(
+                    path=_validate_relative_path(
+                        o.get("path", ""), f"outputs[{i}].path", reject_root=True
+                    ),
+                    tool=o.get("tool", ""),
+                    schema=o.get("schema", ""),
+                    batch_pattern=o.get("batch_pattern", ""),
+                    types=o.get("types") or None,
+                )
+            )
 
         # Inputs (tool interception)
         inputs_raw = raw.get("inputs", {})
-        for t in (inputs_raw.get("tools") or []):
-            config.inputs.tools.append(ToolInputConfig(
-                match=t.get("match", ""),
-                prompt=t.get("prompt", ""),
-                prompt_file=t.get("prompt_file", ""),
-            ))
+        for t in inputs_raw.get("tools") or []:
+            config.inputs.tools.append(
+                ToolInputConfig(
+                    match=t.get("match", ""),
+                    prompt=t.get("prompt", ""),
+                    prompt_file=t.get("prompt_file", ""),
+                )
+            )
 
         # Traces
         traces = raw.get("traces", {})
@@ -407,28 +460,32 @@ class EvalConfig:
                 builtin_val = ""
             if not isinstance(builtin_val, str):
                 raise ValueError(
-                    f"Judge '{j.get('name', '')}': 'builtin' must be a string")
+                    f"Judge '{j.get('name', '')}': 'builtin' must be a string"
+                )
             args_val = j.get("arguments")
             if args_val is None:
                 args_val = {}
             elif not isinstance(args_val, dict):
                 raise ValueError(
-                    f"Judge '{j.get('name', '')}': 'arguments' must be a mapping")
-            config.judges.append(JudgeConfig(
-                name=j.get("name", ""),
-                description=j.get("description", ""),
-                condition=j.get("if", ""),
-                check=j.get("check", ""),
-                prompt=j.get("prompt", ""),
-                prompt_file=j.get("prompt_file", ""),
-                context=j.get("context", []),
-                feedback_type=j.get("feedback_type", ""),
-                model=j.get("model", ""),
-                module=j.get("module", ""),
-                function=j.get("function", ""),
-                builtin=builtin_val,
-                arguments=args_val,
-            ))
+                    f"Judge '{j.get('name', '')}': 'arguments' must be a mapping"
+                )
+            config.judges.append(
+                JudgeConfig(
+                    name=j.get("name", ""),
+                    description=j.get("description", ""),
+                    condition=j.get("if", ""),
+                    check=j.get("check", ""),
+                    prompt=j.get("prompt", ""),
+                    prompt_file=j.get("prompt_file", ""),
+                    context=j.get("context", []),
+                    feedback_type=j.get("feedback_type", ""),
+                    model=j.get("model", ""),
+                    module=j.get("module", ""),
+                    function=j.get("function", ""),
+                    builtin=builtin_val,
+                    arguments=args_val,
+                )
+            )
 
         # Thresholds
         config.thresholds = raw.get("thresholds", {})
