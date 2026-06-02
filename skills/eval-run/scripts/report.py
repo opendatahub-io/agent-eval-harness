@@ -1613,10 +1613,26 @@ def _md_to_html(md_text):
             i += 1
             continue
 
-        # Paragraph
+        # Paragraph — accumulate consecutive non-blank lines into a single
+        # <p> so that soft-wrapped source lines reflow to the container width
+        # instead of each becoming its own (artificially narrow) paragraph.
         _close_lists()
-        out.append(f"<p>{_inline(stripped)}</p>")
+        para_lines = [stripped]
         i += 1
+        while i < len(lines):
+            nxt = lines[i].strip()
+            if not nxt:
+                break
+            # Stop at anything that begins a different block-level construct.
+            if (nxt.startswith("```")
+                    or (nxt.startswith("|") and "|" in nxt[1:])
+                    or nxt.startswith(("### ", "## ", "# ", "- "))
+                    or re.match(r'^(\d+)\.\s(.+)', nxt)
+                    or nxt in ("---", "***", "___")):
+                break
+            para_lines.append(nxt)
+            i += 1
+        out.append(f"<p>{_inline(' '.join(para_lines))}</p>")
 
     _close_lists()
     return "\n".join(out)
