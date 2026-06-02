@@ -14,9 +14,12 @@ from typing import Optional
 
 import yaml
 
-# Add agent_eval to path
-sys.path.insert(0, str(Path(__file__).parent))
+# Activate venv before third-party imports
+import agent_eval._bootstrap
 from agent_eval.config import EvalConfig, TestCategory
+
+# resolve_template is in same directory, use absolute import via sys.path
+sys.path.insert(0, str(Path(__file__).parent))
 from resolve_template import resolve_template
 
 
@@ -136,13 +139,20 @@ def generate_from_taxonomy(
                 )
                 continue
 
-            # Validate annotations is a dict if present
-            if "annotations" in case and not isinstance(case["annotations"], dict):
-                print(
-                    f"  WARNING: Skipping case with invalid 'annotations' (not a dict): {case['annotations']!r}",
-                    file=sys.stderr,
-                )
-                continue
+            # Build annotations dict - always include category for judge filtering
+            annotations = {}
+            if "annotations" in case:
+                if not isinstance(case["annotations"], dict):
+                    print(
+                        f"  WARNING: Skipping case with invalid 'annotations' (not a dict): {case['annotations']!r}",
+                        file=sys.stderr,
+                    )
+                    continue
+                annotations = case["annotations"].copy()
+
+            # CRITICAL: Always set category to match taxonomy category
+            # Judges use `if: "annotations.get('category') == 'navigation'"` for filtering
+            annotations["category"] = category.name
 
             case_id = f"case-{case_counter:03d}"
             case_dir = output_dir / case_id
@@ -153,11 +163,10 @@ def generate_from_taxonomy(
                 yaml.dump(case["input"], sort_keys=False, allow_unicode=True)
             )
 
-            # Write annotations.yaml if present
-            if "annotations" in case:
-                (case_dir / "annotations.yaml").write_text(
-                    yaml.dump(case["annotations"], sort_keys=False, allow_unicode=True)
-                )
+            # Always write annotations.yaml with guaranteed category field
+            (case_dir / "annotations.yaml").write_text(
+                yaml.dump(annotations, sort_keys=False, allow_unicode=True)
+            )
 
             # Track metadata
             all_cases.append({
@@ -340,8 +349,6 @@ def _extract_json_from_response(text: str) -> list:
     # Try cleaning common issues
     # Remove trailing commas before ] or }
     cleaned = re.sub(r',(\s*[\]}])', r'\1', text)
-    # Remove comments (// style)
-    cleaned = re.sub(r'//[^\n]*\n', '\n', cleaned)
 
     try:
         return json.loads(cleaned)

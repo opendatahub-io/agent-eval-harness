@@ -493,6 +493,10 @@ class EvalConfig:
     # programmatically (falls back to Path.cwd()).
     config_dir: Optional[Path] = None
 
+    # Full path to the eval.yaml file (for eval_name derivation).
+    # None when constructed programmatically.
+    config_path: Optional[Path] = None
+
     # Runtime overrides (set by CLI or skill, not config file)
     model: str = ""
     subagent_model: str = ""
@@ -510,6 +514,48 @@ class EvalConfig:
             return p
         base = self.config_dir if self.config_dir is not None else Path.cwd()
         return base / p
+
+    def eval_name(self) -> str:
+        """Derive eval identifier with backward-compatible fallback chain.
+
+        Priority order (backward-compatible with existing skill evals):
+        1. skill field - preserves existing skill-based eval runs
+        2. name field - allows explicit naming for prompt-mode evals
+        3. directory/filename - pure path-based derivation
+        4. "eval" - final fallback
+
+        This ensures existing skill evals continue to work while enabling
+        prompt mode to use either explicit names or path-based identifiers.
+        """
+        # Priority 1: skill field (backward compat with existing evals)
+        if self.skill:
+            return self.skill
+
+        # Priority 2: name field (explicit identifier, sanitized)
+        # Skip if name == path.stem (auto-set default from from_yaml)
+        if self.name and not (self.config_path and self.name == self.config_path.stem):
+            # Sanitize: convert spaces to hyphens, keep only safe chars
+            sanitized = self.name.lower().replace(" ", "-")
+            sanitized = "".join(c for c in sanitized if c.isalnum() or c in "._-")
+            if sanitized and _is_valid_eval_name(sanitized):
+                return sanitized
+
+        # Priority 3: derive from path (new behavior for prompt mode)
+        if self.config_path:
+            if self.config_path.name == "eval.yaml":
+                # Nested: eval/user-guides/eval.yaml → "user-guides"
+                # Check if grandparent directory is named "eval"
+                if self.config_path.parent.parent.name == "eval":
+                    return self.config_path.parent.name
+                # Root: eval.yaml at project root → "eval"
+                else:
+                    return "eval"
+            # Flat: eval/user-guides.yaml → "user-guides"
+            else:
+                return self.config_path.stem
+
+        # Final fallback
+        return "eval"
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "EvalConfig":
@@ -643,6 +689,7 @@ class EvalConfig:
             models=models,
             mlflow=mlflow,
             config_dir=path.resolve().parent,
+            config_path=path.resolve(),
             dataset=dataset_config,
             test_categories=test_categories,
         )
@@ -868,7 +915,13 @@ def discover_configs(project_root: Path) -> list[DiscoveryResult]:
     """Scan the project for eval.yaml files across all supported layouts.
 
     Scan order: eval/*/eval.yaml (nested), eval/*.yaml (flat), root eval.yaml.
-    Files without a ``skill`` field or that fail YAML parsing are skipped.
+    Files that fail YAML parsing are skipped.
+
+    Eval names use backward-compatible fallback chain:
+    1. skill field (preserves existing skill-based evals)
+    2. name field (explicit naming, sanitized)
+    3. directory/filename (path-based derivation)
+
     Eval names with path separators or control characters are rejected.
     """
     results: list[DiscoveryResult] = []
@@ -885,9 +938,35 @@ def discover_configs(project_root: Path) -> list[DiscoveryResult]:
         except Exception as exc:
             print(f"Warning: skipping {yaml_path}: {exc}", file=sys.stderr)
             return
-        if not isinstance(raw, dict) or not raw.get("skill"):
+        if not isinstance(raw, dict):
+            print(f"Warning: skipping {yaml_path}: not a YAML dictionary", file=sys.stderr)
             return
-        eval_name = raw["skill"]
+
+        # Derive eval_name using fallback chain (same as EvalConfig.eval_name())
+        eval_name = None
+
+        # Priority 1: skill field (backward compat)
+        if raw.get("skill"):
+            eval_name = raw["skill"]
+
+        # Priority 2: name field (explicit identifier, sanitized)
+        if not eval_name and raw.get("name"):
+            sanitized = raw["name"].lower().replace(" ", "-")
+            sanitized = "".join(c for c in sanitized if c.isalnum() or c in "._-")
+            if sanitized and _is_valid_eval_name(sanitized):
+                eval_name = sanitized
+
+        # Priority 3: derive from path
+        if not eval_name:
+            if is_root:
+                eval_name = "eval"
+            elif yaml_path.name == "eval.yaml":
+                # Nested: eval/api-docs/eval.yaml → "api-docs"
+                eval_name = yaml_path.parent.name
+            else:
+                # Flat: eval/user-guides.yaml → "user-guides"
+                eval_name = yaml_path.stem
+
         if not _is_valid_eval_name(eval_name):
             print(f"Warning: skipping {yaml_path}: invalid eval name {eval_name!r}",
                   file=sys.stderr)

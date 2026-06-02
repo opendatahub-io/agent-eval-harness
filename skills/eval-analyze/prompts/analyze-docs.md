@@ -434,6 +434,8 @@ description: Test AI agents using {repo-name} documentation
 # No skill field - this is prompt-based evaluation (execution.prompt)
 execution:
   mode: case
+  # Jinja2 template: {{ input.field }} accesses input.yaml fields
+  # Alternative simple syntax: {field} for basic substitution
   prompt: |
     {{ input.prompt }}
 
@@ -453,6 +455,11 @@ runner:
   type: claude-code
   workspace_mode: repo  # Enable in-repo execution for documentation access
   settings:
+    # CRITICAL: These exact tools are REQUIRED (not optional):
+    # - Read: Access documentation files
+    # - Grep: Search across files for keywords/patterns
+    # - Glob: Find files by pattern matching
+    # DO NOT substitute Bash - it bypasses permission controls and breaks test isolation
     append_allowed_tools: ['Read', 'Grep', 'Glob']
     permission_mode: auto
 
@@ -463,7 +470,8 @@ models:
 permissions:
   allow: []
   deny:
-    # Test isolation - prevent agents from reading test infrastructure and answer keys
+    # CRITICAL: Block ALL tools that could access test infrastructure
+    # Tool list must include: Read, Grep, Glob, Bash
     - path: "eval/"
       tools: ["Read", "Grep", "Glob", "Bash"]
       reason: "Test cases contain answer keys (expected_files, expected_mentions, etc.) and run results from other agents"
