@@ -110,7 +110,11 @@ def main():
 
     # Resolve skill args: CLI override > config > empty
     # Treat empty/whitespace-only strings as unset (normalize before fallback)
-    skill_args = (args.skill_args or "").strip() or config.execution.arguments
+    # For prompt mode, use execution.prompt; for skill mode, use execution.arguments
+    if is_prompt_mode:
+        skill_args = (args.skill_args or "").strip() or config.execution.prompt
+    else:
+        skill_args = (args.skill_args or "").strip() or config.execution.arguments
 
     # Resolve {prompt} placeholder from batch.yaml
     if skill_args and "{prompt}" in skill_args:
@@ -250,24 +254,50 @@ def main():
 
 
 def _resolve_arguments(template, case_data):
-    """Resolve {field} and {field?} placeholders from case input data.
+    """Resolve {field} or {{ field }} placeholders from case input data.
 
-    In prompt mode, execution.arguments typically contains "{prompt}" which gets
-    replaced with the test question from input.yaml's 'prompt' field. This allows
-    the same eval.yaml to work across all test cases.
+    Supports two template syntaxes:
+    - Simple: {field} or {field?} for optional fields
+    - Jinja2: {{ input.field }} with full Jinja2 expressions
+
+    The syntax is auto-detected: if template contains '{{', uses Jinja2;
+    otherwise uses simple regex substitution.
 
     Args:
-        template: String with {field} or {field?} placeholders
+        template: String with placeholders
         case_data: Dict from input.yaml with field values
 
     Returns:
         String with all placeholders replaced
 
     Raises:
-        ValueError: If required (non-optional) fields are missing
+        ValueError: If required fields are missing
     """
     import re
 
+    # Auto-detect Jinja2 syntax
+    if '{{' in template:
+        # Use Jinja2 rendering
+        try:
+            from jinja2 import Template, UndefinedError
+        except ImportError:
+            raise ImportError(
+                "Jinja2 is required for {{ }} template syntax. "
+                "Install with: pip install jinja2"
+            )
+
+        try:
+            jinja_template = Template(template)
+            # Render with input.* namespace for Jinja2 templates
+            result = jinja_template.render(input=case_data)
+            return result.strip()
+        except UndefinedError as e:
+            raise ValueError(
+                f"Undefined variable in Jinja2 template: {e}. "
+                f"Template: {template}"
+            )
+
+    # Fall back to simple {field} regex substitution
     missing = []
 
     def _replace(m):
