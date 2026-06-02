@@ -1,3 +1,10 @@
+## [1.4.1](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.4.0...v1.4.1) (2026-06-02)
+
+
+### Bug Fixes
+
+* **eval-run:** reflow soft-wrapped paragraphs in HTML report ([#92](https://github.com/opendatahub-io/agent-eval-harness/issues/92)) ([7a6fd41](https://github.com/opendatahub-io/agent-eval-harness/commit/7a6fd41053c0941f1d97c21af557eff01b8041e4))
+
 # [1.4.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.3.0...v1.4.0) (2026-05-29)
 
 
