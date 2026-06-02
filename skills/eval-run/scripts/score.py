@@ -63,7 +63,7 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
     - Logs: stdout, stderr (if traces config enables them)
     """
     runs_dir = Path(runs_dir) if runs_dir else _get_runs_dir(
-        config.skill if config else "")
+        config.eval_name() if config else "")
     case_dir = Path(case_dir).resolve()
     record = {"files": {}, "tool_calls": [], "case_dir": str(case_dir)}
 
@@ -1481,7 +1481,7 @@ def compute_run_metrics(run_result):
 
 def cmd_judges(args):
     config = EvalConfig.from_yaml(args.config)
-    runs_dir = _get_runs_dir(config.skill)
+    runs_dir = _get_runs_dir(config.eval_name())
     case_dirs = _get_case_dirs(args.run_id, runs_dir)
     project_root = Path.cwd()
 
@@ -1569,7 +1569,7 @@ def cmd_judges(args):
 
 def cmd_pairwise(args):
     config = EvalConfig.from_yaml(args.config)
-    runs_dir = _get_runs_dir(config.skill)
+    runs_dir = _get_runs_dir(config.eval_name())
     case_dirs = _get_case_dirs(args.run_id, runs_dir)
     case_ids = [d.name for d in case_dirs]
 
@@ -1644,7 +1644,7 @@ def cmd_pairwise(args):
 
 def cmd_regression(args):
     config = EvalConfig.from_yaml(args.config)
-    runs_dir = _get_runs_dir(config.skill)
+    runs_dir = _get_runs_dir(config.eval_name())
     summary_path = runs_dir / args.run_id / "summary.yaml"
     if not summary_path.exists():
         print(f"No summary found. Run judges first.", file=sys.stderr)
