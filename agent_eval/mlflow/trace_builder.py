@@ -857,8 +857,11 @@ def log_trace(trace_dict):
         client = MlflowClient()
         # No public API for logging pre-built traces as of MLflow 3.5.
         # _log_trace is the only way to submit a Trace object.
-        client._log_trace(trace)
-        return trace_dict["info"]["trace_id"]
+        # IMPORTANT: _log_trace returns a backend-generated trace ID that
+        # differs from the client-provided trace_dict["info"]["trace_id"].
+        # Always return the backend ID so downstream FK operations succeed.
+        server_trace_id = client._log_trace(trace)
+        return server_trace_id or trace_dict["info"]["trace_id"]
     except Exception as e:
         print(f"WARNING: failed to log trace: {e}", file=sys.stderr)
         return None
