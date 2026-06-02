@@ -30,7 +30,8 @@ from pathlib import Path
 
 from agent_eval.agent import RUNNERS
 from agent_eval.hooks import (
-    HookError, build_hook_env, run_hooks, run_hooks_safe,
+    HookError, build_hook_env, collect_hook_outputs, inject_hook_env,
+    run_hooks, run_hooks_safe, save_hook_data,
 )
 
 _HARNESS_SYSTEM_PROMPT = (
@@ -175,12 +176,18 @@ def main():
     log_dir = output_dir / "hooks"
 
     try:
-        # Run before_all hooks
+        # Run before_all hooks and collect outputs
+        global_hook_outputs = {}
         if config.hooks.before_all:
             print("Running before_all hooks...", file=sys.stderr)
             run_hooks(config.hooks.before_all, env=hook_env,
                       cwd=Path.cwd(), log_dir=log_dir,
                       phase_name="before_all")
+            global_hook_outputs = collect_hook_outputs(Path(args.workspace))
+
+        # Inject hook-output env vars into workspace settings.json
+        inject_hook_env(args.workspace, global_hook_outputs.get("env"))
+        save_hook_data(output_dir, global_hook_outputs.get("data"))
 
         # Set MLflow environment in the workspace settings
         if mlflow_experiment:
@@ -275,7 +282,8 @@ def _build_eval_params(args, config, skill_args, max_budget, timeout_s, effort=N
 def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
                      skill_args_template, model, mlflow_experiment,
                      mlflow_tracking_uri, system_prompt, max_budget, timeout_s,
-                     total_cases, index, config=None, hook_env=None):
+                     total_cases, index, config=None, hook_env=None,
+                     global_hook_outputs=None):
     """Execute and collect results for a single test case.
 
     Thread-safe: all I/O is to case-specific directories.
@@ -309,6 +317,7 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
 
     # Per-case hooks: build case-specific env and run before_each
     case_hook_env = None
+    merged_hook_data = {}
     if config and config.hooks and hook_env:
         dataset_path = config.dataset_path
         case_source_dir = str(Path(dataset_path).resolve() / case_id) if dataset_path else ""
@@ -324,6 +333,23 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
             run_hooks(config.hooks.before_each, env=case_hook_env,
                       cwd=case_ws, log_dir=log_dir,
                       phase_name="before_each", case_id=case_id)
+
+        # Collect hook outputs and merge with global
+        case_outputs = collect_hook_outputs(case_ws)
+        global_env = (global_hook_outputs or {}).get("env", {})
+        case_env = case_outputs.get("env", {})
+        merged_env = {**global_env, **case_env}
+
+        if merged_env:
+            inject_hook_env(case_ws, merged_env)
+            # Re-check settings_path since we may have just created it
+            settings_path = case_settings if case_settings.exists() else settings_path
+            # Forward-propagate to after_each hooks
+            case_hook_env.update({k: str(v) for k, v in merged_env.items()})
+
+        global_data = (global_hook_outputs or {}).get("data", {})
+        case_data_out = case_outputs.get("data", {})
+        merged_hook_data = {**global_data, **case_data_out}
 
     result = runner.run_skill(
         skill_name=skill_name,
@@ -349,6 +375,9 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
         (case_output / "stdout.log").write_text(result.stdout)
     if result.stderr:
         (case_output / "stderr.log").write_text(result.stderr)
+
+    # Save hook output data for judges
+    save_hook_data(case_output, merged_hook_data)
 
     if input_path.exists() and not input_path.is_symlink():
         shutil.copy2(input_path, case_output / "input.yaml")
@@ -423,12 +452,14 @@ def _execute_per_case(args, config, runner, runner_cls,
     wall_clock_start = time.monotonic()
 
     try:
-        # Run before_all hooks (inside try so after_all runs on failure)
+        # Run before_all hooks and collect outputs
+        global_hook_outputs = {}
         if config.hooks.before_all:
             print("Running before_all hooks...", file=sys.stderr)
             run_hooks(config.hooks.before_all, env=hook_env,
                       cwd=Path.cwd(), log_dir=log_dir,
                       phase_name="before_all")
+            global_hook_outputs = collect_hook_outputs(workspace)
 
         if effective_parallelism > 1:
             from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -452,7 +483,8 @@ def _execute_per_case(args, config, runner, runner_cls,
                         mlflow_experiment, config.mlflow.tracking_uri,
                         system_prompt, max_budget, timeout_s,
                         len(case_order), i,
-                        config=config, hook_env=hook_env)
+                        config=config, hook_env=hook_env,
+                        global_hook_outputs=global_hook_outputs)
                     futures[fut] = case_id
 
                 for fut in as_completed(futures):
@@ -468,7 +500,8 @@ def _execute_per_case(args, config, runner, runner_cls,
                     skill_args_template, model, mlflow_experiment,
                     config.mlflow.tracking_uri, system_prompt,
                     max_budget, timeout_s, len(case_order), i,
-                    config=config, hook_env=hook_env)
+                    config=config, hook_env=hook_env,
+                    global_hook_outputs=global_hook_outputs)
                 if result is not None:
                     case_results[case_id] = result
     finally:

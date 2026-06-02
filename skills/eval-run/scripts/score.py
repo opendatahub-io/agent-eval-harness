@@ -245,6 +245,15 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
                 record["tool_calls"] = _extract_tool_calls(
                     stdout_text, tool_outputs)
 
+    # --- Hook outputs (from before_each hooks via .hook-outputs.yaml) ---
+    hook_outputs_path = case_dir / "hook_outputs.yaml"
+    if hook_outputs_path.exists():
+        try:
+            with open(hook_outputs_path) as f:
+                record["hook_outputs"] = yaml.safe_load(f) or {}
+        except (yaml.YAMLError, OSError):
+            record["hook_outputs"] = {}
+
     return record
 
 

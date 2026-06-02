@@ -4,6 +4,7 @@ Runs user-defined shell commands at well-defined points in the eval
 lifecycle (before_all, before_each, after_each, before_scoring, after_all).
 """
 
+import json
 import os
 import signal
 import subprocess
@@ -12,6 +13,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+import yaml
 
 from agent_eval.config import HookEntry
 
@@ -227,6 +230,54 @@ def build_hook_env(
         env["CASE_INPUT"] = case_input
 
     return env
+
+
+def collect_hook_outputs(cwd: Path) -> dict:
+    """Read and remove .hook-outputs.yaml/.json from cwd.
+
+    Returns the parsed dict (with 'env' and/or 'data' keys) or {}.
+    """
+    for name in (".hook-outputs.yaml", ".hook-outputs.json"):
+        path = cwd / name
+        if path.exists():
+            try:
+                content = yaml.safe_load(path.read_text()) or {}
+            except (yaml.YAMLError, OSError):
+                content = {}
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return content
+    return {}
+
+
+def inject_hook_env(workspace_path, env_vars):
+    """Merge hook-output env vars into workspace .claude/settings.json."""
+    if not env_vars:
+        return
+    settings_path = Path(workspace_path) / ".claude" / "settings.json"
+    settings = {}
+    if settings_path.exists():
+        try:
+            settings = json.loads(settings_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    env_block = settings.setdefault("env", {})
+    for key, value in env_vars.items():
+        env_block[key] = str(value)
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps(settings, indent=2))
+
+
+def save_hook_data(output_dir, data):
+    """Save hook output data dict for judges to read later."""
+    if not data:
+        return
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "hook_outputs.yaml").write_text(
+        yaml.dump(data, default_flow_style=False))
 
 
 def main():

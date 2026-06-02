@@ -30,19 +30,19 @@ Add **lifecycle hooks** to `eval.yaml` — user-defined shell commands that run 
 
 ### Hook Points
 
-Six hook points spanning the full eval lifecycle, using conventional test-framework naming:
+Five hook points spanning the full eval lifecycle, using conventional test-framework naming:
 
 ```
-before_all
- ├─ before_each (case 1)
- │   └─ [skill execution]
+before_all ──→ collect .hook-outputs.yaml (global env/data)
+ ├─ before_each (case 1) ──→ collect .hook-outputs.yaml (case env/data)
+ │   └─ [skill execution]  ← merged env injected here
  │   └─ after_each (case 1)
- ├─ before_each (case 2)
- │   └─ [skill execution]
+ ├─ before_each (case 2) ──→ collect .hook-outputs.yaml (case env/data)
+ │   └─ [skill execution]  ← merged env injected here
  │   └─ after_each (case 2)
  ├─ [collection]
- ├─ before_scoring
- │   └─ [judge scoring]
+ ├─ before_scoring ──→ collect .hook-outputs.yaml (scoring data)
+ │   └─ [judge scoring]  ← hook_outputs in record dict
  └─ after_all
 ```
 
@@ -147,6 +147,111 @@ hooks:
 
 When `condition` is set, the harness runs `bash -c "<condition>"` first. If it exits non-zero, the hook is silently skipped (not treated as a failure). This avoids needing `[ -f ... ] && ...` guards inside every command.
 
+### Hook Outputs
+
+Hooks are fire-and-forget by default — they modify the filesystem but can't feed state back into the pipeline. This is insufficient when setup hooks provision dynamic resources (ephemeral repos, service URLs, temporary API keys) that the skill needs at execution time.
+
+#### The problem
+
+Consider a functional test that creates ephemeral GitHub fixtures before each case:
+
+```bash
+# before_each hook creates a repo and issue, but the skill needs the URL
+gh repo create org/eval-repo-abc123 --private
+gh issue create --repo org/eval-repo-abc123 --title "Test issue"
+# How does GITHUB_ISSUE_URL=https://github.com/org/eval-repo-abc123/issues/1
+# reach the skill's environment?
+```
+
+Today there is no channel for this. The hook runs, the skill runs, but dynamic state can't flow between them.
+
+#### Solution: `.hook-outputs.yaml`
+
+After each hook phase completes, the harness checks for a `.hook-outputs.yaml` file in the hook's working directory:
+
+- **Per-case hooks** (`before_each`, `after_each`): `$CASE_WORKSPACE/.hook-outputs.yaml`
+- **Global hooks** (`before_all`, `before_scoring`): `$AGENT_EVAL_WORKSPACE/.hook-outputs.yaml`
+
+If present, the harness parses it as YAML and processes two well-known top-level keys:
+
+| Key | Type | Effect |
+|-----|------|--------|
+| `env` | `dict[str, str]` | Merged into the skill runner's environment before execution. For Claude Code, injected into `.claude/settings.json` env block. For CLI runners, merged into the subprocess env dict. |
+| `data` | `dict[str, any]` | Carried as `outputs["hook_outputs"]` in the record dict passed to judges. Supports arbitrary structured data. |
+
+All other top-level keys are ignored (reserved for future use).
+
+#### File format
+
+```yaml
+# $CASE_WORKSPACE/.hook-outputs.yaml
+env:
+  GITHUB_ISSUE_URL: https://github.com/org/eval-repo-abc123/issues/1
+  EPHEMERAL_REPO: org/eval-repo-abc123
+data:
+  fixture_created_at: "2026-06-01T12:00:00Z"
+  issue_number: 1
+```
+
+#### Merge semantics
+
+- **`env` merging**: Hook-output env vars are merged *after* `execution.env` resolution but *before* skill execution. Hook outputs take precedence over `execution.env` for the same key — this is intentional, since hooks run later and may override static config with dynamic values.
+- **`before_all` + `before_each`**: Both can write `.hook-outputs.yaml`. Per-case outputs are merged on top of global outputs, so a case-level var overrides a global one with the same name.
+- **`data` merging**: Same precedence — per-case `data` merges on top of global `data`. Judges receive the merged dict as `outputs["hook_outputs"]`.
+- **Forward propagation**: Hook-output env vars are available to subsequent hooks in the same case. After `before_each` outputs are collected, the merged env is used for both the skill execution *and* the `after_each` hooks. This lets teardown hooks reference dynamic values set during setup (e.g., `$EPHEMERAL_REPO`).
+- **File lifecycle**: The harness reads and deletes `.hook-outputs.yaml` after processing to prevent stale outputs from leaking across cases. Hooks must write the file fresh each time.
+
+#### Writing from bash
+
+For simple env-only cases, a one-liner suffices:
+
+```bash
+printf 'env:\n  GITHUB_ISSUE_URL: %s\n' "$url" > "$CASE_WORKSPACE/.hook-outputs.yaml"
+```
+
+For hooks written in Python or other languages, write YAML or JSON (the harness accepts both `.hook-outputs.yaml` and `.hook-outputs.json`):
+
+```python
+import json
+from pathlib import Path
+
+outputs = {
+    "env": {"SERVICE_URL": f"http://localhost:{port}"},
+    "data": {"port": port, "container_id": container_id},
+}
+Path(".hook-outputs.yaml").write_text(json.dumps(outputs))
+```
+
+#### Implementation
+
+After `run_hooks()` returns, the harness calls a new `collect_hook_outputs(cwd)` function:
+
+```python
+def collect_hook_outputs(cwd: Path) -> dict:
+    """Read and remove .hook-outputs.yaml from cwd. Returns parsed dict or {}."""
+    for name in (".hook-outputs.yaml", ".hook-outputs.json"):
+        path = cwd / name
+        if path.exists():
+            content = yaml.safe_load(path.read_text()) or {}
+            path.unlink()
+            return content
+    return {}
+```
+
+In `execute.py`, the flow becomes:
+
+1. Run `before_all` hooks → `collect_hook_outputs($AGENT_EVAL_WORKSPACE)` → store global outputs
+2. For each case:
+   a. Run `before_each` hooks → `collect_hook_outputs($CASE_WORKSPACE)` → merge with global outputs
+   b. Inject merged `env` into runner environment
+   c. Execute skill
+   d. Run `after_each` hooks
+3. During scoring, pass merged `data` as `outputs["hook_outputs"]` to judges
+
+#### Security considerations
+
+Hook outputs are trusted at the same level as hooks themselves (see Security section). The harness does not validate or sanitize values in `.hook-outputs.yaml` — they flow directly into the runner environment and judge inputs. This is consistent with the trust model: if you can write eval.yaml hooks, you can already execute arbitrary commands.
+
 ### Execution Contract
 
 1. **Hooks run in the harness process**, not inside Claude Code. They are ordinary shell commands with no access to the skill's Claude session.
@@ -154,7 +259,7 @@ When `condition` is set, the harness runs `bash -c "<condition>"` first. If it e
 3. **Stdout/stderr are captured** to `{run_dir}/hooks/{hook_name}[.{case_id}].log`. Hooks should not assume an interactive terminal.
 4. **`on_failure: fail`** (default) aborts the run. `on_failure: continue` logs a warning and proceeds. `after_all` always uses `continue` semantics internally (guaranteed cleanup).
 5. **Parallelism**: When `execution.parallelism > 1`, `before_each` and `after_each` hooks run in the case's thread — concurrent with other cases' hooks. Hooks must be safe for concurrent execution. Shared resources (ports, containers, databases) should be managed in `before_all`/`after_all` (which are single-threaded), not in per-case hooks.
-6. **No harness file mutation.** Hooks must not modify `.claude/settings.json`, `batch.yaml`, `case_order.yaml`, or other harness-managed files. They may freely create, extract, or modify other files in the workspace.
+6. **No harness file mutation.** Hooks must not modify `.claude/settings.json`, `batch.yaml`, `case_order.yaml`, or other harness-managed files. They may freely create, extract, or modify other files in the workspace. The one exception is `.hook-outputs.yaml` — hooks write this file to pass state forward, and the harness reads and deletes it after each phase (see Hook Outputs).
 7. **Timeout enforcement.** Hooks are killed (SIGTERM, then SIGKILL after 5s) if they exceed `timeout`. Timed-out hooks are treated as failures.
 
 ### Security
@@ -208,7 +313,7 @@ def run_hooks(
 
 **Tool interception (`inputs.tools`)**: Hooks and tool interception are orthogonal. Hooks prepare the environment; tool interception controls what the skill can do during execution. A common pattern is `before_all` starts a service, `inputs.tools` intercepts the skill's HTTP calls to that service.
 
-**`execution.env`**: Hook-injected env vars are available to hooks via the standard environment. Hooks cannot inject new env vars into the skill's session (that would require modifying `.claude/settings.json`, which is prohibited). Use `execution.env` for skill-visible variables.
+**`execution.env`**: Hook-injected env vars are available to hooks via the standard environment. Hooks can also inject *new* env vars into the skill's session by writing `.hook-outputs.yaml` with an `env:` block (see Hook Outputs). This is the intended mechanism for dynamic values that aren't known at eval.yaml authoring time. Use `execution.env` for static values and hook outputs for dynamic ones — hook outputs take precedence when both define the same key.
 
 **Workspace symlinks**: Hooks run after workspace setup, so project symlinks are already in place. Hooks can rely on symlinked resources (e.g., `scripts/` symlink) being available.
 
@@ -283,6 +388,44 @@ hooks:
 
 > **Note:** Database seeding from case files (`seed.sql`) assumes the dataset is trusted. If datasets are sourced externally, validate SQL files or use a parameterized seeding script rather than raw `psql`.
 
+### Ephemeral Fixtures with Dynamic State
+
+Functional tests that create disposable external resources (repos, issues, API keys) and feed the resulting identifiers into the skill:
+
+```yaml
+hooks:
+  before_each:
+    - command: |
+        # Create ephemeral GitHub fixtures for this case
+        repo=$(scripts/create-ephemeral-repo.sh "$CASE_ID")
+        issue_url=$(gh issue create --repo "$repo" \
+          --title "$(yq '.title' input.yaml)" --body "$(yq '.body' input.yaml)" \
+          | tail -1)
+
+        # Pass dynamic state forward to the skill via hook outputs
+        printf 'env:\n  GITHUB_ISSUE_URL: %s\n  EPHEMERAL_REPO: %s\n' \
+          "$issue_url" "$repo" > "$CASE_WORKSPACE/.hook-outputs.yaml"
+      timeout: 60
+      description: "Create ephemeral repo and fixtures"
+
+  after_each:
+    - command: "scripts/capture-fixture-state.sh $CASE_WORKSPACE"
+      timeout: 15
+      description: "Capture fixture state for judges"
+    - command: |
+        # EPHEMERAL_REPO is available because the harness injected it
+        # from .hook-outputs.yaml into the environment
+        [ -n "$EPHEMERAL_REPO" ] && gh repo delete "$EPHEMERAL_REPO" --yes
+      timeout: 30
+      on_failure: continue
+      description: "Delete ephemeral repo"
+
+execution:
+  arguments: "--issue-url $GITHUB_ISSUE_URL"
+```
+
+The `before_each` hook creates the fixture and writes `.hook-outputs.yaml`. The harness reads the `env:` block and injects `GITHUB_ISSUE_URL` into the skill's environment before execution. The `after_each` hook tears down the fixture. No custom runner script needed.
+
 ### Network Shims (PATH Manipulation)
 
 Replace real CLI tools with shims that serve from local archives:
@@ -294,8 +437,9 @@ hooks:
         mkdir -p .shims
         cp "$AGENT_EVAL_PROJECT_ROOT/evals/shims/"* .shims/
         chmod +x .shims/*
-        # Prepend shims to PATH in the skill's env
-        echo "PATH=.shims:$PATH" >> .env.local
+        # Prepend shims to PATH via hook outputs
+        printf 'env:\n  PATH: .shims:%s\n' "$PATH" \
+          > "$CASE_WORKSPACE/.hook-outputs.yaml"
       timeout: 10
       description: "Install CLI shims for hermetic execution"
 ```
@@ -356,6 +500,8 @@ hooks:
 
 **Makefile / CI-level setup.** Moves setup out of the eval config into CI pipeline definitions. Fragments the eval specification across multiple files and systems. Hooks keep everything in eval.yaml.
 
+**`.hook-env` dotenv file for hook outputs.** Hooks write `KEY=VALUE` lines to a `.hook-env` file that the harness parses and injects into the runner environment. Simpler for trivial cases (`echo "URL=..." >> .hook-env`) but fragile for real-world use — quoting, multiline values, comments, and escaping all become parsing hazards. The YAML approach (`.hook-outputs.yaml`) handles these naturally, supports structured `data` for judges alongside `env` for the runner, and is consistent with the project's existing use of YAML everywhere.
+
 ## Migration
 
 No breaking changes. `hooks:` is a new optional top-level key in eval.yaml. Existing configs without it behave identically. The eval-run skill instructions would add hook execution calls at each lifecycle point, and `preflight.py` would validate hook commands are syntactically valid.
@@ -366,7 +512,7 @@ No breaking changes. `hooks:` is a new optional top-level key in eval.yaml. Exis
 
 ## Future Extensions
 
-- **Hook outputs as judge inputs**: `before_scoring` hooks could write structured data that judges receive via a new `{{ hook_outputs }}` template variable.
+- **`{{ hook_outputs }}` template variable in judge prompts**: Hook outputs are available as `outputs["hook_outputs"]` in the record dict. A future enhancement could expose them directly in Jinja2 judge prompts via `{{ hook_outputs }}` for more ergonomic access.
 - **Built-in hook library**: Common patterns (archive extraction, Docker lifecycle, DB reset) could become named builtins: `- builtin: extract-archives` instead of inline shell.
 - **Dry-run mode**: `--dry-run` flag that prints hook commands without executing, for debugging eval configs.
 - **Hook metrics**: Capture duration and exit code per hook, surface in the HTML report alongside judge results.

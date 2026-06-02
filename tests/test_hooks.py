@@ -10,7 +10,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agent_eval.config import EvalConfig, HookEntry, HooksConfig
-from agent_eval.hooks import HookError, HookResult, run_hooks, run_hooks_safe
+from agent_eval.hooks import (
+    HookError, HookResult, collect_hook_outputs, run_hooks, run_hooks_safe,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -299,3 +301,53 @@ def test_run_hooks_safe_never_raises(tmp_path):
     assert len(results) == 2
     assert results[0].exit_code == 1
     assert results[1].exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# collect_hook_outputs
+# ---------------------------------------------------------------------------
+
+def test_collect_hook_outputs_yaml(tmp_path):
+    (tmp_path / ".hook-outputs.yaml").write_text(
+        "env:\n  FOO: bar\ndata:\n  count: 42\n")
+    result = collect_hook_outputs(tmp_path)
+    assert result == {"env": {"FOO": "bar"}, "data": {"count": 42}}
+    assert not (tmp_path / ".hook-outputs.yaml").exists()
+
+
+def test_collect_hook_outputs_json(tmp_path):
+    import json
+    (tmp_path / ".hook-outputs.json").write_text(
+        json.dumps({"env": {"KEY": "val"}}))
+    result = collect_hook_outputs(tmp_path)
+    assert result == {"env": {"KEY": "val"}}
+    assert not (tmp_path / ".hook-outputs.json").exists()
+
+
+def test_collect_hook_outputs_yaml_takes_precedence(tmp_path):
+    (tmp_path / ".hook-outputs.yaml").write_text("env:\n  FROM: yaml\n")
+    (tmp_path / ".hook-outputs.json").write_text('{"env": {"FROM": "json"}}')
+    result = collect_hook_outputs(tmp_path)
+    assert result["env"]["FROM"] == "yaml"
+    assert not (tmp_path / ".hook-outputs.yaml").exists()
+    # JSON file should still exist — only the first match is consumed
+    assert (tmp_path / ".hook-outputs.json").exists()
+
+
+def test_collect_hook_outputs_no_file(tmp_path):
+    result = collect_hook_outputs(tmp_path)
+    assert result == {}
+
+
+def test_collect_hook_outputs_malformed_yaml(tmp_path):
+    (tmp_path / ".hook-outputs.yaml").write_text(": : : not valid yaml [")
+    result = collect_hook_outputs(tmp_path)
+    assert result == {}
+    assert not (tmp_path / ".hook-outputs.yaml").exists()
+
+
+def test_collect_hook_outputs_empty_file(tmp_path):
+    (tmp_path / ".hook-outputs.yaml").write_text("")
+    result = collect_hook_outputs(tmp_path)
+    assert result == {}
+    assert not (tmp_path / ".hook-outputs.yaml").exists()
