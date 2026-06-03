@@ -49,6 +49,57 @@ _HARNESS_SYSTEM_PROMPT = (
 )
 
 
+def _filter_permissions_for_mode(config, workspace=None, in_repo_mode=None):
+    """Filter permissions based on execution mode.
+
+    Deny rules in permissions are only applied in prompt mode with in-repo execution.
+    In skill mode with isolated per-case workspaces, deny rules are removed to prevent
+    incorrectly blocking access to /tmp/ workspaces.
+
+    Args:
+        config: EvalConfig with permissions
+        workspace: Path to workspace (optional, for early in-repo detection)
+        in_repo_mode: bool (optional, if already detected)
+
+    Returns:
+        Filtered permissions dict safe to pass to runner
+    """
+    import yaml as _yaml
+
+    # If in_repo_mode is not explicitly provided, try to detect it
+    if in_repo_mode is None and workspace:
+        in_repo_mode = False
+        workspace_path = Path(workspace)
+        case_order_path = workspace_path / "case_order.yaml"
+
+        if case_order_path.exists():
+            try:
+                with open(case_order_path) as f:
+                    case_order = _yaml.safe_load(f) or []
+                if case_order:
+                    first_case_id = case_order[0] if isinstance(case_order[0], str) else case_order[0]["case_id"]
+                    first_case_ws = workspace_path / "cases" / first_case_id
+                    metadata_path = first_case_ws / "_metadata.yaml"
+
+                    if metadata_path.exists():
+                        with open(metadata_path) as f:
+                            meta = _yaml.safe_load(f) or {}
+                            if meta.get("mode") == "in-repo":
+                                in_repo_mode = True
+            except Exception:
+                pass  # If detection fails, assume not in-repo mode
+
+    # Start with config permissions
+    filtered = config.permissions.copy() if config.permissions else {}
+
+    # If NOT in repo mode (skill mode), remove deny rules
+    # Deny rules are only appropriate for in-repo execution
+    if not in_repo_mode and "deny" in filtered:
+        filtered.pop("deny")
+
+    return filtered
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -139,6 +190,10 @@ def main():
     mlflow_experiment = args.mlflow_experiment or config.mlflow.experiment
     effort = args.effort or config.runner.effort
 
+    # Filter permissions based on execution mode
+    # Deny rules should only apply in prompt mode with in-repo execution
+    filtered_permissions = _filter_permissions_for_mode(config, workspace=args.workspace)
+
     runner = runner_cls.from_config(
         config,
         log_prefix="eval",
@@ -146,6 +201,7 @@ def main():
         mlflow_experiment=mlflow_experiment,
         mlflow_tracking_uri=config.mlflow.tracking_uri,
         effort=effort,
+        permissions=filtered_permissions,
     )
 
     # Resolve timeout and budget: CLI override > config > defaults.
@@ -801,8 +857,11 @@ def _execute_per_case(args, config, runner, runner_cls,
             futures = {}
             with ThreadPoolExecutor(max_workers=effective_parallelism) as pool:
                 for i, entry in enumerate(case_order, 1):
-                    case_id = entry["case_id"] if isinstance(entry, dict) else entry
+                    case_id = entry if isinstance(entry, str) else entry["case_id"]
                     case_ws = workspace / "cases" / case_id
+                    # Filter permissions: only apply deny rules in in-repo mode
+                    case_permissions = _filter_permissions_for_mode(
+                        config, in_repo_mode=in_repo_mode)
                     case_runner = runner_cls.from_config(
                         config,
                         log_prefix=f"eval:{case_id}",
@@ -810,6 +869,7 @@ def _execute_per_case(args, config, runner, runner_cls,
                         mlflow_experiment=mlflow_experiment,
                         mlflow_tracking_uri=config.mlflow.tracking_uri,
                         effort=effort,
+                        permissions=case_permissions,
                     )
                     fut = pool.submit(
                         _run_single_case, case_runner, args.skill, case_id,

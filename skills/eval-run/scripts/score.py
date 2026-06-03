@@ -202,24 +202,6 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
     else:
         record["conversation"] = ""
 
-    # --- Documentation tracking (Read tool calls) ---
-    if config.traces.documentation_tracking:
-        read_calls_path = case_dir / "read_calls.json"
-        if read_calls_path.exists():
-            try:
-                with open(read_calls_path) as f:
-                    record["read_calls"] = json.load(f)
-                if not isinstance(record["read_calls"], list):
-                    print(f"  Warning: read_calls.json is not a list in {case_dir}",
-                          file=sys.stderr)
-                    record["read_calls"] = []
-            except (json.JSONDecodeError, OSError) as e:
-                print(f"  Warning: malformed read_calls.json in {case_dir}: {e}",
-                      file=sys.stderr)
-                record["read_calls"] = []
-        else:
-            record["read_calls"] = []
-
     # --- Logs (if traces config enables them) ---
     if run_id:
         if config.traces.stdout:

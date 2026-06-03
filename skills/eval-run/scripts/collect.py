@@ -28,7 +28,6 @@ import yaml
 from agent_eval.config import EvalConfig
 from agent_eval.events import (
     DEFAULT_RESULT_CAP, parse_stream_events, merge_subagent_transcripts,
-    extract_read_calls,
 )
 
 # Files/dirs created by the harness infrastructure, not by the skill
@@ -268,22 +267,6 @@ def _generate_events_json(case_dir, output_case_dir, config):
         except OSError:
             pass
         raise
-
-    # Documentation tracking: extract Read tool calls
-    if config.traces.documentation_tracking:
-        read_calls = extract_read_calls(events)
-        read_dest = output_case_dir / "read_calls.json"
-        fd, tmp_path = tempfile.mkstemp(dir=str(output_case_dir), suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(read_calls, f, indent=2)
-            os.rename(tmp_path, str(read_dest))
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
 
 
 def _collect_modified_files(case_dir, config):

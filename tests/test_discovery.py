@@ -56,11 +56,14 @@ def test_empty_project(tmp_path):
     assert results == []
 
 
-def test_skips_files_without_skill_field(tmp_path):
+def test_discovers_configs_without_skill_field(tmp_path):
+    """Configs without skill field are discovered (for prompt mode support)."""
     cfg = tmp_path / "eval.yaml"
     cfg.write_text("name: just-a-name\n")
     results = discover_configs(tmp_path)
-    assert results == []
+    assert len(results) == 1
+    assert results[0].eval_name == "just-a-name"
+    assert results[0].is_root is True
 
 
 def test_skips_invalid_yaml(tmp_path):

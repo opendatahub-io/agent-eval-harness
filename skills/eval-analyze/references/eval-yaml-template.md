@@ -98,25 +98,27 @@ models:
 # (check its allowed-tools frontmatter for "Skill"), add "Skill"
 # to the allow list — otherwise nested skill calls silently fail.
 #
-# IMPORTANT: Add deny blocks for test isolation. Agents should not be able to
-# read test infrastructure (eval/, eval.yaml, eval.md, tmp/) which contains
-# answer keys, expected outputs, domain knowledge, and other agents' results.
+# IMPORTANT: Deny rules are ONLY for PROMPT-MODE evaluations (workspace_mode: repo).
+# For SKILL-based evaluations: OMIT deny rules entirely (skill runs in isolated workspace).
+# For PROMPT-based evaluations: Add deny blocks to prevent test cheating.
 permissions:
   allow: []     # Tool patterns to allow (e.g., "Skill", "Write(artifacts/**)")
-  deny:
-    # Standard test isolation blocks (prevent cheating)
-    - path: "eval/"
-      tools: ["Read", "Glob", "Bash"]
-      reason: "Test cases contain answer keys and run results from other agents"
-    - path: "eval.yaml"
-      tools: ["Read", "Bash"]
-      reason: "Eval config contains domain knowledge and expected schemas"
-    - path: "eval.md"
-      tools: ["Read", "Bash"]
-      reason: "Analysis cache contains skill/documentation structure maps"
-    - path: "tmp/"
-      tools: ["Read", "Glob", "Bash"]
-      reason: "Harness state files not relevant to skill execution"
+  # deny: []    # ONLY for prompt-mode evals - see note above
+  
+  # Example deny rules for PROMPT-MODE evaluations (workspace_mode: repo):
+  # deny:
+  #   - path: "eval/"
+  #     tools: ["Read", "Grep", "Glob", "Bash"]
+  #     reason: "Test cases contain answer keys and run results from other agents"
+  #   - path: "eval.yaml"
+  #     tools: ["Read", "Grep", "Bash"]
+  #     reason: "Eval config contains domain knowledge and expected schemas"
+  #   - path: "eval.md"
+  #     tools: ["Read", "Grep", "Bash"]
+  #     reason: "Analysis cache contains documentation structure maps"
+  #   - path: "tmp/"
+  #     tools: ["Read", "Grep", "Glob", "Bash"]
+  #     reason: "Harness state files not relevant to execution"
 
 # MLflow logging target (optional)
 mlflow:
