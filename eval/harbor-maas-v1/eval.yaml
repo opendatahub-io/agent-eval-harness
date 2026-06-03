@@ -1,0 +1,103 @@
+name: harbor-maas-v1-anova
+description: >
+  Phase-2 validation: /eval-anova over a subset of harbor-maas-v1 (real
+  models-as-a-service PR tasks). Judges fixed to read in-place repo edits
+  and compare against the decoded oracle. Lives under gitignored eval/runs/.
+
+skill: null                      # raw PR prompt is the agent input (no skill)
+
+execution:
+  mode: case
+  arguments: |
+    You are an automated software engineer working inside a checked-out clone of
+    the opendatahub-io/models-as-a-service git repository (your current working
+    directory). Implement the change described below by EDITING the repository's
+    source files in place with the Write/Edit tools. Make the actual code changes
+    — do not merely describe them or only read files. Save all edits to disk.
+
+    ---
+    {prompt}
+  timeout: 900
+
+runner:
+  type: claude-code
+
+models:
+  skill: claude-sonnet-4-6       # overridden per matrix cell
+  judge: claude-opus-4-6         # LLM judge model (Vertex)
+
+permissions:
+  allow:                         # headless: pre-approve editing tools
+    - Read
+    - Write
+    - Edit
+    - Bash
+    - Glob
+    - Grep
+  deny:
+    - "mcp__*"
+
+dataset:
+  path: dataset                  # relative to this eval.yaml
+  schema: |
+    Each case dir (task-NNNN/) has input.yaml (prompt), instruction.txt and
+    oracle.diff (referenced by annotations.yaml for the judge).
+
+outputs:
+  - path: artifacts
+    schema: In-place repo edits captured via git diff into _modified/.
+
+traces:
+  stdout: false
+  stderr: true
+  events: false
+  metrics: false
+
+judges:
+  - name: has_code_changes
+    description: Agent produced non-trivial in-place edits.
+    check: |
+      mods = outputs.get("modified_files") or {}
+      total = sum(len(v) for v in mods.values() if isinstance(v, str))
+      if total < 50:
+          return False, f"Only {total} chars changed across {len(mods)} file(s)"
+      return True, f"{len(mods)} file(s) changed, {total} chars"
+
+  - name: solution_quality
+    description: LLM judge — does the agent's diff solve the task vs the oracle?
+    feedback_type: int
+    prompt: |
+      You are scoring an agent's attempt at a coding task on the
+      opendatahub-io/models-as-a-service repository.
+
+      ## Task instruction
+      {{ outputs.annotation_instruction_content }}
+
+      ## Agent's changes (modified files / diff)
+      {{ outputs.modified_files }}
+
+      ## Reference oracle patch (the merged PR; may be empty)
+      {{ outputs.annotation_oracle_content }}
+
+      Assess:
+      1. Does it address the core problem in the instruction?
+      2. Are the changes technically sound?
+      3. Would they plausibly pass the test suite / match the oracle?
+
+      Score 1-5 (1=no meaningful attempt, 3=addresses it with gaps,
+      5=excellent, comparable to the oracle). Respond with a JSON object:
+      {"score": <int 1-5>, "rationale": "<one sentence>"}
+
+thresholds:
+  has_code_changes:
+    min_pass_rate: 0.8
+  solution_quality:
+    min_mean: 3.0
+
+matrix:
+  factors:
+    model:
+      - claude-opus-4-6
+      - claude-sonnet-4-6
+      - claude-haiku-4-5
+  replications: 1
