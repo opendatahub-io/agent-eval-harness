@@ -43,7 +43,7 @@ class ClaudeCodeRunner(EvalRunner):
         resolved_plugin_dirs = [
             str(Path(d).resolve()) for d in plugin_dirs]
         return cls(
-            permissions=config.permissions,
+            permissions=overrides.get("permissions", config.permissions),
             plugin_dirs=resolved_plugin_dirs,
             env=config.runner.env,
             system_prompt=config.runner.system_prompt,

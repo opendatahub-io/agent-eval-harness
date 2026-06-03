@@ -1,4 +1,4 @@
-"""Tests for documentation tracking (Read tool call extraction)."""
+"""Tests for Read tool call extraction (used by consulted_docs judge)."""
 
 import json
 import tempfile
@@ -303,77 +303,6 @@ class TestExtractReadCalls:
 
         read_calls = extract_read_calls(events)
         assert read_calls == []
-
-
-class TestDocumentationTrackingConfig:
-    """Test config validation for documentation tracking."""
-
-    def test_documentation_tracking_requires_events(self):
-        """Test that documentation_tracking requires events to be enabled."""
-        config_data = {
-            "name": "test-eval",
-            "execution": {"mode": "case", "prompt": "{{ input.prompt }}"},
-            "dataset": {"path": "eval/dataset", "schema": "test"},
-            "outputs": [{"path": "output", "schema": "test"}],
-            "traces": {
-                "events": False,
-                "documentation_tracking": True
-            }
-        }
-
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-            yaml.dump(config_data, f)
-            config_path = f.name
-
-        try:
-            with pytest.raises(ValueError, match="documentation_tracking requires traces.events"):
-                EvalConfig.from_yaml(config_path)
-        finally:
-            Path(config_path).unlink()
-
-    def test_documentation_tracking_with_events_enabled(self):
-        """Test that documentation_tracking works when events are enabled."""
-        config_data = {
-            "name": "test-eval",
-            "execution": {"mode": "case", "prompt": "{{ input.prompt }}"},
-            "dataset": {"path": "eval/dataset", "schema": "test"},
-            "outputs": [{"path": "output", "schema": "test"}],
-            "traces": {
-                "events": True,
-                "documentation_tracking": True
-            }
-        }
-
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-            yaml.dump(config_data, f)
-            config_path = f.name
-
-        try:
-            config = EvalConfig.from_yaml(config_path)
-            assert config.traces.events is True
-            assert config.traces.documentation_tracking is True
-        finally:
-            Path(config_path).unlink()
-
-    def test_documentation_tracking_default_disabled(self):
-        """Test that documentation_tracking defaults to False."""
-        config_data = {
-            "name": "test-eval",
-            "execution": {"mode": "case"},
-            "skill": "test-skill",
-            "dataset": {"path": "eval/dataset", "schema": "test"},
-            "outputs": [{"path": "output", "schema": "test"}],
-        }
-
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-            yaml.dump(config_data, f)
-            config_path = f.name
-
-        try:
-            config = EvalConfig.from_yaml(config_path)
-            assert config.traces.documentation_tracking is False
-        finally:
-            Path(config_path).unlink()
 
 
 class TestEndToEndDocumentationTracking:
