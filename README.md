@@ -225,8 +225,6 @@ traces:
   stderr: true     # Capture stderr.log
   events: false    # Execution events: tool calls, reasoning, results (verbose)
   metrics: true    # Capture exit code, tokens, cost, duration
-  # documentation_tracking: false  # Capture Read tool calls (requires events: true)
-  #                                # Useful for verifying agents use documentation
 
 # Judges — evaluate output quality
 judges:
@@ -313,7 +311,7 @@ thresholds:
 - **`domain`** — (prompt mode only) repository-specific context used during test generation. Can include `type`, `documentation_structure`, `constraints`, `apis`, `components`, etc. Tailors generic templates to your repository.
 - **`inputs.tools`** — tool interception for headless and interactive execution. Each entry has a `match` (what to intercept) and a `prompt` (how to handle it). AskUserQuestion uses 3-tier answering: exact `case_overrides` → LLM call (`models.hook`) with case context (`input.yaml` + `answers.yaml`) → fallback to first option.
 - **`outputs`** — two types: `path` for file artifacts on disk, `tool` for tool call side effects (Jira, APIs). Both have `schema` descriptions. Optional `batch_pattern` maps output files to cases in batch mode using `{n}` as a 1-based index (e.g. `"RFE-{n:03d}"` → `RFE-001`, `RFE-002`).
-- **`traces`** — execution data to capture: stdout/stderr logs, events (tool calls, reasoning text, results), metrics (exit code, tokens, cost, duration), and documentation_tracking (Read tool calls for verifying documentation usage). Available to judges via the `outputs` dict.
+- **`traces`** — execution data to capture: stdout/stderr logs, events (tool calls, reasoning text, results), metrics (exit code, tokens, cost, duration). Available to judges via the `outputs` dict.
 - **`check`** — inline Python snippet for deterministic validation. Receives an `outputs` dict with file contents, execution metadata, tool calls, logs, and `annotations` (from dataset `annotations.yaml`). Returns `(bool, str)`.
 - **`if`** — optional condition on a judge. Python expression evaluated against `annotations` and `outputs`. When false, the judge is skipped for that case (not counted in pass_rate or mean).
 - **`prompt`** / **`prompt_file`** / **`llm_rubric`** — LLM judge evaluation instructions. All three compile to the same internal prompt before Jinja2 rendering. Priority order: `llm_rubric` > `prompt` > `prompt_file`.
@@ -544,15 +542,15 @@ traces:
   stdout: true
   events: true
   metrics: true
-  documentation_tracking: true  # Track which docs the agent reads
 
 judges:
   # Check if agent read the expected documentation
   - name: consulted_docs
-    llm_rubric: |
-      Did the agent read the expected documentation files?
-      Check outputs["read_calls"] for file paths.
-      Return true if the agent consulted the right docs, false otherwise.
+    builtin: consulted_docs
+    if: "annotations.get('category') == 'navigation'"
+    arguments:
+      min_coverage: 0.8
+      match: suffix
   
   # Semantic quality assessment
   - name: answer_quality

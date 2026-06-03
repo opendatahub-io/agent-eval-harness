@@ -143,8 +143,7 @@ class TestPromptBasedConfigGeneration:
                 "stdout": True,
                 "stderr": True,
                 "events": True,
-                "metrics": True,
-                "documentation_tracking": True
+                "metrics": True
             },
             "judges": [
                 {
@@ -198,13 +197,6 @@ class TestPromptBasedConfigGeneration:
         assert len(domain["constraints"]) == 1
         assert "v1alpha1" in domain["constraints"][0]["rule"]
 
-    def test_documentation_tracking_enabled(self, sample_docs_config):
-        """Test that documentation tracking is enabled for doc evals."""
-        traces = sample_docs_config["traces"]
-
-        assert traces["documentation_tracking"] is True
-        assert traces["events"] is True  # Required for doc tracking
-
     def test_config_validation(self, sample_docs_config):
         """Test that generated config can be loaded by EvalConfig."""
         from agent_eval.config import EvalConfig
@@ -220,7 +212,6 @@ class TestPromptBasedConfigGeneration:
             assert config.execution.mode == "case"
             assert config.execution.prompt  # Prompt mode uses execution.prompt
             assert not config.execution.skill  # Prompt mode has no skill in execution
-            assert config.traces.documentation_tracking is True
 
             # Validate taxonomy fields
             assert len(config.test_categories) == 2
@@ -331,7 +322,6 @@ class TestEndToEndFlow:
         assert "mode: case" in content
         assert "prompt:" in content
         assert "test_categories:" in content
-        assert "documentation_tracking: true" in content
 
     def test_workflow_components_exist(self):
         """Test that all required workflow components exist."""

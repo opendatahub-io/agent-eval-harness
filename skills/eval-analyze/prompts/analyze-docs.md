@@ -310,11 +310,12 @@ judges:
     if: "annotations.get('category') == 'navigation'"
     description: Did the agent find the right documentation files?
     llm_rubric: |
-      Score on scale 0-1:
-      - 1.0: Found and listed all expected files, showed evidence of reading CLAUDE.md/AGENTS.md first
-      - 0.75: Found most files but missed 1-2, or skipped reading entry point docs
-      - 0.5: Found some correct files but also read many irrelevant ones
-      - 0.0: Did not consult expected documentation
+      Score on scale 1-5:
+      - 5: Found and listed all expected files, showed evidence of reading CLAUDE.md/AGENTS.md first
+      - 4: Found most files but missed 1-2, or skipped reading entry point docs
+      - 3: Found some correct files but also read many irrelevant ones
+      - 2: Minimal doc usage
+      - 1: Did not consult expected documentation
       
       Check: Does "Documentation Used" section list files matching expected_files?
       Did agent read CLAUDE.md or AGENTS.md to navigate to the right docs?
@@ -323,14 +324,14 @@ judges:
     if: "annotations.get('category') == 'component-usage'"
     description: Quality of YAML examples and API explanations
     llm_rubric: |
-      Score 0-1 based on YAML example completeness, API group correctness,
+      Score on scale 1-5 based on YAML example completeness, API group correctness,
       field explanations, and documentation references.
 
   - name: architecture-understanding
     if: "annotations.get('category') == 'architecture'"
     description: Understanding of component relationships and data flows
     llm_rubric: |
-      Score 0-1 based on whether the agent explains how components interact,
+      Score on scale 1-5 based on whether the agent explains how components interact,
       data flows between them, and references architecture documentation.
 ```
 
@@ -350,16 +351,26 @@ judges:
 
 ### Navigation Judges (navigation category only):
 ```yaml
+  # Builtin judge: verifies agent read expected documentation files
+  - name: consulted-docs
+    builtin: consulted_docs
+    if: "annotations.get('category') == 'navigation'"
+    arguments:
+      min_coverage: 0.8  # 80% of expected_files must be read
+      match: suffix      # Match by file path suffix (default)
+    description: Agent must read the expected documentation files
+  
+  # LLM judge: evaluates navigation quality and strategy
   - name: navigation-accuracy
     if: "annotations.get('category') == 'navigation'"
     description: Did the agent find the right documentation files?
     llm_rubric: |
-      Score on scale 0-1:
-      - 1.0: Found and listed all expected files, showed evidence of reading CLAUDE.md/AGENTS.md first
-      - 0.75: Found most files but missed 1-2, or skipped reading entry point docs
-      - 0.5: Found some correct files but also read many irrelevant ones
-      - 0.25: Minimal doc usage, mostly relied on general knowledge
-      - 0.0: Did not consult expected documentation
+      Score on scale 1-5:
+      - 5: Found and listed all expected files, showed evidence of reading CLAUDE.md/AGENTS.md first
+      - 4: Found most files but missed 1-2, or skipped reading entry point docs
+      - 3: Found some correct files but also read many irrelevant ones
+      - 2: Minimal doc usage, mostly relied on general knowledge
+      - 1: Did not consult expected documentation
 
       Check: Does "Documentation Used" section list files matching expected_files?
       Did agent read CLAUDE.md or AGENTS.md to navigate to the right docs?
@@ -371,16 +382,23 @@ judges:
     if: "annotations.get('category') == 'anti-pattern'"
     description: Agent must reject constraint violations
     llm_rubric: |
-      The agent must reject the user's request and explain why it
-      violates documented constraints. Score 1.0 if rejected with
-      explanation, 0.0 if accepted the wrong approach.
+      Score on scale 1-5:
+      - 5: Agent explicitly rejects the request and explains why it violates documented rules
+      - 4: Agent rejects but explanation could be clearer
+      - 3: Agent hesitates or provides mixed message
+      - 2: Agent almost agrees or doesn't clearly reject
+      - 1: Agent accepts the wrong approach
     
   - name: cited-constraint-docs
     if: "annotations.get('category') == 'anti-pattern'"
     description: Agent must cite constraint documentation
     llm_rubric: |
-      The agent must cite the documentation that defines the constraint
-      they're enforcing. Score 1.0 if cites specific docs, 0.0 if not.
+      Score on scale 1-5:
+      - 5: Explicitly cites constraint documentation (e.g., "ai-docs/domain/machineconfig.md states...")
+      - 4: References constraint but not exact documentation
+      - 3: Mentions constraint exists but no documentation reference
+      - 2: Vague mention of rule
+      - 1: No constraint documentation cited
 ```
 
 ### Component-Usage Judges (component-usage category only):
@@ -389,13 +407,12 @@ judges:
     if: "annotations.get('category') == 'component-usage'"
     description: Quality of YAML examples and API explanations
     llm_rubric: |
-      Score on scale 0-1:
-      - 1.0: Complete working YAML with correct API group, explains key fields, cites docs
-      - 0.8: Good YAML with minor gaps
-      - 0.6: Basic example but missing field explanations
-      - 0.4: Example incomplete or incorrect
-      - 0.2: Minimal example, mostly generic
-      - 0.0: No example or completely wrong
+      Score on scale 1-5:
+      - 5: Complete working YAML with correct API group, explains key fields, cites docs
+      - 4: Good YAML with minor gaps
+      - 3: Basic example but missing field explanations
+      - 2: Example incomplete or incorrect
+      - 1: No example or completely wrong
 
       Check: apiVersion, kind, metadata, spec fields, doc references
 ```
@@ -406,13 +423,12 @@ judges:
     if: "annotations.get('category') == 'architecture'"
     description: Understanding of component relationships and data flows
     llm_rubric: |
-      Score on scale 0-1:
-      - 1.0: Explains data flow between all components, mentions roles, traces full lifecycle
-      - 0.85: Covers most components and flow
-      - 0.7: Some component relationships but gaps
-      - 0.5: Partial understanding, significant gaps
-      - 0.2: Confused about roles or relationships
-      - 0.0: Fundamentally incorrect
+      Score on scale 1-5:
+      - 5: Explains data flow between all components, mentions roles, traces full lifecycle
+      - 4: Covers most components and flow
+      - 3: Some component relationships but gaps
+      - 2: Partial understanding, significant gaps
+      - 1: Confused about roles or relationships or fundamentally incorrect
 
       Check: Component roles (not just names), data flow, CRDs mentioned, architecture docs cited
 ```
@@ -523,7 +539,6 @@ traces:
   stderr: true
   events: true
   metrics: true
-  documentation_tracking: true  # Track Read tool calls for doc citation validation
 
 judges:
   # CRITICAL: Include if: field for category-specific judges

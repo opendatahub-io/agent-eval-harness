@@ -734,7 +734,6 @@ class EvalConfig:
                 stderr=traces.get("stderr", True),
                 events=traces.get("events", True),
                 metrics=traces.get("metrics", True),
-                documentation_tracking=traces.get("documentation_tracking", False),
             )
 
         # Judges
