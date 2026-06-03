@@ -53,7 +53,7 @@ pip install -e ./agent-eval-harness
 claude --plugin-dir ./agent-eval-harness
 ```
 
-This makes all eval skills available: `/eval-setup`, `/eval-analyze`, `/eval-dataset`, `/eval-run`, `/eval-review`, `/eval-mlflow`, `/eval-optimize`, and `/eval-harness-check`.
+This makes all eval skills available: `/eval-setup`, `/eval-analyze`, `/eval-dataset`, `/eval-run`, `/eval-review`, `/eval-mlflow`, `/eval-optimize`, and `/eval-check`.
 
 ### 2. Set up environment
 
@@ -497,14 +497,14 @@ Automated refinement loop: run eval, identify failures, read traces + judge rati
 /eval-optimize --model opus --max-iterations 3
 ```
 
-### /eval-harness-check
+### /eval-check
 
 Scan the full configuration (skills, commands, CLAUDE.md, hooks) as a system. Finds content overlap, trigger collisions, CLAUDE.md duplication, and type misclassification. Produces an informational report with restructuring suggestions.
 
 ```bash
-/eval-harness-check                        # Scan and report to harness-report.md
-/eval-harness-check --include-global       # Also scan ~/.claude/CLAUDE.md
-/eval-harness-check --output my-report.md  # Custom output path
+/eval-check                        # Scan and report to harness-report.md
+/eval-check --include-global       # Also scan ~/.claude/CLAUDE.md
+/eval-check --output my-report.md  # Custom output path
 ```
 
 ## Architecture
@@ -531,7 +531,7 @@ skills/
   eval-review/           # Interactive human review
   eval-mlflow/           # MLflow integration
   eval-optimize/         # Automated refinement loop
-  eval-harness-check/    # Full-harness configuration health check
+  eval-check/    # Full-harness configuration health check
 ```
 
 ## Agent Support

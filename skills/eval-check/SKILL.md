@@ -1,5 +1,5 @@
 ---
-name: eval-harness-check
+name: eval-check
 description: Evaluate the full harness configuration as a system. Scans all skills, commands, CLAUDE.md, and hooks for redundancy, overlap, type misclassification, and structural issues. Produces an informational report with restructuring suggestions. Use when the user wants to check their overall setup health, find redundant skills, detect overlapping triggers, or get restructuring recommendations before diving into individual skill evaluation. Triggers on "check my setup", "harness health", "are my skills redundant", "what should I merge", "setup overview", "configuration check".
 user-invocable: true
 allowed-tools: Read, Bash, Glob, Grep, Agent, AskUserQuestion, Write
