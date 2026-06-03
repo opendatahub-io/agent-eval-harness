@@ -141,13 +141,18 @@ def find_hooks(root: Path) -> list[dict]:
             continue
         try:
             data = json.loads(content)
-            for hook_type, matchers in data.get("hooks", {}).items():
+            hooks_map = data.get("hooks", {}) if isinstance(data, dict) else {}
+            for hook_type, matchers in hooks_map.items():
                 if not isinstance(matchers, list):
                     continue
                 for matcher in matchers:
+                    if not isinstance(matcher, dict):
+                        continue
                     inner_hooks = matcher.get("hooks", [])
                     if isinstance(inner_hooks, list):
                         for hook in inner_hooks:
+                            if not isinstance(hook, dict):
+                                continue
                             hooks.append({
                                 "type": hook_type,
                                 "matcher": matcher.get("matcher", ""),

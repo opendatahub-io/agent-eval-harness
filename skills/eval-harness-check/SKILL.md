@@ -93,7 +93,7 @@ Flag any issues found by the inventory script, plus:
 
 ## Step 5: Generate Report
 
-Write the report to the path specified by `--output` (default: `harness-report.md`). Use the Write tool.
+Write the report to the path specified by `--output` (default: `harness-report.md`) only if it resolves within the project root. If it resolves outside root (e.g., `..` traversal or absolute external path), refuse and ask for a valid path. Use the Write tool.
 
 Structure the report as:
 
@@ -162,7 +162,7 @@ Suggest next steps:
 
 - **Read-only.** Do not modify any skill, command, CLAUDE.md, or hook file. Write only the report.
 - **Informational, not prescriptive.** All findings are suggestions. The user decides what to act on.
-- **Skip gracefully.** If a file can't be read, note it and continue. Don't fail the whole report.
+- **Skip unreadable files.** If a file can't be read, note it in the report and continue. Don't fail the whole report for one missing file.
 - **No false precision.** Word counts are approximate. Overlap assessment is qualitative. Don't present LLM judgments as deterministic measurements.
 - **Respect privacy.** Only scan `~/.claude/CLAUDE.md` if `--include-global` is explicitly passed.
 
