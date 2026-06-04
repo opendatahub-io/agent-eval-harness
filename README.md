@@ -116,7 +116,8 @@ runner:
   # effort: high              # Reasoning effort: low | medium | high | xhigh | max
   # settings: {}              # Arbitrary Claude Code settings merged into workspace
   # plugin_dirs: []           # Directories to load plugins from
-  # env: [CUSTOM_AUTH_TOKEN]   # Extra env var names to forward to subprocess
+  # env:                       # Extra env vars for subprocess ($VAR resolves from caller)
+  #   CUSTOM_AUTH_TOKEN: "$CUSTOM_AUTH_TOKEN"
   # system_prompt: |          # Appended to Claude CLI system prompt
   #   Custom instructions for the skill run.
 

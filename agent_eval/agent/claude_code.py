@@ -59,7 +59,7 @@ class ClaudeCodeRunner(EvalRunner):
         permissions: Optional[dict] = None,
         subagent_model: Optional[str] = None,
         plugin_dirs: Optional[list] = None,
-        env: Optional[list] = None,
+        env: Optional[dict] = None,
         system_prompt: Optional[str] = None,
         mlflow_experiment: Optional[str] = None,
         mlflow_tracking_uri: Optional[str] = None,
@@ -69,7 +69,7 @@ class ClaudeCodeRunner(EvalRunner):
         self._permissions = permissions or {}
         self._subagent_model = subagent_model
         self._plugin_dirs = plugin_dirs or []
-        self._env = env or []
+        self._env = env or {}
         self._system_prompt = system_prompt
         self._mlflow_experiment = mlflow_experiment
         self._mlflow_tracking_uri = mlflow_tracking_uri
@@ -345,8 +345,14 @@ class ClaudeCodeRunner(EvalRunner):
 
     def _build_env(self):
         """Build subprocess environment with allowlisted keys only."""
-        allowed = self._SAFE_ENV_KEYS | set(self._env)
-        env = {k: v for k, v in os.environ.items() if k in allowed}
+        env = {k: v for k, v in os.environ.items() if k in self._SAFE_ENV_KEYS}
+        for k, v in self._env.items():
+            if isinstance(v, str) and v.startswith("$"):
+                resolved = os.environ.get(v[1:])
+                if resolved is not None:
+                    env[k] = resolved
+            else:
+                env[k] = str(v)
         if self._subagent_model:
             env["CLAUDE_CODE_SUBAGENT_MODEL"] = self._subagent_model
         if self._mlflow_experiment:

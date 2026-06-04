@@ -135,15 +135,16 @@ class RunnerConfig:
     Other fields are runner-specific; unused fields are harmless for runners
     that don't read them.
 
-    env: extra environment variable *names* to forward from the caller's
-    environment into the runner subprocess.  Additive to the runner's
-    built-in safe defaults (Claude Code allowlist).
+    env: extra environment variables injected into the runner subprocess.
+    Keys are variable names, values are literal strings or ``$VAR``
+    references resolved from the caller's environment.  Additive to the
+    runner's built-in safe defaults (Claude Code allowlist).
     """
     type: str = "claude-code"
     command: Optional[Union[str, list]] = None  # CLI runner: command template
     settings: dict = field(default_factory=dict)
     plugin_dirs: list = field(default_factory=list)
-    env: list = field(default_factory=list)
+    env: dict = field(default_factory=dict)
     system_prompt: Optional[str] = None
     effort: Optional[str] = None  # Claude Code: low | medium | high | xhigh | max
 
@@ -318,7 +319,7 @@ class EvalConfig:
             command=command,
             settings=runner_raw.get("settings", {}) or {},
             plugin_dirs=runner_raw.get("plugin_dirs", []) or [],
-            env=runner_raw.get("env", []) or [],
+            env=runner_raw.get("env", {}) or {},
             system_prompt=runner_raw.get("system_prompt"),
             effort=runner_raw.get("effort"),
         )

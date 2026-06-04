@@ -129,7 +129,7 @@ Judges get an `outputs` dict with these keys (all populated from the above sourc
 |---|---|---|
 | Inherits caller's env | Full `os.environ` (see security note below) | Filtered to safe allowlist |
 | `execution.env` vars | Injected via `_build_env()` with `$VAR` resolution | Injected into `.claude/settings.json` env block |
-| `runner.env` | No effect (full env already inherited) | Forwards additional env var names on top of safe allowlist |
+| `runner.env` | No effect (full env already inherited) | Injects explicit key/value pairs on top of safe allowlist (`$VAR` resolved from caller) |
 
 **Security note on environment inheritance:** The opaque CLI runner inherits the
 full caller environment because commands are provided by the eval author (not
