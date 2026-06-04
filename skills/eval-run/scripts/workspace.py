@@ -322,8 +322,9 @@ def _read_input(case_dir, config=None):
     _SKIP_NAMES = {"answers", "reference", "expected", "gold"}
     if config is not None:
         ws = getattr(getattr(config, "dataset", None), "workspace", None)
-        for f in getattr(ws, "files", None) or []:
-            _SKIP_NAMES.add(Path(f).parts[0])
+        _SKIP_NAMES = _SKIP_NAMES | {
+            Path(f).parts[0] for f in (getattr(ws, "files", None) or [])
+        }
 
     # First pass: look for a file named 'input.*'
     for suffix in (".yaml", ".yml", ".json"):

@@ -80,7 +80,7 @@ dataset:
 
 
 def test_workspace_files_rejects_parent_traversal(tmp_path):
-    with pytest.raises(ValueError, match="must be a relative path"):
+    with pytest.raises(ValueError, match="must not contain '\\.\\.'"):
         EvalConfig.from_yaml(
             _write(
                 tmp_path,
@@ -220,7 +220,7 @@ def test_copy_workspace_files_skips_symlinks(tmp_path):
     _copy_input_files(case_dir, workspace, config)
 
     assert (workspace / "src" / "real.py").read_text() == "real"
-    assert not (workspace / "src" / "link.txt").exists()
+    assert not os.path.lexists(workspace / "src" / "link.txt")
 
 
 def test_copy_workspace_files_skips_symlinked_entry(tmp_path):
@@ -244,5 +244,5 @@ def test_copy_workspace_files_skips_symlinked_entry(tmp_path):
     )
     _copy_input_files(case_dir, workspace, config)
 
-    assert not (workspace / "evil").exists()
-    assert not (workspace / "secret.txt").exists()
+    assert not os.path.lexists(workspace / "evil")
+    assert list(workspace.iterdir()) == []
