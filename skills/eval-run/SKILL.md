@@ -89,16 +89,18 @@ Before setting up the workspace, verify the project's artifact directories are c
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/preflight.py \
   --config <config> \
-  [--run-id <id>]
+  [--run-id <id>] \
+  [--baseline <baseline-id>]
 ```
 
-The script checks `tmp/` state files and whether `$AGENT_EVAL_RUNS_DIR/<eval-name>/<id>` already has results from a previous run.
+The script checks `tmp/` state files, whether `$AGENT_EVAL_RUNS_DIR/<eval-name>/<id>` already has results from a previous run, and (if `--baseline` is given) that the baseline run-id exists under the same eval-name directory.
 
 - **If `CLEAN`**: proceed to workspace setup.
 - **If `DIRTY`**: report the findings to the user and ask what to do:
   - **Force clean**: run `preflight.py --clean --force` to delete all stale artifacts, then proceed.
   - **Change run-id**: append a version suffix (e.g., `2026-04-11-opus-v2`) and re-check. This avoids overwriting previous run results but still requires cleaning project artifacts — re-run preflight with `--clean` and the new run-id.
   - **Abort**: let the user handle cleanup manually.
+- **If `MISSING_BASELINE` (exit 2)**: the baseline run-id wasn't found at `$AGENT_EVAL_RUNS_DIR/<eval-name>/<baseline>`. The script lists nearby run-ids — confirm the correct one with the user (typo, or did they mean a different date/variant?) before retrying.
 
 ## Step 3: Prepare Workspace
 

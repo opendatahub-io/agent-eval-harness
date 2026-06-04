@@ -17,6 +17,9 @@ Usage:
 
     # Also check if eval/runs/<id> already exists
     python3 ${CLAUDE_SKILL_DIR}/scripts/preflight.py --config eval.yaml --run-id 2026-04-11-opus
+
+    # Also verify a baseline run-id exists (exit 2 if not, lists nearby runs)
+    python3 ${CLAUDE_SKILL_DIR}/scripts/preflight.py --config eval.yaml --baseline 2026-04-10-opus
 """
 
 import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
@@ -65,12 +68,33 @@ def main():
                         help="Skip confirmation prompt (for non-interactive use)")
     parser.add_argument("--run-id", default=None,
                         help="Also check if eval/runs/<id> already exists")
+    parser.add_argument("--baseline", default=None,
+                        help="Verify the given baseline run-id exists before continuing")
     args = parser.parse_args()
 
     config = EvalConfig.from_yaml(args.config)
     project_root = Path.cwd()
     runs_base = Path(os.environ.get("AGENT_EVAL_RUNS_DIR", "eval/runs"))
     runs_dir = runs_base / config.skill if config.skill else runs_base
+
+    # 0. Baseline existence — fail fast before any expensive setup
+    if args.baseline:
+        baseline_path = project_root / runs_dir / args.baseline
+        if not (baseline_path.exists() and any(baseline_path.iterdir())):
+            print(f"MISSING_BASELINE: {runs_dir}/{args.baseline}", file=sys.stderr)
+            # List nearby runs to help typo recovery
+            runs_root = project_root / runs_dir
+            if runs_root.exists():
+                siblings = sorted(p.name for p in runs_root.iterdir() if p.is_dir())
+                if siblings:
+                    print(f"Available runs in {runs_dir}/:", file=sys.stderr)
+                    for s in siblings[-20:]:
+                        print(f"  {s}", file=sys.stderr)
+                else:
+                    print(f"No runs found in {runs_dir}/", file=sys.stderr)
+            else:
+                print(f"Runs directory does not exist: {runs_dir}/", file=sys.stderr)
+            sys.exit(2)
 
     dirty = {}  # path_label -> list of files
 
