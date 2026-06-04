@@ -18,7 +18,6 @@ Usage:
         [--mlflow-experiment my-eval]
 """
 
-import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
 
 import argparse
 import json

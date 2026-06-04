@@ -90,6 +90,18 @@ Creates 5 starter test cases based on the skill analysis. Skip this if you alrea
 
 This prepares a workspace, runs the skill (headless or interactive), collects artifacts, scores with judges, and reports results.
 
+### CLI (no Claude Code needed)
+
+For deterministic, scriptable eval runs without Claude Code orchestration:
+
+```bash
+pip install git+https://github.com/opendatahub-io/agent-eval-harness.git
+agent-eval run --config eval.yaml --model opus
+agent-eval run --config eval.yaml --model opus --baseline 2026-06-03-opus --open
+```
+
+This chains the pipeline scripts directly: preflight → workspace → execute → collect → score → report. Same results, no token burn on orchestration.
+
 ## eval.yaml
 
 The harness uses natural language to describe evaluation datasets and skills input/output and spawns LLM sub-agents to interpret them.

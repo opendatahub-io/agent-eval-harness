@@ -1,4 +1,4 @@
-"""Tests for the report markdown renderer (skills/eval-run/scripts/report.py).
+"""Tests for the report markdown renderer (agent_eval/run/report.py).
 
 Focus: _md_to_html paragraph handling. Soft-wrapped source lines must be
 joined into a single <p> so analysis.md paragraphs reflow to the container
