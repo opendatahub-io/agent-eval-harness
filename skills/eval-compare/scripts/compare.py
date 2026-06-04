@@ -13,6 +13,7 @@ import sys
 from collections import defaultdict
 from html import escape
 from pathlib import Path
+from urllib.parse import quote
 
 import yaml
 
@@ -29,6 +30,8 @@ def load_json(path):
 
 def discover_runs(input_dir):
     input_dir = Path(input_dir)
+    if not input_dir.exists() or not input_dir.is_dir():
+        raise NotADirectoryError(f"Input directory not found: {input_dir}")
     runs = []
     for d in sorted(input_dir.iterdir()):
         if not d.is_dir():
@@ -375,7 +378,7 @@ def generate_report(runs, title, overview, output_dir):
     html += '<div class="tab-content active" id="tab-comparison">\n<div class="page">\n'
 
     if overview:
-        html += f'<div class="overview">{overview}</div>\n'
+        html += f'<div class="overview">{escape(overview)}</div>\n'
 
     # Bottom Line: auto-generated summary, agent replaces with LLM analysis in Step 3
     html += '<div class="verdict">\n<h2>Bottom Line</h2>\n<p>'
@@ -516,7 +519,7 @@ def generate_report(runs, title, overview, output_dir):
             r = model_runs[0]
             html += f'<div class="tab-content" id="tab-{escape(m)}">\n'
             if r["html_report"]:
-                html += f'  <iframe class="iframe-wrap" src="{r["name"]}/eval-report-summary.html"></iframe>\n'
+                html += f'  <iframe class="iframe-wrap" src="{quote(r['name'], safe='')}/eval-report-summary.html"></iframe>\n'
             else:
                 html += '  <div class="page"><p>No HTML report available for this run.</p></div>\n'
             html += '</div>\n\n'
@@ -526,13 +529,13 @@ def generate_report(runs, title, overview, output_dir):
             for j, r in enumerate(model_runs):
                 active = " active" if j == 0 else ""
                 act_style = f"color:var(--accent); border-bottom-color:var(--accent);" if j == 0 else ""
-                html += f'    <button class="{active}" data-sub="{j}" style="{act_style}">Run {j + 1} ({r["name"]})</button>\n'
+                html += f'    <button class="{active}" data-sub="{j}" style="{act_style}">Run {j + 1} ({escape(r["name"])})</button>\n'
             html += '  </div>\n'
             for j, r in enumerate(model_runs):
                 display = "" if j == 0 else ' style="display:none;"'
                 html += f'  <div class="sub-panel" data-model="{escape(m)}" data-idx="{j}"{display}>\n'
                 if r["html_report"]:
-                    html += f'    <iframe class="iframe-wrap" src="{r["name"]}/eval-report-summary.html"></iframe>\n'
+                    html += f'    <iframe class="iframe-wrap" src="{quote(r['name'], safe='')}/eval-report-summary.html"></iframe>\n'
                 else:
                     html += '    <div class="page"><p>No HTML report available.</p></div>\n'
                 html += '  </div>\n'
@@ -579,7 +582,11 @@ document.querySelectorAll('.sub-bar').forEach(bar => {
 
 
 def cmd_discover(args):
-    runs = discover_runs(args.input_dir)
+    try:
+        runs = discover_runs(args.input_dir)
+    except NotADirectoryError as e:
+        print(json.dumps({"error": str(e), "runs": []}))
+        sys.exit(1)
     if not runs:
         print(json.dumps({"error": "No valid runs found", "runs": []}))
         sys.exit(1)
@@ -598,11 +605,16 @@ def cmd_discover(args):
 
 
 def cmd_generate(args):
-    runs = discover_runs(args.input_dir)
+    try:
+        runs = discover_runs(args.input_dir)
+    except NotADirectoryError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
     if not runs:
         print("ERROR: No valid runs found", file=sys.stderr)
         sys.exit(1)
-    path = generate_report(runs, args.title, args.overview, args.output)
+    output_dir = args.output or str(Path(args.input_dir) / "comparison-report")
+    path = generate_report(runs, args.title, args.overview, output_dir)
     groups = group_by_model(runs)
     print(f"Report generated: {path}")
     print(f"Runs: {len(runs)} across {len(groups)} models")
@@ -623,7 +635,7 @@ def main():
 
     p_generate = sub.add_parser("generate")
     p_generate.add_argument("input_dir")
-    p_generate.add_argument("--output", required=True)
+    p_generate.add_argument("--output", default=None)
     p_generate.add_argument("--title", default="Model Comparison")
     p_generate.add_argument("--overview", default=None)
 
