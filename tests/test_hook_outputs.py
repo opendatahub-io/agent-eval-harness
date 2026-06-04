@@ -531,7 +531,8 @@ def test_run_single_case_after_each_runs_on_before_each_failure(tmp_path):
     # after_each must have run despite before_each failure
     assert marker.exists(), "after_each hook did not run after before_each failure"
     assert marker.read_text().strip() == "cleanup"
-    assert result is None
+    assert result is not None
+    assert result["exit_code"] != 0
 
 
 def test_cli_runner_receives_hook_output_env_vars(tmp_path):

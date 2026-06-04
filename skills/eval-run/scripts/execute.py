@@ -321,6 +321,7 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
     case_hook_env = None
     merged_hook_data = {}
     result = None
+    error_msg = ""
     try:
         if config and config.hooks and hook_env:
             dataset_path = config.dataset_path
@@ -368,6 +369,7 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
     except Exception as exc:
         print(f"    → {case_id}: ERROR ({exc})", file=sys.stderr)
         result = None
+        error_msg = str(exc)
     finally:
         # Run after_each hooks (guaranteed, like after_all)
         if config and config.hooks and config.hooks.after_each and case_hook_env:
@@ -377,7 +379,22 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
                            phase_name="after_each", case_id=case_id)
 
     if result is None:
-        return case_id, None
+        case_output = output_dir / "cases" / case_id
+        case_output.mkdir(parents=True, exist_ok=True)
+        failed_result = {
+            "exit_code": 1,
+            "duration_s": 0,
+            "token_usage": None,
+            "cost_usd": None,
+            "num_turns": None,
+            "per_model_usage": None,
+            "per_model_turns": None,
+            "error": error_msg,
+        }
+        with open(case_output / "run_result.json", "w") as f:
+            json.dump(failed_result, f, indent=2)
+            f.write("\n")
+        return case_id, failed_result
 
     case_output = output_dir / "cases" / case_id
     case_output.mkdir(parents=True, exist_ok=True)
