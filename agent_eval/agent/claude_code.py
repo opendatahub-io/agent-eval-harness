@@ -347,6 +347,8 @@ class ClaudeCodeRunner(EvalRunner):
         """Build subprocess environment with allowlisted keys only."""
         env = {k: v for k, v in os.environ.items() if k in self._SAFE_ENV_KEYS}
         for k, v in self._env.items():
+            if v is None:
+                continue
             if isinstance(v, str) and v.startswith("$"):
                 resolved = os.environ.get(v[1:])
                 if resolved is not None:
