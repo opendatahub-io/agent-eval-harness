@@ -315,43 +315,46 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
     print(f"  [{index}/{total_cases}] {case_id}: /{skill_name} {case_args}",
           file=sys.stderr)
 
-    # Per-case hooks: build case-specific env and run before_each
+    # Per-case hooks: build case-specific env, run before_each/after_each.
+    # The entire block is wrapped in try/finally so that after_each cleanup
+    # hooks fire even if before_each or run_skill raises.
     case_hook_env = None
     merged_hook_data = {}
-    if config and config.hooks and hook_env:
-        dataset_path = config.dataset_path
-        case_source_dir = str(Path(dataset_path).resolve() / case_id) if dataset_path else ""
-        case_hook_env = {
-            **hook_env,
-            "CASE_ID": case_id,
-            "CASE_WORKSPACE": str(case_ws.resolve()),
-            "CASE_SOURCE_DIR": case_source_dir,
-            "CASE_INPUT": str((case_ws / "input.yaml").resolve()),
-        }
-        log_dir = output_dir / "hooks"
-        if config.hooks.before_each:
-            run_hooks(config.hooks.before_each, env=case_hook_env,
-                      cwd=case_ws, log_dir=log_dir,
-                      phase_name="before_each", case_id=case_id)
-
-        # Collect hook outputs and merge with global
-        case_outputs = collect_hook_outputs(case_ws)
-        global_env = (global_hook_outputs or {}).get("env", {})
-        case_env = case_outputs.get("env", {})
-        merged_env = {**global_env, **case_env}
-
-        if merged_env:
-            inject_hook_env(case_ws, merged_env)
-            # Re-check settings_path since we may have just created it
-            settings_path = case_settings if case_settings.exists() else settings_path
-            # Forward-propagate to after_each hooks
-            case_hook_env.update({k: str(v) for k, v in merged_env.items()})
-
-        global_data = (global_hook_outputs or {}).get("data", {})
-        case_data_out = case_outputs.get("data", {})
-        merged_hook_data = {**global_data, **case_data_out}
-
+    result = None
     try:
+        if config and config.hooks and hook_env:
+            dataset_path = config.dataset_path
+            case_source_dir = str(Path(dataset_path).resolve() / case_id) if dataset_path else ""
+            case_hook_env = {
+                **hook_env,
+                "CASE_ID": case_id,
+                "CASE_WORKSPACE": str(case_ws.resolve()),
+                "CASE_SOURCE_DIR": case_source_dir,
+                "CASE_INPUT": str((case_ws / "input.yaml").resolve()),
+            }
+            log_dir = output_dir / "hooks"
+            if config.hooks.before_each:
+                run_hooks(config.hooks.before_each, env=case_hook_env,
+                          cwd=case_ws, log_dir=log_dir,
+                          phase_name="before_each", case_id=case_id)
+
+            # Collect hook outputs and merge with global
+            case_outputs = collect_hook_outputs(case_ws)
+            global_env = (global_hook_outputs or {}).get("env", {})
+            case_env = case_outputs.get("env", {})
+            merged_env = {**global_env, **case_env}
+
+            if merged_env:
+                inject_hook_env(case_ws, merged_env)
+                # Re-check settings_path since we may have just created it
+                settings_path = case_settings if case_settings.exists() else settings_path
+                # Forward-propagate to after_each hooks
+                case_hook_env.update({k: str(v) for k, v in merged_env.items()})
+
+            global_data = (global_hook_outputs or {}).get("data", {})
+            case_data_out = case_outputs.get("data", {})
+            merged_hook_data = {**global_data, **case_data_out}
+
         result = runner.run_skill(
             skill_name=skill_name,
             args=case_args,

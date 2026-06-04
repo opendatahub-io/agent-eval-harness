@@ -491,6 +491,49 @@ def test_run_single_case_after_each_runs_on_runner_exception(tmp_path):
     assert result is None or result["exit_code"] != 0
 
 
+def test_run_single_case_after_each_runs_on_before_each_failure(tmp_path):
+    """after_each hooks run even when a before_each hook fails with
+    on_failure: fail, so resources created by earlier hooks get cleaned up."""
+    case_ws = tmp_path / "workspace" / "cases" / "case-001"
+    case_ws.mkdir(parents=True)
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+
+    dataset = tmp_path / "dataset"
+    (dataset / "case-001").mkdir(parents=True)
+
+    marker = tmp_path / "after_each_ran.txt"
+
+    config = _make_config(
+        before_each=[
+            HookEntry(command="echo setup-resource"),
+            HookEntry(command="exit 1", on_failure="fail"),
+        ],
+        after_each=[HookEntry(
+            command=f'echo cleanup > {marker}',
+        )],
+        dataset_path=dataset,
+    )
+    hook_env = build_hook_env(
+        workspace=str(tmp_path / "workspace"),
+        run_id="test-run",
+        config_path="eval.yaml",
+        project_root=str(Path.cwd()),
+        model="sonnet",
+    )
+
+    case_id, result = _run_single_case(
+        _make_mock_runner(), "test-skill", "case-001", case_ws, output_dir,
+        "", "sonnet", None, None, None, 5.0, 600,
+        1, 1, config=config, hook_env=hook_env,
+    )
+
+    # after_each must have run despite before_each failure
+    assert marker.exists(), "after_each hook did not run after before_each failure"
+    assert marker.read_text().strip() == "cleanup"
+    assert result is None
+
+
 def test_cli_runner_receives_hook_output_env_vars(tmp_path):
     """Hook output env vars injected via inject_hook_env flow into the CLI
     runner's subprocess environment, not just settings.json."""
