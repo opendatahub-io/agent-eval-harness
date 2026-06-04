@@ -1003,7 +1003,7 @@ def _render_model_usage(run_result, baseline_result=None):
         turns = usage.get("num_turns")
         total_in = inp + cr + cw
         total_tokens = total_in + out
-        if key == "input":         return inp or None
+        if key == "input":         return total_in or None
         if key == "output":        return out or None
         if key == "cache_read":    return cr or None
         if key == "cache_create":  return cw or None
@@ -1107,7 +1107,7 @@ def _render_model_usage(run_result, baseline_result=None):
         return ""
 
     metrics = [
-        ("Input tokens", "input"),
+        ("Input tokens (total)", "input"),
         ("Output tokens", "output"),
         ("Cache read", "cache_read"),
         ("Cache write", "cache_create"),
