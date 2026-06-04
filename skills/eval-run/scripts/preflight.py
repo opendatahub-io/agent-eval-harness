@@ -80,11 +80,11 @@ def main():
     # 0. Baseline existence — fail fast before any expensive setup
     if args.baseline:
         baseline_path = project_root / runs_dir / args.baseline
-        if not (baseline_path.exists() and any(baseline_path.iterdir())):
+        if not (baseline_path.is_dir() and any(baseline_path.iterdir())):
             print(f"MISSING_BASELINE: {runs_dir}/{args.baseline}", file=sys.stderr)
             # List nearby runs to help typo recovery
             runs_root = project_root / runs_dir
-            if runs_root.exists():
+            if runs_root.is_dir():
                 siblings = sorted(p.name for p in runs_root.iterdir() if p.is_dir())
                 if siblings:
                     print(f"Available runs in {runs_dir}/:", file=sys.stderr)
