@@ -448,6 +448,74 @@ def test_run_single_case_merges_global_and_case_outputs(tmp_path):
     assert record["hook_outputs"]["shared_key"] == "from_case"
 
 
+def test_run_single_case_after_each_runs_on_runner_exception(tmp_path):
+    """after_each hooks run even when runner.run_skill() raises an exception,
+    so cleanup hooks (e.g. deleting ephemeral repos) are guaranteed to fire."""
+    case_ws = tmp_path / "workspace" / "cases" / "case-001"
+    case_ws.mkdir(parents=True)
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+
+    dataset = tmp_path / "dataset"
+    (dataset / "case-001").mkdir(parents=True)
+
+    marker = tmp_path / "after_each_ran.txt"
+
+    config = _make_config(
+        after_each=[HookEntry(
+            command=f'echo cleanup > {marker}',
+        )],
+        dataset_path=dataset,
+    )
+    hook_env = build_hook_env(
+        workspace=str(tmp_path / "workspace"),
+        run_id="test-run",
+        config_path="eval.yaml",
+        project_root=str(Path.cwd()),
+        model="sonnet",
+    )
+
+    runner = _make_mock_runner()
+    runner.run_skill.side_effect = RuntimeError("unexpected crash")
+
+    case_id, result = _run_single_case(
+        runner, "test-skill", "case-001", case_ws, output_dir,
+        "", "sonnet", None, None, None, 5.0, 600,
+        1, 1, config=config, hook_env=hook_env,
+    )
+
+    # after_each must have run despite the exception
+    assert marker.exists(), "after_each hook did not run after runner exception"
+    assert marker.read_text().strip() == "cleanup"
+    # The case should report as failed
+    assert result is None or result["exit_code"] != 0
+
+
+def test_cli_runner_receives_hook_output_env_vars(tmp_path):
+    """Hook output env vars injected via inject_hook_env flow into the CLI
+    runner's subprocess environment, not just settings.json."""
+    from agent_eval.agent.cli_runner import CliRunner
+
+    case_ws = tmp_path / "workspace" / "cases" / "case-001"
+    case_ws.mkdir(parents=True)
+
+    # Inject hook env vars (simulating what the harness does after before_each)
+    inject_hook_env(case_ws, {"FIXTURE_URL": "https://example.com/42"})
+
+    # Verify settings.json was written
+    settings_path = case_ws / ".claude" / "settings.json"
+    assert settings_path.exists()
+
+    # Create a CLI runner and run a command that echoes the env var
+    runner = CliRunner(command="echo {agent}")
+
+    # The runner should pick up FIXTURE_URL from settings.json
+    # and pass it through to the subprocess environment
+    env = runner._build_env(settings_path=settings_path)
+    assert env.get("FIXTURE_URL") == "https://example.com/42", \
+        "CLI runner _build_env() should read hook env vars from settings.json"
+
+
 def test_run_single_case_no_hooks_no_side_effects(tmp_path):
     """Without hooks configured, no settings.json or hook_outputs.yaml created."""
     case_ws = tmp_path / "workspace" / "cases" / "case-001"

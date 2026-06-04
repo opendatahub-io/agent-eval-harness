@@ -351,23 +351,30 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
         case_data_out = case_outputs.get("data", {})
         merged_hook_data = {**global_data, **case_data_out}
 
-    result = runner.run_skill(
-        skill_name=skill_name,
-        args=case_args,
-        workspace=case_ws,
-        model=model,
-        settings_path=settings_path,
-        system_prompt=system_prompt,
-        max_budget_usd=max_budget,
-        timeout_s=timeout_s,
-    )
+    try:
+        result = runner.run_skill(
+            skill_name=skill_name,
+            args=case_args,
+            workspace=case_ws,
+            model=model,
+            settings_path=settings_path,
+            system_prompt=system_prompt,
+            max_budget_usd=max_budget,
+            timeout_s=timeout_s,
+        )
+    except Exception as exc:
+        print(f"    → {case_id}: ERROR ({exc})", file=sys.stderr)
+        result = None
+    finally:
+        # Run after_each hooks (guaranteed, like after_all)
+        if config and config.hooks and config.hooks.after_each and case_hook_env:
+            log_dir = output_dir / "hooks"
+            run_hooks_safe(config.hooks.after_each, env=case_hook_env,
+                           cwd=case_ws, log_dir=log_dir,
+                           phase_name="after_each", case_id=case_id)
 
-    # Run after_each hooks
-    if config and config.hooks and config.hooks.after_each and case_hook_env:
-        log_dir = output_dir / "hooks"
-        run_hooks(config.hooks.after_each, env=case_hook_env,
-                  cwd=case_ws, log_dir=log_dir,
-                  phase_name="after_each", case_id=case_id)
+    if result is None:
+        return case_id, None
 
     case_output = output_dir / "cases" / case_id
     case_output.mkdir(parents=True, exist_ok=True)
