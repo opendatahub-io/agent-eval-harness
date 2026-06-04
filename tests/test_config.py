@@ -8,7 +8,7 @@ import pytest
 # Ensure agent_eval is importable
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agent_eval.config import EvalConfig, JudgeConfig, ModelsConfig
+from agent_eval.config import DatasetConfig, EvalConfig, JudgeConfig, ModelsConfig
 from score import _resolve_judge_model
 
 
@@ -163,7 +163,7 @@ skill: s
 dataset:
   path: cases/
 """))
-    resolved = cfg.resolve_path(cfg.dataset_path)
+    resolved = cfg.resolve_path(cfg.dataset.path)
     assert resolved == tmp_path.resolve() / "cases"
 
 
@@ -183,7 +183,7 @@ skill: s
 dataset:
   path: /shared/datasets/my-cases
 """))
-    assert cfg.dataset_path == "/shared/datasets/my-cases"
+    assert cfg.dataset.path == "/shared/datasets/my-cases"
 
 
 def test_parent_traversal_rejected(tmp_path):
@@ -209,7 +209,7 @@ dataset:
   path: cases/
 """, name="eval/my-eval/eval.yaml")
     cfg = EvalConfig.from_yaml(p)
-    resolved = cfg.resolve_path(cfg.dataset_path)
+    resolved = cfg.resolve_path(cfg.dataset.path)
     assert resolved == cases_dir
 
 
@@ -219,12 +219,12 @@ def test_shared_dataset_two_configs(tmp_path):
     shared.mkdir()
     cfg_a = EvalConfig(name="a", skill="alpha",
                        config_dir=tmp_path / "eval" / "alpha",
-                       dataset_path=str(shared.resolve()))
+                       dataset=DatasetConfig(path=str(shared.resolve())))
     cfg_b = EvalConfig(name="b", skill="beta",
                        config_dir=tmp_path / "eval" / "beta",
-                       dataset_path=str(shared.resolve()))
-    assert cfg_a.resolve_path(cfg_a.dataset_path) == shared.resolve()
-    assert cfg_b.resolve_path(cfg_b.dataset_path) == shared.resolve()
+                       dataset=DatasetConfig(path=str(shared.resolve())))
+    assert cfg_a.resolve_path(cfg_a.dataset.path) == shared.resolve()
+    assert cfg_b.resolve_path(cfg_b.dataset.path) == shared.resolve()
 
 
 def test_absolute_dataset_path_used_as_is(tmp_path):
@@ -237,5 +237,5 @@ skill: s
 dataset:
   path: {abs_path}
 """, name="eval/my-eval/eval.yaml"))
-    resolved = cfg.resolve_path(cfg.dataset_path)
+    resolved = cfg.resolve_path(cfg.dataset.path)
     assert resolved == abs_path
