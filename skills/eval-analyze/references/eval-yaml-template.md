@@ -47,7 +47,7 @@ runner:
   type: claude-code         # Discriminator: claude-code, opencode, etc.
   # settings: {}            # Runner-specific settings overrides
   # plugin_dirs: []         # Plugin dirs the evaluated skill needs
-  # env_strip: [JIRA_TOKEN] # Env vars to remove before launching the runner
+  # env: [CUSTOM_AUTH_TOKEN] # Extra env var names to forward to the runner
   # system_prompt: ""       # Appended to harness system prompt
   # effort: high            # Claude Code reasoning effort: low | medium | high | xhigh | max
 

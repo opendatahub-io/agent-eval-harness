@@ -26,7 +26,7 @@ runner:
   # effort: high                 # Reasoning effort: low | medium | high | xhigh | max
   # settings: {}                 # Claude Code settings merged into workspace
   # plugin_dirs: []              # Plugin dirs for sub-skills the evaluated skill calls
-  # env_strip: [JIRA_TOKEN]      # Env vars to remove from subprocess
+  # env: [CUSTOM_AUTH_TOKEN]      # Extra env var names to forward to subprocess
   # system_prompt: ""            # Appended to harness system prompt
 
 # Models — defaults for each role (CLI flags override)

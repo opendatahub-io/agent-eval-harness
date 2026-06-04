@@ -87,7 +87,7 @@ skills/eval-check/ # Skill: full-harness configuration health check
 Skills projects create an `eval.yaml` config file with:
 - `skill` — skill to evaluate
 - `execution` — `mode` (`case` or `batch`), `arguments` template with `{field}` placeholders, optional `timeout`/`max_budget_usd`/`parallelism` (concurrent case execution), and `env` for injecting environment variables into workspaces (`$VAR` syntax resolves from caller's env)
-- `runner` — `type` discriminator (`claude-code`, etc.) plus runner-specific `effort`/`settings`/`plugin_dirs`/`env_strip`/`system_prompt`
+- `runner` — `type` discriminator (`claude-code`, etc.) plus runner-specific `effort`/`settings`/`plugin_dirs`/`env`/`system_prompt`
 - `models` — defaults for `skill`/`subagent`/`judge`/`hook` roles (CLI flags override). `hook` is the model for LLM-based AskUserQuestion answering.
 - `mlflow` — `experiment`, optional `tracking_uri`/`tags`
 - `permissions` — `allow`/`deny` tool patterns for headless execution

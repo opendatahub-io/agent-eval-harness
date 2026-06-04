@@ -256,7 +256,7 @@ class AgentEvalAdapter(FrameworkAdapter):
                 permissions=eval_config.permissions,
                 system_prompt=eval_config.runner.system_prompt,
                 plugin_dirs=eval_config.runner.plugin_dirs,
-                env_strip=eval_config.runner.env_strip,
+                env=eval_config.runner.env,
                 effort=eval_config.runner.effort,
             )
 

@@ -43,7 +43,7 @@ runner:
   type: claude-code
   plugin_dirs:
     - /tmp/p
-  env_strip:
+  env:
     - FOO
   settings:
     a: 1
@@ -51,7 +51,7 @@ runner:
 """))
     assert cfg.runner.type == "claude-code"
     assert cfg.runner.plugin_dirs == ["/tmp/p"]
-    assert cfg.runner.env_strip == ["FOO"]
+    assert cfg.runner.env == ["FOO"]
     assert cfg.runner.settings == {"a": 1}
     assert cfg.runner.system_prompt == "be careful"
 

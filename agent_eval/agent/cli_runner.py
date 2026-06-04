@@ -43,7 +43,6 @@ class CliRunner(EvalRunner):
         return cls(
             command=config.runner.command,
             env=config.execution.env,
-            env_strip=config.runner.env_strip,
             log_prefix=log_prefix,
             subagent_model=overrides.get("subagent_model"),
             effort=overrides.get("effort", config.runner.effort),
@@ -54,7 +53,6 @@ class CliRunner(EvalRunner):
         self,
         command: Union[str, list],
         env: Optional[dict] = None,
-        env_strip: Optional[list] = None,
         log_prefix: Optional[str] = None,
         subagent_model: Optional[str] = None,
         effort: Optional[str] = None,
@@ -70,7 +68,6 @@ class CliRunner(EvalRunner):
                 f"runner.command must be a string or list, got {type(command).__name__}")
         self._command = command
         self._extra_env = env or {}
-        self._env_strip = env_strip or []
         self._log_prefix = log_prefix
         self._subagent_model = subagent_model or ""
         self._effort = effort or ""
@@ -222,10 +219,8 @@ class CliRunner(EvalRunner):
         return _sub(self._command)
 
     def _build_env(self) -> dict:
-        """Build subprocess environment: inherit env, apply strip list, add extras."""
+        """Build subprocess environment: inherit env, add extras."""
         env = os.environ.copy()
-        for key in self._env_strip:
-            env.pop(key, None)
         for k, v in self._extra_env.items():
             if isinstance(v, str) and v.startswith("$"):
                 resolved = os.environ.get(v[1:])
