@@ -150,7 +150,7 @@ class TestTaxonomyGeneration:
         assert len(sample_config.test_categories) == 1
         assert sample_config.test_categories[0].name == "navigation"
         assert sample_config.test_categories[0].count == 2
-        assert sample_config.domain["type"] == "test-repo"
+        assert sample_config.dataset.domain["type"] == "test-repo"
 
     def test_generate_from_taxonomy_mocked(self, sample_config, monkeypatch):
         """Test generation with mocked API calls."""

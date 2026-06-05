@@ -1,10 +1,23 @@
+# OpenShift Agentic Documentation Analysis Recipe
+
+**This is a domain-specific example recipe** for evaluating OpenShift/Kubernetes operator and platform documentation. It includes ecosystem-specific terminology (CRDs, Operators, status conditions, webhooks, MachineConfig, etc.).
+
+**To use this recipe**:
+```bash
+/eval-analyze --prompt examples/openshift-agentic-docs.md
+```
+
+**For other domains**: Use `builtin:docs` (generic) or create your own recipe by adapting this example.
+
+---
+
 # Documentation Analysis Prompt for eval-analyze
 
 You are analyzing a repository's **agentic documentation** (CLAUDE.md, AGENTS.md, ai-docs/, etc.) to generate an evaluation configuration (`eval.yaml`) for testing whether AI agents can effectively navigate and use this documentation.
 
 **What to analyze**: Agentic documentation written FOR agents (not manual user docs like README.md or end-user guides).
 
-**Context**: This prompt is invoked via `/eval-analyze --prompt builtin:docs`. It generates a prompt-mode eval config (not a skill eval).
+**Context**: This prompt is invoked via `/eval-analyze --prompt examples/openshift-agentic-docs.md`. It generates a prompt-mode eval config (not a skill eval).
 
 **Goal**: Test if agents can:
 - Navigate and find relevant information in the agentic docs
@@ -46,7 +59,7 @@ find <doc-area> -name "*.md" | head -30
 
 Categorize directories by purpose:
 - **Workflows**: Processes, how-to guides (e.g., `ai-docs/workflows/`)
-- **Domain**: APIs, data models, concepts (e.g., `ai-docs/domain/`)
+- **Domain**: APIs, CRDs, concepts (e.g., `ai-docs/domain/`)
 - **Architecture**: System design, components (e.g., `ai-docs/architecture/`)
 - **Practices**: Best practices, patterns (e.g., `ai-docs/practices/`)
 - **Decisions**: ADRs, design decisions (e.g., `ai-docs/decisions/`)
@@ -70,16 +83,16 @@ Based on what you read, classify the repository:
 - Contains enhancement proposals, RFCs, ADRs
 - Focuses on **process** (how to propose/design features)
 - Has **constraints** ("must use X pattern", "avoid Y")
-- Examples: Enhancement repositories, design doc repos
+- Examples: openshift/enhancements
 
 **Test focus**: Process adherence, pattern application, constraint enforcement
 
 ### Type B: Component/Code Repository
 **Characteristics**:
-- Contains component documentation (APIs, data models, libraries)
+- Contains component documentation (APIs, CRDs, libraries)
 - Focuses on **usage** (how to use this component)
-- Has **examples** (code snippets, configuration samples)
-- Examples: Component repos, library repos, service repos
+- Has **examples** (YAML snippets, code samples)
+- Examples: openshift/machine-config-operator, Operator repos
 
 **Test focus**: API usage, example accuracy, architecture understanding
 
@@ -105,9 +118,9 @@ documentation_structure:
   entry_point: CLAUDE.md  # or AGENTS.md (whichever exists at root)
   areas:
     - path: ai-docs/workflows/
-      topics: [development-process, feature-implementation, testing-workflow]
-    - path: ai-docs/domain/
-      topics: [component-patterns, lifecycle-management, interfaces]
+      topics: [enhancement-process, feature-implementation, testing-workflow]
+    - path: ai-docs/platform/
+      topics: [operator-patterns, status-conditions, webhooks]
     - path: ai-docs/practices/
       topics: [api-evolution, security, testing]
 ```
@@ -138,7 +151,7 @@ constraints:
 
 ### 3.3 Identify APIs/Components (if Type B)
 
-Look for API documentation, data models, libraries:
+Look for API documentation, CRDs, libraries:
 
 ```bash
 find ai-docs/domain -name "*.md"
@@ -148,16 +161,16 @@ find ai-docs/apis -name "*.md"
 For each API/component:
 - **Name**: API or component name
 - **Documentation**: Path to docs
-- **Example type**: code, json, yaml, etc.
+- **Example type**: yaml, code, json
 
 Example:
 ```yaml
 apis:
-  - name: UserService
-    documentation: ai-docs/apis/user-service.md
-    example_type: json
-  - name: ConfigSchema
-    documentation: ai-docs/domain/config-schema.md
+  - name: MachineConfig
+    documentation: ai-docs/domain/machineconfig.md
+    example_type: yaml
+  - name: KubeletConfig
+    documentation: ai-docs/domain/kubeletconfig.md
     example_type: yaml
 ```
 
@@ -247,7 +260,7 @@ Based on test categories, describe what each test case should contain:
 schema: |
   Each case contains:
   - input.yaml: with 'prompt' field (user's question)
-  - expected_files: list of documentation files agent should read
+  - annotations.yaml: with 'expected_files' field (list of doc paths for consulted_docs judge)
   - expected_mentions: keywords that should appear in response
 ```
 
@@ -289,9 +302,32 @@ List available builtin judges with:
 python3 ${CLAUDE_SKILL_DIR}/scripts/list_builtins.py
 ```
 
-**Pattern**: Use `builtin: consulted_docs` for navigation tests. For category-specific LLM rubric judges, add `if: "annotations.get('category') == 'navigation'"` to prevent scoring tests outside that category's scope.
+**Pattern for documentation navigation**:
 
-See `${CLAUDE_SKILL_DIR}/references/eval-yaml-template.md` for judge patterns and examples.
+1. **Mechanical check** - Use `builtin: consulted_docs` to verify agent read expected docs:
+   ```yaml
+   - name: docs_consultation
+     builtin: consulted_docs
+     description: Verifies agent read the expected documentation files
+     # No arguments needed - reads from annotations.expected_files in each case
+   ```
+   This judge extracts Read tool calls from events.json and checks coverage against `annotations.expected_files`.
+
+2. **Semantic check** - Use LLM judges to verify agent *navigated* (vs. answered from cache):
+   ```yaml
+   - name: navigation_success
+     prompt: |
+       Expected files: {{ annotations.expected_files }}
+       Did the agent find and read the correct docs, or answer from memory?
+       {{ conversation }}
+     if: "annotations.get('category') == 'navigation'"
+   ```
+
+**Important**: Both judges should reference `annotations.expected_files` (not `expected_paths` or other variants). This is the standard field name for expected documentation paths.
+
+For category-specific judges, add `if:` conditions (YAML-level condition where `annotations` is implicit — NOT for use inside `check:` code blocks where you must use `outputs.get("annotations", {})`).
+
+See `${CLAUDE_SKILL_DIR}/references/eval-yaml-template.md` for judge patterns and correct variable scoping.
 
 ---
 

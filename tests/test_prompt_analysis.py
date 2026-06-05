@@ -220,9 +220,9 @@ class TestPromptBasedConfigGeneration:
             assert config.test_categories[0].count == 2
 
             # Validate domain knowledge
-            assert config.domain["type"] == "test-repository"
-            assert "documentation_structure" in config.domain
-            assert len(config.domain["constraints"]) == 1
+            assert config.dataset.domain["type"] == "test-repository"
+            assert "documentation_structure" in config.dataset.domain
+            assert len(config.dataset.domain["constraints"]) == 1
 
         finally:
             Path(config_path).unlink()
@@ -313,15 +313,20 @@ class TestEndToEndFlow:
         assert "Step 7: Generate eval.yaml" in content
 
     def test_prompt_contains_yaml_template(self):
-        """Test that analyze-docs.md includes eval.yaml template."""
+        """Test that analyze-docs.md references eval.yaml template."""
         prompt_path = Path(__file__).parent.parent / "skills/eval-analyze/prompts/analyze-docs.md"
         content = prompt_path.read_text()
 
-        # Should contain example config
-        assert "execution:" in content
-        assert "mode: case" in content
-        assert "prompt:" in content
+        # Should reference the template file
+        assert "eval-yaml-template.md" in content
         assert "test_categories:" in content
+
+        # Verify the template file exists and contains the structure
+        template_path = Path(__file__).parent.parent / "skills/eval-analyze/references/eval-yaml-template.md"
+        template_content = template_path.read_text()
+        assert "execution:" in template_content
+        assert "mode: case" in template_content
+        assert "prompt:" in template_content
 
     def test_workflow_components_exist(self):
         """Test that all required workflow components exist."""
