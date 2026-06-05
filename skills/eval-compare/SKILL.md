@@ -52,11 +52,9 @@ Using the discovery JSON from Step 1, read each run's `summary.yaml` (paths are 
 
 Add a badge `<div>` to model cards based on your analysis. Not every model needs a badge — only add one when it clearly applies. Available badge styles:
 
-- **Best Value** (green): The model with the best quality-to-cost ratio. A model scoring within a small margin of the top but costing significantly less IS the best value — don't just pick the highest raw score. Quality parity at lower cost wins.
+- **Best Value** (green): The model with the best quality-to-cost ratio. Consider both quality AND consistency — a model with high variance across runs is NOT a good value even if its average looks competitive. The best value model must be reliable.
   `<div class="badge" style="background: var(--green); color: #000;">Best Value</div>`
-- **Best Quality** (green): Only use when one model's quality scores are **significantly** higher than all others. If the top models are within ~0.2 of each other, don't award this badge — the difference isn't meaningful. This badge should be rare; "Best Value" is usually the more useful signal.
-  `<div class="badge" style="background: var(--green); color: #000;">Best Quality</div>`
-- **Highly Variable** (yellow): A model with multiple runs whose scores diverge significantly across runs (e.g., same case scoring 1 in one run and 4 in another).
+- **Highly Variable** (yellow): A model with multiple runs whose scores diverge significantly across runs (e.g., same case scoring 1 in one run and 4 in another). A highly variable model should NEVER also be Best Value — inconsistency disqualifies it.
   `<div class="badge" style="background: var(--yellow); color: #000;">Highly Variable</div>`
 - **Not Viable** (red): A model that fundamentally fails the task — very low scores, missing outputs, can't invoke the skill reliably.
   `<div class="badge" style="background: var(--red); color: #000;">Not Viable</div>`
@@ -83,7 +81,7 @@ Replace the placeholder `<p>` with 3-5 actionable bullet points (`<ul><li>`). Co
 
 Show the user:
 - Number of runs discovered, grouped by model
-- Best model by analysis quality and cost
+- Best value model and why
 - Where the report was saved
 
 Suggest opening the report:
