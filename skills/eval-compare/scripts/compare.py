@@ -46,7 +46,7 @@ def discover_runs(input_dir):
         result_path = d / "run_result.json"
         if result_path.exists():
             run["run_result"] = load_json(result_path)
-        html_path = d / "eval-report-summary.html"
+        html_path = d / "report.html"
         if html_path.exists():
             run["html_report"] = str(html_path)
         runs.append(run)
@@ -385,7 +385,7 @@ def generate_report(runs, title, overview, output_dir):
         if r["html_report"]:
             dest = output_dir / r["name"]
             dest.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(r["html_report"], dest / "eval-report-summary.html")
+            shutil.copy2(r["html_report"], dest / "report.html")
 
     # Build HTML
     html = f"""<!DOCTYPE html>
@@ -586,7 +586,7 @@ def generate_report(runs, title, overview, output_dir):
             r = model_runs[0]
             html += f'<div class="tab-content" id="tab-{escape(m)}">\n'
             if r["html_report"]:
-                html += f'  <iframe class="iframe-wrap" src="{quote(r['name'], safe='')}/eval-report-summary.html"></iframe>\n'
+                html += f'  <iframe class="iframe-wrap" src="{quote(r['name'], safe='')}/report.html"></iframe>\n'
             else:
                 html += '  <div class="page"><p>No HTML report available for this run.</p></div>\n'
             html += '</div>\n\n'
@@ -602,7 +602,7 @@ def generate_report(runs, title, overview, output_dir):
                 display = "" if j == 0 else ' style="display:none;"'
                 html += f'  <div class="sub-panel" data-model="{escape(m)}" data-idx="{j}"{display}>\n'
                 if r["html_report"]:
-                    html += f'    <iframe class="iframe-wrap" src="{quote(r['name'], safe='')}/eval-report-summary.html"></iframe>\n'
+                    html += f'    <iframe class="iframe-wrap" src="{quote(r['name'], safe='')}/report.html"></iframe>\n'
                 else:
                     html += '    <div class="page"><p>No HTML report available.</p></div>\n'
                 html += '  </div>\n'
@@ -685,11 +685,17 @@ def cmd_generate(args):
     groups = group_by_model(runs)
     print(f"Report generated: {path}")
     print(f"Runs: {len(runs)} across {len(groups)} models")
+    all_judges = get_all_judge_names(runs)
+    first_judge = all_judges[0] if all_judges else None
     for m, model_runs in groups.items():
-        aq = aggregate([get_judge_mean(r, "analysis_quality") for r in model_runs])
         cost = aggregate([get_metric(r, "cost_usd") for r in model_runs])
-        print(f"  {short_name(m)}: {len(model_runs)} run(s), "
-              f"AQ={fmt(aq['avg'], 'num')}, cost={fmt(cost['avg'], 'usd')}")
+        parts = [f"{short_name(m)}: {len(model_runs)} run(s)"]
+        if first_judge:
+            score = aggregate([get_judge_mean(r, first_judge) for r in model_runs])
+            label = first_judge.replace("_", " ").title()
+            parts.append(f"{label}={fmt(score['avg'], 'num')}")
+        parts.append(f"cost={fmt(cost['avg'], 'usd')}")
+        print(f"  {', '.join(parts)}")
 
 
 def main():
