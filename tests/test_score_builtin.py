@@ -338,7 +338,8 @@ class TestOutputsProxy:
 
     def test_jinja2_annotations_variable(self):
         from score import _render_jinja2_template
-        template = "Annotations: {{ annotations }}"
+        # annotations_text provides formatted output, annotations provides dict access
+        template = "Annotations:\n{{ annotations_text }}"
         result = _render_jinja2_template(
             template, {},
             {"annotations": {"key1": "val1", "key2": "val2"}},

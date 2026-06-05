@@ -55,17 +55,50 @@ def resolve_analysis_prompt(prompt_ref: str) -> Path:
 
         return prompt_path.resolve()
 
-    # Custom prompt path (absolute or relative to project root)
+    # Custom prompt path (absolute or relative to project root or plugin dir)
     path = Path(prompt_ref)
-    if not path.is_absolute():
-        path = Path.cwd() / path
 
-    if not path.exists():
-        raise FileNotFoundError(
-            f"Prompt file not found: {path}\n"
-            f"Looked in: {path.absolute()}")
+    # If absolute, use directly
+    if path.is_absolute():
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Prompt file not found: {path}")
+        return path.resolve()
 
-    return path.resolve()
+    # If relative, search in order:
+    # 1. Current working directory (project repo)
+    # 2. Plugin installation directory
+
+    search_paths = []
+
+    # Search in project repo
+    project_path = Path.cwd() / path
+    search_paths.append(project_path)
+    if project_path.exists():
+        return project_path.resolve()
+
+    # Search in plugin directory
+    # Try CLAUDE_PLUGIN_DIR env var first, fall back to script location
+    plugin_dir_str = os.environ.get("CLAUDE_PLUGIN_DIR", "")
+    if plugin_dir_str:
+        plugin_dir = Path(plugin_dir_str)
+    else:
+        # Determine plugin dir from this script's location
+        # Script is at: skills/eval-analyze/scripts/resolve_prompt.py
+        # Plugin root is: ../../.. (up 3 levels)
+        script_path = Path(__file__).resolve()
+        plugin_dir = script_path.parent.parent.parent.parent
+
+    plugin_path = plugin_dir / path
+    search_paths.append(plugin_path)
+    if plugin_path.exists():
+        return plugin_path.resolve()
+
+    # Not found in any location
+    raise FileNotFoundError(
+        f"Prompt file not found: {prompt_ref}\n"
+        f"Looked in:\n" +
+        "\n".join(f"  - {p.absolute()}" for p in search_paths))
 
 
 def main():
