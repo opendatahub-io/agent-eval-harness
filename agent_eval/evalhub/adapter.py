@@ -63,6 +63,33 @@ except ImportError:
     EVALHUB_AVAILABLE = False
 
 
+def _ensure_case_settings(case_dir: Path, eval_config: "EvalConfig") -> Path:
+    """Create a minimal .claude/settings.json for a case workspace.
+
+    With --bare mode, Claude Code loads nothing automatically. This
+    ensures permissions from eval.yaml are available to the runner.
+    """
+    import json as _json
+
+    settings_dir = case_dir / ".claude"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = settings_dir / "settings.json"
+
+    settings: dict[str, Any] = {}
+
+    # Merge eval.yaml permissions
+    perms = eval_config.permissions or {}
+    if perms.get("allow"):
+        settings.setdefault("permissions", {})["allow"] = list(perms["allow"])
+    if perms.get("deny"):
+        settings.setdefault("permissions", {})["deny"] = list(perms["deny"])
+
+    with open(settings_path, "w") as f:
+        _json.dump(settings, f, indent=2)
+
+    return settings_path
+
+
 def _resolve_arguments(template: str, input_data: dict) -> str:
     """Resolve {field} and {field?} placeholders from input.yaml data.
 
@@ -272,11 +299,17 @@ class AgentEvalAdapter(FrameworkAdapter):
                 timeout = eval_config.execution.timeout or 600
                 budget = eval_config.execution.max_budget_usd or 5.0
 
+                # Create minimal settings.json so --bare mode has
+                # permissions and plugin config. Without this, the
+                # runner would get no settings at all.
+                settings_path = _ensure_case_settings(case_dir, eval_config)
+
                 result = runner.run_skill(
                     skill_name=eval_config.skill,
                     args=args,
                     workspace=case_dir,
                     model=model_name,
+                    settings_path=settings_path,
                     max_budget_usd=budget,
                     timeout_s=timeout,
                 )

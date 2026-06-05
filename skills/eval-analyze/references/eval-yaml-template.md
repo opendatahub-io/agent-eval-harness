@@ -64,6 +64,7 @@ models:
 # If the skill under test invokes sub-skills via the Skill tool
 # (check its allowed-tools frontmatter for "Skill"), add "Skill"
 # to the allow list — otherwise nested skill calls silently fail.
+# Tool names and rule syntax: https://code.claude.com/docs/en/tools-reference
 permissions:
   allow: []     # Tool patterns to allow (e.g., "Skill", "Write(artifacts/**)")
   deny: []      # Tool patterns to block (e.g., "mcp__*")
