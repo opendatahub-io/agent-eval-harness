@@ -586,6 +586,7 @@ details.case > summary:hover { color: var(--accent); }
 .pw-loss { background: var(--danger-soft); color: var(--danger); border-color: var(--danger-border); }
 .pw-tie { background: var(--warning-soft); color: var(--warning); border-color: var(--warning-border); }
 .pw-error { background: var(--neutral-soft); color: var(--text-muted); border-color: var(--neutral-border); }
+.pw-spread { font-size: 0.72em; color: var(--text-muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 .diff-table { width: 100%; border-collapse: collapse; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.82em; table-layout: fixed; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .diff-table td { padding: 1px 6px; vertical-align: top; white-space: pre-wrap; word-wrap: break-word; border: 1px solid var(--border); }
 .diff-table .ln { width: 35px; min-width: 35px; color: var(--text-muted); text-align: right; background: var(--surface-2); user-select: none; white-space: nowrap; }
@@ -1281,6 +1282,59 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
     return html
 
 
+def _render_pairwise_stability(summary):
+    """Render judge-stochasticity stats when pairwise was run with --repeat."""
+    pw = summary.get("pairwise") or {}
+    st = pw.get("stability")
+    if not st or st.get("runs", 1) < 2:
+        return ""
+    runs = st.get("runs")
+    tie_counts = st.get("tie_counts", [])
+    wb = st.get("wins_b_counts", [])
+    wa = st.get("wins_a_counts", [])
+    stable = st.get("stable_cases", 0)
+    total = st.get("total_cases", 0)
+    rate = st.get("agreement_rate", 0.0)
+    run_a = _esc(str(pw.get("run_a", "A")))
+    run_b = _esc(str(pw.get("run_b", "B")))
+
+    html = "<h2>Pairwise Stability</h2>\n"
+    html += (f"<p>The pairwise comparison was run <strong>{runs}×</strong> to separate "
+             f"signal from judge stochasticity. "
+             f"<strong>{stable}/{total}</strong> cases gave the identical verdict on every "
+             f"run (<strong>{rate:.0%}</strong> agreement).</p>\n")
+    html += '<table class="scoring-table"><thead><tr><th>Metric</th>'
+    html += "".join(f"<th>run {i+1}</th>" for i in range(runs))
+    html += "</tr></thead><tbody>\n"
+
+    def _row(label, vals):
+        cells = "".join(f"<td>{v}</td>" for v in vals)
+        return f"<tr><td>{label}</td>{cells}</tr>\n"
+
+    html += _row(f"{run_b} wins", wb)
+    if any(wa):
+        html += _row(f"{run_a} wins", wa)
+    html += _row("ties", tie_counts)
+    html += "</tbody></table>\n"
+
+    flipped = st.get("flipped_cases", [])
+    if flipped:
+        html += (f"<p><strong>{len(flipped)} case(s) flipped</strong> across runs "
+                 f"(verdict was not stable — treat as noise / genuinely close):</p>\n")
+        html += '<table class="scoring-table"><thead><tr><th>Case</th>'
+        html += "".join(f"<th>run {i+1}</th>" for i in range(runs))
+        html += "<th>majority</th></tr></thead><tbody>\n"
+        for fc in flipped:
+            vs = fc.get("verdicts", [])
+            badges = "".join(f"<td>{_pairwise_badge(v)}</td>" for v in vs)
+            html += (f"<tr><td>{_esc(fc.get('case_id',''))}</td>{badges}"
+                     f"<td>{_pairwise_badge(fc.get('majority','tie'))}</td></tr>\n")
+        html += "</tbody></table>\n"
+    else:
+        html += "<p>No cases flipped — every verdict was stable across all runs.</p>\n"
+    return html
+
+
 def _render_regressions(summary, config):
     judges = summary.get("judges", {})
     thresholds = config.get("thresholds", {})
@@ -1817,6 +1871,9 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
     pw = summary.get("pairwise", {})
     for pc in pw.get("per_case", []):
         pw_by_case[pc.get("case_id", "")] = pc
+    # Per-case verdict spread across repeated runs (stability), if available.
+    pw_flipped = {fc.get("case_id"): fc.get("verdicts", [])
+                  for fc in (pw.get("stability") or {}).get("flipped_cases", [])}
 
     html = '<h2 class="section-heading">Per-Case Details</h2>\n'
     if baseline_dir:
@@ -1920,8 +1977,14 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
                 pw_reasoning = pw_reasoning.get("reasoning", "")
             pw_reasoning = str(pw_reasoning)
             pw_rat_html = _md_to_html(_normalize_escapes(pw_reasoning)) if pw_reasoning else ""
+            # If this case flipped across repeated runs, show the verdict spread.
+            spread = pw_flipped.get(case_id)
+            verdict_html = _pairwise_badge(pw_winner)
+            if spread:
+                verdict_html += (f'<br><span class="pw-spread" title="verdict per repeat run">'
+                                 f'{_esc("/".join(spread))}</span>')
             html += (f'<tr><td>pairwise</td>'
-                     f'<td>{_pairwise_badge(pw_winner)}</td>'
+                     f'<td>{verdict_html}</td>'
                      f'<td class="rationale">{pw_rat_html}</td></tr>\n')
 
         html += "</table>\n"
@@ -2243,6 +2306,7 @@ def generate_report(config, summary, run_result, run_dir,
     html += _wrap_section(_render_run_config(run_result, baseline_result))
     html += _render_analysis(run_dir, summary, run_result, baseline_summary)
     html += _wrap_section(_render_scoring_summary(summary, config, baseline_summary))
+    html += _wrap_section(_render_pairwise_stability(summary))
     html += _wrap_section(_render_regressions(summary, config))
     html += _wrap_section(_render_shared_outputs(run_dir, config))
     html += _render_per_case(summary, run_dir, config, baseline_dir, review)
