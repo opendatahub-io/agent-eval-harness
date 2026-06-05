@@ -84,7 +84,7 @@ class TestLLMRubricJudgeLoading:
                 judges = score.load_judges(config_with_llm_rubric)
 
         assert len(judges) == 1
-        name, scorer, condition = judges[0]
+        name, scorer, condition, judge_type, samples = judges[0]
         assert name == "llm-rubric-judge"
         assert callable(scorer)
         assert condition == ""

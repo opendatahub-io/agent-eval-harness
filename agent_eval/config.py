@@ -664,6 +664,20 @@ class EvalConfig:
         # Test categories (taxonomy-based dataset) with validation
         test_categories = []
         for i, tc in enumerate(dataset.get("test_categories") or []):
+            # Check for common field name mistakes
+            invalid_fields = []
+            if "target_cases" in tc:
+                invalid_fields.append("target_cases")
+            if "target_count" in tc:
+                invalid_fields.append("target_count")
+            if "num_cases" in tc:
+                invalid_fields.append("num_cases")
+
+            if invalid_fields:
+                raise ValueError(
+                    f"dataset.test_categories[{i}] has invalid field(s): {', '.join(invalid_fields)}. "
+                    f"Use 'count' to specify the number of test cases to generate.")
+
             name = tc.get("name", "")
             template = tc.get("template", "")
             count = tc.get("count", 1)

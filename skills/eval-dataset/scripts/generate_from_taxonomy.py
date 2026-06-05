@@ -97,7 +97,7 @@ def generate_from_taxonomy(
                 client=client,
                 template=template_content,
                 category=category,
-                domain=config.domain,
+                domain=config.dataset.domain,
                 count=category.count,
                 model=model,
             )

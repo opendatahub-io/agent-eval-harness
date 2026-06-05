@@ -524,7 +524,8 @@ def _render_jinja2_template(template_text, arguments, outputs):
     - {{ outputs }} - formatted file listings (via __str__) or dict access
     - {{ outputs.files }}, {{ outputs.events }}, etc. - structured access
     - {{ arguments }} - judge arguments from eval.yaml
-    - {{ annotations }} - formatted annotation text
+    - {{ annotations }} - dict for .get() access (e.g., {{ annotations.get('category') }})
+    - {{ annotations_text }} - formatted annotation text for display
     - {{ conversation }} - root-level assistant text from events
     """
     from jinja2 import Environment
@@ -564,7 +565,8 @@ def _render_jinja2_template(template_text, arguments, outputs):
     return template.render(
         arguments=arguments or {},
         outputs=out,
-        annotations=ann_text,
+        annotations=ann,  # Dict for .get() access
+        annotations_text=ann_text,  # Formatted text for display
         conversation=conversation,
         inputs=inputs_text,
         evidence=evidence_text,
