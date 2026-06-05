@@ -196,9 +196,17 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
         record["events"] = []
 
     # --- Conversation text (convenience key for check judges) ---
+    # Prefer the result event's final output text over concatenating all
+    # intermediate assistant turns, which bloats the context with tool calls
+    # and reasoning text.
     if record["events"]:
         from agent_eval.events import extract_conversation_text
-        record["conversation"] = extract_conversation_text(record["events"])
+        result_events = [e for e in record["events"]
+                         if e.get("type") == "result" and e.get("text")]
+        if result_events:
+            record["conversation"] = result_events[-1]["text"]
+        else:
+            record["conversation"] = extract_conversation_text(record["events"])
     else:
         record["conversation"] = ""
 
@@ -485,7 +493,7 @@ _SCORE_SYSTEM_PROMPT = (
     "Return a JSON object with 'score' (integer 1-5) and 'rationale' (string).")
 
 
-def _call_judge_llm(prompt, model, system_prompt, images=None, max_tokens=1024):
+def _call_judge_llm(prompt, model, system_prompt, images=None, max_tokens=4096):
     """Call the Anthropic API with a judge prompt. Returns raw response text."""
     client = _get_anthropic_client()
     if images:
@@ -507,6 +515,10 @@ def _call_judge_llm(prompt, model, system_prompt, images=None, max_tokens=1024):
         system=system_prompt,
         messages=[{"role": "user", "content": user_message}],
     )
+    # Retry with doubled budget if the model hit the token limit mid-response.
+    if response.stop_reason == "max_tokens" and max_tokens < 16384:
+        return _call_judge_llm(prompt, model, system_prompt,
+                               images=images, max_tokens=max_tokens * 2)
     return response.content[0].text.strip()
 
 

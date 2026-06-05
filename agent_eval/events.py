@@ -161,6 +161,7 @@ def _parse_user_tool_results(obj, tool_id_to_name, result_cap):
 def _parse_result_event(obj):
     return {
         "type": "result",
+        "text": obj.get("result", ""),   # final skill output text
         "cost_usd": obj.get("total_cost_usd"),
         "num_turns": obj.get("num_turns"),
         "timestamp": None,
