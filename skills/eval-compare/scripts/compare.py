@@ -523,7 +523,8 @@ def generate_report(runs, title, overview, output_dir):
                 continue
 
             judge_label = judge.replace("_", " ").title()
-            is_pct = _is_pass_rate(judge, get_judge_mean(runs[0], judge), runs)
+            sample_v = next((get_judge_mean(r, judge) for r in runs if get_judge_mean(r, judge) is not None), None)
+            is_pct = _is_pass_rate(judge, sample_v, runs)
             html += f'<section>\n<h2>Per-Case: {escape(judge_label)}</h2>\n'
             html += "<table><thead><tr><th>Case</th>"
             for m in models:
@@ -662,6 +663,7 @@ def cmd_discover(args):
     for r in runs:
         entry = {
             "name": r["name"],
+            "dir": r["dir"],
             "model": get_model(r),
             "cost_usd": get_metric(r, "cost_usd"),
             "judges": {j: get_judge_mean(r, j) for j in all_judge_names},

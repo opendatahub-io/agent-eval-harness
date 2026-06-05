@@ -42,7 +42,7 @@ If `--overview` was provided, also pass `--overview "<text>"`.
 
 This produces:
 - `<output-dir>/index.html` — the comparison report
-- Copies of any `eval-report-summary.html` files into model subdirectories for iframe embedding
+- Copies of any `report.html` files into model subdirectories for iframe embedding
 
 ## Step 3: Write Analysis Sections
 
