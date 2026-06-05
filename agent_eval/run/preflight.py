@@ -22,7 +22,6 @@ Usage:
     python3 ${CLAUDE_SKILL_DIR}/scripts/preflight.py --config eval.yaml --baseline 2026-04-10-opus
 """
 
-import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
 
 import argparse
 import os

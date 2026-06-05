@@ -23,7 +23,15 @@ agent_eval/              # Python package (config, runner, state)
     traces.py            # Trace search and input extraction
     trace_builder.py     # Hierarchical trace builder (stream-json → MLflow trace)
   cli/
+    eval_run.py          # agent-eval run CLI (deterministic eval pipeline)
     trace_run.py         # claude-trace CLI (standalone skill tracing)
+  run/
+    preflight.py         # Pre-run cleanup and validation
+    workspace.py         # Workspace creation, batch.yaml, symlinks
+    execute.py           # Skill execution via agent runner
+    collect.py           # Artifact collection + case mapping
+    score.py             # Scoring: inline checks, LLM judges, pairwise, regression
+    report.py            # HTML report generation (scoring summary, per-case details, diffs)
 
 skills/eval-setup/       # Skill: environment setup
   SKILL.md               # Dependencies, MLflow, API keys, directories
@@ -44,14 +52,9 @@ skills/eval-analyze/     # Skill: bootstrap eval config
 skills/eval-dataset/     # Skill: generate test cases
   SKILL.md               # Bootstrap, expand, or extract cases from traces
 
-skills/eval-run/         # Skill: execute eval suite
-  SKILL.md               # Prepare, execute, collect, score, report
+skills/eval-run/         # Skill: execute eval suite (interactive, via Claude Code)
+  SKILL.md               # Orchestrates pipeline/ scripts + analysis + tool interception
   scripts/
-    workspace.py         # Workspace creation, batch.yaml, symlinks
-    execute.py           # Skill execution via agent runner
-    collect.py           # Artifact collection + case mapping
-    score.py             # Scoring: inline checks, LLM judges, pairwise, regression
-    report.py            # HTML report generation (scoring summary, per-case details, diffs)
     tools.py             # PreToolUse hook for tool interception
   prompts/
     analyze-results.md   # Results interpretation prompt

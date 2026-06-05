@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-# Add skills script directories to sys.path so tests can import them
+# Add pipeline and skills script directories to sys.path so tests can import them
 _repo_root = Path(__file__).parent.parent
-sys.path.insert(0, str(_repo_root / "skills" / "eval-run" / "scripts"))
+sys.path.insert(0, str(_repo_root / "agent_eval" / "run"))
 sys.path.insert(0, str(_repo_root / "skills" / "eval-mlflow" / "scripts"))
 
 

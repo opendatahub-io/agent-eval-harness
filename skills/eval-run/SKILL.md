@@ -87,7 +87,7 @@ If no cases found, stop and tell the user clearly:
 Before setting up the workspace, verify the project's artifact directories are clean. Skills write to the project directory (not the workspace), so stale artifacts from previous runs contaminate results — wrong IDs, stale run reports, inflated file counts.
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/preflight.py \
+python3 -m agent_eval.run.preflight \
   --config <config> \
   [--run-id <id>] \
   [--baseline <baseline-id>]
@@ -97,7 +97,7 @@ The script checks `tmp/` state files, whether `$AGENT_EVAL_RUNS_DIR/<eval-name>/
 
 - **If `CLEAN`**: proceed to workspace setup.
 - **If `DIRTY`**: report the findings to the user and ask what to do:
-  - **Force clean**: run `preflight.py --clean --force` to delete all stale artifacts, then proceed.
+  - **Force clean**: run `python3 -m agent_eval.run.preflight --clean --force` to delete all stale artifacts, then proceed.
   - **Change run-id**: append a version suffix (e.g., `2026-04-11-opus-v2`) and re-check. This avoids overwriting previous run results but still requires cleaning project artifacts — re-run preflight with `--clean` and the new run-id.
   - **Abort**: let the user handle cleanup manually.
 - **If `MISSING_BASELINE` (exit 2)**: the baseline run-id wasn't found at `$AGENT_EVAL_RUNS_DIR/<eval-name>/<baseline>`. The script lists nearby run-ids — confirm the correct one with the user (typo, or did they mean a different date/variant?) before retrying.
@@ -107,7 +107,7 @@ The script checks `tmp/` state files, whether `$AGENT_EVAL_RUNS_DIR/<eval-name>/
 Create an isolated workspace with the test cases and output directories:
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/workspace.py \
+python3 -m agent_eval.run.workspace \
   --config <config> \
   --run-id <id> \
   [--cases <id> [<id> ...]]
@@ -136,7 +136,7 @@ Run the skill headlessly against test cases. In `case` mode (default), execute.p
 The execute script handles CLI construction, streaming progress, and result capture:
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/execute.py \
+python3 -m agent_eval.run.execute \
   --config <config> \
   --workspace <workspace_path> \
   --skill <skill_name> \
@@ -194,7 +194,7 @@ If `exit_code` is non-zero, report the failure with the exit code, duration, and
 Distribute workspace outputs into per-case directories so judges can score each case independently:
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/collect.py \
+python3 -m agent_eval.run.collect \
   --config <config> \
   --workspace <workspace_path> \
   --output $AGENT_EVAL_RUNS_DIR/<eval-name>/<id>
@@ -215,7 +215,7 @@ Run all configured judges against the collected outputs. Four judge types are su
 If `--no-llm-judges` was specified, skip judges that make LLM API calls (prompt, prompt_file, and LLM builtins). Run deterministic judges only (check, Python builtins, external code).
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/score.py judges \
+python3 -m agent_eval.run.score judges \
   --run-id <id> \
   --config <config>
 ```
@@ -232,7 +232,7 @@ This means judges can check output quality, execution efficiency, AND expected o
 If `--baseline` was specified, also run pairwise comparison:
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/score.py pairwise \
+python3 -m agent_eval.run.score pairwise \
   --run-id <id> \
   --baseline <baseline_id> \
   --config <config>
@@ -271,7 +271,7 @@ Write the analysis body as markdown with these sections in order: `## Recommenda
 **Generate HTML report**:
 
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/report.py \
+python3 -m agent_eval.run.report \
   --run-id <id> \
   --config <config> \
   [--baseline <baseline_id>] \

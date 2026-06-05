@@ -13,7 +13,6 @@ Usage:
         [--symlinks scripts,.claude,CLAUDE.md]
 """
 
-import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
 
 import argparse
 import os
