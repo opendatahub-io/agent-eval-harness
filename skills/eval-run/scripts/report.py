@@ -1812,11 +1812,11 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
     cases_dir = run_dir / "cases"
     bl_cases_dir = baseline_dir / "cases" if baseline_dir else None
 
-    # Build pairwise lookup per case
+    # Build pairwise lookup per case (full entry: winner + reasoning)
     pw_by_case = {}
     pw = summary.get("pairwise", {})
     for pc in pw.get("per_case", []):
-        pw_by_case[pc.get("case_id", "")] = pc.get("winner", "error")
+        pw_by_case[pc.get("case_id", "")] = pc
 
     html = '<h2 class="section-heading">Per-Case Details</h2>\n'
     if baseline_dir:
@@ -1863,13 +1863,15 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
 
         # Pairwise badge or pass/fail accent — applied as a left-border class
         pw_badge = ""
-        if case_id in pw_by_case:
-            pw_winner = pw_by_case[case_id]
+        pw_entry = pw_by_case.get(case_id)
+        if pw_entry:
+            pw_winner = pw_entry.get("winner", "error")
             pw_badge = f" {_pairwise_badge(pw_winner)}"
             pw_class_map = {"A": "case-pw-a", "B": "case-pw-b",
                             "tie": "case-pw-tie", "error": "case-pw-error"}
             accent_class = pw_class_map.get(pw_winner, "case-pw-error")
         else:
+            pw_winner = None
             accent_class = f"case-{status}"
 
         scored = total - skipped
@@ -1910,6 +1912,18 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
             rat_html = _md_to_html(_normalize_escapes(rat)) if rat else ""
             html += (f'<tr><td>{_esc(jname)}</td><td>{val_html}</td>'
                      f'<td class="rationale">{rat_html}</td></tr>\n')
+
+        # Pairwise comparison as a judge-table row (verdict + reasoning)
+        if pw_entry:
+            pw_reasoning = pw_entry.get("reasoning") or ""
+            if isinstance(pw_reasoning, dict):
+                pw_reasoning = pw_reasoning.get("reasoning", "")
+            pw_reasoning = str(pw_reasoning)
+            pw_rat_html = _md_to_html(_normalize_escapes(pw_reasoning)) if pw_reasoning else ""
+            html += (f'<tr><td>pairwise</td>'
+                     f'<td>{_pairwise_badge(pw_winner)}</td>'
+                     f'<td class="rationale">{pw_rat_html}</td></tr>\n')
+
         html += "</table>\n"
 
         # Human feedback
