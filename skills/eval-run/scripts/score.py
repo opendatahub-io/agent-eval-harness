@@ -895,6 +895,44 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
     }
 
 
+def _compute_pairwise_stability(runs):
+    """Summarize judge stochasticity across repeated pairwise runs.
+
+    `runs` is a list of compare_runs() result dicts. Returns per-run win/tie
+    counts plus per-case verdict agreement: which cases gave the same verdict
+    every run (stable) vs flipped, so readers can tell signal from noise.
+    """
+    from collections import Counter
+    n = len(runs)
+    # Per-case verdicts across runs, preserving case order from the first run.
+    case_order = [pc["case_id"] for pc in runs[0].get("per_case", [])]
+    verdicts = {cid: [] for cid in case_order}
+    for r in runs:
+        for pc in r.get("per_case", []):
+            verdicts.setdefault(pc["case_id"], []).append(pc.get("winner", "error"))
+
+    flipped = []
+    stable = 0
+    for cid in case_order:
+        vs = verdicts.get(cid, [])
+        if len(set(vs)) <= 1:
+            stable += 1
+        else:
+            majority = Counter(vs).most_common(1)[0][0]
+            flipped.append({"case_id": cid, "verdicts": vs, "majority": majority})
+    total = len(case_order)
+    return {
+        "runs": n,
+        "wins_a_counts": [r["wins_a"] for r in runs],
+        "wins_b_counts": [r["wins_b"] for r in runs],
+        "tie_counts": [r["ties"] for r in runs],
+        "total_cases": total,
+        "stable_cases": stable,
+        "agreement_rate": (stable / total) if total else 0.0,
+        "flipped_cases": flipped,
+    }
+
+
 def _format_outputs_for_pairwise(record):
     """Render the full set of skill-output files for a case as markdown.
 
@@ -1354,24 +1392,42 @@ def cmd_pairwise(args):
         sys.exit(1)
     prompt_file = args.prompt_file or (pairwise_jc.prompt_file if pairwise_jc else "")
 
+    repeat = max(1, getattr(args, "repeat", 1) or 1)
+    suffix = f", repeat={repeat}" if repeat > 1 else ""
     print(f"Pairwise comparison: {args.run_id} vs {args.baseline} "
-          f"({len(case_ids)} cases, model={model})")
+          f"({len(case_ids)} cases, model={model}{suffix})")
 
-    result = compare_runs(
-        run_dir, baseline_dir, config, case_ids,
-        prompt=pairwise_jc.prompt if pairwise_jc else None,
-        prompt_file=prompt_file,
-        model=model,
-    )
+    runs = []
+    for i in range(repeat):
+        if repeat > 1:
+            print(f"  --- repeat {i + 1}/{repeat} ---")
+        r = compare_runs(
+            run_dir, baseline_dir, config, case_ids,
+            prompt=pairwise_jc.prompt if pairwise_jc else None,
+            prompt_file=prompt_file,
+            model=model,
+        )
+        if "error" in r:
+            print(f"ERROR: {r['error']}", file=sys.stderr)
+            sys.exit(1)
+        print(f"  A wins: {r['wins_a']} | B wins: {r['wins_b']} | "
+              f"Ties: {r['ties']} | Errors: {r['errors']}")
+        runs.append(r)
 
-    if "error" in result:
-        print(f"ERROR: {result['error']}", file=sys.stderr)
-        sys.exit(1)
-
-    print(f"  A wins: {result['wins_a']}")
-    print(f"  B wins: {result['wins_b']}")
-    print(f"  Ties:   {result['ties']}")
-    print(f"  Errors: {result['errors']}")
+    # The first run is the primary (its per-case reasoning is rendered).
+    result = runs[0]
+    if repeat > 1:
+        result["stability"] = _compute_pairwise_stability(runs)
+        st = result["stability"]
+        print(f"  Stability over {repeat} runs: "
+              f"B wins {st['wins_b_counts']}, ties {st['tie_counts']}; "
+              f"{st['stable_cases']}/{st['total_cases']} cases gave the same "
+              f"verdict every run ({st['agreement_rate']:.0%} agreement)")
+        if st["flipped_cases"]:
+            print("  Flipped cases:")
+            for fc in st["flipped_cases"]:
+                print(f"    {fc['case_id']}: {'/'.join(fc['verdicts'])} "
+                      f"(majority {fc['majority']})")
 
     _merge_summary(args.run_id, "pairwise", result, runs_dir)
 
@@ -1429,6 +1485,9 @@ def main():
                       help="Override comparison prompt file")
     pw_p.add_argument("--model", default=None,
                       help="Override judge model")
+    pw_p.add_argument("--repeat", type=int, default=1,
+                      help="Run the comparison N times and record verdict "
+                           "stability (tie/win variance + per-case agreement)")
 
     # regression
     reg_p = subparsers.add_parser("regression", help="Threshold checks")
