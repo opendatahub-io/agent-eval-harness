@@ -587,7 +587,7 @@ def generate_report(runs, title, overview, output_dir):
             r = model_runs[0]
             html += f'<div class="tab-content" id="tab-{escape(m)}">\n'
             if r["html_report"]:
-                html += f'  <iframe class="iframe-wrap" src="{quote(r['name'], safe='')}/report.html"></iframe>\n'
+                html += f'  <iframe class="iframe-wrap" src="{quote(r["name"], safe="")}/report.html"></iframe>\n'
             else:
                 html += '  <div class="page"><p>No HTML report available for this run.</p></div>\n'
             html += '</div>\n\n'
@@ -603,7 +603,7 @@ def generate_report(runs, title, overview, output_dir):
                 display = "" if j == 0 else ' style="display:none;"'
                 html += f'  <div class="sub-panel" data-model="{escape(m)}" data-idx="{j}"{display}>\n'
                 if r["html_report"]:
-                    html += f'    <iframe class="iframe-wrap" src="{quote(r['name'], safe='')}/report.html"></iframe>\n'
+                    html += f'    <iframe class="iframe-wrap" src="{quote(r["name"], safe="")}/report.html"></iframe>\n'
                 else:
                     html += '    <div class="page"><p>No HTML report available.</p></div>\n'
                 html += '  </div>\n'
