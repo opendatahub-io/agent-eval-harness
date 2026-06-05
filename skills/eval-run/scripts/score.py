@@ -774,6 +774,8 @@ class PairwiseResult:
     pref_ab: Optional[str] = None
     pref_ba: Optional[str] = None
     error: Optional[str] = None
+    reasoning_ab: Optional[dict] = None
+    reasoning_ba: Optional[dict] = None
 
     @property
     def winner(self) -> str:
@@ -784,6 +786,30 @@ class PairwiseResult:
         elif self.pref_ab == "B" and self.pref_ba == "A":
             return "B"
         return "tie"
+
+    @property
+    def reasoning(self) -> Optional[str]:
+        """Overall reasoning from the canonical (A=run_a) judge call.
+
+        Judges don't reliably use the schema's `reasoning` key — observed
+        variants include `analysis`, `rationale`, `explanation`, `scratchpad`,
+        and `summary`. Search common key names and return the first non-empty
+        string value so reasoning isn't silently dropped.
+        """
+        return _extract_reasoning_text(self.reasoning_ab)
+
+    @property
+    def dimensions(self) -> Optional[dict]:
+        """Per-dimension judgments from the canonical (A=run_a) judge call.
+
+        Tolerant of the `dimensions`/`scores` key-name variants judges use.
+        """
+        if isinstance(self.reasoning_ab, dict):
+            for key in ("dimensions", "scores"):
+                val = self.reasoning_ab.get(key)
+                if isinstance(val, dict) and val:
+                    return val
+        return None
 
 
 def compare_runs(run_a_dir, run_b_dir, config, case_ids,
@@ -807,8 +833,12 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
         record_a = load_case_record(run_a_dir / "cases" / case_id, config)
         record_b = load_case_record(run_b_dir / "cases" / case_id, config)
 
-        output_a = _first_content(record_a)
-        output_b = _first_content(record_b)
+        # Render the FULL artifact set per side (task + review + feasibility +
+        # auto-fix reports, etc.) — not just the first file. Using _first_content
+        # here meant the judge never saw the review/feasibility files, so the
+        # calibration and feasibility-depth dimensions could never be evaluated.
+        output_a = _format_outputs_for_pairwise(record_a)
+        output_b = _format_outputs_for_pairwise(record_b)
 
         if not output_a or not output_b:
             return PairwiseResult(case_id=case_id,
@@ -819,6 +849,7 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
         pref_ab, err = _call_judge(client, comparison_prompt, msg_ab, model)
         if pref_ab:
             result.pref_ab = pref_ab.get("preferred")
+            result.reasoning_ab = pref_ab
         else:
             result.error = f"AB failed: {err}"
             return result
@@ -827,6 +858,7 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
         pref_ba, err = _call_judge(client, comparison_prompt, msg_ba, model)
         if pref_ba:
             result.pref_ba = pref_ba.get("preferred")
+            result.reasoning_ba = pref_ba
         else:
             result.error = f"BA failed: {err}"
         return result
@@ -857,9 +889,56 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
         "cases_compared": len(results),
         "wins_a": wins_a, "wins_b": wins_b,
         "ties": ties, "errors": errors,
-        "per_case": [{"case_id": r.case_id, "winner": r.winner, "error": r.error}
+        "per_case": [{"case_id": r.case_id, "winner": r.winner, "error": r.error,
+                      "reasoning": r.reasoning, "dimensions": r.dimensions}
                      for r in results],
     }
+
+
+def _format_outputs_for_pairwise(record):
+    """Render the full set of skill-output files for a case as markdown.
+
+    Mirrors how the regular LLM judges see {{ outputs }} (via _OutputsProxy):
+    every artifact file (RFE task, review with rubric scores, feasibility
+    review, auto-fix reports, originals) is included so the pairwise judge can
+    actually evaluate the calibration and feasibility dimensions — not just the
+    task file. Returns "" when the case produced no files.
+    """
+    files = record.get("files") or {}
+    parts = []
+    for path, content in sorted(files.items()):
+        if isinstance(content, dict) and content.get("_binary"):
+            parts.append(f"\n### {path}\n\n<binary: {content.get('name', '?')}>\n")
+        else:
+            parts.append(f"\n### {path}\n\n{content}\n")
+    return "".join(parts)
+
+
+_REASONING_KEYS = ("reasoning", "analysis", "rationale", "explanation",
+                   "scratchpad", "summary", "justification", "notes")
+
+
+def _extract_reasoning_text(parsed):
+    """Pull the overall reasoning prose from a judge's JSON, tolerant of the
+    field name. Judges paraphrase the schema (observed: `analysis`,
+    `scratchpad`, `rationale`, …), so try known aliases, then fall back to the
+    longest string value that isn't the verdict itself."""
+    if not isinstance(parsed, dict):
+        return None
+    for key in _REASONING_KEYS:
+        val = parsed.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    # Fallback: the longest free-text string field (excludes short verdicts
+    # like "B"/"tie" and the 'preferred' key).
+    best = None
+    for k, v in parsed.items():
+        if k == "preferred":
+            continue
+        if isinstance(v, str) and len(v.strip()) > 40:
+            if best is None or len(v) > len(best):
+                best = v
+    return best
 
 
 def _first_content(record):
@@ -883,13 +962,16 @@ def _get_anthropic_client():
     raise RuntimeError("Set ANTHROPIC_VERTEX_PROJECT_ID or ANTHROPIC_API_KEY")
 
 
-def _call_judge(client, system_prompt, user_message, model, max_tokens=8192):
+def _call_judge(client, system_prompt, user_message, model, max_tokens=16384):
     try:
         response = client.messages.create(
             model=model, max_tokens=max_tokens,
             system=("You are a judge comparing two outputs. "
-                    "You MUST end your response with a JSON object that follows "
-                    "the schema specified in the user prompt and includes a "
+                    "Return ONLY a single JSON object — no prose, no code fences, "
+                    "no commentary before or after. The first character of your "
+                    "response must be '{' and the last must be '}'. Put ALL of "
+                    "your reasoning inside the JSON fields. The JSON must follow "
+                    "the schema specified in the user prompt and include a "
                     "'preferred' field set to 'A', 'B', or 'tie'."),
             messages=[
                 {"role": "user", "content": f"{system_prompt}\n\n{user_message}"},
@@ -900,7 +982,7 @@ def _call_judge(client, system_prompt, user_message, model, max_tokens=8192):
         if parsed is not None:
             return parsed, None
         # Retry once with a larger budget if the response was truncated.
-        if response.stop_reason == "max_tokens" and max_tokens < 16384:
+        if response.stop_reason == "max_tokens" and max_tokens < 32768:
             return _call_judge(client, system_prompt, user_message, model,
                                max_tokens=max_tokens * 2)
         return None, (f"Could not parse JSON from response "
@@ -927,30 +1009,62 @@ def _extract_judge_json(text):
         return _loads(json_text.strip())
     except json.JSONDecodeError:
         pass
-    # Fallback: extract the outermost balanced JSON object containing "preferred".
+    # The model is instructed to return only JSON, so the object usually spans
+    # the first '{' to the last '}'. Try that whole span — robust to a stray
+    # leading/trailing sentence the model occasionally adds.
+    first = text.find("{")
+    last = text.rfind("}")
+    if first != -1 and last > first:
+        try:
+            return _loads(text[first:last + 1])
+        except json.JSONDecodeError:
+            pass
+    # Fallback: scan for a balanced JSON object containing "preferred", tracking
+    # string state so braces *inside* string values (e.g. "{cluster}-autoscaler"
+    # echoed from feasibility content) don't throw off the depth counter.
     for start in range(len(text)):
         if text[start] != "{":
             continue
         depth = 0
+        in_str = False
+        escaped = False
         for end in range(start, len(text)):
-            if text[end] == "{":
+            ch = text[end]
+            if in_str:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
                 depth += 1
-            elif text[end] == "}":
+            elif ch == "}":
                 depth -= 1
-            if depth == 0:
-                candidate = text[start:end + 1]
-                if '"preferred"' in candidate:
-                    try:
-                        return _loads(candidate)
-                    except json.JSONDecodeError:
-                        pass
-                break
+                if depth == 0:
+                    candidate = text[start:end + 1]
+                    if '"preferred"' in candidate:
+                        try:
+                            return _loads(candidate)
+                        except json.JSONDecodeError:
+                            pass
+                    break
     # Last-resort recovery: judge wrote a partial/unclosed JSON object but the
-    # top-level "preferred" verdict is still extractable. Lose the rationale,
-    # keep the verdict — better than counting the case as an error.
+    # top-level "preferred" verdict is still extractable. Try to also recover the
+    # overall reasoning string so the verdict isn't left rationale-less.
     m = re.search(r'"preferred"\s*:\s*"(A|B|tie)"', text)
     if m:
-        return {"preferred": m.group(1)}
+        recovered = {"preferred": m.group(1)}
+        rm = re.search(r'"reasoning"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
+        if rm:
+            try:
+                recovered["reasoning"] = json.loads(f'"{rm.group(1)}"')
+            except json.JSONDecodeError:
+                recovered["reasoning"] = rm.group(1)
+        return recovered
     return None
 
 
