@@ -397,7 +397,7 @@ def _build_eval_params(args, config, skill_args, max_budget, timeout_s, effort=N
         "timeout_s": timeout_s,
     }
     # skill is optional for prompt mode
-    target = args.skill or config.skill
+    target = args.skill or config.execution.skill or config.skill
     if target:
         params["skill"] = target
     if skill_args:
@@ -871,14 +871,26 @@ def _execute_per_case(args, config, runner, runner_cls,
                         effort=effort,
                         permissions=case_permissions,
                     )
-                    fut = pool.submit(
-                        _run_single_case, case_runner, args.skill, case_id,
-                        case_ws, output_dir, skill_args_template, model,
-                        mlflow_experiment, config.mlflow.tracking_uri,
-                        system_prompt, max_budget, timeout_s,
-                        len(case_order), i,
-                        config=config, hook_env=hook_env,
-                        global_hook_outputs=global_hook_outputs)
+
+                    # Route to in-repo or regular execution based on mode
+                    if in_repo_mode:
+                        # In-repo mode: agent runs in repo, I/O in case_ws
+                        # NO hooks (not yet implemented, see docs/in-repo-hooks-future-enhancement.md)
+                        fut = pool.submit(
+                            _run_single_case_in_repo, case_runner, target, case_ws,
+                            output_dir, skill_args_template, model, mlflow_experiment,
+                            config.mlflow.tracking_uri, system_prompt, max_budget, timeout_s,
+                            len(case_order), i)
+                    else:
+                        # Regular isolated workspace mode with hooks
+                        fut = pool.submit(
+                            _run_single_case, case_runner, target, case_id,
+                            case_ws, output_dir, skill_args_template, model,
+                            mlflow_experiment, config.mlflow.tracking_uri,
+                            system_prompt, max_budget, timeout_s,
+                            len(case_order), i,
+                            config=config, hook_env=hook_env,
+                            global_hook_outputs=global_hook_outputs)
                     futures[fut] = case_id
 
                 for fut in as_completed(futures):
@@ -889,13 +901,25 @@ def _execute_per_case(args, config, runner, runner_cls,
             for i, entry in enumerate(case_order, 1):
                 case_id = entry if isinstance(entry, str) else entry["case_id"]
                 case_ws = workspace / "cases" / case_id
-                case_id, result = _run_single_case(
-                    runner, target, case_id, case_ws, output_dir,
-                    skill_args_template, model, mlflow_experiment,
-                    config.mlflow.tracking_uri, system_prompt,
-                    max_budget, timeout_s, len(case_order), i,
-                    config=config, hook_env=hook_env,
-                    global_hook_outputs=global_hook_outputs)
+
+                # Route to in-repo or regular execution based on mode
+                if in_repo_mode:
+                    # In-repo mode: agent runs in repo, I/O in case_ws
+                    # NO hooks (not yet implemented, see docs/in-repo-hooks-future-enhancement.md)
+                    case_id, result = _run_single_case_in_repo(
+                        runner, target, case_ws, output_dir,
+                        skill_args_template, model, mlflow_experiment,
+                        config.mlflow.tracking_uri, system_prompt,
+                        max_budget, timeout_s, len(case_order), i)
+                else:
+                    # Regular isolated workspace mode with hooks
+                    case_id, result = _run_single_case(
+                        runner, target, case_id, case_ws, output_dir,
+                        skill_args_template, model, mlflow_experiment,
+                        config.mlflow.tracking_uri, system_prompt,
+                        max_budget, timeout_s, len(case_order), i,
+                        config=config, hook_env=hook_env,
+                        global_hook_outputs=global_hook_outputs)
                 if result is not None:
                     case_results[case_id] = result
     finally:

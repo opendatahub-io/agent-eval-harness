@@ -46,6 +46,7 @@ execution:
   skill: rfe.create
   arguments: '--priority {{ input.priority }} "{{ input.prompt }}"'
   # → sends: /rfe.create --priority High "Add signature verification"
+  # Uses isolated /tmp workspace (skill + input.yaml + symlinked resources)
 
 # ── Skill mode: batch ──
 # execution:
@@ -53,12 +54,14 @@ execution:
 #   skill: rfe.speedrun
 #   arguments: '--input batch.yaml --headless --dry-run'
 #   # → sends: /rfe.speedrun --input batch.yaml --headless --dry-run
+#   # Uses isolated /tmp workspace
 
-# ── Prompt mode: case (common for doc testing) ──
+# ── Prompt mode: case (common for doc testing, agent capability testing) ──
 # execution:
 #   mode: case
 #   prompt: "{{ input.prompt }}"
 #   # → sends: Add signature verification
+#   # Workspace: DEPENDS on what you're testing (see Runner section below)
 #   # Same input.yaml feeds both (prompt, priority); one Jinja2 dialect; mode stays case/batch.
 
 # ── Prompt mode: batch (uncommon, but structurally valid) ──
@@ -66,6 +69,7 @@ execution:
 #   mode: batch
 #   prompt: "{{ input.prompt }}"
 #   # → batch.yaml contains all prompts; agent processes sequentially in one conversation
+#   # Workspace: DEPENDS on what you're testing (see Runner section below)
 
 # Additional execution options:
   # timeout: 3600           # Per-invocation wall-clock timeout (seconds)
@@ -76,8 +80,29 @@ execution:
   #   JIRA_TOKEN: $JIRA_TOKEN              # $VAR resolved from caller's environment
 
 # Runner — agent harness + runner-specific knobs
+#
+# WORKSPACE_MODE determines execution context — choose based on WHAT you're testing:
+#
+# - (unset/omitted): Isolated /tmp workspace with input.yaml + symlinked resources
+#                    DEFAULT and CORRECT for:
+#                    • All skill-based evaluations (safe, reproducible, no repo contamination)
+#                    • Prompt-based tests that don't need full repo access
+#
+# - repo: Run agents in actual repository directory with full file tree access
+#         USE WHEN TESTING:
+#         • Documentation navigation (agents need ai-docs/, docs/ at real paths)
+#         • In-repo code understanding (agents need pkg/, cmd/, internal/)
+#         • Repository structure/organization (grep across files, find patterns)
+#         Requires permissions.deny rules to prevent repo modification
+#
+# DECISION GUIDE:
+# Ask: "Does the agent need to navigate the real repository structure to answer correctly?"
+#   YES (doc navigation, code exploration) → workspace_mode: repo
+#   NO  (skill testing, isolated capabilities) → omit workspace_mode (use default)
+#
 runner:
   type: claude-code         # Discriminator: claude-code, opencode, etc.
+  # workspace_mode: repo    # Set ONLY when testing requires full repo access (see above)
   # settings: {}            # Runner-specific settings overrides
   # plugin_dirs: []         # Plugin dirs the evaluated skill needs
   # env:                     # Extra env vars for the runner ($VAR resolves from caller)
@@ -213,10 +238,19 @@ traces:
 # Judges — evaluate output quality
 # Four judge types (determined by which field is set):
 #   builtin:     reusable judge from the harness library
-#   check:       inline Python snippet
+#   check:       inline Python snippet (receives outputs, arguments)
 #   prompt/prompt_file: LLM judge (Jinja2 rendered)
 #   module/function:   external Python module
-# All judge types support optional `arguments:` for parameterization.
+# All judge types support optional `arguments:` and `if:` (conditional).
+#
+# CONDITIONAL EXECUTION: Add `if: "expression"` to skip judges on certain cases.
+# Available in if expressions: annotations, outputs (direct access, no .get() needed)
+#   if: "annotations.get('category') == 'navigation'"
+#
+# CRITICAL: Inside check blocks, use outputs.get("annotations", {}) — NOT bare annotations
+#   check: |
+#     cat = outputs.get("annotations", {}).get("category")  # Correct
+#     # annotations.get("category")  # WRONG - NameError
 judges:
   # Builtin judge: reusable judge from the harness library
   # List available: python3 ${CLAUDE_SKILL_DIR}/scripts/list_builtins.py
