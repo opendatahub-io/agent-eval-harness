@@ -7,11 +7,13 @@ allowed-tools: Read, Write, Bash, Glob, Grep, AskUserQuestion
 
 You are an eval comparison report generator. You take a directory of eval run results and produce a self-contained HTML comparison report with LLM-generated analysis. You do not run evaluations or modify source data.
 
+**IMPORTANT: Follow the steps below sequentially. Do not explore the filesystem, run `ls`, `find`, or otherwise investigate the input directory. The scripts handle all discovery. Just run the commands as written.**
+
 ## Step 0: Parse Arguments
 
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `<input-dir>` | yes | — | Directory containing run subdirectories, each with `summary.yaml` and `run_result.json` |
+| `<input-dir>` | yes | — | Directory to scan recursively for eval runs (any subdirectory containing `summary.yaml`) |
 | `--output <path>` | no | `<input-dir>/comparison-report` | Output directory for the HTML report |
 | `--title <text>` | no | `Model Comparison` | Report title |
 | `--overview <text>` | no | auto-generated | Context paragraph shown at the top of the report |
@@ -24,7 +26,7 @@ Run the discovery script to find all valid eval runs:
 python3 ${CLAUDE_SKILL_DIR}/scripts/compare.py discover <input-dir>
 ```
 
-This scans subdirectories for `summary.yaml` + `run_result.json` pairs and prints a JSON manifest of discovered runs with model names, costs, and judge scores.
+This recursively scans for directories containing `summary.yaml` and prints a JSON manifest of discovered runs with model names, costs, and judge scores. Just pass the input directory — do not search for files yourself.
 
 If no valid runs are found, report the error and stop.
 
@@ -42,18 +44,40 @@ This produces:
 - `<output-dir>/index.html` — the comparison report
 - Copies of any `eval-report-summary.html` files into model subdirectories for iframe embedding
 
-## Step 3: Write the Bottom Line
+## Step 3: Write Analysis Sections
 
-Read the discovery JSON from Step 1 and the summary.yaml files to understand the full picture. Then edit the generated `<output-dir>/index.html` to replace the auto-generated "Bottom Line" content (inside `<div class="verdict">`) with your own analysis.
+Using the discovery JSON from Step 1, read each run's `summary.yaml` (paths are in the `"dir"` field of each discovered run) to understand the full picture — per-case scores, judge breakdowns, cost data, variance across runs. Then edit the generated `<output-dir>/index.html` to replace placeholder content and add badges.
 
-Cover:
+### Model Card Badges
 
-- Which model delivers the best value (quality vs cost tradeoff)
-- Notable per-case differences (where one model excels or struggles)
-- Variance concerns for models with multiple runs
-- Any surprising findings (e.g., a cheaper model outperforming, cost blowups)
+Add a badge `<div>` to model cards based on your analysis. Not every model needs a badge — only add one when it clearly applies. Available badge styles:
 
-Keep it to 3-5 sentences. Use `<p>` tags. Write for someone who hasn't seen the raw data.
+- **Best Value** (green): The model with the best quality-to-cost ratio. A model scoring within a small margin of the top but costing significantly less IS the best value — don't just pick the highest raw score. Quality parity at lower cost wins.
+  `<div class="badge" style="background: var(--green); color: #000;">Best Value</div>`
+- **Best Quality** (green): Only use when one model's quality scores are **significantly** higher than all others. If the top models are within ~0.2 of each other, don't award this badge — the difference isn't meaningful. This badge should be rare; "Best Value" is usually the more useful signal.
+  `<div class="badge" style="background: var(--green); color: #000;">Best Quality</div>`
+- **Highly Variable** (yellow): A model with multiple runs whose scores diverge significantly across runs (e.g., same case scoring 1 in one run and 4 in another).
+  `<div class="badge" style="background: var(--yellow); color: #000;">Highly Variable</div>`
+- **Not Viable** (red): A model that fundamentally fails the task — very low scores, missing outputs, can't invoke the skill reliably.
+  `<div class="badge" style="background: var(--red); color: #000;">Not Viable</div>`
+
+Insert the badge `<div>` right after the opening `<div class="card"...>` tag. Also add `style="border-color: var(--green);"` (or `--yellow`/`--red`) to the card's outer div.
+
+### Bottom Line (`<div class="verdict">`)
+
+Replace the placeholder with a concise summary — 3 sentences maximum. State which model is the best choice and why, note any models that aren't viable, and call out the most important tradeoff. Do not list every model individually. Write for someone who hasn't seen the raw data. Use `<p>` tags.
+
+### Where Each Model Shined (`<div id="model-strengths">`)
+
+Replace the placeholder `<p>` with per-model subsections. For each model, write a `<h3>` with the model name and 2-3 sentences highlighting its unique strengths. What cases did it handle best? What patterns show it excelling? What is it uniquely good at compared to the others?
+
+### Shared Weaknesses (`<div id="shared-weaknesses">`)
+
+Replace the placeholder `<p>` with an HTML table (Issue | Impact | Affected Cases) listing weaknesses that appear across ALL or most models. Look at per-case scores to find cases where every model scored poorly or failed. These are skill-level issues, not model-level.
+
+### Recommendations (`<div id="recommendations">`)
+
+Replace the placeholder `<p>` with 3-5 actionable bullet points (`<ul><li>`). Cover: which model to use for production, when alternatives make sense, and what to improve in the skill itself based on the shared weaknesses.
 
 ## Step 4: Present Summary
 
