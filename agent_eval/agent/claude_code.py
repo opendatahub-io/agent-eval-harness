@@ -104,6 +104,7 @@ class ClaudeCodeRunner(EvalRunner):
         system_prompt: Optional[str] = None,
         max_budget_usd: float = 5.0,
         timeout_s: int = 600,
+        extra_env: Optional[dict] = None,
     ) -> RunResult:
         cmd = [
             "claude",
@@ -160,7 +161,7 @@ class ClaudeCodeRunner(EvalRunner):
                 stderr=subprocess.PIPE,
                 cwd=str(workspace),
                 text=True,
-                env=self._build_env(),
+                env=self._build_env(extra_env=extra_env),
             )
 
             proc.stdin.write(prompt)
@@ -343,7 +344,7 @@ class ClaudeCodeRunner(EvalRunner):
         "AGENT_EVAL_RUNS_DIR",
     }
 
-    def _build_env(self):
+    def _build_env(self, extra_env=None):
         """Build subprocess environment with allowlisted keys only."""
         env = {k: v for k, v in os.environ.items() if k in self._SAFE_ENV_KEYS}
         for k, v in self._env.items():
@@ -354,6 +355,9 @@ class ClaudeCodeRunner(EvalRunner):
                 if resolved is not None:
                     env[k] = resolved
             else:
+                env[k] = str(v)
+        if extra_env:
+            for k, v in extra_env.items():
                 env[k] = str(v)
         if self._subagent_model:
             env["CLAUDE_CODE_SUBAGENT_MODEL"] = self._subagent_model

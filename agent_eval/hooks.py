@@ -4,7 +4,6 @@ Runs user-defined shell commands at well-defined points in the eval
 lifecycle (before_all, before_each, after_each, before_scoring, after_all).
 """
 
-import json
 import os
 import signal
 import subprocess
@@ -250,24 +249,6 @@ def collect_hook_outputs(cwd: Path) -> dict:
                 pass
             return content
     return {}
-
-
-def inject_hook_env(workspace_path, env_vars):
-    """Merge hook-output env vars into workspace .claude/settings.json."""
-    if not env_vars:
-        return
-    settings_path = Path(workspace_path) / ".claude" / "settings.json"
-    settings = {}
-    if settings_path.exists():
-        try:
-            settings = json.loads(settings_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            pass
-    env_block = settings.setdefault("env", {})
-    for key, value in env_vars.items():
-        env_block[key] = str(value)
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(settings, indent=2))
 
 
 def save_hook_data(output_dir, data):

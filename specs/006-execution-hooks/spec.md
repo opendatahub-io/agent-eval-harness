@@ -118,7 +118,12 @@ Hooks inherit the caller's full environment plus harness-injected variables:
 | `CASE_SOURCE_DIR` | per-case hooks | Absolute path to the original case directory in the dataset |
 | `CASE_INPUT` | per-case hooks | Absolute path to `input.yaml` in the case workspace |
 
-`CASE_SOURCE_DIR` is the key variable — it gives hooks access to files in the dataset case directory (like `snapshot.tar.gz`, `fixtures/`, test data) that workspace.py deliberately does not copy into the case workspace to avoid leaking annotations and gold standards to the skill.
+`CASE_SOURCE_DIR` is the key variable — it gives hooks access to files in the dataset case directory (like `snapshot.tar.gz`, `fixtures/`, test data). Static case files can also be copied declaratively via `dataset.workspace.files` (added in #70), which whitelists specific files for workspace provisioning. The two mechanisms are complementary:
+
+- **`dataset.workspace.files`** — declarative copy of static case files into the workspace during setup.
+- **`before_each` + `CASE_SOURCE_DIR`** — the imperative escape hatch for what a static copy can't do: extracting archives, seeding databases, pulling volumes, or any computed/dynamic provisioning.
+
+Per-case env vars (`CASE_ID`, `CASE_WORKSPACE`, `CASE_SOURCE_DIR`, `CASE_INPUT`) are only available in case/prompt execution modes. In batch mode, only `before_all`, `before_scoring`, and `after_all` hooks run; `before_each`/`after_each` are not executed.
 
 Variables from `execution.env` are also available, resolved the same way as during skill execution (`$VAR` references resolved from the caller's environment).
 

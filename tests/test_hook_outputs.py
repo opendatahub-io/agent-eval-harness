@@ -18,9 +18,9 @@ _real_execv = os.execv
 os.execv = lambda *a, **kw: None  # no-op during import
 
 from agent_eval.agent.base import RunResult
-from agent_eval.config import EvalConfig, HookEntry, HooksConfig
+from agent_eval.config import DatasetConfig, EvalConfig, HookEntry, HooksConfig
 from agent_eval.hooks import (
-    build_hook_env, collect_hook_outputs, inject_hook_env, run_hooks,
+    build_hook_env, collect_hook_outputs, run_hooks,
     save_hook_data,
 )
 from execute import _run_single_case
@@ -71,49 +71,6 @@ def test_hook_writes_outputs_json(tmp_path):
 
     outputs = collect_hook_outputs(case_ws)
     assert outputs["env"]["API_KEY"] == "test-key-123"
-
-
-# ---------------------------------------------------------------------------
-# inject_hook_env patches settings.json
-# ---------------------------------------------------------------------------
-
-def test_inject_hook_env_creates_settings(tmp_path):
-    """Hook env vars are written into .claude/settings.json."""
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-
-    inject_hook_env(workspace, {"FIXTURE_URL": "https://example.com/1"})
-
-    settings_path = workspace / ".claude" / "settings.json"
-    assert settings_path.exists()
-    settings = json.loads(settings_path.read_text())
-    assert settings["env"]["FIXTURE_URL"] == "https://example.com/1"
-
-
-def test_inject_hook_env_merges_with_existing(tmp_path):
-    """Hook env vars merge into existing settings.json env block."""
-    workspace = tmp_path / "workspace"
-    settings_dir = workspace / ".claude"
-    settings_dir.mkdir(parents=True)
-    (settings_dir / "settings.json").write_text(
-        json.dumps({"env": {"EXISTING": "keep"}, "permissions": {"allow": []}}))
-
-    inject_hook_env(workspace, {"NEW_VAR": "added"})
-
-    settings = json.loads((settings_dir / "settings.json").read_text())
-    assert settings["env"]["EXISTING"] == "keep"
-    assert settings["env"]["NEW_VAR"] == "added"
-    assert settings["permissions"] == {"allow": []}
-
-
-def test_inject_hook_env_noop_when_empty(tmp_path):
-    """No settings.json created when env dict is empty."""
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-
-    inject_hook_env(workspace, {})
-
-    assert not (workspace / ".claude" / "settings.json").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -170,11 +127,8 @@ def test_full_hook_outputs_flow(tmp_path):
     assert outputs["env"]["SERVICE_URL"] == "http://localhost:8080"
     assert outputs["data"]["container_id"] == "abc123"
 
-    # 3. Harness injects env into settings.json
-    inject_hook_env(case_ws, outputs.get("env"))
-    settings = json.loads(
-        (case_ws / ".claude" / "settings.json").read_text())
-    assert settings["env"]["SERVICE_URL"] == "http://localhost:8080"
+    # 3. Hook env is available for passing to runner via extra_env
+    assert outputs["env"]["SERVICE_URL"] == "http://localhost:8080"
 
     # 4. Harness saves data for judges
     save_hook_data(case_output, outputs.get("data"))
@@ -254,13 +208,14 @@ def _make_config(before_each=None, after_each=None, dataset_path=None):
         after_each=after_each or [],
     )
     if dataset_path:
-        config.dataset_path = str(dataset_path)
+        config.dataset = DatasetConfig(path=str(dataset_path))
+        config.config_dir = Path(dataset_path).parent
     return config
 
 
 def test_run_single_case_injects_hook_env(tmp_path):
-    """before_each hook writes .hook-outputs.yaml → env injected into
-    settings.json before runner.run_skill is called."""
+    """before_each hook writes .hook-outputs.yaml → env passed to runner
+    via extra_env parameter."""
     case_ws = tmp_path / "workspace" / "cases" / "case-001"
     case_ws.mkdir(parents=True)
     output_dir = tmp_path / "output"
@@ -298,16 +253,12 @@ def test_run_single_case_injects_hook_env(tmp_path):
     assert result is not None
     assert result["exit_code"] == 0
 
-    # Verify env was injected into settings.json
-    settings_path = case_ws / ".claude" / "settings.json"
-    assert settings_path.exists()
-    settings = json.loads(settings_path.read_text())
-    assert settings["env"]["ISSUE_URL"] == "https://github.com/org/repo/issues/1"
-
-    # Verify settings_path was passed to runner
+    # Verify extra_env was passed to runner.run_skill
     call_kwargs = runner.run_skill.call_args
-    assert call_kwargs.kwargs.get("settings_path") == settings_path or \
-        call_kwargs[1].get("settings_path") == settings_path
+    extra_env = call_kwargs.kwargs.get("extra_env") or (
+        call_kwargs[1].get("extra_env") if len(call_kwargs) > 1 else None)
+    assert extra_env is not None, "extra_env should be passed to run_skill"
+    assert extra_env.get("ISSUE_URL") == "https://github.com/org/repo/issues/1"
 
 
 def test_run_single_case_saves_hook_data(tmp_path):
@@ -426,19 +377,21 @@ def test_run_single_case_merges_global_and_case_outputs(tmp_path):
         "data": {"global_key": "global_val", "shared_key": "from_global"},
     }
 
+    runner = _make_mock_runner()
     _run_single_case(
-        _make_mock_runner(), "test-skill", "case-001", case_ws, output_dir,
+        runner, "test-skill", "case-001", case_ws, output_dir,
         "", "sonnet", None, None, None, 5.0, 600,
         1, 1, config=config, hook_env=hook_env,
         global_hook_outputs=global_hook_outputs,
     )
 
     # Check env: case overrides global for SHARED, both GLOBAL_VAR and CASE_VAR present
-    settings = json.loads(
-        (case_ws / ".claude" / "settings.json").read_text())
-    assert settings["env"]["GLOBAL_VAR"] == "from_global"
-    assert settings["env"]["CASE_VAR"] == "from_case"
-    assert settings["env"]["SHARED"] == "from_case"
+    call_kwargs = runner.run_skill.call_args
+    extra_env = call_kwargs.kwargs.get("extra_env") or (
+        call_kwargs[1].get("extra_env") if len(call_kwargs) > 1 else None)
+    assert extra_env["GLOBAL_VAR"] == "from_global"
+    assert extra_env["CASE_VAR"] == "from_case"
+    assert extra_env["SHARED"] == "from_case"
 
     # Check data: merged and available to judges
     case_output = output_dir / "cases" / "case-001"
@@ -536,28 +489,14 @@ def test_run_single_case_after_each_runs_on_before_each_failure(tmp_path):
 
 
 def test_cli_runner_receives_hook_output_env_vars(tmp_path):
-    """Hook output env vars injected via inject_hook_env flow into the CLI
-    runner's subprocess environment, not just settings.json."""
+    """Hook output env vars flow into the CLI runner via extra_env."""
     from agent_eval.agent.cli_runner import CliRunner
 
-    case_ws = tmp_path / "workspace" / "cases" / "case-001"
-    case_ws.mkdir(parents=True)
-
-    # Inject hook env vars (simulating what the harness does after before_each)
-    inject_hook_env(case_ws, {"FIXTURE_URL": "https://example.com/42"})
-
-    # Verify settings.json was written
-    settings_path = case_ws / ".claude" / "settings.json"
-    assert settings_path.exists()
-
-    # Create a CLI runner and run a command that echoes the env var
     runner = CliRunner(command="echo {agent}")
 
-    # The runner should pick up FIXTURE_URL from settings.json
-    # and pass it through to the subprocess environment
-    env = runner._build_env(settings_path=settings_path)
+    env = runner._build_env(extra_env={"FIXTURE_URL": "https://example.com/42"})
     assert env.get("FIXTURE_URL") == "https://example.com/42", \
-        "CLI runner _build_env() should read hook env vars from settings.json"
+        "CLI runner _build_env() should merge extra_env into subprocess env"
 
 
 def test_run_single_case_no_hooks_no_side_effects(tmp_path):

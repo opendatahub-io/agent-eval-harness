@@ -87,6 +87,7 @@ class CliRunner(EvalRunner):
         system_prompt: Optional[str] = None,
         max_budget_usd: float = 5.0,
         timeout_s: int = 600,
+        extra_env: Optional[dict] = None,
     ) -> RunResult:
         workspace = workspace.resolve()
         output_dir = workspace / "output"
@@ -131,7 +132,7 @@ class CliRunner(EvalRunner):
             with _print_lock:
                 print(f"  {self._log_prefix} | Running: {cmd_str[:120]}", flush=True)
 
-        env = self._build_env(settings_path=settings_path)
+        env = self._build_env(extra_env=extra_env)
         start = time.monotonic()
 
         try:
@@ -218,12 +219,8 @@ class CliRunner(EvalRunner):
             return [_sub(part) for part in self._command]
         return _sub(self._command)
 
-    def _build_env(self, settings_path: Optional[Path] = None) -> dict:
-        """Build subprocess environment: inherit env, apply strip list, add extras.
-
-        If settings_path is provided, also merges env vars from the
-        settings.json ``env`` block (written by hook output injection).
-        """
+    def _build_env(self, extra_env=None) -> dict:
+        """Build subprocess environment: inherit env, add extras."""
         env = os.environ.copy()
         for k, v in self._extra_env.items():
             if isinstance(v, str) and v.startswith("$"):
@@ -232,14 +229,9 @@ class CliRunner(EvalRunner):
                     env[k] = resolved
             else:
                 env[k] = str(v)
-        # Merge env vars from settings.json (hook outputs, MLflow tracing, etc.)
-        if settings_path and settings_path.exists():
-            try:
-                settings = json.loads(settings_path.read_text())
-                for k, v in (settings.get("env") or {}).items():
-                    env[k] = str(v)
-            except (json.JSONDecodeError, OSError):
-                pass
+        if extra_env:
+            for k, v in extra_env.items():
+                env[k] = str(v)
         return env
 
     @staticmethod

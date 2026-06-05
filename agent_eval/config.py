@@ -543,6 +543,20 @@ class EvalConfig:
                 ))
             setattr(config.hooks, phase, entries)
 
+        if config.execution.mode == "batch":
+            per_case = []
+            if config.hooks.before_each:
+                per_case.append("before_each")
+            if config.hooks.after_each:
+                per_case.append("after_each")
+            if per_case:
+                import warnings
+                warnings.warn(
+                    f"hooks.{', '.join(per_case)} ignored in batch mode "
+                    f"(per-case hooks only run in case/prompt mode)",
+                    stacklevel=2,
+                )
+
         if config.skill and not _is_valid_eval_name(config.skill):
             raise ValueError(
                 f"Invalid skill name in {path}: {config.skill!r}")

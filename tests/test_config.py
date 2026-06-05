@@ -239,3 +239,41 @@ dataset:
 """, name="eval/my-eval/eval.yaml"))
     resolved = cfg.resolve_path(cfg.dataset.path)
     assert resolved == abs_path
+
+
+def test_batch_mode_warns_on_per_case_hooks(tmp_path):
+    """Per-case hooks in batch mode emit a warning at config load time."""
+    import warnings
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+skill: s
+execution:
+  mode: batch
+hooks:
+  before_each:
+    - command: "echo setup"
+  after_each:
+    - command: "echo cleanup"
+"""))
+    assert len(w) == 1
+    assert "before_each, after_each" in str(w[0].message)
+    assert "batch mode" in str(w[0].message)
+
+
+def test_case_mode_no_warning_on_per_case_hooks(tmp_path):
+    """Per-case hooks in case mode do not emit a warning."""
+    import warnings
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+skill: s
+execution:
+  mode: case
+hooks:
+  before_each:
+    - command: "echo setup"
+"""))
+    assert len(w) == 0

@@ -30,7 +30,7 @@ from pathlib import Path
 
 from agent_eval.agent import RUNNERS
 from agent_eval.hooks import (
-    HookError, build_hook_env, collect_hook_outputs, inject_hook_env,
+    HookError, build_hook_env, collect_hook_outputs,
     run_hooks, run_hooks_safe, save_hook_data,
 )
 
@@ -185,8 +185,6 @@ def main():
                       phase_name="before_all")
             global_hook_outputs = collect_hook_outputs(Path(args.workspace))
 
-        # Inject hook-output env vars into workspace settings.json
-        inject_hook_env(args.workspace, global_hook_outputs.get("env"))
         save_hook_data(output_dir, global_hook_outputs.get("data"))
 
         # Set MLflow environment in the workspace settings
@@ -208,6 +206,7 @@ def main():
             system_prompt=system_prompt,
             max_budget_usd=max_budget,
             timeout_s=timeout_s,
+            extra_env=global_hook_outputs.get("env") or None,
         )
 
         _save_result(result, args, output_dir, runner, model, eval_params=eval_params)
@@ -320,12 +319,13 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
     # hooks fire even if before_each or run_skill raises.
     case_hook_env = None
     merged_hook_data = {}
+    merged_env = {}
     result = None
     error_msg = ""
     try:
         if config and config.hooks and hook_env:
-            dataset_path = config.dataset_path
-            case_source_dir = str(Path(dataset_path).resolve() / case_id) if dataset_path else ""
+            dataset_path = config.dataset.path
+            case_source_dir = str(config.resolve_path(dataset_path) / case_id) if dataset_path else ""
             case_hook_env = {
                 **hook_env,
                 "CASE_ID": case_id,
@@ -346,10 +346,6 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
             merged_env = {**global_env, **case_env}
 
             if merged_env:
-                inject_hook_env(case_ws, merged_env)
-                # Re-check settings_path since we may have just created it
-                settings_path = case_settings if case_settings.exists() else settings_path
-                # Forward-propagate to after_each hooks
                 case_hook_env.update({k: str(v) for k, v in merged_env.items()})
 
             global_data = (global_hook_outputs or {}).get("data", {})
@@ -365,6 +361,7 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
             system_prompt=system_prompt,
             max_budget_usd=max_budget,
             timeout_s=timeout_s,
+            extra_env=merged_env or None,
         )
     except Exception as exc:
         print(f"    → {case_id}: ERROR ({exc})", file=sys.stderr)
