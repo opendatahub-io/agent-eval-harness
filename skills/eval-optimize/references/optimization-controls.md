@@ -2,6 +2,26 @@
 
 Controls that prevent overfitting, over-editing, or retrying failed approaches.
 
+## 0. Strategy Selection
+
+`/eval-optimize --strategy` selects how much of this machinery runs:
+
+| Strategy | When | What runs |
+|----------|------|-----------|
+| `lite` | Small datasets / quick fixes | Linear flow + always-on controls only |
+| `skillopt` | Larger datasets, many iterations | Everything below |
+| `auto` (default) | — | `lite` if the dataset has **< 20 cases**, else `skillopt` |
+
+The 20-case threshold matches `split_dataset.py`'s degenerate-split handling — below it, train/selection/test splits and minibatches are statistical noise, so the lightweight flow is cheaper and more reliable.
+
+**Always-on (both strategies):**
+- Evidence-grounded edits
+- Regression check after edits
+- Rejected-edit buffer (control 4)
+- Judge-type awareness (`builtin`/`check`/`llm`/`code`)
+
+**SkillOpt-only (gated controls):** everything else below — data splitting (1), edit budget (2), validation gate (3), minibatch reflection (5), hierarchical merge (6), protected slow-update region (7), meta-skill (8), rewrite mode (9), cost tracking (10), edit ranking (11).
+
 ## 1. Data Splitting
 
 | Split | Default % | Purpose | When used |
