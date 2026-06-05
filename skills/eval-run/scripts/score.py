@@ -485,7 +485,7 @@ _SCORE_SYSTEM_PROMPT = (
     "Return a JSON object with 'score' (integer 1-5) and 'rationale' (string).")
 
 
-def _call_judge_llm(prompt, model, system_prompt, images=None, max_tokens=1024):
+def _call_judge_llm(prompt, model, system_prompt, images=None, max_tokens=4096):
     """Call the Anthropic API with a judge prompt. Returns raw response text."""
     client = _get_anthropic_client()
     if images:
@@ -510,29 +510,55 @@ def _call_judge_llm(prompt, model, system_prompt, images=None, max_tokens=1024):
     return response.content[0].text.strip()
 
 
+def _rationale_field(text):
+    """Extract a JSON `rationale` string value, unescaped, or None.
+
+    Escaped-quote-aware so the value isn't cut at the first embedded quote.
+    """
+    m = re.search(r'"rationale"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
+    if not m:
+        return None
+    try:
+        return json.loads(f'"{m.group(1)}"')
+    except json.JSONDecodeError:
+        return m.group(1)
+
+
 def _parse_bool_response(text):
-    """Parse {"passed": bool, "rationale": str} from LLM response."""
+    """Parse {"passed": bool, "rationale": str} from LLM response.
+
+    When no structured `rationale` field is present, fall back to the full
+    response text (it renders as markdown in the report) rather than a
+    200-char slice that truncates mid-word.
+    """
     match = re.search(r'"passed"\s*:\s*(true|false)', text, re.IGNORECASE)
     if match:
         passed = match.group(1).lower() == "true"
-        rat_match = re.search(r'"rationale"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
-        rationale = rat_match.group(1) if rat_match else text[:200]
+        rationale = _rationale_field(text) or text.strip()
         return (passed, rationale)
-    return (False, f"Could not parse judge response: {text[:200]}")
+    return (False, text.strip() or "Could not parse judge response")
 
 
 def _parse_score_response(text):
-    """Parse {"score": int, "rationale": str} from LLM response with fallbacks."""
-    try:
-        match = re.search(r'"score"\s*:\s*(\d+)', text)
-        if match:
-            score_val = int(match.group(1))
-            rationale_match = re.search(r'"rationale"\s*:\s*"([^"]*)"', text)
-            rationale = (rationale_match.group(1) if rationale_match
-                         else text[:200])
-            return (score_val, rationale)
-    except (ValueError, AttributeError):
-        pass
+    """Parse {"score": int, "rationale": str} from an LLM response, with fallbacks.
+
+    Never truncates the rationale: when the judge returns prose instead of the
+    requested JSON (observed with opus-4-8), the full response text is used as
+    the rationale rather than a 200-char slice that cuts off mid-word.
+    """
+    # 1. Clean JSON object (handles escapes, newlines, embedded quotes).
+    obj = _loads_json_object(text)
+    if isinstance(obj, dict) and obj.get("score") is not None:
+        try:
+            rationale = str(obj.get("rationale") or "").strip() or text.strip()
+            return (int(obj["score"]), rationale)
+        except (ValueError, TypeError):
+            pass
+    # 2. Regex score + escaped-quote-aware rationale; full text if absent.
+    match = re.search(r'"score"\s*:\s*(\d+)', text)
+    if match:
+        return (int(match.group(1)), _rationale_field(text) or text.strip())
+    # 3. Prose fallbacks — keep the full text as the rationale.
     explicit = re.search(
         r'(?:overall|score|rating)\s*[=:]\s*(\d)\b'
         r'|(\d)\s*/\s*5'
@@ -540,11 +566,30 @@ def _parse_score_response(text):
         text, re.IGNORECASE)
     if explicit:
         score_val = int(next(g for g in explicit.groups() if g))
-        return (score_val, text[:200])
+        return (score_val, text.strip())
     nums = re.findall(r'\b([1-5])\b', text)
     if nums:
-        return (int(nums[-1]), text[:200])
-    return (3, f"Could not parse score from: {text[:200]}")
+        return (int(nums[-1]), text.strip())
+    return (3, text.strip() or "Could not parse score")
+
+
+def _loads_json_object(text):
+    """Best-effort parse of a single JSON object from a response (code fences
+    or surrounding prose tolerated). Returns a dict or None."""
+    t = text.strip()
+    fence = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', t, re.DOTALL)
+    if fence:
+        t = fence.group(1)
+    for candidate in (t, t[t.find("{"):t.rfind("}") + 1] if "{" in t and "}" in t else ""):
+        if not candidate:
+            continue
+        try:
+            obj = json.loads(candidate, strict=False)
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            continue
+    return None
 
 
 def score_cases(judges, case_dirs, config, run_id=None):
