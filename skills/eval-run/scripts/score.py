@@ -445,9 +445,8 @@ def _make_builtin_scorer(entry, jc, config):
             out = outputs or {}
             rendered = _render_jinja2_template(prompt_text, arguments, out)
             images = _extract_images(out)
-            raw = _call_judge_llm(rendered, judge_model,
-                                  _BOOL_SYSTEM_PROMPT, images=images)
-            return _parse_bool_response(raw)
+            return _call_structured_judge(rendered, judge_model, "bool",
+                                          images=images)
 
         return scorer
 
@@ -477,37 +476,116 @@ def _extract_images(outputs):
 
 
 _BOOL_SYSTEM_PROMPT = (
-    "You are a judge evaluating agent outputs. "
-    "Return a JSON object with 'passed' (boolean) and 'rationale' (string).")
+    "You are a judge evaluating agent outputs. Call the submit_evaluation "
+    "tool once with your pass/fail judgment and a thorough rationale.")
 
 _SCORE_SYSTEM_PROMPT = (
-    "You are a judge evaluating skill outputs. "
-    "Return a JSON object with 'score' (integer 1-5) and 'rationale' (string).")
+    "You are a judge evaluating skill outputs. Call the submit_score tool "
+    "once with an integer score 1-5 and a thorough rationale.")
+
+_SCORE_JUDGE_TOOL = {
+    "name": "submit_score",
+    "description": "Submit the evaluation score and rationale.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "score": {"type": "integer", "minimum": 1, "maximum": 5,
+                      "description": "Overall score, 1 (worst) to 5 (best)."},
+            "rationale": {"type": "string",
+                          "description": "Thorough justification citing specific "
+                                         "content from the outputs."},
+        },
+        "required": ["score", "rationale"],
+    },
+}
+
+_BOOL_JUDGE_TOOL = {
+    "name": "submit_evaluation",
+    "description": "Submit the pass/fail judgment and rationale.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "passed": {"type": "boolean",
+                       "description": "Whether the output passes the criterion."},
+            "rationale": {"type": "string",
+                          "description": "Thorough justification citing specific "
+                                         "content from the outputs."},
+        },
+        "required": ["passed", "rationale"],
+    },
+}
+
+
+def _judge_user_message(prompt, images=None):
+    """Build the user-message content for a judge call, inlining any images."""
+    if not images:
+        return prompt
+    parts = [{"type": "text", "text": prompt}]
+    for img in images:
+        parts.append({"type": "text", "text": f"\n**Image: {img['label']}**"})
+        parts.append({"type": "image", "source": {
+            "type": "base64",
+            "media_type": img["media_type"],
+            "data": img["data"],
+        }})
+    return parts
 
 
 def _call_judge_llm(prompt, model, system_prompt, images=None, max_tokens=4096):
-    """Call the Anthropic API with a judge prompt. Returns raw response text."""
+    """Call the Anthropic API with a judge prompt. Returns raw response text.
+
+    Retained as the text-parse fallback path; the primary path is
+    _call_structured_judge (forced tool output).
+    """
     client = _get_anthropic_client()
-    if images:
-        content_parts = [{"type": "text", "text": prompt}]
-        for img in images:
-            content_parts.append({"type": "text",
-                                  "text": f"\n**Image: {img['label']}**"})
-            content_parts.append({"type": "image", "source": {
-                "type": "base64",
-                "media_type": img["media_type"],
-                "data": img["data"],
-            }})
-        user_message = content_parts
-    else:
-        user_message = prompt
     response = client.messages.create(
         model=model,
         max_tokens=max_tokens,
         system=system_prompt,
-        messages=[{"role": "user", "content": user_message}],
+        messages=[{"role": "user", "content": _judge_user_message(prompt, images)}],
     )
     return response.content[0].text.strip()
+
+
+def _call_structured_judge(prompt, model, feedback_type, images=None,
+                           max_tokens=4096):
+    """Call an LLM judge with forced tool output. Returns (value, rationale).
+
+    feedback_type "bool" → (passed: bool, rationale); anything else →
+    (score: int, rationale). Forcing a tool guarantees the value and rationale
+    come back in known fields instead of free-form text the model may format
+    however it likes (opus-4-8 routinely ignores "return JSON" instructions).
+    Falls back to parsing any text in the response if no tool_use is returned.
+    """
+    is_bool = (feedback_type == "bool")
+    tool = _BOOL_JUDGE_TOOL if is_bool else _SCORE_JUDGE_TOOL
+    system_prompt = _BOOL_SYSTEM_PROMPT if is_bool else _SCORE_SYSTEM_PROMPT
+    parser = _parse_bool_response if is_bool else _parse_score_response
+    client = _get_anthropic_client()
+    response = client.messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        system=system_prompt,
+        tools=[tool],
+        tool_choice={"type": "tool", "name": tool["name"]},
+        messages=[{"role": "user", "content": _judge_user_message(prompt, images)}],
+    )
+    for block in response.content:
+        if getattr(block, "type", None) == "tool_use" and block.name == tool["name"]:
+            data = dict(block.input)
+            rationale = str(data.get("rationale") or "").strip()
+            if is_bool:
+                if isinstance(data.get("passed"), bool):
+                    return (data["passed"], rationale or "(no rationale provided)")
+            else:
+                try:
+                    return (int(data["score"]), rationale or "(no rationale provided)")
+                except (KeyError, TypeError, ValueError):
+                    pass
+    # Fallback: model emitted text instead of a tool call (rare with tool_choice).
+    text = "".join(getattr(b, "text", "") for b in response.content
+                   if getattr(b, "type", None) == "text").strip()
+    return parser(text)
 
 
 def _rationale_field(text):
@@ -536,7 +614,7 @@ def _parse_bool_response(text):
         passed = match.group(1).lower() == "true"
         rationale = _rationale_field(text) or text.strip()
         return (passed, rationale)
-    return (False, text.strip() or "Could not parse judge response")
+    return (False, f"Could not parse judge response: {text.strip() or '(empty)'}")
 
 
 def _parse_score_response(text):
@@ -570,7 +648,7 @@ def _parse_score_response(text):
     nums = re.findall(r'\b([1-5])\b', text)
     if nums:
         return (int(nums[-1]), text.strip())
-    return (3, text.strip() or "Could not parse score")
+    return (3, f"Could not parse score from: {text.strip() or '(empty)'}")
 
 
 def _loads_json_object(text):
@@ -761,21 +839,15 @@ def _load_llm_judge(jc, config, project_root=None):
     if (os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID")
             or os.environ.get("ANTHROPIC_API_KEY")):
         judge_model = _resolve_judge_model(jc, config)
-        if jc.feedback_type == "bool":
-            system_prompt = _BOOL_SYSTEM_PROMPT
-            parser = _parse_bool_response
-        else:
-            system_prompt = _SCORE_SYSTEM_PROMPT
-            parser = _parse_score_response
+        feedback_type = "bool" if jc.feedback_type == "bool" else "score"
         arguments = jc.arguments
 
         def scorer(outputs=None, **kwargs):
             out = outputs or {}
             rendered = _render_jinja2_template(prompt, arguments, out)
             images = _extract_images(out)
-            raw = _call_judge_llm(rendered, judge_model, system_prompt,
-                                  images=images)
-            return parser(raw)
+            return _call_structured_judge(rendered, judge_model, feedback_type,
+                                          images=images)
 
         return scorer
 
