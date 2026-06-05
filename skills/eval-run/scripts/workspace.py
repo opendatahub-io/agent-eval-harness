@@ -89,6 +89,14 @@ def main():
 
     # ── Batch mode (below) ───────────────────────────────────────
 
+    if config.dataset.workspace.files:
+        print(
+            "WARNING: dataset.workspace.files is ignored in batch mode — "
+            "files are per-case but batch mode uses a shared workspace. "
+            "Use execution.mode: case instead.",
+            file=sys.stderr,
+        )
+
     # Create output directories from config
     for output in config.outputs:
         if output.path and output.path != ".":
@@ -119,9 +127,6 @@ def main():
         else:
             batch_entries.append(input_content)
             case_order.append({"case_id": case_dir.name, "entry_count": 1})
-
-        # Copy input files directory if present
-        _copy_input_files(case_dir, workspace, config)
 
     # Write batch.yaml
     with open(workspace / "batch.yaml", "w") as f:
