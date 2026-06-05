@@ -128,13 +128,15 @@ class TestLoadJudgesBuiltin:
         assert name == "safety"
         assert judge_type == "builtin"
 
-        with patch("score._call_judge_llm",
-                   return_value='{"passed": true, "rationale": "ok"}') as mock_call:
+        with patch("score._call_structured_judge",
+                   return_value=(True, "ok")) as mock_call:
             result = scorer(outputs={"conversation": "test", "files": {}})
             assert result == (True, "ok")
             rendered_prompt = mock_call.call_args[0][0]
             assert "malware" in rendered_prompt
             assert "test" in rendered_prompt
+            # builtin judges are pass/fail
+            assert mock_call.call_args[0][2] == "bool"
 
 
 class TestParsers:
@@ -175,6 +177,72 @@ class TestParsers:
         score, rationale = _parse_score_response("no numbers here at all")
         assert score == 3
         assert "Could not parse" in rationale
+
+    def test_parse_score_prose_keeps_full_rationale(self):
+        # Judge returned markdown prose instead of JSON: the score is still
+        # extracted and the FULL text is kept as the rationale (not truncated
+        # to 200 chars mid-word).
+        from score import _parse_score_response
+        prose = ("## Assessment\n\n**WHAT:** clear. " + ("detail " * 80)
+                 + "\n\n**Total: 4/5**")
+        score, rationale = _parse_score_response(prose)
+        assert score == 4
+        assert len(rationale) > 200
+        assert rationale.endswith("**Total: 4/5**")
+
+    def test_parse_score_rationale_with_embedded_quotes(self):
+        from score import _parse_score_response
+        raw = ('{"score": 5, "rationale": "Names \\"Acme Corp\\" and quantifies '
+               'impact across all criteria."}')
+        score, rationale = _parse_score_response(raw)
+        assert score == 5
+        assert '"Acme Corp"' in rationale
+
+    def test_parse_bool_prose_keeps_full_rationale(self):
+        from score import _parse_bool_response
+        prose = '{"passed": true} because ' + ("reason " * 80)
+        passed, rationale = _parse_bool_response(prose)
+        assert passed is True
+        assert len(rationale) > 200
+
+
+class TestStructuredJudge:
+
+    def _resp(self, *blocks):
+        return type("R", (), {"content": list(blocks)})()
+
+    def _tool_use(self, name, data):
+        return type("B", (), {"type": "tool_use", "name": name, "input": data})()
+
+    def _text(self, txt):
+        return type("B", (), {"type": "text", "text": txt})()
+
+    def test_structured_score_from_tool_use(self):
+        import score
+        resp = self._resp(self._tool_use(
+            "submit_score", {"score": 4, "rationale": "solid across criteria"}))
+        with patch("score._get_anthropic_client") as mock_client:
+            mock_client.return_value.messages.create.return_value = resp
+            val, rat = score._call_structured_judge("p", "m", "score")
+        assert val == 4 and rat == "solid across criteria"
+
+    def test_structured_bool_from_tool_use(self):
+        import score
+        resp = self._resp(self._tool_use(
+            "submit_evaluation", {"passed": False, "rationale": "missing field"}))
+        with patch("score._get_anthropic_client") as mock_client:
+            mock_client.return_value.messages.create.return_value = resp
+            val, rat = score._call_structured_judge("p", "m", "bool")
+        assert val is False and rat == "missing field"
+
+    def test_structured_falls_back_to_text(self):
+        # No tool_use block (model emitted text despite tool_choice) → parse text.
+        import score
+        resp = self._resp(self._text('{"score": 3, "rationale": "adequate"}'))
+        with patch("score._get_anthropic_client") as mock_client:
+            mock_client.return_value.messages.create.return_value = resp
+            val, rat = score._call_structured_judge("p", "m", "score")
+        assert val == 3 and rat == "adequate"
 
 
 class TestOutputsProxy:
