@@ -962,31 +962,112 @@ def _get_anthropic_client():
     raise RuntimeError("Set ANTHROPIC_VERTEX_PROJECT_ID or ANTHROPIC_API_KEY")
 
 
+# Per-dimension verdict shape, reused for each comparison dimension.
+_PAIRWISE_DIM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "preferred": {"type": "string", "enum": ["A", "B", "tie", "n/a"]},
+        "reasoning": {"type": "string",
+                      "description": "Why this dimension favors A, B, or neither — cite specific content."},
+    },
+    "required": ["preferred", "reasoning"],
+}
+
+# Forced-output tool for the pairwise judge. Using tool_choice guarantees the
+# model returns exactly these fields instead of improvising key names
+# (observed: opus-4-8 emits `analysis`/`score_A`/`confidence` instead of the
+# documented `reasoning`/`dimensions`, which silently drops the per-dimension
+# breakdown). Structured output works uniformly across judge models.
+_PAIRWISE_DIM_NAMES = ("rfe_quality", "calibration", "feasibility", "revision")
+_PAIRWISE_TOOL = {
+    "name": "submit_comparison",
+    "description": ("Submit the blind pairwise comparison of outputs A and B. "
+                    "Provide the overall verdict, thorough overall reasoning, and "
+                    "a per-dimension breakdown."),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "preferred": {"type": "string", "enum": ["A", "B", "tie"],
+                          "description": "Which output is stronger overall."},
+            "reasoning": {"type": "string",
+                          "description": ("Thorough, self-contained overall reasoning — "
+                                          "several sentences citing specific content from "
+                                          "both outputs across RFE quality, assessment "
+                                          "calibration, feasibility depth, and revision "
+                                          "effectiveness. This is the primary field; make it "
+                                          "complete on its own.")},
+            "dimensions": {
+                "type": "object",
+                "description": "Per-dimension verdict and reasoning.",
+                "properties": {
+                    "rfe_quality": _PAIRWISE_DIM_SCHEMA,
+                    "calibration": _PAIRWISE_DIM_SCHEMA,
+                    "feasibility": _PAIRWISE_DIM_SCHEMA,
+                    "revision": _PAIRWISE_DIM_SCHEMA,
+                },
+            },
+        },
+        "required": ["preferred", "reasoning"],
+    },
+}
+
+
+def _normalize_pairwise_input(data):
+    """Recombine the flat per-dimension fields into a `dimensions` dict.
+
+    The tool schema is flat (top-level rfe_quality/calibration/feasibility/
+    revision), but a model may also nest them under `dimensions`. Collect
+    dimension-shaped objects ({preferred, reasoning}) from either location so
+    downstream always sees `data["dimensions"]` as a dict.
+    """
+    dims = {}
+    nested = data.get("dimensions")
+    if isinstance(nested, dict):
+        for k, v in nested.items():
+            if isinstance(v, dict):
+                dims[k] = v
+    for name in _PAIRWISE_DIM_NAMES:
+        v = data.pop(name, None)
+        if isinstance(v, dict):
+            dims[name] = v
+    if dims:
+        data["dimensions"] = dims
+    elif not isinstance(data.get("dimensions"), dict):
+        data.pop("dimensions", None)
+    return data
+
+
 def _call_judge(client, system_prompt, user_message, model, max_tokens=16384):
     try:
         response = client.messages.create(
             model=model, max_tokens=max_tokens,
-            system=("You are a judge comparing two outputs. "
-                    "Return ONLY a single JSON object — no prose, no code fences, "
-                    "no commentary before or after. The first character of your "
-                    "response must be '{' and the last must be '}'. Put ALL of "
-                    "your reasoning inside the JSON fields. The JSON must follow "
-                    "the schema specified in the user prompt and include a "
-                    "'preferred' field set to 'A', 'B', or 'tie'."),
+            system=("You are a blind judge comparing two outputs, A and B. "
+                    "Call the submit_comparison tool exactly once with your verdict "
+                    "and reasoning. Put ALL of your reasoning inside the tool input — "
+                    "do not write any text outside the tool call."),
+            tools=[_PAIRWISE_TOOL],
+            tool_choice={"type": "tool", "name": "submit_comparison"},
             messages=[
                 {"role": "user", "content": f"{system_prompt}\n\n{user_message}"},
             ],
         )
-        text = response.content[0].text
-        parsed = _extract_judge_json(text)
+        # Preferred path: read the forced tool_use block directly — no text
+        # parsing, no improvised keys.
+        for block in response.content:
+            if getattr(block, "type", None) == "tool_use" and block.name == "submit_comparison":
+                return _normalize_pairwise_input(dict(block.input)), None
+        # Fallback: model emitted text despite tool_choice (rare) — parse it.
+        text = "".join(getattr(b, "text", "") for b in response.content
+                       if getattr(b, "type", None) == "text")
+        parsed = _extract_judge_json(text) if text else None
         if parsed is not None:
             return parsed, None
         # Retry once with a larger budget if the response was truncated.
         if response.stop_reason == "max_tokens" and max_tokens < 32768:
             return _call_judge(client, system_prompt, user_message, model,
                                max_tokens=max_tokens * 2)
-        return None, (f"Could not parse JSON from response "
-                      f"(stop_reason={response.stop_reason}): {text[:200]}")
+        return None, (f"No submit_comparison tool_use in response "
+                      f"(stop_reason={response.stop_reason})")
     except Exception as e:
         return None, str(e)
 
