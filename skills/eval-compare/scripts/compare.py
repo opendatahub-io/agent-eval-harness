@@ -33,12 +33,8 @@ def discover_runs(input_dir):
     if not input_dir.exists() or not input_dir.is_dir():
         raise NotADirectoryError(f"Input directory not found: {input_dir}")
     runs = []
-    for d in sorted(input_dir.iterdir()):
-        if not d.is_dir():
-            continue
-        summary_path = d / "summary.yaml"
-        if not summary_path.exists():
-            continue
+    for summary_path in sorted(input_dir.rglob("summary.yaml")):
+        d = summary_path.parent
         summary = load_yaml(summary_path)
         run = {
             "dir": str(d),
@@ -110,6 +106,37 @@ def get_all_judge_names(runs):
         for k in (r["summary"].get("judges") or {}):
             names.add(k)
     return sorted(names)
+
+
+def _is_pass_rate(judge_name, value, runs):
+    """Heuristic: a judge is pass-rate style if all its per-case values are 0 or 1."""
+    if value is None:
+        return False
+    for r in runs:
+        for case in (r["summary"].get("per_case") or {}).values():
+            j = case.get(judge_name, {})
+            v = j.get("value")
+            if v is not None and v not in (0, 1, True, False, 0.0, 1.0):
+                return False
+    return True
+
+
+def pick_card_judges(all_judges, model_aggs, models, max_judges=4):
+    """Pick the most interesting judges for model cards.
+
+    Ranks by variance across models — judges where all models score identically
+    (e.g. pass_rate=1.0 everywhere) are least interesting.
+    """
+    scored = []
+    for judge in all_judges:
+        values = [model_aggs[m].get(f"judge_{judge}", {}).get("avg") for m in models]
+        clean = [v for v in values if v is not None]
+        if not clean:
+            continue
+        spread = max(clean) - min(clean) if len(clean) > 1 else 0
+        scored.append((spread, judge))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    return [j for _, j in scored[:max_judges]]
 
 
 def get_all_case_names(runs):
@@ -250,6 +277,14 @@ tbody tr:hover { background: rgba(255,255,255,0.02); }
 .worst { background: rgba(248,81,73,0.06); color: var(--red); }
 .insight { background: var(--surface2); border-left: 3px solid var(--accent); padding: 14px 18px;
            margin: 14px 0; border-radius: 0 6px 6px 0; font-size: 14px; line-height: 1.6; }
+.analysis-section { background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+            padding: 24px 28px; margin-bottom: 28px; }
+.analysis-section h2 { font-size: 17px; font-weight: 600; margin-bottom: 14px; padding-bottom: 8px;
+             border-bottom: 1px solid var(--border); }
+.analysis-section h3 { font-size: 15px; font-weight: 600; margin: 16px 0 8px; }
+.analysis-section p { font-size: 14px; line-height: 1.7; margin-bottom: 8px; }
+.analysis-section table { margin: 12px 0; }
+.analysis-section .placeholder { color: var(--text-muted); font-style: italic; }
 .iframe-wrap { width: 100%; height: calc(100vh - 90px); border: none; }
 .run-link { padding: 8px 16px; background: var(--surface); border-bottom: 1px solid var(--border); font-size: 12px; }
 .sub-bar { display: flex; align-items: center; gap: 4px; padding: 8px 16px;
@@ -319,11 +354,15 @@ def generate_report(runs, title, overview, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     groups = group_by_model(runs)
-    # Sort models: best analysis quality first
-    models = sorted(groups.keys(),
-                    key=lambda m: aggregate([get_judge_mean(r, "analysis_quality")
-                                             for r in groups[m]]).get("avg") or 0,
-                    reverse=True)
+    all_judges_for_sort = get_all_judge_names(runs)
+    first_judge = all_judges_for_sort[0] if all_judges_for_sort else None
+    if first_judge:
+        models = sorted(groups.keys(),
+                        key=lambda m: aggregate([get_judge_mean(r, first_judge)
+                                                 for r in groups[m]]).get("avg") or 0,
+                        reverse=True)
+    else:
+        models = sorted(groups.keys())
 
     model_aggs = {}
     for m, model_runs in groups.items():
@@ -335,8 +374,11 @@ def generate_report(runs, title, overview, output_dir):
             agg[f"judge_{judge}"] = aggregate([get_judge_mean(r, judge) for r in model_runs])
         model_aggs[m] = agg
 
-    best_quality_model = max(models, key=lambda m: (model_aggs[m].get("judge_analysis_quality", {}).get("avg") or 0))
-    cheapest_model = min(models, key=lambda m: (model_aggs[m]["cost_usd"].get("avg") or float("inf")))
+    all_judges = get_all_judge_names(runs)
+    card_judges = pick_card_judges(all_judges, model_aggs, models)
+    primary_judge = card_judges[0] if card_judges else None
+
+    # Badges are added by the LLM agent in Step 3, not auto-computed
 
     # Copy HTML reports
     for r in runs:
@@ -380,24 +422,15 @@ def generate_report(runs, title, overview, output_dir):
     if overview:
         html += f'<div class="overview">{escape(overview)}</div>\n'
 
-    # Bottom Line: auto-generated summary, agent replaces with LLM analysis in Step 3
-    html += '<div class="verdict">\n<h2>Bottom Line</h2>\n<p>'
-    for m in models:
-        agg = model_aggs[m]
-        aq = agg.get("judge_analysis_quality", {}).get("avg")
-        cost = agg["cost_usd"].get("avg")
-        parts = []
-        if aq is not None:
-            parts.append(f"{aq:.2f}/5 quality")
-        if cost is not None:
-            parts.append(f"${cost:.2f}/run")
-        detail = ", ".join(parts)
-        html += f'<strong>{escape(short_name(m))}</strong>: {detail}. '
-    html += "</p>\n</div>\n\n"
+    # Bottom Line: placeholder for LLM analysis in Step 3
+    html += '<div class="verdict">\n<h2>Bottom Line</h2>\n'
+    html += '<p class="placeholder">Analysis pending — will be replaced with a per-model verdict.</p>\n'
+    html += "</div>\n\n"
 
     # Pre-compute all values for relative coloring
-    all_aq = [model_aggs[m].get("judge_analysis_quality", {}).get("avg") for m in models]
-    all_rs = [model_aggs[m].get("judge_revert_scoring_accuracy", {}).get("avg") for m in models]
+    judge_all_values = {}
+    for judge in card_judges:
+        judge_all_values[judge] = [model_aggs[m].get(f"judge_{judge}", {}).get("avg") for m in models]
     all_cost = [model_aggs[m]["cost_usd"].get("avg") for m in models]
     all_wall = [model_aggs[m]["wall_clock_s"].get("avg") for m in models]
 
@@ -408,15 +441,7 @@ def generate_report(runs, title, overview, output_dir):
         c = color_for(m)
         extra_style = ""
         badge = ""
-        if m == best_quality_model and m == cheapest_model:
-            extra_style = f' style="border-color: var(--green);"'
-            badge = '<div class="badge" style="background: var(--green); color: #000;">Best Value</div>'
-        elif m == best_quality_model:
-            extra_style = f' style="border-color: var(--green);"'
-            badge = '<div class="badge" style="background: var(--green); color: #000;">Best Quality</div>'
 
-        aq = agg.get("judge_analysis_quality", {}).get("avg")
-        rs = agg.get("judge_revert_scoring_accuracy", {}).get("avg")
         cost = agg["cost_usd"].get("avg")
         turns = agg["num_turns"].get("avg")
         out_tok = agg["output_tokens"].get("avg")
@@ -429,8 +454,13 @@ def generate_report(runs, title, overview, output_dir):
             html += f' <span style="font-size:11px; color:var(--text-muted); font-weight:400;">({n} runs avg)</span>'
         html += '</h3>\n  <div class="stats">\n'
 
-        html += f'    <div class="stat"><span class="label">Analysis Quality</span><span class="value {_rank_color(aq, all_aq, True)}">{fmt(aq, "num") if aq else "--"}</span></div>\n'
-        html += f'    <div class="stat"><span class="label">Revert Scoring</span><span class="value {_rank_color(rs, all_rs, True)}">{fmt(rs, "num") if rs else "--"}</span></div>\n'
+        for judge in card_judges:
+            jv = agg.get(f"judge_{judge}", {}).get("avg")
+            is_pct = _is_pass_rate(judge, jv, runs)
+            judge_label = judge.replace("_", " ").title()
+            rank_cls = _rank_color(jv, judge_all_values.get(judge, []), True)
+            html += f'    <div class="stat"><span class="label">{escape(judge_label)}</span><span class="value {rank_cls}">{fmt(jv, "pct" if is_pct else "num") if jv is not None else "--"}</span></div>\n'
+
         html += f'    <div class="stat"><span class="label">{"Avg Run Cost" if n > 1 else "Total Cost"}</span><span class="value {_rank_color(cost, all_cost, False)}">{fmt(cost, "usd")}</span></div>\n'
         html += f'    <div class="stat"><span class="label">Wall Clock</span><span class="value {_rank_color(wall, all_wall, False)}">{fmt(wall, "time")}</span></div>\n'
         html += f'    <div class="stat"><span class="label">Output Tokens</span><span class="value">{fmt(out_tok, "tokens")}</span></div>\n'
@@ -458,7 +488,6 @@ def generate_report(runs, title, overview, output_dir):
     html += '</section>\n\n'
 
     # Quality table
-    all_judges = get_all_judge_names(runs)
     html += '<section>\n<h2>Quality Scores</h2>\n'
     quality_rows = []
     for judge in all_judges:
@@ -466,47 +495,85 @@ def generate_report(runs, title, overview, output_dir):
         for m in models:
             agg = model_aggs[m].get(f"judge_{judge}", {})
             v = agg.get("avg")
-            n = agg.get("count", 0)
             values.append(v)
-        is_pass_rate = all(v is not None and v <= 1.0 for v in values if v is not None)
-        ft = "pct" if is_pass_rate and judge not in ("analysis_quality", "revert_scoring_accuracy") else "num"
+        sample_v = next((v for v in values if v is not None), None)
+        ft = "pct" if _is_pass_rate(judge, sample_v, runs) else "num"
         label = judge.replace("_", " ").title()
         quality_rows.append((label, values, ft))
     html += render_comparison_table(models, quality_rows)
     html += '</section>\n\n'
 
-    # Per-case analysis quality
+    # Per-case tables for each judge
     all_cases = get_all_case_names(runs)
     if all_cases:
-        html += '<section>\n<h2>Per-Case Analysis Quality</h2>\n'
-        html += "<table><thead><tr><th>Case</th>"
-        for m in models:
-            html += f"<th>{escape(short_name(m))}</th>"
-        html += "</tr></thead><tbody>"
-        for case in all_cases:
-            case_short = case.replace("case-", "").replace("-", " ", 1).split(" ", 1)
-            label = case_short[1] if len(case_short) > 1 else case
-            html += f"<tr><td>{escape(label)}</td>"
-            values = []
+        for judge in all_judges:
+            # Check if this judge has any variation across models — skip if uniform
+            has_variation = False
+            for case in all_cases:
+                case_values = []
+                for m in models:
+                    scores = [get_case_score(r, case, judge) for r in groups[m]]
+                    agg = aggregate(scores)
+                    case_values.append(agg["avg"])
+                clean = [v for v in case_values if v is not None]
+                if len(clean) >= 2 and max(clean) != min(clean):
+                    has_variation = True
+                    break
+            if not has_variation and len(models) > 1:
+                continue
+
+            judge_label = judge.replace("_", " ").title()
+            is_pct = _is_pass_rate(judge, get_judge_mean(runs[0], judge), runs)
+            html += f'<section>\n<h2>Per-Case: {escape(judge_label)}</h2>\n'
+            html += "<table><thead><tr><th>Case</th>"
             for m in models:
-                scores = [get_case_score(r, case, "analysis_quality") for r in groups[m]]
-                agg = aggregate(scores)
-                values.append(agg["avg"])
-            best_i, worst_i = best_worst_indices(values, True)
-            for i, v in enumerate(values):
-                cls = ""
-                if i == best_i:
-                    cls = ' class="best"'
-                elif i == worst_i:
-                    cls = ' class="worst"'
-                if v is not None:
-                    n = model_aggs[models[i]].get("judge_analysis_quality", {}).get("count", 1)
-                    cell = f"{v:.1f}" if n > 1 else f"{int(v)}"
-                else:
-                    cell = "--"
-                html += f"<td{cls}>{cell}</td>"
-            html += "</tr>"
-        html += "</tbody></table>\n</section>\n\n"
+                html += f"<th>{escape(short_name(m))}</th>"
+            html += "</tr></thead><tbody>"
+            for case in all_cases:
+                case_short = case.replace("case-", "").replace("-", " ", 1).split(" ", 1)
+                label = case_short[1] if len(case_short) > 1 else case
+                html += f"<tr><td>{escape(label)}</td>"
+                values = []
+                for m in models:
+                    scores = [get_case_score(r, case, judge) for r in groups[m]]
+                    agg = aggregate(scores)
+                    values.append(agg["avg"])
+                best_i, worst_i = best_worst_indices(values, True)
+                for i, v in enumerate(values):
+                    cls = ""
+                    if i == best_i:
+                        cls = ' class="best"'
+                    elif i == worst_i:
+                        cls = ' class="worst"'
+                    if v is not None:
+                        n = len(groups[models[i]])
+                        if is_pct:
+                            cell = fmt(v, "pct")
+                        elif n > 1:
+                            cell = f"{v:.1f}"
+                        else:
+                            cell = f"{v:.2f}" if v != int(v) else f"{int(v)}"
+                    else:
+                        cell = "--"
+                    html += f"<td{cls}>{cell}</td>"
+                html += "</tr>"
+            html += "</tbody></table>\n</section>\n\n"
+
+    # LLM analysis placeholder sections — populated by the agent in Step 3
+    html += '<div class="analysis-section" id="model-strengths">\n'
+    html += '<h2>Where Each Model Shined</h2>\n'
+    html += '<p class="placeholder">Analysis pending — will be replaced with per-model strengths.</p>\n'
+    html += '</div>\n\n'
+
+    html += '<div class="analysis-section" id="shared-weaknesses">\n'
+    html += '<h2>Shared Weaknesses Across All Models</h2>\n'
+    html += '<p class="placeholder">Analysis pending — will be replaced with cross-cutting weaknesses.</p>\n'
+    html += '</div>\n\n'
+
+    html += '<div class="analysis-section" id="recommendations">\n'
+    html += '<h2>Recommendations</h2>\n'
+    html += '<p class="placeholder">Analysis pending — will be replaced with actionable recommendations.</p>\n'
+    html += '</div>\n\n'
 
     html += '</div>\n</div>\n\n'
 
@@ -590,14 +657,14 @@ def cmd_discover(args):
     if not runs:
         print(json.dumps({"error": "No valid runs found", "runs": []}))
         sys.exit(1)
+    all_judge_names = get_all_judge_names(runs)
     out = []
     for r in runs:
         entry = {
             "name": r["name"],
             "model": get_model(r),
             "cost_usd": get_metric(r, "cost_usd"),
-            "analysis_quality": get_judge_mean(r, "analysis_quality"),
-            "revert_scoring": get_judge_mean(r, "revert_scoring_accuracy"),
+            "judges": {j: get_judge_mean(r, j) for j in all_judge_names},
             "has_html": r["html_report"] is not None,
         }
         out.append(entry)
