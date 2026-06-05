@@ -52,7 +52,7 @@ Using the discovery JSON from Step 1, read each run's `summary.yaml` (paths are 
 
 Add a badge `<div>` to model cards based on your analysis. Not every model needs a badge — only add one when it clearly applies. Available badge styles:
 
-- **Best Value** (green): The model with the best quality-to-cost ratio. Consider both quality AND consistency — a model with high variance across runs is NOT a good value even if its average looks competitive. The best value model must be reliable.
+- **Best Value** (green): The best model considering both quality and cost. A model with slightly higher quality but much higher cost is NOT the best value — the cheaper model wins unless the quality difference is substantial. Must also be consistent across runs.
   `<div class="badge" style="background: var(--green); color: #000;">Best Value</div>`
 - **Highly Variable** (yellow): A model with multiple runs whose scores diverge significantly across runs (e.g., same case scoring 1 in one run and 4 in another). A highly variable model should NEVER also be Best Value — inconsistency disqualifies it.
   `<div class="badge" style="background: var(--yellow); color: #000;">Highly Variable</div>`
