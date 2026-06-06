@@ -1,0 +1,7 @@
+FROM registry.access.redhat.com/ubi9/python-312:latest
+WORKDIR /app
+COPY pyproject.toml .
+RUN pip install --no-cache-dir ".[evalhub]" "kubernetes>=29.0,<32.0" "mlflow-skinny>=3.5"
+COPY agent_eval/ agent_eval/
+COPY deploy/harbor/entrypoint.py .
+ENTRYPOINT ["python3", "entrypoint.py"]
