@@ -586,8 +586,11 @@ details.case > summary:hover { color: var(--accent); }
 .pw-loss { background: var(--danger-soft); color: var(--danger); border-color: var(--danger-border); }
 .pw-tie { background: var(--warning-soft); color: var(--warning); border-color: var(--warning-border); }
 .pw-error { background: var(--neutral-soft); color: var(--text-muted); border-color: var(--neutral-border); }
-.pw-spread { font-size: 0.72em; color: var(--text-muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
-.pw-stability { font-size: 0.85em; color: var(--text-muted); font-weight: 400; }
+.stab-wrap { display: inline-flex; align-items: center; gap: 5px; }
+.stab-bar { vertical-align: middle; }
+.stab-label { font-size: 0.8em; color: var(--text-muted); }
+.ascii-range { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.85em; letter-spacing: 1px; color: var(--text-muted); margin-left: 6px; white-space: pre; }
+.ascii-range .med { color: var(--accent); font-weight: 700; }
 .diff-table { width: 100%; border-collapse: collapse; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.82em; table-layout: fixed; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .diff-table td { padding: 1px 6px; vertical-align: top; white-space: pre-wrap; word-wrap: break-word; border: 1px solid var(--border); }
 .diff-table .ln { width: 35px; min-width: 35px; color: var(--text-muted); text-align: right; background: var(--surface-2); user-select: none; white-space: nowrap; }
@@ -1149,6 +1152,24 @@ def _render_model_usage(run_result, baseline_result=None):
     return html
 
 
+def _stability_proportion_bar(stable, total, samples):
+    """Small proportion bar (stable vs varied) summarizing a judge's cross-case
+    sampling consistency. Used in the Scoring Summary for LLM-judge rows and the
+    pairwise row so the whole table shares one visual language."""
+    if not total:
+        return ""
+    W, H = 46, 7
+    frac = stable / total
+    title = f"{stable}/{total} cases stable across {samples} samples"
+    return (
+        f'<span class="stab-wrap">'
+        f'<svg class="stab-bar" width="{W}" height="{H}" viewBox="0 0 {W} {H}" '
+        f'role="img" aria-label="{_esc(title)}"><title>{_esc(title)}</title>'
+        f'<rect x="0" y="0" width="{W}" height="{H}" rx="3.5" fill="var(--warning-soft)"/>'
+        f'<rect x="0" y="0" width="{W * frac:.1f}" height="{H}" rx="3.5" fill="var(--success)"/>'
+        f'</svg><span class="stab-label">{stable}/{total} · {samples}×</span></span>')
+
+
 def _render_scoring_summary(summary, config, baseline_summary=None):
     judges = summary.get("judges", {})
     thresholds = config.get("thresholds", {})
@@ -1194,18 +1215,13 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
             metric_name = "—"
             metric_val = "—"
 
-        # Sampling stability (from `score.py judges --repeat N`) — same
-        # treatment as the pairwise row: a confidence suffix on the value.
+        # Sampling stability (from `score.py judges --repeat N`) — a proportion
+        # bar (stable vs varied across cases) appended to the metric.
         jst = agg.get("stability")
         if isinstance(jst, dict) and jst.get("samples", 1) > 1 and metric_val != "—":
-            stable, tot = jst.get("stable_cases", 0), jst.get("total_cases", 0)
-            varied = tot - stable
-            if varied == 0:
-                metric_val += (f' <span class="pw-stability">· stable across '
-                               f'{jst["samples"]} samples</span>')
-            else:
-                metric_val += (f' <span class="pw-stability">· {stable}/{tot} stable '
-                               f'across {jst["samples"]} samples ({varied} varied)</span>')
+            metric_val += " " + _stability_proportion_bar(
+                jst.get("stable_cases", 0), jst.get("total_cases", 0),
+                jst.get("samples"))
 
         # Baseline
         bl_val = ""
@@ -1277,18 +1293,13 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
         pw_val = f"{wins_a}W / {wins_b}L / {ties}T"
         if errors:
             pw_val += f" / {errors}E"
-        # Fold verdict-stability (from `score.py pairwise --repeat N`) into the
-        # same cell — confidence on this tally — rather than a separate section.
+        # Verdict-stability (from `score.py pairwise --repeat N`) — same
+        # proportion bar the judge rows use.
         st = pw.get("stability") or {}
         n = st.get("runs", 1)
         if n and n > 1:
-            stable, tot = st.get("stable_cases", 0), st.get("total_cases", 0)
-            flipped = len(st.get("flipped_cases", []))
-            if flipped == 0:
-                pw_val += f' <span class="pw-stability">· stable across {n} samples</span>'
-            else:
-                pw_val += (f' <span class="pw-stability">· {stable}/{tot} stable across '
-                           f'{n} samples ({flipped} flipped)</span>')
+            pw_val += " " + _stability_proportion_bar(
+                st.get("stable_cases", 0), st.get("total_cases", 0), n)
         if wins_a > wins_b:
             pw_status_cls, pw_status = "pass", "WIN"
         elif wins_b > wins_a:
@@ -1826,6 +1837,43 @@ def _render_shared_outputs(run_dir, config):
     return html
 
 
+def _ascii_hist(items, lo_label, hi_label, mark_key):
+    """Monospace ASCII histogram of sampled judge values on a labelled axis.
+
+    `items` is an ordered list of (key, count); each renders as a block bar
+    (height = count, tallest = █), empty categories stay ░, and the bar for
+    `mark_key` is wrapped in markers (\\x01..\\x02) for colourising in HTML.
+    A stable judge — all samples in one bucket — is a single bar (e.g.
+    ``1 ░░░░█ 5``), so the column reads "agree" vs "wobble" at a glance.
+    Used for numeric judges (1 … 5), bool judges (F … P) and pairwise (A … B).
+    """
+    blocks = "▁▂▃▄▅▆▇█"
+    maxc = max((c for _, c in items), default=1) or 1
+    cells = []
+    for key, c in items:
+        ch = "░" if c == 0 else blocks[round(c / maxc * 7)]
+        if key == mark_key:
+            ch = "\x01" + ch + "\x02"   # marker (colourised in HTML)
+        cells.append(ch)
+    return f"{lo_label} " + "".join(cells) + f" {hi_label}"
+
+
+def _ascii_score_hist(med, values, smin=1, smax=5):
+    """`_ascii_hist` over the numeric score scale, marking the median level."""
+    from collections import Counter
+    counts = Counter(values)
+    med = max(smin, min(smax, med))
+    items = [(s, counts.get(s, 0)) for s in range(smin, smax + 1)]
+    return _ascii_hist(items, str(smin), str(smax), med)
+
+
+def _colorise_hist(glyph):
+    """HTML-escape an ASCII histogram and colourise its marked bar."""
+    return (_esc(glyph)
+            .replace("\x01", '<span class="med">')
+            .replace("\x02", "</span>"))
+
+
 def _render_per_case(summary, run_dir, config, baseline_dir, review):
     per_case = summary.get("per_case", {})
     if not per_case:
@@ -1847,6 +1895,7 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
     # Per-case verdict spread across repeated runs (stability), if available.
     pw_flipped = {fc.get("case_id"): fc.get("verdicts", [])
                   for fc in (pw.get("stability") or {}).get("flipped_cases", [])}
+    pw_runs = (pw.get("stability") or {}).get("runs", 1)
 
     html = '<h2 class="section-heading">Per-Case Details</h2>\n'
     if baseline_dir:
@@ -1938,19 +1987,27 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
 
             if err:
                 rat = f"ERROR: {err}"
-
-            # Sampling spread (from --repeat): annotate the value when the
-            # judge's samples for this case didn't all agree.
+            # Per-case sampling distribution (from --repeat): an ASCII glyph
+            # (monospace, aligns cleanly) showing the spread on the 1–5 scale.
+            # Shown for every sampled judge — a stable judge is a single bar,
+            # which reads at a glance as "all samples agree". Raw samples on hover.
             jst = jresult.get("stability")
-            if isinstance(jst, dict) and jst.get("samples", 1) > 1 and not jst.get("stable", True):
-                if "min" in jst and "max" in jst:
-                    spread = f"{jst['min']}–{jst['max']}"
-                else:
-                    spread = "/".join(str(v) for v in jst.get("values", []))
-                if spread:
-                    val_html += (f'<br><span class="pw-spread" '
-                                 f'title="per-sample values ({jst["samples"]} samples)">'
-                                 f'{_esc(spread)}</span>')
+            if (isinstance(jst, dict) and jst.get("samples", 1) > 1
+                    and "min" in jst):
+                vals = jst.get("values", [])
+                samples = ", ".join(str(v) for v in vals)
+                glyph = _colorise_hist(_ascii_score_hist(val, vals))
+                val_html += (f' <span class="ascii-range" '
+                             f'title="samples: {_esc(samples)}">{glyph}</span>')
+            elif (isinstance(jst, dict) and jst.get("samples", 1) > 1
+                  and "pass_count" in jst):
+                npass = jst["pass_count"]
+                nsamp = jst["samples"]
+                winner = "pass" if npass * 2 >= nsamp else "fail"
+                glyph = _colorise_hist(_ascii_hist(
+                    [("fail", nsamp - npass), ("pass", npass)], "F", "P", winner))
+                val_html += (f' <span class="ascii-range" '
+                             f'title="{npass}/{nsamp} pass">{glyph}</span>')
 
             rat_html = _md_to_html(_normalize_escapes(rat)) if rat else ""
             html += (f'<tr><td>{_esc(jname)}</td><td>{val_html}</td>'
@@ -1964,11 +2021,17 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
             pw_reasoning = str(pw_reasoning)
             pw_rat_html = _md_to_html(_normalize_escapes(pw_reasoning)) if pw_reasoning else ""
             # If this case flipped across repeated runs, show the verdict spread.
-            spread = pw_flipped.get(case_id)
             verdict_html = _pairwise_badge(pw_winner)
-            if spread:
-                verdict_html += (f'<br><span class="pw-spread" title="verdict per repeat run">'
-                                 f'{_esc("/".join(spread))}</span>')
+            if pw_runs and pw_runs > 1:
+                # stable cases didn't flip → all runs == winner (single bar)
+                verds = pw_flipped.get(case_id) or [pw_winner] * pw_runs
+                from collections import Counter as _Counter
+                vc = _Counter(verds)
+                glyph = _colorise_hist(_ascii_hist(
+                    [("A", vc.get("A", 0)), ("tie", vc.get("tie", 0)),
+                     ("B", vc.get("B", 0))], "A", "B", pw_winner))
+                verdict_html += (f'<br><span class="ascii-range" '
+                                 f'title="verdicts: {_esc("/".join(verds))}">{glyph}</span>')
             html += (f'<tr><td>pairwise</td>'
                      f'<td>{verdict_html}</td>'
                      f'<td class="rationale">{pw_rat_html}</td></tr>\n')
