@@ -670,8 +670,64 @@ def _loads_json_object(text):
     return None
 
 
-def score_cases(judges, case_dirs, config, run_id=None):
-    """Score all cases with all judges in parallel."""
+def _normalize_result(result):
+    """Extract (value, rationale) from a scorer return (tuple/Feedback/primitive)."""
+    if isinstance(result, tuple) and len(result) == 2:
+        return result[0], result[1]
+    if hasattr(result, "value"):
+        return result.value, getattr(result, "rationale", "")
+    return result, ""
+
+
+def _aggregate_samples(runs, judge_type):
+    """Reduce N stochastic-judge samples to one value + rationale, recording spread.
+
+    `runs` is a list of {value, rationale?, error?}. Numeric (score) judges
+    reduce by median (noise reduction, returns an actually-observed score via
+    median_low); bool judges by majority vote. The kept rationale is one from a
+    sample matching the reduced value, so it stays consistent with the score.
+    `stability.stable` is True when every sample agreed.
+    """
+    import statistics
+    vals = [r["value"] for r in runs if r.get("value") is not None]
+    if not vals:
+        err = next((r.get("error") for r in runs if r.get("error")), "all samples failed")
+        return {"value": None, "error": err, "judge_type": judge_type,
+                "stability": {"samples": len(runs), "values": []}}
+    # bool must be checked before int (bool is a subclass of int)
+    if all(isinstance(v, bool) for v in vals):
+        passes = sum(1 for v in vals if v)
+        value = (passes * 2 >= len(vals))  # majority; ties resolve to pass
+        rationale = next((r.get("rationale", "") for r in runs
+                          if r.get("value") is value), "")
+        stability = {"samples": len(vals), "pass_count": passes,
+                     "values": vals, "stable": passes in (0, len(vals))}
+    elif all(isinstance(v, (int, float)) for v in vals):
+        value = statistics.median_low(vals)
+        lo, hi = min(vals), max(vals)
+        rationale = next((r.get("rationale", "") for r in runs
+                          if r.get("value") == value), runs[0].get("rationale", ""))
+        stability = {"samples": len(vals), "min": lo, "max": hi,
+                     "mean": round(statistics.fmean(vals), 2),
+                     "values": vals, "stable": lo == hi}
+    else:
+        value = vals[0]
+        rationale = next((r.get("rationale", "") for r in runs
+                          if r.get("value") == value), "")
+        stability = {"samples": len(vals), "values": vals,
+                     "stable": len({str(v) for v in vals}) <= 1}
+    return {"value": value, "rationale": rationale, "judge_type": judge_type,
+            "stability": stability}
+
+
+def score_cases(judges, case_dirs, config, run_id=None, samples=1):
+    """Score all cases with all judges in parallel.
+
+    When samples > 1, each stochastic (LLM) judge is run `samples` times per
+    case; the reduced value (median/majority) becomes the score and the spread
+    is recorded under per-case `stability`. Deterministic judges (check/code)
+    always run once.
+    """
     if not case_dirs:
         return {"per_case": {}, "aggregated": {n: {"values": [], "mean": None, "pass_rate": None} for n, *_ in judges}}
     per_case = {}
@@ -704,26 +760,22 @@ def score_cases(judges, case_dirs, config, run_id=None):
                         "judge_type": judge_type,
                     }
                     continue
+            # Only stochastic (LLM) judges are sampled repeatedly; deterministic
+            # check/code judges run once regardless of `samples`.
+            n = samples if (samples > 1 and judge_type == "llm") else 1
             try:
-                result = scorer(outputs=record)
-                # Normalize — accepts (bool, str) tuples, Feedback, primitives
-                if isinstance(result, tuple) and len(result) == 2:
-                    case_results[name] = {
-                        "value": result[0],
-                        "rationale": result[1],
-                        "judge_type": judge_type,
-                    }
-                elif hasattr(result, "value"):
-                    case_results[name] = {
-                        "value": result.value,
-                        "rationale": getattr(result, "rationale", ""),
-                        "judge_type": judge_type,
-                    }
-                elif isinstance(result, (bool, int, float, str)):
-                    case_results[name] = {"value": result, "rationale": "",
-                                          "judge_type": judge_type}
+                if n > 1:
+                    runs = []
+                    for _ in range(n):
+                        try:
+                            v, rat = _normalize_result(scorer(outputs=record))
+                            runs.append({"value": v, "rationale": rat})
+                        except Exception as e:
+                            runs.append({"value": None, "error": str(e)})
+                    case_results[name] = _aggregate_samples(runs, judge_type)
                 else:
-                    case_results[name] = {"value": result, "rationale": "",
+                    v, rat = _normalize_result(scorer(outputs=record))
+                    case_results[name] = {"value": v, "rationale": rat,
                                           "judge_type": judge_type}
             except Exception as e:
                 case_results[name] = {"value": None, "error": str(e),
@@ -767,6 +819,22 @@ def score_cases(judges, case_dirs, config, run_id=None):
         else:
             aggregated[name]["mean"] = None
             aggregated[name]["pass_rate"] = None
+
+    # Per-judge stability across cases (only meaningful when sampled > 1):
+    # how many cases gave a consistent score across all samples.
+    if samples > 1:
+        for name in aggregated:
+            scored = [per_case[c][name] for c in per_case
+                      if isinstance(per_case.get(c, {}).get(name), dict)
+                      and "stability" in per_case[c][name]
+                      and per_case[c][name].get("value") is not None]
+            if scored:
+                stable = sum(1 for r in scored if r["stability"].get("stable"))
+                aggregated[name]["stability"] = {
+                    "samples": samples,
+                    "stable_cases": stable,
+                    "total_cases": len(scored),
+                }
 
     return {"per_case": per_case, "aggregated": aggregated}
 
@@ -1363,19 +1431,29 @@ def cmd_judges(args):
     case_dirs = _get_case_dirs(args.run_id, runs_dir)
     project_root = Path.cwd()
 
+    samples = max(1, getattr(args, "repeat", 1) or 1)
     judges = load_judges(config, project_root)
-    print(f"Scoring {len(case_dirs)} cases with {len(judges)} judges: "
+    n_llm = sum(1 for _, _, _, jt in judges if jt == "llm")
+    suffix = (f" (LLM judges sampled {samples}×)"
+              if samples > 1 and n_llm else "")
+    print(f"Scoring {len(case_dirs)} cases with {len(judges)} judges{suffix}: "
           f"{[n for n, *_ in judges]}")
 
-    judge_results = score_cases(judges, case_dirs, config, run_id=args.run_id)
+    judge_results = score_cases(judges, case_dirs, config, run_id=args.run_id,
+                                samples=samples)
 
     for name, agg in judge_results.get("aggregated", {}).items():
         mean = agg.get("mean")
         rate = agg.get("pass_rate")
+        st = agg.get("stability")
+        st_note = ""
+        if isinstance(st, dict) and st.get("samples", 1) > 1:
+            stable, tot = st.get("stable_cases", 0), st.get("total_cases", 0)
+            st_note = f"  [{stable}/{tot} stable over {st['samples']} samples]"
         if rate is not None:
-            print(f"  {name}: pass_rate={rate:.1%}")
+            print(f"  {name}: pass_rate={rate:.1%}{st_note}")
         elif mean is not None:
-            print(f"  {name}: mean={mean:.2f}")
+            print(f"  {name}: mean={mean:.2f}{st_note}")
 
     _merge_summary(args.run_id, "judges", {
         name: {k: v for k, v in agg.items() if k != "values"}
@@ -1531,6 +1609,10 @@ def main():
     jdg_p = subparsers.add_parser("judges", help="Run all judges")
     jdg_p.add_argument("--run-id", required=True)
     jdg_p.add_argument("--config", required=True)
+    jdg_p.add_argument("--repeat", type=int, default=1,
+                       help="Sample each LLM judge N times per case; the median "
+                            "(score) / majority (bool) becomes the value and the "
+                            "spread is recorded for stability reporting")
 
     # pairwise
     pw_p = subparsers.add_parser("pairwise", help="Pairwise comparison")

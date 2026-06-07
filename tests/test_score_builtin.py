@@ -245,6 +245,50 @@ class TestStructuredJudge:
         assert val == 3 and rat == "adequate"
 
 
+class TestSampleAggregation:
+
+    def test_score_reduces_to_median_and_records_spread(self):
+        import score
+        runs = [{"value": 4, "rationale": "r4a"},
+                {"value": 5, "rationale": "r5"},
+                {"value": 4, "rationale": "r4b"}]
+        out = score._aggregate_samples(runs, "llm")
+        assert out["value"] == 4                      # median_low of [4,5,4]
+        assert out["rationale"] in ("r4a", "r4b")     # a sample matching the value
+        st = out["stability"]
+        assert st["min"] == 4 and st["max"] == 5 and st["stable"] is False
+        assert st["samples"] == 3
+
+    def test_score_unanimous_is_stable(self):
+        import score
+        out = score._aggregate_samples(
+            [{"value": 5, "rationale": "a"}, {"value": 5, "rationale": "b"}], "llm")
+        assert out["value"] == 5
+        assert out["stability"]["stable"] is True
+
+    def test_bool_majority_vote(self):
+        import score
+        out = score._aggregate_samples(
+            [{"value": True, "rationale": "ok"},
+             {"value": False, "rationale": "no"},
+             {"value": True, "rationale": "ok2"}], "llm")
+        assert out["value"] is True                   # 2/3 pass
+        assert out["stability"]["pass_count"] == 2
+        assert out["stability"]["stable"] is False
+
+    def test_all_samples_failed(self):
+        import score
+        out = score._aggregate_samples(
+            [{"value": None, "error": "boom"}, {"value": None, "error": "boom2"}], "llm")
+        assert out["value"] is None
+        assert "boom" in out["error"]
+
+    def test_normalize_result_shapes(self):
+        import score
+        assert score._normalize_result((4, "why")) == (4, "why")
+        assert score._normalize_result(True) == (True, "")
+
+
 class TestOutputsProxy:
 
     def test_str_renders_files(self):
