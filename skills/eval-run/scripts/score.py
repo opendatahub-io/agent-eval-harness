@@ -908,25 +908,12 @@ class PairwiseResult:
     def reasoning(self) -> Optional[str]:
         """Overall reasoning from the canonical (A=run_a) judge call.
 
-        Judges don't reliably use the schema's `reasoning` key — observed
+        Judges don't always use the schema's `reasoning` key — observed
         variants include `analysis`, `rationale`, `explanation`, `scratchpad`,
         and `summary`. Search common key names and return the first non-empty
         string value so reasoning isn't silently dropped.
         """
         return _extract_reasoning_text(self.reasoning_ab)
-
-    @property
-    def dimensions(self) -> Optional[dict]:
-        """Per-dimension judgments from the canonical (A=run_a) judge call.
-
-        Tolerant of the `dimensions`/`scores` key-name variants judges use.
-        """
-        if isinstance(self.reasoning_ab, dict):
-            for key in ("dimensions", "scores"):
-                val = self.reasoning_ab.get(key)
-                if isinstance(val, dict) and val:
-                    return val
-        return None
 
 
 def compare_runs(run_a_dir, run_b_dir, config, case_ids,
@@ -1007,7 +994,7 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
         "wins_a": wins_a, "wins_b": wins_b,
         "ties": ties, "errors": errors,
         "per_case": [{"case_id": r.case_id, "winner": r.winner, "error": r.error,
-                      "reasoning": r.reasoning, "dimensions": r.dimensions}
+                      "reasoning": r.reasoning}
                      for r in results],
     }
 
@@ -1117,79 +1104,33 @@ def _get_anthropic_client():
     raise RuntimeError("Set ANTHROPIC_VERTEX_PROJECT_ID or ANTHROPIC_API_KEY")
 
 
-# Per-dimension verdict shape, reused for each comparison dimension.
-_PAIRWISE_DIM_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "preferred": {"type": "string", "enum": ["A", "B", "tie", "n/a"]},
-        "reasoning": {"type": "string",
-                      "description": "Why this dimension favors A, B, or neither — cite specific content."},
-    },
-    "required": ["preferred", "reasoning"],
-}
-
 # Forced-output tool for the pairwise judge. Using tool_choice guarantees the
-# model returns exactly these fields instead of improvising key names
-# (observed: opus-4-8 emits `analysis`/`score_A`/`confidence` instead of the
-# documented `reasoning`/`dimensions`, which silently drops the per-dimension
-# breakdown). Structured output works uniformly across judge models.
-_PAIRWISE_DIM_NAMES = ("rfe_quality", "calibration", "feasibility", "revision")
+# verdict and reasoning come back in known fields instead of free-form text
+# whose keys the model improvises (observed: opus-4-8 emits
+# `analysis`/`score_A`/`confidence` instead of the requested `reasoning`).
+# The schema is intentionally minimal — `preferred` is all the harness needs to
+# tally wins/losses/ties, and `reasoning` is what the report renders. Anything
+# the comparison prompt wants the judge to weigh (criteria, dimensions, ...) is
+# the prompt's concern and the judge folds it into `reasoning`; the harness
+# stays generic and prompt-agnostic.
 _PAIRWISE_TOOL = {
     "name": "submit_comparison",
-    "description": ("Submit the blind pairwise comparison of outputs A and B. "
-                    "Provide the overall verdict, thorough overall reasoning, and "
-                    "a per-dimension breakdown."),
+    "description": ("Submit the blind pairwise comparison of outputs A and B: "
+                    "the overall verdict and the reasoning behind it."),
     "input_schema": {
         "type": "object",
         "properties": {
             "preferred": {"type": "string", "enum": ["A", "B", "tie"],
                           "description": "Which output is stronger overall."},
             "reasoning": {"type": "string",
-                          "description": ("Thorough, self-contained overall reasoning — "
-                                          "several sentences citing specific content from "
-                                          "both outputs across RFE quality, assessment "
-                                          "calibration, feasibility depth, and revision "
-                                          "effectiveness. This is the primary field; make it "
-                                          "complete on its own.")},
-            "dimensions": {
-                "type": "object",
-                "description": "Per-dimension verdict and reasoning.",
-                "properties": {
-                    "rfe_quality": _PAIRWISE_DIM_SCHEMA,
-                    "calibration": _PAIRWISE_DIM_SCHEMA,
-                    "feasibility": _PAIRWISE_DIM_SCHEMA,
-                    "revision": _PAIRWISE_DIM_SCHEMA,
-                },
-            },
+                          "description": ("Thorough, self-contained reasoning citing "
+                                          "specific content from both outputs and "
+                                          "addressing every criterion the comparison "
+                                          "instructions specify.")},
         },
         "required": ["preferred", "reasoning"],
     },
 }
-
-
-def _normalize_pairwise_input(data):
-    """Recombine the flat per-dimension fields into a `dimensions` dict.
-
-    The tool schema is flat (top-level rfe_quality/calibration/feasibility/
-    revision), but a model may also nest them under `dimensions`. Collect
-    dimension-shaped objects ({preferred, reasoning}) from either location so
-    downstream always sees `data["dimensions"]` as a dict.
-    """
-    dims = {}
-    nested = data.get("dimensions")
-    if isinstance(nested, dict):
-        for k, v in nested.items():
-            if isinstance(v, dict):
-                dims[k] = v
-    for name in _PAIRWISE_DIM_NAMES:
-        v = data.pop(name, None)
-        if isinstance(v, dict):
-            dims[name] = v
-    if dims:
-        data["dimensions"] = dims
-    elif not isinstance(data.get("dimensions"), dict):
-        data.pop("dimensions", None)
-    return data
 
 
 def _call_judge(client, system_prompt, user_message, model, max_tokens=16384):
@@ -1210,7 +1151,7 @@ def _call_judge(client, system_prompt, user_message, model, max_tokens=16384):
         # parsing, no improvised keys.
         for block in response.content:
             if getattr(block, "type", None) == "tool_use" and block.name == "submit_comparison":
-                return _normalize_pairwise_input(dict(block.input)), None
+                return dict(block.input), None
         # Fallback: model emitted text despite tool_choice (rare) — parse it.
         text = "".join(getattr(b, "text", "") for b in response.content
                        if getattr(b, "type", None) == "text")
