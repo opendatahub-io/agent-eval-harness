@@ -1194,6 +1194,19 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
             metric_name = "—"
             metric_val = "—"
 
+        # Sampling stability (from `score.py judges --repeat N`) — same
+        # treatment as the pairwise row: a confidence suffix on the value.
+        jst = agg.get("stability")
+        if isinstance(jst, dict) and jst.get("samples", 1) > 1 and metric_val != "—":
+            stable, tot = jst.get("stable_cases", 0), jst.get("total_cases", 0)
+            varied = tot - stable
+            if varied == 0:
+                metric_val += (f' <span class="pw-stability">· stable across '
+                               f'{jst["samples"]} samples</span>')
+            else:
+                metric_val += (f' <span class="pw-stability">· {stable}/{tot} stable '
+                               f'across {jst["samples"]} samples ({varied} varied)</span>')
+
         # Baseline
         bl_val = ""
         if has_bl and judge_name in bl_judges:
@@ -1925,6 +1938,19 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
 
             if err:
                 rat = f"ERROR: {err}"
+
+            # Sampling spread (from --repeat): annotate the value when the
+            # judge's samples for this case didn't all agree.
+            jst = jresult.get("stability")
+            if isinstance(jst, dict) and jst.get("samples", 1) > 1 and not jst.get("stable", True):
+                if "min" in jst and "max" in jst:
+                    spread = f"{jst['min']}–{jst['max']}"
+                else:
+                    spread = "/".join(str(v) for v in jst.get("values", []))
+                if spread:
+                    val_html += (f'<br><span class="pw-spread" '
+                                 f'title="per-sample values ({jst["samples"]} samples)">'
+                                 f'{_esc(spread)}</span>')
 
             rat_html = _md_to_html(_normalize_escapes(rat)) if rat else ""
             html += (f'<tr><td>{_esc(jname)}</td><td>{val_html}</td>'
