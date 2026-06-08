@@ -1431,7 +1431,7 @@ def cmd_judges(args):
     case_dirs = _get_case_dirs(args.run_id, runs_dir)
     project_root = Path.cwd()
 
-    samples = max(1, getattr(args, "repeat", 1) or 1)
+    samples = max(1, getattr(args, "samples", 1) or 1)
     judges = load_judges(config, project_root)
     n_llm = sum(1 for _, _, _, jt in judges if jt == "llm")
     suffix = (f" (LLM judges sampled {samples}×)"
@@ -1528,15 +1528,15 @@ def cmd_pairwise(args):
         sys.exit(1)
     prompt_file = args.prompt_file or (pairwise_jc.prompt_file if pairwise_jc else "")
 
-    repeat = max(1, getattr(args, "repeat", 1) or 1)
-    suffix = f", repeat={repeat}" if repeat > 1 else ""
+    samples = max(1, getattr(args, "samples", 1) or 1)
+    suffix = f", samples={samples}" if samples > 1 else ""
     print(f"Pairwise comparison: {args.run_id} vs {args.baseline} "
           f"({len(case_ids)} cases, model={model}{suffix})")
 
     runs = []
-    for i in range(repeat):
-        if repeat > 1:
-            print(f"  --- repeat {i + 1}/{repeat} ---")
+    for i in range(samples):
+        if samples > 1:
+            print(f"  --- sample {i + 1}/{samples} ---")
         r = compare_runs(
             run_dir, baseline_dir, config, case_ids,
             prompt=pairwise_jc.prompt if pairwise_jc else None,
@@ -1552,10 +1552,10 @@ def cmd_pairwise(args):
 
     # The first run is the primary (its per-case reasoning is rendered).
     result = runs[0]
-    if repeat > 1:
+    if samples > 1:
         result["stability"] = _compute_pairwise_stability(runs)
         st = result["stability"]
-        print(f"  Stability over {repeat} runs: "
+        print(f"  Stability over {samples} samples: "
               f"B wins {st['wins_b_counts']}, ties {st['tie_counts']}; "
               f"{st['stable_cases']}/{st['total_cases']} cases gave the same "
               f"verdict every run ({st['agreement_rate']:.0%} agreement)")
@@ -1609,7 +1609,7 @@ def main():
     jdg_p = subparsers.add_parser("judges", help="Run all judges")
     jdg_p.add_argument("--run-id", required=True)
     jdg_p.add_argument("--config", required=True)
-    jdg_p.add_argument("--repeat", type=int, default=1,
+    jdg_p.add_argument("--samples", type=int, default=1,
                        help="Sample each LLM judge N times per case; the median "
                             "(score) / majority (bool) becomes the value and the "
                             "spread is recorded for stability reporting")
@@ -1625,7 +1625,7 @@ def main():
                       help="Override comparison prompt file")
     pw_p.add_argument("--model", default=None,
                       help="Override judge model")
-    pw_p.add_argument("--repeat", type=int, default=1,
+    pw_p.add_argument("--samples", type=int, default=1,
                       help="Run the comparison N times and record verdict "
                            "stability (tie/win variance + per-case agreement)")
 

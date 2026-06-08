@@ -1215,7 +1215,7 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
             metric_name = "—"
             metric_val = "—"
 
-        # Sampling stability (from `score.py judges --repeat N`) — a proportion
+        # Sampling stability (from `score.py judges --samples N`) — a proportion
         # bar (stable vs varied across cases) appended to the metric.
         jst = agg.get("stability")
         if isinstance(jst, dict) and jst.get("samples", 1) > 1 and metric_val != "—":
@@ -1293,7 +1293,7 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
         pw_val = f"{wins_a}W / {wins_b}L / {ties}T"
         if errors:
             pw_val += f" / {errors}E"
-        # Verdict-stability (from `score.py pairwise --repeat N`) — same
+        # Verdict-stability (from `score.py pairwise --samples N`) — same
         # proportion bar the judge rows use.
         st = pw.get("stability") or {}
         n = st.get("runs", 1)
@@ -1987,7 +1987,7 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
 
             if err:
                 rat = f"ERROR: {err}"
-            # Per-case sampling distribution (from --repeat): an ASCII glyph
+            # Per-case sampling distribution (from --samples): an ASCII glyph
             # (monospace, aligns cleanly) showing the spread on the 1–5 scale.
             # Shown for every sampled judge — a stable judge is a single bar,
             # which reads at a glance as "all samples agree". Raw samples on hover.
