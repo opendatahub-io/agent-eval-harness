@@ -373,7 +373,7 @@ def load_judges(config, project_root=None):
     - prompt/prompt_file: LLM judge
     - module/function: external code judge
 
-    Returns list of (name, scorer, condition, judge_type) 4-tuples.
+    Returns list of (name, scorer, condition, judge_type, samples) 5-tuples.
     """
     # Duplicate name validation
     seen_names = set()
@@ -421,7 +421,13 @@ def load_judges(config, project_root=None):
                   file=sys.stderr)
             continue
         if scorer:
-            judges.append((jc.name, scorer, jc.condition, judge_type))
+            n = max(1, jc.samples)
+            if n > 1 and judge_type != "llm":
+                print(f"  Warning: judge '{jc.name}' has samples={n} but is "
+                      f"a {judge_type} judge (deterministic); samples ignored",
+                      file=sys.stderr)
+                n = 1
+            judges.append((jc.name, scorer, jc.condition, judge_type, n))
     return judges
 
 
@@ -720,13 +726,12 @@ def _aggregate_samples(runs, judge_type):
             "stability": stability}
 
 
-def score_cases(judges, case_dirs, config, run_id=None, samples=1):
+def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
     """Score all cases with all judges in parallel.
 
-    When samples > 1, each stochastic (LLM) judge is run `samples` times per
-    case; the reduced value (median/majority) becomes the score and the spread
-    is recorded under per-case `stability`. Deterministic judges (check/code)
-    always run once.
+    Each judge's sample count comes from its config (`JudgeConfig.samples`);
+    `samples_override` (from CLI `--samples`) wins when set. Only stochastic
+    (LLM) judges are sampled; deterministic judges always run once.
     """
     if not case_dirs:
         return {"per_case": {}, "aggregated": {n: {"values": [], "mean": None, "pass_rate": None} for n, *_ in judges}}
@@ -740,7 +745,7 @@ def score_cases(judges, case_dirs, config, run_id=None, samples=1):
         case_id = case_dir.name
         record = load_case_record(case_dir, config, run_id=run_id)
         case_results = {}
-        for name, scorer, condition, judge_type in judges:
+        for name, scorer, condition, judge_type, judge_samples in judges:
             # Check condition — skip if it evaluates to False
             if condition:
                 try:
@@ -760,9 +765,10 @@ def score_cases(judges, case_dirs, config, run_id=None, samples=1):
                         "judge_type": judge_type,
                     }
                     continue
-            # Only stochastic (LLM) judges are sampled repeatedly; deterministic
-            # check/code judges run once regardless of `samples`.
-            n = samples if (samples > 1 and judge_type == "llm") else 1
+            # CLI --samples overrides per-judge config; deterministic judges
+            # always run once (warning already emitted by load_judges).
+            n = (samples_override if samples_override and samples_override > 1
+                 else judge_samples)
             try:
                 if n > 1:
                     runs = []
@@ -793,7 +799,7 @@ def score_cases(judges, case_dirs, config, run_id=None, samples=1):
                 case_id = case_dir.name
                 case_results = {name: {"value": None, "error": str(e),
                                        "judge_type": jt}
-                                for name, _, _, jt in judges}
+                                for name, _, _, jt, _ in judges}
                 print(f"  [{completed}/{len(case_dirs)}] {case_id} ERROR: {e}",
                       file=sys.stderr, flush=True)
             per_case[case_id] = case_results
@@ -822,16 +828,17 @@ def score_cases(judges, case_dirs, config, run_id=None, samples=1):
 
     # Per-judge stability across cases (only meaningful when sampled > 1):
     # how many cases gave a consistent score across all samples.
-    if samples > 1:
-        for name in aggregated:
-            scored = [per_case[c][name] for c in per_case
-                      if isinstance(per_case.get(c, {}).get(name), dict)
-                      and "stability" in per_case[c][name]
-                      and per_case[c][name].get("value") is not None]
-            if scored:
+    for name in aggregated:
+        scored = [per_case[c][name] for c in per_case
+                  if isinstance(per_case.get(c, {}).get(name), dict)
+                  and "stability" in per_case[c][name]
+                  and per_case[c][name].get("value") is not None]
+        if scored:
+            n_samples = scored[0]["stability"].get("samples", 1)
+            if n_samples > 1:
                 stable = sum(1 for r in scored if r["stability"].get("stable"))
                 aggregated[name]["stability"] = {
-                    "samples": samples,
+                    "samples": n_samples,
                     "stable_cases": stable,
                     "total_cases": len(scored),
                 }
@@ -1431,16 +1438,22 @@ def cmd_judges(args):
     case_dirs = _get_case_dirs(args.run_id, runs_dir)
     project_root = Path.cwd()
 
-    samples = max(1, getattr(args, "samples", 1) or 1)
+    samples_override = getattr(args, "samples", None) or None
+    if samples_override is not None:
+        samples_override = max(1, samples_override)
+        if samples_override == 1:
+            samples_override = None
     judges = load_judges(config, project_root)
-    n_llm = sum(1 for _, _, _, jt in judges if jt == "llm")
-    suffix = (f" (LLM judges sampled {samples}×)"
-              if samples > 1 and n_llm else "")
+    n_llm = sum(1 for _, _, _, jt, _ in judges if jt == "llm")
+    sampled = [n for n, _, _, jt, s in judges
+               if jt == "llm" and ((samples_override or s) > 1)]
+    suffix = (f" (sampling: {', '.join(f'{n}={samples_override or s}×' for n, _, _, _, s in judges if n in sampled)})"
+              if sampled else "")
     print(f"Scoring {len(case_dirs)} cases with {len(judges)} judges{suffix}: "
           f"{[n for n, *_ in judges]}")
 
     judge_results = score_cases(judges, case_dirs, config, run_id=args.run_id,
-                                samples=samples)
+                                samples_override=samples_override)
 
     for name, agg in judge_results.get("aggregated", {}).items():
         mean = agg.get("mean")
@@ -1528,7 +1541,13 @@ def cmd_pairwise(args):
         sys.exit(1)
     prompt_file = args.prompt_file or (pairwise_jc.prompt_file if pairwise_jc else "")
 
-    samples = max(1, getattr(args, "samples", 1) or 1)
+    cfg_samples = pairwise_jc.samples if pairwise_jc else 1
+    cli_samples = getattr(args, "samples", None) or None
+    if cli_samples is not None:
+        cli_samples = max(1, cli_samples)
+        if cli_samples == 1:
+            cli_samples = None
+    samples = cli_samples or cfg_samples
     suffix = f", samples={samples}" if samples > 1 else ""
     print(f"Pairwise comparison: {args.run_id} vs {args.baseline} "
           f"({len(case_ids)} cases, model={model}{suffix})")
@@ -1609,10 +1628,11 @@ def main():
     jdg_p = subparsers.add_parser("judges", help="Run all judges")
     jdg_p.add_argument("--run-id", required=True)
     jdg_p.add_argument("--config", required=True)
-    jdg_p.add_argument("--samples", type=int, default=1,
-                       help="Sample each LLM judge N times per case; the median "
-                            "(score) / majority (bool) becomes the value and the "
-                            "spread is recorded for stability reporting")
+    jdg_p.add_argument("--samples", type=int, default=None,
+                       help="Override per-judge samples config: sample each LLM "
+                            "judge N times per case; median (score) / majority "
+                            "(bool) becomes the value, spread recorded for "
+                            "stability reporting")
 
     # pairwise
     pw_p = subparsers.add_parser("pairwise", help="Pairwise comparison")
@@ -1625,9 +1645,9 @@ def main():
                       help="Override comparison prompt file")
     pw_p.add_argument("--model", default=None,
                       help="Override judge model")
-    pw_p.add_argument("--samples", type=int, default=1,
-                      help="Run the comparison N times and record verdict "
-                           "stability (tie/win variance + per-case agreement)")
+    pw_p.add_argument("--samples", type=int, default=None,
+                      help="Override per-judge samples config: run the comparison "
+                           "N times and record verdict stability")
 
     # regression
     reg_p = subparsers.add_parser("regression", help="Threshold checks")

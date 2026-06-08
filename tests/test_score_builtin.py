@@ -23,7 +23,7 @@ class TestLoadJudgesBuiltin:
         ]
         judges = load_judges(config)
         assert len(judges) == 1
-        name, scorer, condition, judge_type = judges[0]
+        name, scorer, condition, judge_type, _samples = judges[0]
         assert name == "budget"
         assert judge_type == "builtin"
         assert condition == ""
@@ -42,7 +42,7 @@ class TestLoadJudgesBuiltin:
                         arguments={"max_cost_usd": 0.10}),
         ]
         judges = load_judges(config)
-        _, scorer, _, _ = judges[0]
+        _, scorer, _, _, _ = judges[0]
         result = scorer(outputs={"cost_usd": 0.50})
         assert result[0] is False
         assert "exceeds" in result[1]
@@ -109,7 +109,7 @@ class TestLoadJudgesBuiltin:
                         arguments={"max_cost_usd": 2.0}),
         ]
         judges = load_judges(config)
-        _, scorer, _, _ = judges[0]
+        _, scorer, _, _, _ = judges[0]
         result = scorer(outputs={"cost_usd": 1.50})
         assert result[0] is True
         assert "$2.00" in result[1]
@@ -124,7 +124,7 @@ class TestLoadJudgesBuiltin:
         ]
         judges = load_judges(config)
         assert len(judges) == 1
-        name, scorer, condition, judge_type = judges[0]
+        name, scorer, condition, judge_type, _samples = judges[0]
         assert name == "safety"
         assert judge_type == "builtin"
 
@@ -379,14 +379,14 @@ class TestLoadJudgesDuplicateValidation:
 
 class TestLoadJudgesTypes:
 
-    def test_check_judge_returns_4_tuple(self):
+    def test_check_judge_returns_5_tuple(self):
         config = EvalConfig(name="test", skill="test")
         config.judges = [
             JudgeConfig(name="test_check", check="return (True, 'ok')"),
         ]
         judges = load_judges(config)
         assert len(judges) == 1
-        name, scorer, condition, judge_type = judges[0]
+        name, scorer, condition, judge_type, _samples = judges[0]
         assert name == "test_check"
         assert judge_type == "check"
 
@@ -400,7 +400,7 @@ class TestLoadJudgesTypes:
             ),
         ]
         judges = load_judges(config)
-        _, scorer, _, _ = judges[0]
+        _, scorer, _, _, _ = judges[0]
         result = scorer(outputs={"content": "hi"})
         assert result[0] is True
 
@@ -435,7 +435,7 @@ class TestJudgeTypeMetadata:
             JudgeConfig(name="inline", check="return (True, 'ok')"),
         ]
         judges = load_judges(config)
-        types = {name: jtype for name, _, _, jtype in judges}
+        types = {name: jtype for name, _, _, jtype, _ in judges}
         assert types["budget"] == "builtin"
         assert types["inline"] == "check"
 
@@ -462,7 +462,7 @@ class TestVendoringPattern:
         ]
         judges = load_judges(config, project_root=tmp_path)
         assert len(judges) == 1
-        _, scorer, _, judge_type = judges[0]
+        _, scorer, _, judge_type, _ = judges[0]
         assert judge_type == "code"
         result = scorer(outputs={"cost_usd": 3.0})
         assert result[0] is True

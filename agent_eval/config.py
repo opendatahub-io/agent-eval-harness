@@ -248,6 +248,9 @@ class JudgeConfig:
     builtin: str = ""
     # Arguments passed as **kwargs to Python judges, Jinja var to LLM judges
     arguments: dict = field(default_factory=dict)
+    # Sampling — run this judge N times per case and reduce (median/majority).
+    # Only meaningful for stochastic (LLM) judges; ignored for deterministic ones.
+    samples: int = 1
 
 
 @dataclass
@@ -484,6 +487,7 @@ class EvalConfig:
                     function=j.get("function", ""),
                     builtin=builtin_val,
                     arguments=args_val,
+                    samples=int(j.get("samples", 1)),
                 )
             )
 
