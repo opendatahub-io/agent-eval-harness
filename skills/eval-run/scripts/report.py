@@ -1858,13 +1858,18 @@ def _ascii_hist(items, lo_label, hi_label, mark_key):
     return f"{lo_label} " + "".join(cells) + f" {hi_label}"
 
 
-def _ascii_score_hist(med, values, smin=1, smax=5):
+def _ascii_score_hist(med, values, smin=None, smax=None):
     """`_ascii_hist` over the numeric score scale, marking the median level."""
     from collections import Counter
-    counts = Counter(values)
-    med = max(smin, min(smax, med))
-    items = [(s, counts.get(s, 0)) for s in range(smin, smax + 1)]
-    return _ascii_hist(items, str(smin), str(smax), med)
+    numeric = [int(v) for v in values if isinstance(v, (int, float))]
+    if not numeric:
+        return ""
+    lo = smin if smin is not None else min(numeric)
+    hi = smax if smax is not None else max(numeric)
+    counts = Counter(numeric)
+    med = max(lo, min(hi, int(med)))
+    items = [(s, counts.get(s, 0)) for s in range(lo, hi + 1)]
+    return _ascii_hist(items, str(lo), str(hi), med)
 
 
 def _colorise_hist(glyph):
@@ -2027,9 +2032,13 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
                 verds = pw_flipped.get(case_id) or [pw_winner] * pw_runs
                 from collections import Counter as _Counter
                 vc = _Counter(verds)
+                cats = [("A", vc.get("A", 0)), ("tie", vc.get("tie", 0)),
+                        ("B", vc.get("B", 0))]
+                errs = vc.get("error", 0)
+                if errs:
+                    cats.append(("error", errs))
                 glyph = _colorise_hist(_ascii_hist(
-                    [("A", vc.get("A", 0)), ("tie", vc.get("tie", 0)),
-                     ("B", vc.get("B", 0))], "A", "B", pw_winner))
+                    cats, "A", "E" if errs else "B", pw_winner))
                 verdict_html += (f'<br><span class="ascii-range" '
                                  f'title="verdicts: {_esc("/".join(verds))}">{glyph}</span>')
             html += (f'<tr><td>pairwise</td>'
