@@ -2001,7 +2001,7 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
                     and "min" in jst):
                 vals = jst.get("values", [])
                 samples = ", ".join(str(v) for v in vals)
-                glyph = _colorise_hist(_ascii_score_hist(val, vals))
+                glyph = _colorise_hist(_ascii_score_hist(val, vals, 1, 5))
                 val_html += (f' <span class="ascii-range" '
                              f'title="samples: {_esc(samples)}">{glyph}</span>')
             elif (isinstance(jst, dict) and jst.get("samples", 1) > 1
