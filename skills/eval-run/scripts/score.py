@@ -692,36 +692,42 @@ def _aggregate_samples(runs, judge_type):
     reduce by median (noise reduction, returns an actually-observed score via
     median_low); bool judges by majority vote. The kept rationale is one from a
     sample matching the reduced value, so it stays consistent with the score.
-    `stability.stable` is True when every sample agreed.
+    `stability.stable` is True when every sample agreed and none errored.
     """
     import statistics
     vals = [r["value"] for r in runs if r.get("value") is not None]
+    error_count = sum(1 for r in runs if r.get("error"))
+    all_ok = error_count == 0
     if not vals:
         err = next((r.get("error") for r in runs if r.get("error")), "all samples failed")
         return {"value": None, "error": err, "judge_type": judge_type,
-                "stability": {"samples": len(runs), "values": []}}
+                "stability": {"samples": len(runs), "error_count": error_count,
+                               "values": []}}
     # bool must be checked before int (bool is a subclass of int)
     if all(isinstance(v, bool) for v in vals):
         passes = sum(1 for v in vals if v)
-        value = (passes * 2 >= len(vals))  # majority; ties resolve to pass
+        value = (passes * 2 > len(vals))  # strict majority; ties resolve to fail
         rationale = next((r.get("rationale", "") for r in runs
                           if r.get("value") is value), "")
-        stability = {"samples": len(vals), "pass_count": passes,
-                     "values": vals, "stable": passes in (0, len(vals))}
+        stability = {"samples": len(runs), "pass_count": passes,
+                     "error_count": error_count,
+                     "values": vals, "stable": all_ok and passes in (0, len(vals))}
     elif all(isinstance(v, (int, float)) for v in vals):
         value = statistics.median_low(vals)
         lo, hi = min(vals), max(vals)
         rationale = next((r.get("rationale", "") for r in runs
                           if r.get("value") == value), runs[0].get("rationale", ""))
-        stability = {"samples": len(vals), "min": lo, "max": hi,
+        stability = {"samples": len(runs), "min": lo, "max": hi,
+                     "error_count": error_count,
                      "mean": round(statistics.fmean(vals), 2),
-                     "values": vals, "stable": lo == hi}
+                     "values": vals, "stable": all_ok and lo == hi}
     else:
         value = vals[0]
         rationale = next((r.get("rationale", "") for r in runs
                           if r.get("value") == value), "")
-        stability = {"samples": len(vals), "values": vals,
-                     "stable": len({str(v) for v in vals}) <= 1}
+        stability = {"samples": len(runs), "error_count": error_count,
+                     "values": vals,
+                     "stable": all_ok and len({str(v) for v in vals}) <= 1}
     return {"value": value, "rationale": rationale, "judge_type": judge_type,
             "stability": stability}
 
