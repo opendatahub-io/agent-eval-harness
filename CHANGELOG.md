@@ -1,3 +1,24 @@
+# [1.11.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.10.0...v1.11.0) (2026-06-08)
+
+
+### Bug Fixes
+
+* address CodeRabbit review findings on sampling stability ([4704c3f](https://github.com/opendatahub-io/agent-eval-harness/commit/4704c3f7cd19898f3d47fc905ab9a5bd4c87999c))
+* force structured output for score/bool LLM judges ([e1bc1eb](https://github.com/opendatahub-io/agent-eval-harness/commit/e1bc1eb7b010359dce669cbbcc87c947dc444607))
+* force structured output for the pairwise judge ([ba1d521](https://github.com/opendatahub-io/agent-eval-harness/commit/ba1d5214bedf8ce7e1538e496550511496af392c))
+* pass 1-5 scale bounds to score histogram in the report ([9cf507f](https://github.com/opendatahub-io/agent-eval-harness/commit/9cf507ff2d8d2c90d9800aaff05b9117d025c942))
+* stop truncating score/bool judge rationales to 200 chars ([c922532](https://github.com/opendatahub-io/agent-eval-harness/commit/c9225321bd2c20ac7a105d6de9e7ed678eff02bd))
+
+
+### Features
+
+* add --repeat to pairwise for verdict-stability measurement ([796b614](https://github.com/opendatahub-io/agent-eval-harness/commit/796b614cbbdde0ca6744583ee4010bf93c7fca52))
+* annotate judge scores with sampling stability in the report ([1ae938b](https://github.com/opendatahub-io/agent-eval-harness/commit/1ae938bea8ace06be703419c9f22d5757fd94c75))
+* per-judge `samples` config in eval.yaml ([f478aaf](https://github.com/opendatahub-io/agent-eval-harness/commit/f478aafdff5c46030ac47d73ddf0ddbac82f41cb))
+* render pairwise stability section in the report ([19f1704](https://github.com/opendatahub-io/agent-eval-harness/commit/19f1704dd27e090a763795a55f4083cd82e5de61))
+* sample LLM judges N times for score stability (judges --repeat) ([6b3677d](https://github.com/opendatahub-io/agent-eval-harness/commit/6b3677d6d25d5cf2f1067ba50438f6756435bf63))
+* visualise judge sampling stability in the report ([c6b955f](https://github.com/opendatahub-io/agent-eval-harness/commit/c6b955f7fcbe5c19450b27857f36d1684e2e36cd))
+
 # [1.10.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.9.1...v1.10.0) (2026-06-05)
 
 
