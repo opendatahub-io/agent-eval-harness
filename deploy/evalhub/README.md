@@ -2,22 +2,28 @@
 
 Custom EvalHub provider for evaluating AI coding agent skills on Red Hat OpenShift AI.
 
+The adapter runs the eval **in-process** inside the Job pod created by EvalHub's
+server — matching EvalHub's architecture where adapter pods are execution-only
+(they don't create sub-pods or call Harbor). Uses `ClaudeCodeRunner` directly.
+In-process parallelism (`execution.parallelism` in eval.yaml) handles concurrent
+cases within the pod.
+
 ## Build
 
 ```bash
-podman build --platform linux/amd64 -f deploy/evalhub/Containerfile -t quay.io/rhoai/agent-eval-provider:latest .
+podman build --platform linux/amd64 -f deploy/evalhub/Containerfile -t quay.io/rhoai/agent-eval-hub:latest .
 ```
 
 ## Push to Internal Registry
 
 ```bash
 # Create ImageStream first (required before pushing)
-oc create imagestream agent-eval-provider -n <namespace>
+oc create imagestream agent-eval-hub -n <namespace>
 
 # Tag and push
-podman tag quay.io/rhoai/agent-eval-provider:latest \
-  image-registry.openshift-image-registry.svc:5000/<namespace>/agent-eval-provider:latest
-podman push image-registry.openshift-image-registry.svc:5000/<namespace>/agent-eval-provider:latest
+podman tag quay.io/rhoai/agent-eval-hub:latest \
+  image-registry.openshift-image-registry.svc:5000/<namespace>/agent-eval-hub:latest
+podman push image-registry.openshift-image-registry.svc:5000/<namespace>/agent-eval-hub:latest
 ```
 
 ## Register Provider
@@ -58,8 +64,13 @@ evalhub eval run --config job-config.yaml
 ## Configuration
 
 The provider expects:
-- `eval.yaml` baked into the container at `/app/eval-config/eval.yaml`
+- `eval.yaml` baked into the container or mounted at `/app/eval-config/eval.yaml`
 - Test cases in S3 (referenced via `s3_bucket` and `s3_prefix` parameters)
   or baked into the container at `/app/eval-config/cases/`
-- Claude Code CLI available in the container
+- Claude Code CLI available in the container (inherited from base image)
 - `ANTHROPIC_API_KEY` or Vertex AI credentials as environment variables
+
+## Tests
+
+Adapter unit tests are in `tests/evalhub/` (run with the main test suite).
+Smoke test fixture is in `tests/fixtures/evalhub-smoke/`.

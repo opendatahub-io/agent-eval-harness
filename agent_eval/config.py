@@ -1,11 +1,34 @@
 """Evaluation suite configuration loaded from eval.yaml files."""
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Union
 import sys
 
 import yaml
+
+
+def resolve_arguments(template: str, input_data: dict) -> str:
+    """Resolve {field} / {field?} placeholders from input.yaml data.
+
+    {field}  — required; raises KeyError if missing.
+    {field?} — optional; omitted (empty) if missing.
+    """
+    def _replacer(match):
+        f = match.group(1)
+        optional = f.endswith("?")
+        if optional:
+            f = f[:-1]
+        value = input_data.get(f)
+        if value is None:
+            if optional:
+                return ""
+            raise KeyError(f"Required field '{f}' not found in input.yaml")
+        return str(value)
+
+    result = re.sub(r"\{([^}]+)\}", _replacer, template)
+    return re.sub(r"[ \t]+", " ", result).strip()
 
 
 def _validate_relative_path(

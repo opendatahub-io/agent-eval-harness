@@ -25,6 +25,9 @@ Parse `$ARGUMENTS`:
 | `--no-llm-judges` | no | false | Skip LLM judges (prompt, prompt_file, LLM builtins). Run deterministic judges (check, Python builtins, external code). |
 | `--gold` | no | false | Save outputs as gold references after run |
 | `--effort <level>` | no | `runner.effort` from config | Claude Code reasoning effort (Claude Code only; ignored by other runners) |
+| `--runner <type>` | no | local | `local` (default Steps 1–8) or `harbor` (containerized — skips to Harbor runner section) |
+
+If `--runner harbor`: after config discovery, **skip to the Harbor runner section** below. Steps 1–6 are replaced by one `run.py` call.
 
 ### Config Discovery
 
@@ -301,6 +304,47 @@ If `mlflow.experiment` is configured in eval.yaml:
 ```text
 Use the Skill tool to invoke /eval-mlflow --action log-results --run-id <id> --config <config>
 ```
+
+## Harbor runner (`--runner harbor`)
+
+When `--runner harbor` is specified, **skip Steps 2–6** and call `run.py` instead —
+it handles task generation (or reuse), `harbor run`, per-case judging (in-container),
+result mapping, and report generation in one call:
+
+```bash
+PYTHONPATH="$(pwd)" python3 -m agent_eval.harbor.run \
+    --config <config> --model <model> \
+    --output $AGENT_EVAL_RUNS_DIR/<eval-name>/<run-id> \
+    --tasks-dir <tasks-dir> --jobs-dir <tmp-jobs> \
+    [--image <image>] [--agent <agent>] [--n-concurrent N] \
+    [--environment-import-path agent_eval.harbor.kubernetes:KubernetesEnvironment]
+```
+
+Tasks come from `/eval-dataset` (which emits Harbor task packages via
+`scripts/harbor.py`). If `--tasks-dir` already has them, `run.py` reuses them; if
+empty, it generates on the fly (needs `--image`). The output is a standard
+`run_result.json` + `summary.yaml` + `report.html` — then continue with **Step 6
+pairwise** (if `--baseline`) and **Step 8 (MLflow)** as normal. See
+`deploy/harbor/README.md` for image build, credentials, and environment setup.
+
+## EvalHub runner (`--runner evalhub`)
+
+When `--runner evalhub` is specified, **skip Steps 2–8** and call the EvalHub
+runner instead — it creates ConfigMaps, submits a job to EvalHub, polls for
+completion, and maps the results back:
+
+```bash
+python3 -m agent_eval.evalhub.runner \
+    --config <config> --model <model> \
+    --output $AGENT_EVAL_RUNS_DIR/<eval-name>/<run-id> \
+    [--evalhub-url <url>] [--namespace <ns>] [--project-dir <path>]
+```
+
+The runner creates K8s ConfigMaps for the eval config and project resources
+(via `k8s_resources`), submits the job to EvalHub (which creates a Job pod
+running the adapter in-process), polls until completion, and maps the results
+into the standard `summary.yaml` + `report.html`. No image rebuild needed —
+ConfigMaps carry the project-specific content.
 
 ## Rules
 

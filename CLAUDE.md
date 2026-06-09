@@ -17,6 +17,16 @@ agent_eval/              # Python package (config, runner, state)
     claude_code.py       # Claude Code CLI runner (claude --print)
     cli_runner.py        # Opaque CLI runner (arbitrary command templates)
     stream_capture.py    # Stream-json processing (events, timestamps, usage, hooks)
+  harbor/                # Harbor integration (containerized execution)
+    tasks.py             # Generate self-contained Harbor task packages from eval.yaml
+    reward.py            # Judge → Harbor reward.json bridge (in-container verifier)
+    run.py               # /eval-run --runner harbor orchestration
+    results.py           # Parse Harbor job dirs into per-case results
+    podman.py            # Podman BaseEnvironment (local containers)
+    kubernetes.py        # Kubernetes BaseEnvironment (OpenShift, Python client)
+    templates/           # task.toml, instruction.md, test.sh templates
+  tools/
+    interception.py      # Shared tool interception generation (workspace + Harbor)
   mlflow/
     experiment.py        # MLflow experiment setup, server check, feedback logging
     datasets.py          # Dataset create/sync utilities
@@ -43,6 +53,8 @@ skills/eval-analyze/     # Skill: bootstrap eval config
 
 skills/eval-dataset/     # Skill: generate test cases
   SKILL.md               # Bootstrap, expand, or extract cases from traces
+  scripts/
+    harbor.py            # CLI: generate Harbor task packages (thin wrapper → harbor.tasks)
 
 skills/eval-run/         # Skill: execute eval suite
   SKILL.md               # Prepare, execute, collect, score, report
@@ -140,22 +152,43 @@ The `brainstorm/` directory contains exploratory ideas and design thinking. Thes
 - CI integration patterns and examples
 - `traces.events` implementation — parse stream-json into structured `outputs["events"]` for judges
 
-## EvalHub Integration
+## Execution Paths
 
-The `agent_eval.evalhub` package provides a custom EvalHub provider that runs
-agent skill evaluations on Red Hat OpenShift AI. The adapter:
+The same `eval.yaml` works unchanged across three parallel execution paths.
+The execution substrate is a CLI flag, never in the eval config.
+
+### Local (`/eval-run` or `agent-eval run`)
+Process-level execution — the harness invokes the agent CLI directly, collects
+artifacts, scores with judges, generates the report. No containers.
+
+### Harbor (`harbor run` or `/eval-run --runner harbor`)
+Containerized execution via [Harbor](https://github.com/laude-institute/harbor).
+Self-contained task packages (from `/eval-dataset`) carry instruction, inputs,
+tool interception, and the verifier (judge engine as `reward.json`). Any Harbor
+agent (claude-code, opencode, codex, etc.) runs them directly — no custom agent
+wrapper. Environments: Podman (local) and Kubernetes (OpenShift). See
+`deploy/harbor/README.md`.
+
+### EvalHub (platform-triggered)
+The `agent_eval.evalhub` adapter runs the eval **in-process** inside the Job pod
+created by EvalHub's server — matching EvalHub's architecture where adapter pods
+are execution-only (no sub-pod creation). Uses `ClaudeCodeRunner` directly, not
+Harbor. In-process parallelism handles concurrent cases within the pod.
 
 - Implements `FrameworkAdapter` from `eval-hub-sdk`
 - Downloads test cases from S3 via `s3_dataset.py`
-- Translates `eval.yaml` to EvalHub provider definitions via `config_translator.py`
 - Maps `RunResult` + judge scores to `JobResults` via `results_mapper.py`
 - Ships as a UBI9 container image (`deploy/evalhub/Containerfile`)
 
-### Local skills (unchanged)
-eval-analyze, eval-dataset, eval-optimize, eval-review — authoring workflows
+## Container Images
 
-### EvalHub-managed (via provider)
-Execution, result storage, regression detection, OCI export (MLflow tracking is optional)
+| Image | Containerfile | Used by |
+|---|---|---|
+| `agent-eval-harness` | `deploy/Containerfile` | Trial pods (Harbor), EvalHub Job pods (base) |
+| `agent-eval-hub` | `deploy/evalhub/Containerfile` | EvalHub provider (FROM base + eval-hub-sdk) |
+
+No project-specific images needed. Project resources via ConfigMap (K8s),
+bind-mount (Podman), or `FROM agent-eval-harness` in the project's own repo.
 
 <!-- SPECKIT START -->
 For additional context about the current feature work, read `specs/005-eval-directory-layout/plan.md`

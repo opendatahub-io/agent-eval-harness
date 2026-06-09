@@ -65,7 +65,7 @@ data:
           lower_is_better: true
     runtime:
       k8s:
-        image: quay.io/rhoai/agent-eval-provider:latest
+        image: quay.io/rhoai/agent-eval-hub:latest
         entrypoint:
           - python3
           - entrypoint.py
