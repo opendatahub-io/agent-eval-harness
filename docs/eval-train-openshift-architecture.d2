@@ -1,0 +1,269 @@
+# RL Training Architecture on OpenShift
+# agent-eval-harness + Harbor + NeMo Gym + NeMo RL
+
+direction: down
+
+title: {
+  label: RL Training with Judgment-Based Rewards on OpenShift
+  near: top-center
+  shape: text
+  style.font-size: 24
+  style.bold: true
+}
+
+# === User entry points ===
+
+user: {
+  label: User / CI
+  shape: person
+}
+
+entry: {
+  label: Agent Eval Harness
+  style.fill: "#f0f4ff"
+
+  eval-run: {
+    label: "/eval-run\nagent-eval run"
+    shape: parallelogram
+  }
+  eval-dataset: {
+    label: "/eval-dataset\ngenerate tasks"
+    shape: parallelogram
+  }
+  eval-train: {
+    label: "/eval-train\n(planned)"
+    shape: parallelogram
+    style.stroke-dash: 3
+  }
+}
+
+user -> entry.eval-dataset: "1. generate"
+user -> entry.eval-run: "2. evaluate"
+user -> entry.eval-train: "3. train"
+
+# === Generated artifacts ===
+
+artifacts: {
+  label: Generated Artifacts (portable)
+  style.fill: "#fff8e1"
+
+  eval-yaml: {
+    label: "eval.yaml\n(judges, thresholds)"
+    shape: page
+  }
+  task-packages: {
+    label: "Harbor Task Packages\ninstruction.md + tests/\nenvironment/ + task.toml"
+    shape: package
+  }
+  tool-handlers: {
+    label: "tool_handlers.yaml\n(.claude/settings.json)"
+    shape: page
+  }
+  harbor-config: {
+    label: "harbor_agent.yaml\n(NeMo Gym config)"
+    shape: page
+    style.stroke-dash: 3
+  }
+}
+
+entry.eval-dataset -> artifacts.task-packages
+entry.eval-dataset -> artifacts.tool-handlers
+entry.eval-dataset -> artifacts.harbor-config: "planned"
+
+# === OpenShift Cluster ===
+
+openshift: {
+  label: OpenShift / Kubernetes Cluster
+  style.fill: "#fce4ec"
+
+  # --- ConfigMaps / Secrets ---
+
+  k8s-resources: {
+    label: K8s Resources
+    style.fill: "#fff3e0"
+
+    project-cm: {
+      label: "ConfigMap\nproject resources\n(skills, scripts, .context)"
+      shape: cylinder
+    }
+    eval-cm: {
+      label: "ConfigMap\neval.yaml +\ntool_handlers.yaml"
+      shape: cylinder
+    }
+    creds-secret: {
+      label: "Secret\ncredentials\n(SA key / API key)"
+      shape: cylinder
+    }
+  }
+
+  # --- Model Serving ---
+
+  model-serving: {
+    label: Model Serving (GPU)
+    style.fill: "#e8f5e9"
+
+    vllm: {
+      label: "vLLM\n(KServe / NIM)\nserves model checkpoint"
+      shape: hexagon
+    }
+  }
+
+  # --- NeMo Gym (CPU) ---
+
+  nemo-gym: {
+    label: NeMo Gym (CPU, Ray cluster)
+    style.fill: "#e3f2fd"
+
+    agent-server: {
+      label: "Agent Server\n(harbor_agent)\nrollout orchestration"
+    }
+    model-server: {
+      label: "Model Server\nHTTP proxy\nResponses API ↔ Chat API"
+    }
+    resource-server: {
+      label: "Resource Server\n(optional: built-in verifiers)"
+    }
+  }
+
+  # --- Harbor ---
+
+  harbor: {
+    label: Harbor (trial orchestration)
+    style.fill: "#f3e5f5"
+
+    job-api: {
+      label: "Harbor Job API\nconcurrency, agents,\ntrajectory capture"
+    }
+  }
+
+  # --- Trial Pods ---
+
+  trials: {
+    label: Trial Pods (N parallel)
+    style.fill: "#e0f2f1"
+
+    trial-1: {
+      label: "Trial Pod 1"
+
+      base-image: {
+        label: "agent-eval-harness\nbase image"
+        shape: hexagon
+        style.font-size: 11
+      }
+      project: {
+        label: "Project\n(from ConfigMap)"
+        style.font-size: 11
+      }
+      agent: {
+        label: "Agent\n(claude-code / opencode)"
+        style.fill: "#bbdefb"
+      }
+      verifier: {
+        label: "Verifier\nreward.py\n→ reward.json"
+        style.fill: "#c8e6c9"
+      }
+
+    }
+    trial-n: {
+      label: "Trial Pod N\n..."
+      style.stroke-dash: 3
+    }
+  }
+
+  # --- Training ---
+
+  training: {
+    label: Training (GPU)
+    style.fill: "#fff9c4"
+
+    nemo-rl: {
+      label: "NeMo RL / SkyRL / TRL\nGRPO / DAPO\nweight update"
+    }
+  }
+
+  # --- Validation ---
+
+  validation: {
+    label: "Validation\n/eval-run on new checkpoint\nregression check"
+    shape: diamond
+  }
+
+  # --- MLflow ---
+
+  mlflow: {
+    label: MLflow
+    style.fill: "#ede7f6"
+
+    tracking: {
+      label: "Experiment Tracking\nmetrics, params,\njudge scores"
+      shape: cylinder
+    }
+    model-registry: {
+      label: "Model Registry\ncheckpoints"
+      shape: cylinder
+    }
+  }
+
+  # === Connections ===
+
+  # NeMo Gym internal
+  nemo-gym.model-server -> model-serving.vllm: "inference\n(HTTP)"
+  nemo-gym.agent-server -> harbor.job-api: "create trials"
+  nemo-gym.agent-server -> nemo-gym.model-server: "LLM calls"
+
+  # Harbor → trials
+  harbor.job-api -> trials.trial-1: "creates pod\n(KubernetesEnvironment)"
+  harbor.job-api -> trials.trial-n: "creates pod"
+
+  # Trial pod connections (model-server first to avoid crossing with agent→verifier)
+  trials.trial-1.agent -> nemo-gym.model-server: "inference\nvia vLLM"
+  trials.trial-1.agent -> trials.trial-1.verifier: "artifacts"
+
+  # ConfigMap mounts
+  k8s-resources.project-cm -> trials.trial-1.project: "mount"
+  k8s-resources.creds-secret -> trials.trial-1: "mount"
+
+  # Results flow
+  trials.trial-1.verifier -> nemo-gym.agent-server: "reward.json\n+ trajectory"
+  nemo-gym.agent-server -> training.nemo-rl: "rollouts\n(trajectory, reward,\ntoken_ids)"
+
+  # Training loop
+  training.nemo-rl -> model-serving.vllm: "update weights"
+  training.nemo-rl -> mlflow.model-registry: "save checkpoint"
+  training.nemo-rl -> validation: "new checkpoint"
+
+  # MLflow logging
+  validation -> mlflow.tracking: "eval results\njudge scores"
+
+}
+
+# External connections
+artifacts.task-packages -> openshift.harbor.job-api: "harbor_datasets"
+artifacts.eval-yaml -> openshift.k8s-resources.eval-cm: "k8s_resources.py"
+entry.eval-run -> openshift.harbor.job-api: "--runner harbor"
+entry.eval-train -> openshift.nemo-gym.agent-server: "orchestrate training"
+
+# Legend
+legend: {
+  label: Legend
+  near: bottom-right
+  style.fill: "#fafafa"
+  style.font-size: 12
+
+  cpu: {
+    label: "CPU workload"
+    style.fill: "#e3f2fd"
+  }
+  gpu: {
+    label: "GPU workload"
+    style.fill: "#e8f5e9"
+  }
+  our-code: {
+    label: "agent-eval-harness"
+    style.fill: "#c8e6c9"
+  }
+  planned: {
+    label: "Planned / upstream"
+    style.stroke-dash: 3
+  }
+}
