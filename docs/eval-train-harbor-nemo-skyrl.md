@@ -121,7 +121,7 @@ for evaluation and rollout collection.
 │  │    NeMo Gym Harbor Agent server                        │  │
 │  │    → Harbor Job API → N trial pods in parallel         │  │
 │  │    → each trial:                                       │  │
-│  │        agent (claude-code/opencode using vLLM)       │  │
+│  │        agent (claude-code/opencode using vLLM)         │  │
 │  │        → produces artifacts                            │  │
 │  │        verifier (our reward.py → reward.json)          │  │
 │  │        → judges score the output                       │  │
