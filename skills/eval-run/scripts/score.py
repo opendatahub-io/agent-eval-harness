@@ -789,7 +789,8 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
             # CLI --samples overrides per-judge config for LLM judges only;
             # deterministic judges always run once.
             if judge_type == "llm":
-                n = (samples_override if samples_override and samples_override > 1
+                n = (max(1, samples_override)
+                     if samples_override is not None
                      else judge_samples)
             else:
                 n = 1
@@ -1462,11 +1463,7 @@ def cmd_judges(args):
     case_dirs = _get_case_dirs(args.run_id, runs_dir)
     project_root = Path.cwd()
 
-    samples_override = getattr(args, "samples", None) or None
-    if samples_override is not None:
-        samples_override = max(1, samples_override)
-        if samples_override == 1:
-            samples_override = None
+    samples_override = getattr(args, "samples", None)
 
     # Run before_scoring hooks
     if config.hooks.before_scoring:
@@ -1486,8 +1483,8 @@ def cmd_judges(args):
     judges = load_judges(config, project_root)
     n_llm = sum(1 for _, _, _, jt, _ in judges if jt == "llm")
     sampled = [n for n, _, _, jt, s in judges
-               if jt == "llm" and ((samples_override or s) > 1)]
-    suffix = (f" (sampling: {', '.join(f'{n}={samples_override or s}×' for n, _, _, _, s in judges if n in sampled)})"
+               if jt == "llm" and ((samples_override if samples_override is not None else s) > 1)]
+    suffix = (f" (sampling: {', '.join(f'{n}={(samples_override if samples_override is not None else s)}×' for n, _, _, _, s in judges if n in sampled)})"
               if sampled else "")
     print(f"Scoring {len(case_dirs)} cases with {len(judges)} judges{suffix}: "
           f"{[n for n, *_ in judges]}")
@@ -1582,12 +1579,8 @@ def cmd_pairwise(args):
     prompt_file = args.prompt_file or (pairwise_jc.prompt_file if pairwise_jc else "")
 
     cfg_samples = pairwise_jc.samples if pairwise_jc else 1
-    cli_samples = getattr(args, "samples", None) or None
-    if cli_samples is not None:
-        cli_samples = max(1, cli_samples)
-        if cli_samples == 1:
-            cli_samples = None
-    samples = cli_samples or cfg_samples
+    cli_samples = getattr(args, "samples", None)
+    samples = max(1, cli_samples) if cli_samples is not None else cfg_samples
     suffix = f", samples={samples}" if samples > 1 else ""
     print(f"Pairwise comparison: {args.run_id} vs {args.baseline} "
           f"({len(case_ids)} cases, model={model}{suffix})")
