@@ -786,10 +786,13 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
                         "judge_type": judge_type,
                     }
                     continue
-            # CLI --samples overrides per-judge config; deterministic judges
-            # always run once (warning already emitted by load_judges).
-            n = (samples_override if samples_override and samples_override > 1
-                 else judge_samples)
+            # CLI --samples overrides per-judge config for LLM judges only;
+            # deterministic judges always run once.
+            if judge_type == "llm":
+                n = (samples_override if samples_override and samples_override > 1
+                     else judge_samples)
+            else:
+                n = 1
             try:
                 if n > 1:
                     runs = []
