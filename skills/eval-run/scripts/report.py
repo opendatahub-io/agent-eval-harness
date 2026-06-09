@@ -1673,9 +1673,19 @@ def _md_to_html(md_text):
             i += 1
             continue
 
-        # Blank line
+        # Blank line — only close lists if the next content line isn't a
+        # continuation of the same list type (LLM rationales commonly use
+        # paragraph-spaced list items like "1. ...\n\n2. ...").
         if not stripped:
-            _close_lists()
+            if list_stack:
+                j = i + 1
+                while j < len(lines) and not lines[j].strip():
+                    j += 1
+                next_stripped = lines[j].strip() if j < len(lines) else ""
+                continues_ol = list_stack[-1] == "ol" and re.match(r'^\d+\.\s', next_stripped)
+                continues_ul = list_stack[-1] == "ul" and next_stripped.startswith("- ")
+                if not (continues_ol or continues_ul):
+                    _close_lists()
             i += 1
             continue
 
