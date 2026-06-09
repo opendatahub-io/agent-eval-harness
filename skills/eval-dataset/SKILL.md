@@ -217,6 +217,39 @@ Tell the user what was created:
   - `/eval-run --model <model> --gold` to generate gold references from the best outputs
   - `/eval-dataset --strategy expand --count 10` to add more cases later
 
+## Step 8 (optional): Emit Harbor task packages
+
+To run the eval on the **Harbor** execution substrate (containers — Podman
+locally, Kubernetes on OpenShift) instead of the local runner, generate one
+self-contained Harbor task per case:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/harbor.py \
+    --config <eval.yaml> \
+    --out <harbor-tasks-dir> \
+    --image <task-container-image> \
+    --arguments '<per-case args template with {field} placeholders>' \
+    [--skill <skill>] [--workdir /workspace] [--cases case-001 ...]
+```
+
+Each generated task directory contains `task.toml` (env image + verifier),
+`instruction.md` (the resolved per-case skill command + input context),
+`tests/test.sh` + `tests/eval.yaml` (the judge → `reward.json` bridge, run as the
+Harbor verifier via `agent_eval.harbor.reward`), and `input/` (case input staged
+into the agent workspace). Per-case grading produces Harbor's `reward.json`
+(boolean judges gate; numeric judges average); pairwise/regression stay
+suite-level above Harbor.
+
+Notes:
+- Use `--arguments` to supply a **per-case** template (`mode: case` form) even
+  when the eval's own `execution.mode` is `batch` — container isolation lets each
+  case run independently, so batch orchestration isn't needed.
+- The bundled `tests/eval.yaml` has `dataset.path` blanked; judges score the
+  agent's produced artifacts relative to the case workspace.
+
+Run them with `harbor run -p <task-dir> --agent claude-code -m <model>` or via
+`/eval-run --runner harbor`.
+
 ## Rules
 
 - **Match the schema exactly** — if `dataset.schema` says "input.yaml with a 'prompt' field", create input.yaml with a prompt field. Not input.json, not query.yaml.

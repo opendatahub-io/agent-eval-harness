@@ -13,7 +13,6 @@ from agent_eval.evalhub.s3_dataset import DatasetInfo
 
 
 def _make_eval_yaml(tmpdir: Path, skill: str = "test-skill", arguments: str = "--input {prompt}") -> Path:
-    """Create a minimal eval.yaml for testing."""
     config = {
         "name": "test-eval",
         "skill": skill,
@@ -33,7 +32,6 @@ def _make_eval_yaml(tmpdir: Path, skill: str = "test-skill", arguments: str = "-
 
 
 def _make_case_dir(cases_dir: Path, case_id: str, input_data: dict) -> Path:
-    """Create a case directory with input.yaml."""
     case_dir = cases_dir / case_id
     case_dir.mkdir(parents=True, exist_ok=True)
     (case_dir / "input.yaml").write_text(yaml.dump(input_data))
@@ -41,7 +39,6 @@ def _make_case_dir(cases_dir: Path, case_id: str, input_data: dict) -> Path:
 
 
 def _make_run_result(exit_code: int = 0, duration: float = 10.0) -> RunResult:
-    """Create a RunResult for testing."""
     return RunResult(
         exit_code=exit_code,
         stdout="output text",
@@ -53,7 +50,6 @@ def _make_run_result(exit_code: int = 0, duration: float = 10.0) -> RunResult:
     )
 
 
-# Stub classes for evalhub SDK types
 class _StubModelConfig:
     def __init__(self, name="claude-sonnet-4", url="https://api.anthropic.com"):
         self.name = name
@@ -91,67 +87,53 @@ class _StubJobCallbacks:
         return None
 
 
+def _run_adapter(tmpdir, mock_runner, eval_yaml, config, callbacks):
+    """Helper: run the adapter with a mocked runner via the RUNNERS registry."""
+    cases_dir = tmpdir / "cases"
+    dataset_info = DatasetInfo(
+        num_cases=len(list(cases_dir.iterdir())),
+        case_ids=sorted(d.name for d in cases_dir.iterdir() if d.is_dir()),
+        dest=cases_dir,
+    )
+    mock_runner_cls = MagicMock()
+    mock_runner_cls.from_config.return_value = mock_runner
+
+    with (
+        patch("agent_eval.evalhub.adapter.download_dataset", return_value=dataset_info),
+        patch("agent_eval.evalhub.adapter.boto3"),
+        patch("agent_eval.evalhub.adapter.RUNNERS", {"claude-code": mock_runner_cls}),
+        patch("agent_eval.evalhub.adapter._framework_adapter_init"),
+    ):
+        from agent_eval.evalhub.adapter import AgentEvalAdapter
+        adapter = AgentEvalAdapter(eval_config_path=str(eval_yaml))
+        return adapter.run_benchmark_job(config, callbacks)
+
+
 def test_adapter_runs_skill_and_scores():
     """Adapter runs skill per case and returns JobResults."""
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
         eval_yaml = _make_eval_yaml(tmpdir)
-
-        # Create case directories
-        cases_dir = tmpdir / "cases"
-        _make_case_dir(cases_dir, "case-001", {"prompt": "hello world"})
-        _make_case_dir(cases_dir, "case-002", {"prompt": "goodbye world"})
-
-        dataset_info = DatasetInfo(
-            num_cases=2,
-            case_ids=["case-001", "case-002"],
-            dest=cases_dir,
-        )
-
-        run_result = _make_run_result(exit_code=0)
+        _make_case_dir(tmpdir / "cases", "case-001", {"prompt": "hello world"})
+        _make_case_dir(tmpdir / "cases", "case-002", {"prompt": "goodbye world"})
 
         mock_runner = MagicMock()
-        mock_runner.run_skill.return_value = run_result
-
-        real_config = EvalConfig.from_yaml(eval_yaml)
+        mock_runner.run_skill.return_value = _make_run_result(exit_code=0)
 
         config = _StubJobSpec(
-            id="job-abc",
-            benchmark_id="bench-1",
-            benchmark_index=0,
+            id="job-abc", benchmark_id="bench-1", benchmark_index=0,
             model=_StubModelConfig(name="claude-sonnet-4"),
             parameters={"s3_bucket": "test-bucket", "s3_prefix": "dataset/v1"},
         )
         callbacks = _StubJobCallbacks()
+        result = _run_adapter(tmpdir, mock_runner, eval_yaml, config, callbacks)
 
-        with (
-            patch("agent_eval.evalhub.adapter.download_dataset", return_value=dataset_info),
-            patch("agent_eval.evalhub.adapter.boto3") as mock_boto3,
-            patch("agent_eval.evalhub.adapter.ClaudeCodeRunner", return_value=mock_runner),
-            patch("agent_eval.evalhub.adapter.EvalConfig") as mock_eval_config_cls,
-            patch("agent_eval.evalhub.adapter._framework_adapter_init"),
-        ):
-            mock_eval_config_cls.from_yaml.return_value = real_config
-
-            from agent_eval.evalhub.adapter import AgentEvalAdapter
-
-            adapter = AgentEvalAdapter(eval_config_path=str(eval_yaml))
-            result = adapter.run_benchmark_job(config, callbacks)
-
-        # Runner called once per case
         assert mock_runner.run_skill.call_count == 2
-
-        # Verify args resolved from input.yaml
         calls = mock_runner.run_skill.call_args_list
         for call in calls:
-            # run_skill is called with keyword args
             args_val = call.kwargs.get("args", "")
             assert args_val in ("--input hello world", "--input goodbye world")
-
-        # Status reported multiple times (at least INITIALIZING, LOADING_DATA, RUNNING_EVALUATION, POST_PROCESSING, COMPLETED)
         assert len(callbacks.statuses) >= 4
-
-        # JobResults has correct fields
         assert result.id == "job-abc"
         assert result.model_name == "claude-sonnet-4"
         assert result.num_examples_evaluated == 2
@@ -163,55 +145,23 @@ def test_adapter_handles_runner_failure():
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
         eval_yaml = _make_eval_yaml(tmpdir)
-
-        cases_dir = tmpdir / "cases"
-        _make_case_dir(cases_dir, "case-001", {"prompt": "fail case"})
-
-        dataset_info = DatasetInfo(
-            num_cases=1,
-            case_ids=["case-001"],
-            dest=cases_dir,
-        )
-
-        # Runner returns exit_code=1 (failure)
-        run_result = _make_run_result(exit_code=1, duration=5.0)
+        _make_case_dir(tmpdir / "cases", "case-001", {"prompt": "fail case"})
 
         mock_runner = MagicMock()
-        mock_runner.run_skill.return_value = run_result
-
-        real_config = EvalConfig.from_yaml(eval_yaml)
+        mock_runner.run_skill.return_value = _make_run_result(exit_code=1, duration=5.0)
 
         config = _StubJobSpec(
-            id="job-fail",
-            benchmark_id="bench-1",
+            id="job-fail", benchmark_id="bench-1",
             model=_StubModelConfig(name="claude-sonnet-4"),
             parameters={"s3_bucket": "test-bucket", "s3_prefix": "dataset/v1"},
         )
         callbacks = _StubJobCallbacks()
+        result = _run_adapter(tmpdir, mock_runner, eval_yaml, config, callbacks)
 
-        with (
-            patch("agent_eval.evalhub.adapter.download_dataset", return_value=dataset_info),
-            patch("agent_eval.evalhub.adapter.boto3") as mock_boto3,
-            patch("agent_eval.evalhub.adapter.ClaudeCodeRunner", return_value=mock_runner),
-            patch("agent_eval.evalhub.adapter.EvalConfig") as mock_eval_config_cls,
-            patch("agent_eval.evalhub.adapter._framework_adapter_init"),
-        ):
-            mock_eval_config_cls.from_yaml.return_value = real_config
-
-            from agent_eval.evalhub.adapter import AgentEvalAdapter
-
-            adapter = AgentEvalAdapter(eval_config_path=str(eval_yaml))
-            result = adapter.run_benchmark_job(config, callbacks)
-
-        # Results returned despite failure
         assert result is not None
         assert result.id == "job-fail"
         assert result.num_examples_evaluated == 1
-
-        # exit_code=1 present in evaluation results
         exit_metric = next(
-            (r for r in result.results if r.metric_name == "exit_code"),
-            None,
-        )
+            (r for r in result.results if r.metric_name == "exit_code"), None)
         assert exit_metric is not None
         assert exit_metric.metric_value == 1

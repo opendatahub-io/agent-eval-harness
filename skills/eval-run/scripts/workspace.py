@@ -525,113 +525,42 @@ def _setup_subagent_only_hook(workspace, config):
     print("HOOKS: SubagentStop configured (subagent capture)")
 
 
-def _extract_tool_patterns(match_text):
-    """Extract tool name patterns from a natural language match description.
-
-    Looks for known tool names and patterns like mcp__*. This is a
-    heuristic — eval-run's agent can refine these to concrete patterns
-    at runtime by reading eval.md.
-    """
-    import re
-
-    patterns = []
-    # Known tool names
-    known_tools = [
-        "AskUserQuestion",
-        "Bash",
-        "Read",
-        "Write",
-        "Edit",
-        "Glob",
-        "Grep",
-        "Agent",
-        "Skill",
-    ]
-    for tool in known_tools:
-        if tool.lower() in match_text.lower():
-            patterns.append(tool)
-    # MCP tool patterns (mcp__something__*)
-    for m in re.finditer(r"(mcp__\w+(?:__\w+)*(?:\*)?)", match_text):
-        patterns.append(m.group(1))
-    # If nothing found, add "Bash" as fallback for script-based interception
-    if not patterns and ("script" in match_text.lower() or "api" in match_text.lower()):
-        patterns.append("Bash")
-    return patterns or ["*"]
-
-
 def _setup_tool_hooks(workspace, config):
-    """Generate settings.json and tool_handlers.yaml for tool interception."""
+    """Generate settings.json and tool_handlers.yaml for tool interception.
+
+    Delegates the core interception artifacts (handlers, hooks, interceptor
+    script) to :func:`agent_eval.tools.interception.generate_interception`,
+    then layers workspace-specific settings on top (project permissions,
+    subagent capture, execution env, runner settings).
+    """
     import json as _json
+    from agent_eval.tools.interception import generate_interception
 
-    # Build handler config with resolved patterns
-    # The `match` field is natural language — for now, extract tool name
-    # patterns from it. eval-run's agent resolves complex matches to
-    # concrete patterns in tool_handlers.yaml before execution.
-    handlers = []
-    hook_matchers = set()
-    for tool_cfg in config.inputs.tools:
-        handler = {"match": tool_cfg.match}
-        # Extract simple tool name patterns from match text
-        patterns = _extract_tool_patterns(tool_cfg.match)
-        handler["patterns"] = patterns
-        if tool_cfg.prompt:
-            handler["prompt"] = tool_cfg.prompt
-        if tool_cfg.prompt_file:
-            handler["prompt_file"] = tool_cfg.prompt_file
-        handlers.append(handler)
-        hook_matchers.update(patterns)
+    hooks_command = f"python3 {workspace}/hooks/tools.py"
+    resolved = config.config_dir / "tool_handlers.yaml" if config.config_dir else None
+    hook_matchers = generate_interception(
+        workspace, config, hooks_command,
+        resolved_handlers_path=resolved if resolved and resolved.is_file() else None)
 
-    # Write tool_handlers.yaml
-    handler_data = {"handlers": handlers}
-    if config.models.hook:
-        handler_data["hook_model"] = config.models.hook
-    with open(workspace / "tool_handlers.yaml", "w") as f:
-        yaml.dump(handler_data, f, default_flow_style=False)
+    # The shared module wrote .claude/settings.json with hooks + eval.yaml
+    # permissions + execution.env. Now layer workspace-specific settings.
+    settings_path = workspace / ".claude" / "settings.json"
+    settings = {}
+    if settings_path.exists():
+        settings = _json.loads(settings_path.read_text())
 
-    # Copy interceptor script
-    hooks_dir = workspace / "hooks"
-    hooks_dir.mkdir(exist_ok=True)
-    interceptor_src = Path(__file__).parent / "tools.py"
-    if interceptor_src.exists():
-        shutil.copy2(interceptor_src, hooks_dir / "tools.py")
-
-    # Generate .claude/settings.json with PreToolUse hooks
-    # Don't overwrite if symlinked from project — create alongside
-    settings_dir = workspace / ".claude"
-    settings_dir.mkdir(parents=True, exist_ok=True)
-
-    settings = {"hooks": {"PreToolUse": []}}
-    for matcher in sorted(hook_matchers):
-        settings["hooks"]["PreToolUse"].append(
-            {
-                "matcher": matcher,
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": f"python3 {workspace}/hooks/tools.py",
-                    }
-                ],
-            }
-        )
-
-    # Carry over permissions (allow, deny, additionalDirectories)
+    # Carry over project permissions (allow, deny, additionalDirectories)
     _carry_over_permissions(settings)
-
     _merge_harness_permissions(settings, config)
 
-    # Grant access to the project root so symlinked resources (skills,
-    # scripts, context) can be read by the sandbox.
+    # Grant access to the project root so symlinked resources can be read.
     project_root = str(Path.cwd().resolve())
     settings.setdefault("permissions", {}).setdefault(
         "additionalDirectories", []
     ).append(project_root)
 
     # Add SubagentStop hook to capture background agent transcripts.
-    # The hook copies each subagent's .jsonl file to workspace/subagents/.
-    # Requires session persistence ON (the runner must NOT pass
-    # --no-session-persistence) so transcript files survive until the hook fires.
     from agent_eval.agent.stream_capture import setup_subagent_hook
-
     subagent_dir = str((workspace / "subagents").resolve())
     setup_subagent_hook(settings, subagent_dir)
 
@@ -641,7 +570,7 @@ def _setup_tool_hooks(workspace, config):
     # Apply user-provided runner.settings last so they can override defaults
     _apply_runner_settings(settings, config)
 
-    with open(settings_dir / "settings.json", "w") as f:
+    with open(settings_path, "w") as f:
         _json.dump(settings, f, indent=2)
 
     print(f"HOOKS: {len(hook_matchers)} tool interceptors configured")
