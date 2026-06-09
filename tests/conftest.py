@@ -10,6 +10,7 @@ import pytest
 _repo_root = Path(__file__).parent.parent
 sys.path.insert(0, str(_repo_root / "skills" / "eval-run" / "scripts"))
 sys.path.insert(0, str(_repo_root / "skills" / "eval-mlflow" / "scripts"))
+sys.path.insert(0, str(_repo_root / "skills" / "eval-dataset" / "scripts"))
 
 
 # ---------------------------------------------------------------------------

@@ -40,50 +40,43 @@ def _setup_eval_project(tmp_path):
     return eval_path
 
 
-@patch("agent_eval.evalhub.adapter.ClaudeCodeRunner")
-@patch("agent_eval.evalhub.adapter.download_dataset")
-@patch("agent_eval.evalhub.adapter._framework_adapter_init")
-def test_full_lifecycle(mock_init, mock_download, mock_runner_cls, tmp_path):
+def test_full_lifecycle(tmp_path):
     """Test the full adapter lifecycle from JobSpec to JobResults."""
     eval_path = _setup_eval_project(tmp_path)
-
     from agent_eval.evalhub.s3_dataset import DatasetInfo
 
     cases_dir = tmp_path / "cases"
-    mock_download.return_value = DatasetInfo(
-        num_cases=2,
-        case_ids=["case-001", "case-002"],
-        dest=cases_dir,
-    )
 
     mock_runner = MagicMock()
     mock_runner.name = "claude-code"
     mock_runner.run_skill.return_value = RunResult(
-        exit_code=0,
-        stdout="done",
-        stderr="",
-        duration_s=20.0,
-        cost_usd=0.08,
-        num_turns=6,
+        exit_code=0, stdout="done", stderr="",
+        duration_s=20.0, cost_usd=0.08, num_turns=6,
     )
-    mock_runner_cls.return_value = mock_runner
 
-    # Mock FrameworkAdapter.__init__ to avoid loading meta/job.json
-    mock_init.return_value = None
+    mock_runner_cls = MagicMock()
+    mock_runner_cls.from_config.return_value = mock_runner
 
-    adapter = AgentEvalAdapter(eval_config_path=str(eval_path))
-    mock_spec = MagicMock()
-    mock_spec.id = "integration-job"
-    mock_spec.benchmark_id = "integration-test"
-    mock_spec.benchmark_index = 0
-    mock_spec.model = MagicMock()
-    mock_spec.model.name = "claude-sonnet-4-6"
-    mock_spec.parameters = {"s3_bucket": "test", "s3_prefix": "cases/"}
+    with (
+        patch("agent_eval.evalhub.adapter.download_dataset") as mock_download,
+        patch("agent_eval.evalhub.adapter.RUNNERS", {"claude-code": mock_runner_cls}),
+        patch("agent_eval.evalhub.adapter._framework_adapter_init"),
+    ):
+        mock_download.return_value = DatasetInfo(
+            num_cases=2, case_ids=["case-001", "case-002"], dest=cases_dir)
 
-    mock_callbacks = MagicMock()
-    results = adapter.run_benchmark_job(mock_spec, mock_callbacks)
+        adapter = AgentEvalAdapter(eval_config_path=str(eval_path))
+        mock_spec = MagicMock()
+        mock_spec.id = "integration-job"
+        mock_spec.benchmark_id = "integration-test"
+        mock_spec.benchmark_index = 0
+        mock_spec.model = MagicMock()
+        mock_spec.model.name = "claude-sonnet-4-6"
+        mock_spec.parameters = {"s3_bucket": "test", "s3_prefix": "cases/"}
 
-    # Verify structure
+        mock_callbacks = MagicMock()
+        results = adapter.run_benchmark_job(mock_spec, mock_callbacks)
+
     assert results.id == "integration-job"
     assert results.model_name == "claude-sonnet-4-6"
     assert results.num_examples_evaluated == 2
@@ -94,24 +87,15 @@ def test_full_lifecycle(mock_init, mock_download, mock_runner_cls, tmp_path):
     assert "duration_seconds" in metric_map
     assert "cost_usd" in metric_map
 
-    # Verify runner was instantiated with correct config
-    mock_runner_cls.assert_called_once()
-    call_kwargs = mock_runner_cls.call_args[1]
-    assert call_kwargs["effort"] == "normal"
-    assert call_kwargs["permissions"] is not None
+    # Runner created via from_config (not direct constructor)
+    mock_runner_cls.from_config.assert_called_once()
 
-    # Verify runner was called twice (once per case)
+    # Runner called twice (once per case)
     assert mock_runner.run_skill.call_count == 2
     first_call = mock_runner.run_skill.call_args_list[0]
-    # Check both positional and keyword arguments
-    actual_skill = first_call.kwargs.get("skill_name") or first_call[1].get("skill_name")
+    actual_skill = first_call.kwargs.get("skill_name")
     assert actual_skill == "test-skill"
 
-    # Verify progress reporting
     assert mock_callbacks.report_status.call_count >= 3
-
-    # Local dataset exists so S3 download is skipped
-    mock_download.assert_not_called()
-
-    # Adapter must NOT call report_results — that's the entrypoint's job
-    mock_callbacks.report_results.assert_not_called()
+    mock_download.assert_not_called()  # local dataset exists
+    mock_callbacks.report_results.assert_not_called()  # entrypoint's job
