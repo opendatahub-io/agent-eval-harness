@@ -1,3 +1,21 @@
+# [1.13.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.12.0...v1.13.0) (2026-06-09)
+
+
+### Bug Fixes
+
+* add extra_env parameter to ResponsesAPIRunner.run_skill ([4e0360e](https://github.com/opendatahub-io/agent-eval-harness/commit/4e0360e25e7ff4b30478dc049e74351fe0912deb))
+* address CodeRabbit review feedback ([bd90b5f](https://github.com/opendatahub-io/agent-eval-harness/commit/bd90b5f669812a72bcf28d068e893c5c2e3b22cf))
+* address PR [#88](https://github.com/opendatahub-io/agent-eval-harness/issues/88) review feedback from astefanutti ([04e9cec](https://github.com/opendatahub-io/agent-eval-harness/commit/04e9cec89704c702d71b83b229584628c1979e07)), closes [#70](https://github.com/opendatahub-io/agent-eval-harness/issues/70)
+* guarantee after_each hooks run and flow hook env to CLI runner ([122bab7](https://github.com/opendatahub-io/agent-eval-harness/commit/122bab70e8c4b171939dc76231f5d50887067309))
+* move before_each inside try/finally so after_each runs on setup failure ([b114c02](https://github.com/opendatahub-io/agent-eval-harness/commit/b114c02cf9185f261f1b20c8fb4676229308738e))
+* return synthetic failed result instead of None on case errors ([5f8887f](https://github.com/opendatahub-io/agent-eval-harness/commit/5f8887ffdf8c37be31287470af69b6e3c36790d7))
+
+
+### Features
+
+* add execution lifecycle hooks to eval pipeline ([5bc1e05](https://github.com/opendatahub-io/agent-eval-harness/commit/5bc1e052aa1948d0d6e88ea3449a4942327009ec))
+* **hooks:** implement hook outputs for passing state from hooks to runners and judges ([bb21862](https://github.com/opendatahub-io/agent-eval-harness/commit/bb21862a060d2572e18667c99ae1b90b93569089))
+
 # [1.12.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.11.0...v1.12.0) (2026-06-08)
 
 
