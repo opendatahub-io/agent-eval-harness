@@ -861,7 +861,14 @@ def log_trace(trace_dict):
         # differs from the client-provided trace_dict["info"]["trace_id"].
         # Always return the backend ID so downstream FK operations succeed.
         server_trace_id = client._log_trace(trace)
-        return server_trace_id or trace_dict["info"]["trace_id"]
+        if not server_trace_id:
+            print(
+                "WARNING: _log_trace returned no backend ID; falling back to "
+                "client trace_id — downstream log_feedback may hit FK errors.",
+                file=sys.stderr,
+            )
+            return trace_dict["info"]["trace_id"]
+        return server_trace_id
     except Exception as e:
         print(f"WARNING: failed to log trace: {e}", file=sys.stderr)
         return None
