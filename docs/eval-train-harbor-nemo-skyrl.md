@@ -36,7 +36,7 @@ Gym agent. The architecture:
 NeMo Gym (rollout orchestration + training)
   → Harbor Agent server (NeMo Gym's harbor_agent)
     → Harbor Job API (creates trial containers)
-      → Agent runs in container (Terminus2, claude-code, custom)
+      → Agent runs in container (claude-code, opencode, custom)
       → Verifier: our judge engine (reward.py → reward.json)   ← we plug in here
     → Returns (trajectory, reward) to NeMo Gym
   → NeMo RL / TRL / Unsloth / VeRL (GRPO / DAPO weight update)
@@ -121,7 +121,7 @@ for evaluation and rollout collection.
 │  │    NeMo Gym Harbor Agent server                        │  │
 │  │    → Harbor Job API → N trial pods in parallel         │  │
 │  │    → each trial:                                       │  │
-│  │        agent (terminus-2/claude-code using vLLM)       │  │
+│  │        agent (claude-code/opencode using vLLM)       │  │
 │  │        → produces artifacts                            │  │
 │  │        verifier (our reward.py → reward.json)          │  │
 │  │        → judges score the output                       │  │
@@ -188,8 +188,8 @@ alone hasn't solved yet.
 
 ## What `/eval-train` orchestrates
 
-```python
-# Pseudo-code for the skill's logic
+```
+Pseudo-code for the skill's logic
 
 1. Read eval.yaml + training config (base model, iterations, batch size)
 2. Generate Harbor task packages from the dataset
@@ -272,7 +272,7 @@ the through-line.
 | NeMo Gym Harbor agent server | `NeMo Gym/responses_api_agents/harbor_agent/` |
 | NeMo Gym Claude Code agent (eval) | `NeMo Gym/responses_api_agents/claude_code_agent/` |
 | SkyRL Harbor rollout interface | SkyRL + Harbor docs |
-| Harbor agent zoo (terminus-2, claude-code, opencode) | Harbor `agents/installed/` |
+| Harbor agent zoo (claude-code, opencode, codex, etc.) | Harbor `agents/installed/` |
 | NeMo RL GRPO/DAPO training | NeMo RL |
 | TRL / Unsloth / VeRL integration | NeMo Gym docs |
 
@@ -303,13 +303,13 @@ upstream agent contributions matter:
 1. **NeMo Gym path** (recommended) — the agent wrapper routes LLM calls through
    NeMo Gym's model server and sets `collect_rollout_details: true`, which
    captures `prompt_token_ids`, `generation_token_ids`, and `logprobs`. The
-   Terminus2 wrapper already does this. The Claude Code wrapper
-   ([exists for eval](https://github.com/NVIDIA-NeMo/Gym/tree/main/responses_api_agents/claude_code_agent))
+   The `terminus_2_nemo_gym.py` wrapper already does this. The Claude Code
+   wrapper ([exists for eval](https://github.com/NVIDIA-NeMo/Gym/tree/main/responses_api_agents/claude_code_agent))
    needs extending: currently calls Anthropic API directly; for training it
-   must route through the model server (vLLM) instead, following the Harbor
-   agent's `terminus_2_nemo_gym.py` pattern.
+   must route through the model server (vLLM) instead, following the
+   `terminus_2_nemo_gym.py` pattern.
 2. **SkyRL path** — token collection is WIP upstream ("working to add flags to
-   Terminus 2"). Once available, SkyRL reads them from agent metadata.
+   agents"). Once available, SkyRL reads them from agent metadata.
 3. **SFT/DPO** (no token IDs needed) — only `(prompt, response, reward)`
    triples, which our pipeline already produces. Training data generation
    (`/eval-train --mode generate`) covers this without the NeMo Gym wrappers.
