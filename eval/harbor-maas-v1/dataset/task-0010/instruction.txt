@@ -1,0 +1,51 @@
+# fix: correct TLS_MIN_VERSION environment variable precedence
+
+Related to https://redhat.atlassian.net/browse/RHOAIENG-58761
+
+## Summary
+Fixes the TLS_MIN_VERSION environment variable precedence bug where it incorrectly overrode the --tls-min-version CLI flag, violating the documented behavior that "CLI flags take precedence over environment variables."
+
+## Root Cause
+TLS_MIN_VERSION was read in the `validate()` function (after `flag.Parse()`), overwriting any CLI flag value. All other environment variables are read in `Load()` (before `flag.Parse()`), which allows CLI flags to override them correctly.
+
+## Changes
+- **maas-api/internal/config/tls.go**: Moved TLS_MIN_VERSION environment variable reading from `validate()` into `loadTLSConfig()`
+- **maas-api/internal/config/tls_test.go**: Added comprehensive unit tests (5 precedence scenarios, invalid value handling)
+
+## Fix
+Configuration precedence is now correct:
+```
+CLI flag > environment variable > default value
+```
+
+## Testing
+✅ Unit tests (5 precedence scenarios) - All pass  
+✅ All existing tests pass (80.7% coverage)  
+✅ Live cluster validation with full MaaS stack:
+- **Test 1 (CLI override)**: `env=1.2` + `CLI=1.3` → Rejects TLS 1.2, Accepts TLS 1.3 ✅
+- **Test 2 (Env only)**: `env=1.3` → Rejects TLS 1.2, Accepts TLS 1.3 ✅  
+- **Test 3 (Default)**: No config → Accepts both TLS 1.2 and 1.3 ✅
+
+## References
+- Introduced in: commit 1864049e (feat: implements end-to-end TLS for external API traffic #227)
+- Identified by CodeRabbit in PR #763
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+<!-- This is an auto-generated comment: release notes by coderabbit.ai -->
+## Summary by CodeRabbit
+
+* **Chores**
+  * Added support for configuring TLS minimum version via an environment variable while preserving CLI flag precedence and default fallback behavior.
+
+* **Tests**
+  * Added comprehensive TLS configuration tests covering env/CLI precedence, parsing/validation of TLS versions, and certificate/key validation scenarios.
+
+* **Documentation**
+  * Updated README to document the new TLS_MIN_VERSION environment variable and its allowed values.
+<!-- end of auto-generated comment: release notes by coderabbit.ai -->
+
+## Files involved
+- `maas-api/README.md`
+- `maas-api/internal/config/tls.go`
+- `maas-api/internal/config/tls_test.go`
