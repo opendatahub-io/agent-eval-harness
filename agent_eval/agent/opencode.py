@@ -83,6 +83,7 @@ class OpenCodeRunner(EvalRunner):
         system_prompt: Optional[str] = None,
         max_budget_usd: float = 5.0,
         timeout_s: int = 600,
+        output_dir: Optional[Path] = None,
     ) -> RunResult:
         receiver = None
         otel_port = None
