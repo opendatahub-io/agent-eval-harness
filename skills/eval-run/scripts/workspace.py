@@ -43,6 +43,12 @@ def main():
         help="Comma-separated dirs/files to symlink into workspace "
         "(default: scripts,.claude,CLAUDE.md,.context,skills)",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Overwrite existing workspace directory if it already exists",
+    )
     args = parser.parse_args()
 
     config = EvalConfig.from_yaml(args.config)
@@ -67,15 +73,22 @@ def main():
         print("ERROR: run-id must match [A-Za-z0-9._-]+", file=sys.stderr)
         sys.exit(1)
 
-    # Create workspace in secure temp directory
-    base_dir = (Path(tempfile.gettempdir()) / "agent-eval").resolve()
-    workspace = (base_dir / args.run_id).resolve()
-    if base_dir not in workspace.parents and workspace != base_dir:
-        print("ERROR: invalid run-id path", file=sys.stderr)
-        sys.exit(1)
-    if workspace.exists():
-        shutil.rmtree(workspace)
-    workspace.mkdir(parents=True, mode=0o700)
+    # Create workspace in a unique temp directory.  Each invocation gets
+    # its own random directory so re-runs with the same run-id never
+    # silently destroy a previous workspace's uncollected artifacts.
+    if args.force:
+        # Deterministic path — caller explicitly accepts overwrite risk.
+        workspace = (Path(tempfile.gettempdir()) / "agent-eval" / args.run_id).resolve()
+        if workspace.exists():
+            print(
+                f"WARNING: --force specified, deleting existing workspace {workspace}",
+                file=sys.stderr,
+            )
+            shutil.rmtree(workspace)
+        workspace.mkdir(parents=True, mode=0o700)
+    else:
+        base_dir = Path(tempfile.mkdtemp(prefix=f"agent-eval-{args.run_id}-"))
+        workspace = base_dir.resolve()
 
     # Initialize a bare git repo so Claude Code subagents can discover
     # the project root and load .claude/settings.json with the expanded
