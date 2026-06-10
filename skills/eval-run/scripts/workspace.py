@@ -175,13 +175,8 @@ def main():
                         link.parent.mkdir(parents=True, exist_ok=True)
                         link.symlink_to(sub.resolve())
 
-    # Generate tool interception hooks if inputs.tools configured
-    if config.inputs.tools:
-        _setup_tool_hooks(workspace, config)
-    else:
-        # Even without tool interception, set up SubagentStop hook
-        # to capture background agent transcripts for tracing.
-        _setup_subagent_only_hook(workspace, config)
+    # Runner-specific workspace configuration (hooks, permissions, config files)
+    _runner_setup(workspace, config)
 
     print(f"WORKSPACE: {workspace}")
     print(f"CASES: {len(case_dirs)}")
@@ -288,11 +283,8 @@ def _create_per_case_workspace(workspace, case_dirs, config, args):
                         link.parent.mkdir(parents=True, exist_ok=True)
                         link.symlink_to(sub.resolve())
 
-        # Set up hooks (tool interception + SubagentStop)
-        if config.inputs.tools:
-            _setup_tool_hooks(case_ws, config)
-        else:
-            _setup_subagent_only_hook(case_ws, config)
+        # Runner-specific workspace configuration
+        _runner_setup(case_ws, config)
 
         case_order.append({"case_id": case_id})
 
@@ -366,285 +358,23 @@ def _parse_file(path):
     return None
 
 
-def _expand_symlink_permissions(allow_list):
-    """Add resolved-path variants for permission patterns with symlinked dirs.
+def _runner_setup(workspace, config):
+    """Delegate workspace configuration to the runner implementation.
 
-    On macOS, /tmp is a symlink to /private/tmp.  Claude Code resolves file
-    paths to their canonical form before matching permission patterns, so
-    ``Write(/tmp/rfe-assess/**)`` won't match a write to the real path
-    ``/private/tmp/rfe-assess/...``.  This function detects such cases and
-    adds the resolved variant alongside the original.
+    Each runner writes its own config files, hooks, and permissions.
     """
-    extras = []
-    for pattern in allow_list:
-        m = re.match(r"(Write|Edit|Bash)\((.+)\)", pattern)
-        if not m:
-            continue
-        tool, glob_path = m.groups()
-        # Extract the directory prefix (everything before the first glob char)
-        prefix = re.split(r"[*?]", glob_path, maxsplit=1)[0].rstrip("/")
-        if not prefix or not prefix.startswith("/"):
-            continue
-        resolved = str(Path(prefix).resolve())
-        if resolved != prefix:
-            resolved_pattern = f"{tool}({glob_path.replace(prefix, resolved)})"
-            if resolved_pattern not in allow_list:
-                extras.append(resolved_pattern)
-    return allow_list + extras
-
-
-def _inject_env(settings, config):
-    """Inject execution.env into settings.json env block.
-
-    Values starting with ``$`` are resolved from ``os.environ``.
-    Missing env vars are silently omitted.  Literal values pass through.
-    """
-    if not config.execution.env:
+    from agent_eval.agent import RUNNERS
+    runner_cls = RUNNERS.get(config.runner.type)
+    if not runner_cls:
+        print(f"WARNING: unknown runner '{config.runner.type}', "
+              f"skipping workspace setup", file=sys.stderr)
         return
-    env_block = settings.setdefault("env", {})
-    for key, value in config.execution.env.items():
-        if isinstance(value, str) and value.startswith("$"):
-            resolved = os.environ.get(value[1:])
-            if resolved is not None:
-                env_block[key] = resolved
-        else:
-            env_block[key] = str(value)
-
-
-def _carry_over_permissions(settings):
-    """Copy project permissions (allow, deny, additionalDirectories) into settings."""
-    import json as _json
-
-    project_settings = Path.cwd() / ".claude" / "settings.json"
-    if not project_settings.exists():
-        return
-    try:
-        with open(project_settings) as f:
-            proj = _json.load(f)
-    except (_json.JSONDecodeError, OSError):
-        return
-
-    proj_perms = proj.get("permissions", {})
-    if proj_perms.get("allow"):
-        allow_list = _expand_symlink_permissions(list(proj_perms["allow"]))
-        settings.setdefault("permissions", {})["allow"] = allow_list
-    if proj_perms.get("deny"):
-        settings.setdefault("permissions", {})["deny"] = list(proj_perms["deny"])
-    if proj_perms.get("additionalDirectories"):
-        dirs = list(proj_perms["additionalDirectories"])
-        for d in list(dirs):
-            resolved = str(Path(d).resolve())
-            if resolved != d and resolved not in dirs:
-                dirs.append(resolved)
-        settings.setdefault("permissions", {}).setdefault(
-            "additionalDirectories", []
-        ).extend(dirs)
-
-
-def _merge_harness_permissions(settings, config):
-    """Merge eval.yaml permissions.allow into settings so named subagents
-    (which may not inherit --allowed-tools) receive the harness patterns."""
-    allow = (
-        (config.permissions or {}).get("allow")
-        if hasattr(config, "permissions")
-        else None
+    runner = runner_cls.from_config(config)
+    runner.setup_workspace(
+        workspace, config,
+        project_root=Path.cwd(),
+        interceptor_src=Path(__file__).parent / "tools.py",
     )
-    if not allow:
-        return
-    harness_allow = _expand_symlink_permissions(list(allow))
-    existing = settings.setdefault("permissions", {}).setdefault("allow", [])
-    for pattern in harness_allow:
-        if pattern not in existing:
-            existing.append(pattern)
-
-
-def _deep_merge(dst, src):
-    """Recursively merge src into dst. Lists are extended, dicts merged."""
-    for k, v in src.items():
-        if isinstance(v, dict) and isinstance(dst.get(k), dict):
-            _deep_merge(dst[k], v)
-        elif isinstance(v, list) and isinstance(dst.get(k), list):
-            dst[k].extend(v)
-        else:
-            dst[k] = v
-    return dst
-
-
-def _apply_runner_settings(settings, config):
-    """Merge eval.yaml `runner.settings` into the workspace settings dict.
-
-    Lets users add Claude Code settings (model defaults, env, MCP servers,
-    etc.) to a runner without forking the harness. Merged after harness
-    defaults so user overrides win for scalar keys; lists are extended.
-    """
-    user_settings = getattr(config.runner, "settings", None) or {}
-    if user_settings:
-        _deep_merge(settings, user_settings)
-
-
-def _setup_subagent_only_hook(workspace, config):
-    """Set up SubagentStop hook without tool interception.
-
-    When there are no inputs.tools, we still need the SubagentStop hook
-    to capture background agent transcripts for tracing. This creates
-    a minimal .claude/settings.json with just the hook and project
-    permissions.
-    """
-    import json as _json
-
-    settings_dir = workspace / ".claude"
-    settings_dir.mkdir(parents=True, exist_ok=True)
-
-    settings = {}
-
-    # Carry over project permissions (allow, deny, additionalDirectories)
-    _carry_over_permissions(settings)
-    _merge_harness_permissions(settings, config)
-
-    # Grant project root access
-    project_root = str(Path.cwd().resolve())
-    settings.setdefault("permissions", {}).setdefault(
-        "additionalDirectories", []
-    ).append(project_root)
-
-    # Add SubagentStop hook
-    from agent_eval.agent.stream_capture import setup_subagent_hook
-
-    subagent_dir = str((workspace / "subagents").resolve())
-    setup_subagent_hook(settings, subagent_dir)
-
-    # Inject execution.env into settings
-    _inject_env(settings, config)
-
-    # Apply user-provided runner.settings last so they can override defaults
-    _apply_runner_settings(settings, config)
-
-    with open(settings_dir / "settings.json", "w") as f:
-        _json.dump(settings, f, indent=2)
-
-    print("HOOKS: SubagentStop configured (subagent capture)")
-
-
-def _extract_tool_patterns(match_text):
-    """Extract tool name patterns from a natural language match description.
-
-    Looks for known tool names and patterns like mcp__*. This is a
-    heuristic — eval-run's agent can refine these to concrete patterns
-    at runtime by reading eval.md.
-    """
-    import re
-
-    patterns = []
-    # Known tool names
-    known_tools = [
-        "AskUserQuestion",
-        "Bash",
-        "Read",
-        "Write",
-        "Edit",
-        "Glob",
-        "Grep",
-        "Agent",
-        "Skill",
-    ]
-    for tool in known_tools:
-        if tool.lower() in match_text.lower():
-            patterns.append(tool)
-    # MCP tool patterns (mcp__something__*)
-    for m in re.finditer(r"(mcp__\w+(?:__\w+)*(?:\*)?)", match_text):
-        patterns.append(m.group(1))
-    # If nothing found, add "Bash" as fallback for script-based interception
-    if not patterns and ("script" in match_text.lower() or "api" in match_text.lower()):
-        patterns.append("Bash")
-    return patterns or ["*"]
-
-
-def _setup_tool_hooks(workspace, config):
-    """Generate settings.json and tool_handlers.yaml for tool interception."""
-    import json as _json
-
-    # Build handler config with resolved patterns
-    # The `match` field is natural language — for now, extract tool name
-    # patterns from it. eval-run's agent resolves complex matches to
-    # concrete patterns in tool_handlers.yaml before execution.
-    handlers = []
-    hook_matchers = set()
-    for tool_cfg in config.inputs.tools:
-        handler = {"match": tool_cfg.match}
-        # Extract simple tool name patterns from match text
-        patterns = _extract_tool_patterns(tool_cfg.match)
-        handler["patterns"] = patterns
-        if tool_cfg.prompt:
-            handler["prompt"] = tool_cfg.prompt
-        if tool_cfg.prompt_file:
-            handler["prompt_file"] = tool_cfg.prompt_file
-        handlers.append(handler)
-        hook_matchers.update(patterns)
-
-    # Write tool_handlers.yaml
-    handler_data = {"handlers": handlers}
-    if config.models.hook:
-        handler_data["hook_model"] = config.models.hook
-    with open(workspace / "tool_handlers.yaml", "w") as f:
-        yaml.dump(handler_data, f, default_flow_style=False)
-
-    # Copy interceptor script
-    hooks_dir = workspace / "hooks"
-    hooks_dir.mkdir(exist_ok=True)
-    interceptor_src = Path(__file__).parent / "tools.py"
-    if interceptor_src.exists():
-        shutil.copy2(interceptor_src, hooks_dir / "tools.py")
-
-    # Generate .claude/settings.json with PreToolUse hooks
-    # Don't overwrite if symlinked from project — create alongside
-    settings_dir = workspace / ".claude"
-    settings_dir.mkdir(parents=True, exist_ok=True)
-
-    settings = {"hooks": {"PreToolUse": []}}
-    for matcher in sorted(hook_matchers):
-        settings["hooks"]["PreToolUse"].append(
-            {
-                "matcher": matcher,
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": f"python3 {workspace}/hooks/tools.py",
-                    }
-                ],
-            }
-        )
-
-    # Carry over permissions (allow, deny, additionalDirectories)
-    _carry_over_permissions(settings)
-
-    _merge_harness_permissions(settings, config)
-
-    # Grant access to the project root so symlinked resources (skills,
-    # scripts, context) can be read by the sandbox.
-    project_root = str(Path.cwd().resolve())
-    settings.setdefault("permissions", {}).setdefault(
-        "additionalDirectories", []
-    ).append(project_root)
-
-    # Add SubagentStop hook to capture background agent transcripts.
-    # The hook copies each subagent's .jsonl file to workspace/subagents/.
-    # Requires session persistence ON (the runner must NOT pass
-    # --no-session-persistence) so transcript files survive until the hook fires.
-    from agent_eval.agent.stream_capture import setup_subagent_hook
-
-    subagent_dir = str((workspace / "subagents").resolve())
-    setup_subagent_hook(settings, subagent_dir)
-
-    # Inject execution.env into settings
-    _inject_env(settings, config)
-
-    # Apply user-provided runner.settings last so they can override defaults
-    _apply_runner_settings(settings, config)
-
-    with open(settings_dir / "settings.json", "w") as f:
-        _json.dump(settings, f, indent=2)
-
-    print(f"HOOKS: {len(hook_matchers)} tool interceptors configured")
 
 
 if __name__ == "__main__":

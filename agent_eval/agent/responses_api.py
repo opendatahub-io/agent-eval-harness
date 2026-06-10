@@ -264,6 +264,7 @@ class ResponsesAPIRunner(EvalRunner):
         max_budget_usd: float = 5.0,
         timeout_s: int = 600,
         extra_env: Optional[dict] = None,
+        output_dir: Optional[Path] = None,
     ) -> RunResult:
         client = None
         effective_model = model or self._default_model

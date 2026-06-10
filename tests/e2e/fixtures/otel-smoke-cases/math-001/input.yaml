@@ -1,0 +1,2 @@
+prompt: "What is 2+2? Reply with just the number, nothing else."
+expected: "4"

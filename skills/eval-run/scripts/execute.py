@@ -172,6 +172,7 @@ def main():
         config_path=str(Path(args.config).resolve()),
         project_root=str(Path.cwd()),
         model=model,
+        output_dir=output_dir,
     )
     log_dir = output_dir / "hooks"
 
@@ -352,6 +353,9 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
             case_data_out = case_outputs.get("data", {})
             merged_hook_data = {**global_data, **case_data_out}
 
+        case_output = output_dir / "cases" / case_id
+        case_output.mkdir(parents=True, exist_ok=True)
+
         result = runner.run_skill(
             skill_name=skill_name,
             args=case_args,
@@ -362,13 +366,13 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
             max_budget_usd=max_budget,
             timeout_s=timeout_s,
             extra_env=merged_env or None,
+            output_dir=case_output,
         )
     except Exception as exc:
         print(f"    → {case_id}: ERROR ({exc})", file=sys.stderr)
         result = None
         error_msg = str(exc)
     finally:
-        # Run after_each hooks (guaranteed, like after_all)
         if config and config.hooks and config.hooks.after_each and case_hook_env:
             log_dir = output_dir / "hooks"
             run_hooks_safe(config.hooks.after_each, env=case_hook_env,
@@ -393,8 +397,6 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
             f.write("\n")
         return case_id, failed_result
 
-    case_output = output_dir / "cases" / case_id
-    case_output.mkdir(parents=True, exist_ok=True)
     if result.stdout:
         (case_output / "stdout.log").write_text(result.stdout)
     if result.stderr:
@@ -402,6 +404,12 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
 
     # Save hook output data for judges
     save_hook_data(case_output, merged_hook_data)
+
+    # Copy OTel spans from workspace if the receiver wrote there
+    ws_otel = case_ws / "otel_spans.json"
+    if (ws_otel.exists() and not ws_otel.is_symlink()
+            and not (case_output / "otel_spans.json").exists()):
+        shutil.copy2(ws_otel, case_output / "otel_spans.json")
 
     if input_path.exists() and not input_path.is_symlink():
         shutil.copy2(input_path, case_output / "input.yaml")

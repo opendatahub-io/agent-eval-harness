@@ -226,26 +226,42 @@ def _collect_per_case(workspace, output_dir, config):
 
 
 def _generate_events_json(case_dir, output_case_dir, config):
-    """Parse stdout.log into events.json using atomic write."""
-    # In case mode, execute.py writes stdout.log to the output directory,
-    # not the workspace. Check there first, fall back to workspace.
+    """Parse OTel spans or stdout.log into events.json using atomic write.
+
+    Prefers OTel spans (otel_spans.json) when available, falling back to
+    stream-json stdout parsing for backward compatibility.
+    """
+    # Priority 1: OTel spans (when available and non-empty)
+    otel_path = _find_otel_spans(output_case_dir, case_dir)
+    if otel_path:
+        events = _events_from_otel(otel_path, case_dir, config)
+        if events:
+            _write_events_json(output_case_dir, events)
+            return
+
+    # Priority 2: stdout-based parsing
     stdout_path = output_case_dir / "stdout.log"
     if not stdout_path.exists():
         stdout_path = case_dir / "stdout.log"
     if not stdout_path.exists():
-        output_case_dir.mkdir(parents=True, exist_ok=True)
-        dest = output_case_dir / "events.json"
-        fd, tmp_path = tempfile.mkstemp(dir=str(output_case_dir), suffix=".tmp")
-        with os.fdopen(fd, "w") as f:
-            json.dump([], f)
-        os.rename(tmp_path, str(dest))
+        _write_events_json(output_case_dir, [])
         return
 
     try:
         stdout_text = stdout_path.read_text()
     except OSError:
+        _write_events_json(output_case_dir, [])
         return
 
+    # OpenCode JSON events (--format json)
+    runner_type = config.runner.type if hasattr(config, "runner") else ""
+    if runner_type == "opencode":
+        from agent_eval.otel.span_mapper import parse_opencode_events
+        events = parse_opencode_events(stdout_text)
+        _write_events_json(output_case_dir, events)
+        return
+
+    # Claude Code stream-json
     events = parse_stream_events(stdout_text)
 
     subagent_dir = case_dir / "subagents"
@@ -253,6 +269,38 @@ def _generate_events_json(case_dir, output_case_dir, config):
         events = merge_subagent_transcripts(events, str(subagent_dir),
                                             result_cap=DEFAULT_RESULT_CAP)
 
+    _write_events_json(output_case_dir, events)
+
+
+def _find_otel_spans(output_case_dir, case_dir):
+    """Find otel_spans.json in output or workspace directories."""
+    for d in (output_case_dir, case_dir):
+        p = d / "otel_spans.json"
+        if p.exists():
+            return p
+    return None
+
+
+def _events_from_otel(otel_path, case_dir, config):
+    """Convert OTel spans to canonical event dicts."""
+    from agent_eval.otel.span_mapper import get_span_mapper
+    try:
+        data = json.loads(otel_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    resource_spans = data.get("resourceSpans", [])
+    if not resource_spans:
+        return None
+    mapper = get_span_mapper(config.runner.type)
+    api_bodies_dir = case_dir / ".work" / "otel-api-bodies"
+    return mapper.map_spans(
+        resource_spans,
+        api_bodies_dir=api_bodies_dir if api_bodies_dir.is_dir() else None,
+    )
+
+
+def _write_events_json(output_case_dir, events):
+    """Atomic write of events.json."""
     output_case_dir.mkdir(parents=True, exist_ok=True)
     dest = output_case_dir / "events.json"
     fd, tmp_path = tempfile.mkstemp(dir=str(output_case_dir), suffix=".tmp")

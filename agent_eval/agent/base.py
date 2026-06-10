@@ -51,6 +51,26 @@ class EvalRunner(ABC):
     def name(self) -> str:
         """Short identifier for this runner (e.g. 'claude-code', 'agent-sdk')."""
 
+    def setup_workspace(
+        self,
+        workspace: Path,
+        config,
+        *,
+        project_root: Optional[Path] = None,
+        interceptor_src: Optional[Path] = None,
+    ) -> None:
+        """Configure workspace with runner-specific settings.
+
+        Called after generic workspace setup (dirs, symlinks, inputs).
+        Each runner writes its own config files, hooks, and permissions.
+
+        Args:
+            workspace: Root workspace (batch) or case workspace (case mode).
+            config: EvalConfig instance.
+            project_root: Project root directory (where eval.yaml lives).
+            interceptor_src: Path to tool interceptor script (tools.py).
+        """
+
     @abstractmethod
     def run_skill(
         self,
@@ -63,6 +83,7 @@ class EvalRunner(ABC):
         max_budget_usd: float = 5.0,
         timeout_s: int = 600,
         extra_env: Optional[dict] = None,
+        output_dir: Optional[Path] = None,
     ) -> RunResult:
         """Invoke a skill in an isolated workspace.
 
@@ -79,6 +100,8 @@ class EvalRunner(ABC):
             timeout_s: Timeout in seconds.
             extra_env: Additional env vars to inject (e.g. from hook outputs).
                 Merged after execution.env, so hook env overrides static config.
+            output_dir: Where to write trace artifacts (e.g. otel_spans.json).
+                Defaults to workspace if not provided.
 
         Returns:
             RunResult with exit code, output, timing, and optional usage stats.
