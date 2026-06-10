@@ -43,6 +43,12 @@ def main():
         help="Comma-separated dirs/files to symlink into workspace "
         "(default: scripts,.claude,CLAUDE.md,.context,skills)",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Overwrite existing workspace directory if it already exists",
+    )
     args = parser.parse_args()
 
     config = EvalConfig.from_yaml(args.config)
@@ -74,6 +80,17 @@ def main():
         print("ERROR: invalid run-id path", file=sys.stderr)
         sys.exit(1)
     if workspace.exists():
+        if not args.force:
+            print(
+                f"ERROR: Workspace {workspace} already exists. "
+                f"Use --force to overwrite, or choose a different --run-id.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(
+            f"WARNING: --force specified, deleting existing workspace {workspace}",
+            file=sys.stderr,
+        )
         shutil.rmtree(workspace)
     workspace.mkdir(parents=True, mode=0o700)
 
