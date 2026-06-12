@@ -84,7 +84,8 @@ def _prepare_workspace(ws: Path, case_id: str, dataset_root: Path):
     else:
         (ws / "instruction.md").write_text(f"# Task {case_id}\n\nComplete the task.\n")
 
-    # task.toml
+    # task.toml — cpus and memory_mb are required; harbor's OpenShift env
+    # generates "None" / "NoneMi" as Kubernetes quantities if omitted.
     (ws / "task.toml").write_text(
         'schema_version = "1.3"\n'
         "\n"
@@ -97,6 +98,9 @@ def _prepare_workspace(ws: Path, case_id: str, dataset_root: Path):
         "[environment]\n"
         "build_timeout_sec = 600.0\n"
         'network_mode = "public"\n'
+        "cpus = 2\n"
+        "memory_mb = 4096\n"
+        "storage_mb = 10240\n"
     )
 
     # environment/
