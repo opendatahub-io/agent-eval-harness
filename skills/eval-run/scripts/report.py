@@ -633,12 +633,16 @@ h2.section-heading { margin: 1.8em 0 0.8em; }
 .section-intro code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; font-size: 0.92em; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
-#theme-toggle { position: fixed; top: 16px; right: 16px; z-index: 1000; background: var(--surface); color: var(--text); border: 1px solid var(--border-strong); border-radius: 999px; width: 38px; height: 38px; padding: 0; cursor: pointer; font-size: 16px; display: flex; align-items: center; justify-content: center; box-shadow: var(--shadow); transition: background-color .15s ease, transform .15s ease, border-color .15s ease; }
-#theme-toggle:hover { background: var(--surface-2); border-color: var(--accent); transform: scale(1.05); }
-#theme-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#report-toolbar { position: fixed; top: 16px; right: 16px; z-index: 1000; display: flex; gap: 8px; align-items: center; }
+#report-toolbar button { background: var(--surface); color: var(--text); border: 1px solid var(--border-strong); border-radius: 999px; height: 38px; padding: 0 14px; cursor: pointer; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 6px; box-shadow: var(--shadow); transition: background-color .15s ease, transform .15s ease, border-color .15s ease; white-space: nowrap; }
+#report-toolbar button.icon-only { width: 38px; padding: 0; font-size: 16px; }
+#report-toolbar button:hover { background: var(--surface-2); border-color: var(--accent); transform: scale(1.05); }
+#report-toolbar button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#report-toolbar .toast { position: absolute; top: 46px; right: 0; background: var(--pass); color: #fff; padding: 6px 12px; border-radius: 6px; font-size: 12px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+#report-toolbar .toast.show { opacity: 1; }
 @media print {
   :root { color-scheme: light; --bg: #fff; --surface: #fff; --text: #000; --text-muted: #444; }
-  #theme-toggle { display: none; }
+  #report-toolbar { display: none; }
   .section, .analysis, details.case { box-shadow: none; break-inside: avoid; }
 }
 
@@ -725,6 +729,53 @@ TOGGLE_SCRIPT = """
     paint();
   });
   paint();
+})();
+"""
+
+SHARE_SCRIPT = """
+(function () {
+  var toast = document.getElementById('toolbar-toast');
+  function showToast(msg) {
+    toast.textContent = msg;
+    toast.classList.add('show');
+    setTimeout(function () { toast.classList.remove('show'); }, 2000);
+  }
+
+  var btnDownload = document.getElementById('btn-download');
+  if (btnDownload) {
+    btnDownload.addEventListener('click', function () {
+      var html = document.documentElement.outerHTML;
+      var blob = new Blob(['<!DOCTYPE html>\\n' + html], { type: 'text/html' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = document.title.replace(/[^a-zA-Z0-9_\\-]/g, '_') + '.html';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('Downloaded!');
+    });
+  }
+
+  var btnCopy = document.getElementById('btn-copy');
+  if (btnCopy) {
+    btnCopy.addEventListener('click', function () {
+      var path = window.location.pathname || window.location.href;
+      if (path.startsWith('file://')) path = path.slice(7);
+      navigator.clipboard.writeText(path).then(function () {
+        showToast('Path copied!');
+      }).catch(function () {
+        var ta = document.createElement('textarea');
+        ta.value = path;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        showToast('Path copied!');
+      });
+    });
+  }
 })();
 """
 
@@ -2412,7 +2463,12 @@ def generate_report(config, summary, run_result, run_dir,
 <style>{CSS}</style>
 </head>
 <body>
-<button id="theme-toggle" type="button" aria-label="Toggle theme">\u263E</button>
+<div id="report-toolbar">
+<button id="btn-download" type="button" aria-label="Download report">&#8681; Download</button>
+<button id="btn-copy" type="button" aria-label="Copy file path">&#128203; Copy Path</button>
+<button id="theme-toggle" type="button" class="icon-only" aria-label="Toggle theme">\u263E</button>
+<div class="toast" id="toolbar-toast"></div>
+</div>
 """
     baseline_id = None
     if baseline_summary:
@@ -2427,6 +2483,7 @@ def generate_report(config, summary, run_result, run_dir,
     html += _wrap_section(_render_shared_outputs(run_dir, config))
     html += _render_per_case(summary, run_dir, config, baseline_dir, review)
     html += f"\n<script>{TOGGLE_SCRIPT}</script>\n"
+    html += f"<script>{SHARE_SCRIPT}</script>\n"
     html += f"<script>{IMAGE_COMPARE_SCRIPT}</script>\n"
     html += f"<script>{SAMPLE_TABS_SCRIPT}</script>\n"
     html += "</body>\n</html>\n"
