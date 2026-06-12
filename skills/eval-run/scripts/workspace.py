@@ -29,6 +29,10 @@ import yaml
 from agent_eval.config import EvalConfig
 from workspace_files import _copy_input_files
 
+# Resolve git executable to absolute path to prevent PATH hijacking (CWE-426)
+# Validated at runtime in main(), not at import time (safe for tests/imports)
+GIT_BIN = shutil.which("git")
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -44,6 +48,11 @@ def main():
         "(default: scripts,.claude,CLAUDE.md,.context,skills)",
     )
     args = parser.parse_args()
+
+    # Validate git is available (required for workspace creation)
+    if GIT_BIN is None:
+        print("ERROR: git executable not found in PATH", file=sys.stderr)
+        sys.exit(1)
 
     config = EvalConfig.from_yaml(args.config)
 
@@ -80,11 +89,19 @@ def main():
     # Initialize a bare git repo so Claude Code subagents can discover
     # the project root and load .claude/settings.json with the expanded
     # permission patterns (e.g. /private/tmp variants on macOS).
-    subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+    subprocess.run([GIT_BIN, "init", "-q", str(workspace)], check=True)
 
     # Branch on execution mode
+    # Case mode: one invocation per test case (works for both skill and prompt)
+    # Batch mode: one invocation for all cases via batch.yaml
+    # For prompt mode (execution.prompt set) with workspace_mode: repo, use in-repo execution
     if config.execution.mode == "case":
-        _create_per_case_workspace(workspace, case_dirs, config, args)
+        workspace_mode = getattr(config.runner, "workspace_mode", None)
+        is_prompt_mode = bool(config.execution.prompt and config.execution.prompt.strip())
+        if is_prompt_mode and workspace_mode == "repo":
+            _create_in_repo_workspace(workspace, case_dirs, config, args)
+        else:
+            _create_per_case_workspace(workspace, case_dirs, config, args)
         return
 
     # ── Batch mode (below) ───────────────────────────────────────
@@ -211,7 +228,7 @@ def _create_per_case_workspace(workspace, case_dirs, config, args):
         case_id = case_dir.name
         case_ws = workspace / "cases" / case_id
         case_ws.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["git", "init", "-q", str(case_ws)], check=True)
+        subprocess.run([GIT_BIN, "init", "-q", str(case_ws)], check=True)
 
         # Copy only the input file and answers.yaml into the workspace.
         # Companion files (e.g., source code for autofix skills) should
@@ -248,11 +265,11 @@ def _create_per_case_workspace(workspace, case_dirs, config, args):
             "GIT_COMMITTER_EMAIL": "eval@harness",
         }
         subprocess.run(
-            ["git", "-C", str(case_ws), "add", "-A"], check=True, capture_output=True
+            [GIT_BIN, "-C", str(case_ws), "add", "-A"], check=True, capture_output=True
         )
         subprocess.run(
             [
-                "git",
+                GIT_BIN,
                 "-C",
                 str(case_ws),
                 "commit",
@@ -301,10 +318,230 @@ def _create_per_case_workspace(workspace, case_dirs, config, args):
         yaml.dump(case_order, f, default_flow_style=False)
 
     print(f"WORKSPACE: {workspace}")
-    print(f"MODE: case")
+    print("MODE: case")
     print(f"CASES: {len(case_dirs)}")
     for entry in case_order:
         print(f"  {entry['case_id']}: {workspace / 'cases' / entry['case_id']}")
+
+
+def _create_in_repo_workspace(workspace, case_dirs, config, args):
+    """For prompt-mode documentation evals: run agents in the repo itself.
+
+    Agents navigate the real repo structure (ai-docs/, docs/, pkg/, etc.)
+    but all I/O (input.yaml, outputs, logs) goes to workspace/cases/case-NNN/.
+
+    This tests: "Can agents use our documentation as deployed in the repo?"
+
+    Safety measures:
+    - Write protection via permissions.deny prevents repo modification
+    - Git status check after each case verifies repo cleanliness
+    - All outputs collected to workspace/cases/case-NNN/, never written to repo
+    """
+    import json as _json
+
+    project_root = Path.cwd()
+
+    # Snapshot repo state before any agent runs
+    repo_snapshot = _snapshot_repo_state(project_root)
+    (workspace / "repo_snapshot_before.txt").write_text(repo_snapshot)
+
+    # Create case directories (same structure as regular mode)
+    cases_dir = workspace / "cases"
+    cases_dir.mkdir(parents=True, exist_ok=True)
+
+    case_order = []
+
+    for case_dir in case_dirs:
+        case_id = case_dir.name
+        case_ws = cases_dir / case_id
+        case_ws.mkdir(parents=True, exist_ok=True)
+
+        # Copy input.yaml to case workspace (reject symlinks to prevent CWE-59)
+        input_src = _find_input_file(case_dir)
+        if input_src:
+            if input_src.is_symlink():
+                print(f"ERROR: Refusing to copy symlink: {input_src}", file=sys.stderr)
+                sys.exit(1)
+            shutil.copy2(input_src, case_ws / input_src.name)
+
+        # Create output directories in case workspace
+        for output in config.outputs:
+            if output.path and output.path != ".":
+                out = case_ws / output.path
+                if out.suffix:
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                else:
+                    out.mkdir(parents=True, exist_ok=True)
+
+        # Create .claude/settings.json with write protection
+        _create_repo_mode_settings(case_ws, project_root, config)
+
+        # Store metadata marking this as in-repo mode
+        case_meta = {
+            "case_id": case_id,
+            "mode": "in-repo",
+            "repo_cwd": str(project_root),  # Agent runs here, not in case_ws
+        }
+        with open(case_ws / "_metadata.yaml", "w") as f:
+            yaml.dump(case_meta, f)
+
+        case_order.append({"case_id": case_id})
+
+    # Write case order at workspace level (same format as regular mode)
+    with open(workspace / "case_order.yaml", "w") as f:
+        yaml.dump(case_order, f, default_flow_style=False)
+
+    print(f"WORKSPACE: {workspace}")
+    print("MODE: in-repo (documentation eval)")
+    print(f"REPO: {project_root}")
+    print(f"CASES: {len(case_dirs)}")
+    for entry in case_order:
+        print(f"  {entry['case_id']}: workspace/cases/{entry['case_id']}")
+
+
+def _snapshot_repo_state(repo_root):
+    """Capture git status output as baseline for verification."""
+    result = subprocess.run(
+        [GIT_BIN, "status", "--porcelain"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=True
+    )
+    return result.stdout
+
+
+def _create_repo_mode_settings(case_ws, project_root, config):
+    """Create settings.json that prevents repo modifications.
+
+    Strategy:
+    - Allow Read, Grep, Glob anywhere (agents need to navigate docs)
+    - Deny Write, Edit to repo paths (prevent modification)
+    - Allow Write, Edit to case workspace (outputs go here)
+    - Deny git commands that would modify repo
+    """
+    import json as _json
+
+    settings = {}
+
+    # Start with project permissions
+    _carry_over_permissions(settings)
+    _merge_harness_permissions(settings, config)
+
+    # Add repo write protection
+    perms = settings.setdefault("permissions", {})
+    deny_list = perms.setdefault("deny", [])
+
+    # Prevent writes to repo (use string patterns that Claude Code understands)
+    repo_str = str(project_root)
+    deny_patterns = [
+        f"Write({repo_str}/**)",
+        f"Edit({repo_str}/**)",
+        # Prevent git operations that modify repo
+        "Bash(git add*)",
+        "Bash(git commit*)",
+        "Bash(git push*)",
+        "Bash(git checkout*)",
+        "Bash(git reset*)",
+        "Bash(git restore*)",
+        "Bash(git stash*)",
+        "Bash(git clean*)",
+        "Bash(git apply*)",
+        "Bash(git rm*)",
+        "Bash(git mv*)",
+        # Prevent common file manipulation commands that bypass Write/Edit
+        "Bash(echo *>*)",
+        "Bash(echo *>>*)",
+        "Bash(cp * " + repo_str + "*)",
+        "Bash(mv * " + repo_str + "*)",
+        "Bash(sed -i*)",
+        "Bash(rm *)",
+    ]
+
+    for pattern in deny_patterns:
+        if pattern not in deny_list:
+            deny_list.append(pattern)
+
+    # Allow writes to case workspace
+    case_ws_str = str(case_ws)
+    allow_list = perms.setdefault("allow", [])
+    allow_patterns = [
+        f"Write({case_ws_str}/**)",
+        f"Edit({case_ws_str}/**)",
+    ]
+
+    for pattern in allow_patterns:
+        if pattern not in allow_list:
+            allow_list.append(pattern)
+
+    # Grant access to project root for reading
+    perms.setdefault("additionalDirectories", []).append(repo_str)
+
+    # Add SubagentStop hook to capture transcripts
+    from agent_eval.agent.stream_capture import setup_subagent_hook
+    subagent_dir = str((case_ws / "subagents").resolve())
+    setup_subagent_hook(settings, subagent_dir)
+
+    # Set up tool interception hooks if needed
+    if config.inputs.tools:
+        _setup_in_repo_tool_hooks(case_ws, config, settings)
+
+    # Inject execution.env
+    _inject_env(settings, config)
+
+    # Apply user-provided runner.settings
+    _apply_runner_settings(settings, config)
+
+    # Write settings.json to case workspace
+    settings_dir = case_ws / ".claude"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    with open(settings_dir / "settings.json", "w") as f:
+        _json.dump(settings, f, indent=2)
+
+
+def _setup_in_repo_tool_hooks(case_ws, config, settings):
+    """Set up tool interception hooks for in-repo mode."""
+    # Build handler config
+    handlers = []
+    hook_matchers = set()
+
+    for tool_cfg in config.inputs.tools:
+        handler = {"match": tool_cfg.match}
+        patterns = _extract_tool_patterns(tool_cfg.match)
+        handler["patterns"] = patterns
+        if tool_cfg.prompt:
+            handler["prompt"] = tool_cfg.prompt
+        if tool_cfg.prompt_file:
+            handler["prompt_file"] = tool_cfg.prompt_file
+        handlers.append(handler)
+        hook_matchers.update(patterns)
+
+    # Write tool_handlers.yaml to case workspace
+    handler_data = {"handlers": handlers}
+    if config.models.hook:
+        handler_data["hook_model"] = config.models.hook
+    with open(case_ws / "tool_handlers.yaml", "w") as f:
+        yaml.dump(handler_data, f, default_flow_style=False)
+
+    # Copy interceptor script to case workspace
+    hooks_dir = case_ws / "hooks"
+    hooks_dir.mkdir(exist_ok=True)
+    interceptor_src = Path(__file__).parent / "tools.py"
+    if interceptor_src.exists():
+        shutil.copy2(interceptor_src, hooks_dir / "tools.py")
+
+    # Add PreToolUse hooks to settings
+    settings.setdefault("hooks", {})["PreToolUse"] = []
+    for matcher in sorted(hook_matchers):
+        settings["hooks"]["PreToolUse"].append({
+            "matcher": matcher,
+            "hooks": [{
+                "type": "command",
+                "command": f"python3 {case_ws}/hooks/tools.py",
+            }],
+        })
+
+    print(f"HOOKS: {len(hook_matchers)} tool interceptors configured (in-repo mode)")
 
 
 def _find_input_file(case_dir):

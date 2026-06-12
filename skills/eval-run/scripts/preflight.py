@@ -75,7 +75,7 @@ def main():
     config = EvalConfig.from_yaml(args.config)
     project_root = Path.cwd()
     runs_base = Path(os.environ.get("AGENT_EVAL_RUNS_DIR", "eval/runs"))
-    runs_dir = runs_base / config.skill if config.skill else runs_base
+    runs_dir = runs_base / config.eval_name()
 
     # 0. Baseline existence — fail fast before any expensive setup
     if args.baseline:

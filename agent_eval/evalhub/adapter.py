@@ -1,6 +1,6 @@
 """EvalHub FrameworkAdapter for agent-eval-harness.
 
-Orchestrates the full evaluation loop: download dataset, run skill
+Orchestrates the full evaluation loop: download dataset, execute agent
 against each case, score with judges, and map results to JobResults.
 
 Uses conditional imports so the module works without eval-hub-sdk
@@ -159,9 +159,9 @@ def _framework_adapter_init(adapter_instance):
 
 
 class AgentEvalAdapter(FrameworkAdapter):
-    """EvalHub adapter that runs agent skill evaluations.
+    """EvalHub adapter that runs agent evaluations.
 
-    Orchestrates: dataset download -> skill execution -> scoring -> results mapping.
+    Orchestrates: dataset download -> agent execution -> scoring -> results mapping.
     """
 
     def __init__(self, eval_config_path: str = "eval.yaml"):
@@ -272,8 +272,8 @@ class AgentEvalAdapter(FrameworkAdapter):
                 timeout = eval_config.execution.timeout or 600
                 budget = eval_config.execution.max_budget_usd or 5.0
 
-                result = runner.run_skill(
-                    skill_name=eval_config.skill,
+                result = runner.execute(
+                    target=eval_config.skill,
                     args=args,
                     workspace=case_dir,
                     model=model_name,

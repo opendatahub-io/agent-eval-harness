@@ -192,7 +192,7 @@ def test_global_and_case_outputs_merge(tmp_path):
 def _make_mock_runner():
     """Create a mock runner that records call args and returns a RunResult."""
     runner = unittest.mock.MagicMock()
-    runner.run_skill.return_value = RunResult(
+    runner.execute.return_value = RunResult(
         exit_code=0, stdout="ok", stderr="", duration_s=1.0,
         cost_usd=0.01, num_turns=1,
     )
@@ -253,11 +253,11 @@ def test_run_single_case_injects_hook_env(tmp_path):
     assert result is not None
     assert result["exit_code"] == 0
 
-    # Verify extra_env was passed to runner.run_skill
-    call_kwargs = runner.run_skill.call_args
+    # Verify extra_env was passed to runner.execute
+    call_kwargs = runner.execute.call_args
     extra_env = call_kwargs.kwargs.get("extra_env") or (
         call_kwargs[1].get("extra_env") if len(call_kwargs) > 1 else None)
-    assert extra_env is not None, "extra_env should be passed to run_skill"
+    assert extra_env is not None, "extra_env should be passed to execute"
     assert extra_env.get("ISSUE_URL") == "https://github.com/org/repo/issues/1"
 
 
@@ -386,7 +386,7 @@ def test_run_single_case_merges_global_and_case_outputs(tmp_path):
     )
 
     # Check env: case overrides global for SHARED, both GLOBAL_VAR and CASE_VAR present
-    call_kwargs = runner.run_skill.call_args
+    call_kwargs = runner.execute.call_args
     extra_env = call_kwargs.kwargs.get("extra_env") or (
         call_kwargs[1].get("extra_env") if len(call_kwargs) > 1 else None)
     assert extra_env["GLOBAL_VAR"] == "from_global"
@@ -402,7 +402,7 @@ def test_run_single_case_merges_global_and_case_outputs(tmp_path):
 
 
 def test_run_single_case_after_each_runs_on_runner_exception(tmp_path):
-    """after_each hooks run even when runner.run_skill() raises an exception,
+    """after_each hooks run even when runner.execute() raises an exception,
     so cleanup hooks (e.g. deleting ephemeral repos) are guaranteed to fire."""
     case_ws = tmp_path / "workspace" / "cases" / "case-001"
     case_ws.mkdir(parents=True)
@@ -429,7 +429,7 @@ def test_run_single_case_after_each_runs_on_runner_exception(tmp_path):
     )
 
     runner = _make_mock_runner()
-    runner.run_skill.side_effect = RuntimeError("unexpected crash")
+    runner.execute.side_effect = RuntimeError("unexpected crash")
 
     case_id, result = _run_single_case(
         runner, "test-skill", "case-001", case_ws, output_dir,

@@ -19,6 +19,98 @@ sys.path.insert(0, str(Path(__file__).parent))
 from find_skills import find_skill
 
 
+def _validate_builtin_arguments(builtin_name, judge_name, arguments, errors, warnings):
+    """Validate that builtin judges only use documented arguments."""
+    # Known builtin judges and their valid arguments
+    BUILTIN_ARGS = {
+        "consulted_docs": {"min_coverage", "match"},
+        "cost_budget": {"max_cost_usd"},
+        "no_harmful_content": set(),  # No custom arguments
+        "output_completeness": set(),  # No custom arguments
+        "tool_call_validation": {"required_tools", "forbidden_tools"},
+    }
+
+    valid_args = BUILTIN_ARGS.get(builtin_name)
+    if valid_args is None:
+        # Unknown builtin - this might be a new one we haven't documented
+        warnings.append(
+            f"judges.{judge_name} uses unknown builtin '{builtin_name}'. "
+            f"Known builtins: {', '.join(sorted(BUILTIN_ARGS.keys()))}"
+        )
+        return
+
+    invalid_args = set(arguments.keys()) - valid_args
+    if invalid_args:
+        errors.append(
+            f"judges.{judge_name} (builtin:{builtin_name}) has invalid argument(s): {', '.join(sorted(invalid_args))}. "
+            f"Valid arguments for {builtin_name}: {', '.join(sorted(valid_args)) if valid_args else 'none'}"
+        )
+
+    # Specific validation for consulted_docs
+    if builtin_name == "consulted_docs":
+        # Common mistake: using required_paths instead of relying on annotations.expected_files
+        if "required_paths" in arguments:
+            errors.append(
+                f"judges.{judge_name} uses 'required_paths' argument, which doesn't exist for consulted_docs. "
+                f"Remove this argument - consulted_docs reads from annotations.expected_files in the dataset."
+            )
+
+
+def _validate_field_consistency(config, judges, dataset_path, config_dir, errors, warnings):
+    """Check for field name consistency between judges and dataset annotations."""
+    # Check if consulted_docs is used
+    has_consulted_docs = any(j.get("builtin") == "consulted_docs" for j in judges)
+
+    # Check if any LLM judges reference expected_paths
+    llm_judges_with_expected_paths = []
+    for j in judges:
+        name = j.get("name", "unnamed")
+        prompt = j.get("prompt", "") + j.get("prompt_file", "")
+        if "expected_paths" in prompt:
+            llm_judges_with_expected_paths.append(name)
+
+    if has_consulted_docs and llm_judges_with_expected_paths:
+        warnings.append(
+            f"Inconsistent field names: consulted_docs expects 'annotations.expected_files' "
+            f"but these judges reference 'expected_paths': {', '.join(llm_judges_with_expected_paths)}. "
+            f"Use 'expected_files' consistently for documentation path annotations."
+        )
+
+    # Sample dataset cases to check what fields they actually use
+    if dataset_path:
+        dp = Path(dataset_path) if Path(dataset_path).is_absolute() else config_dir / dataset_path
+        if dp.exists() and dp.is_dir():
+            sample_cases = [d for d in dp.iterdir() if d.is_dir() and not d.name.startswith(".")][:3]
+            uses_expected_paths = False
+            uses_expected_files = False
+
+            for case_dir in sample_cases:
+                ann_file = case_dir / "annotations.yaml"
+                if ann_file.exists():
+                    try:
+                        with open(ann_file) as f:
+                            ann = yaml.safe_load(f) or {}
+                            if "expected_paths" in ann:
+                                uses_expected_paths = True
+                            if "expected_files" in ann:
+                                uses_expected_files = True
+                    except (yaml.YAMLError, OSError):
+                        pass
+
+            if has_consulted_docs and uses_expected_paths and not uses_expected_files:
+                errors.append(
+                    f"Dataset cases use 'expected_paths' but consulted_docs judge expects 'expected_files'. "
+                    f"Rename the field in all {dataset_path}/*/annotations.yaml files."
+                )
+
+            if uses_expected_paths and llm_judges_with_expected_paths:
+                # Both dataset and judges use expected_paths, but should use expected_files
+                warnings.append(
+                    f"Dataset and judges use non-standard field 'expected_paths'. "
+                    f"Consider renaming to 'expected_files' (the standard field for doc paths)."
+                )
+
+
 def validate_config(path="eval.yaml"):
     """Validate eval.yaml — structure, completeness, and file references."""
     p = Path(path)
@@ -26,19 +118,55 @@ def validate_config(path="eval.yaml"):
         print(f"NOT_FOUND: {path}")
         sys.exit(1)
 
+    # First, check YAML syntax with safe_load
     with open(p) as f:
-        config = yaml.safe_load(f) or {}
+        try:
+            config = yaml.safe_load(f) or {}
+        except yaml.scanner.ScannerError as e:
+            print(f"YAML_SYNTAX_ERROR: {path}")
+            print(f"  {e}")
+            print("\nTip: Look for unquoted strings in lists, especially with '()', '-', or ':'")
+            print("  Bad:  - field (type)")
+            print("  Good: - \"field (type)\"")
+            sys.exit(1)
 
     config_dir = p.resolve().parent
 
     errors = []
     warnings = []
 
+    # Second, validate schema with EvalConfig
+    try:
+        from agent_eval.config import EvalConfig
+        config_obj = EvalConfig.from_yaml(str(p))
+        # Schema validation passed - use the validated config
+        # (EvalConfig doesn't have to_dict(), so we keep using the yaml.safe_load config)
+    except ValueError as e:
+        # EvalConfig validation failed - this is a critical schema error
+        error_msg = str(e)
+        # Make the error message more user-friendly
+        if "test_categories" in error_msg and "template" in error_msg:
+            errors.append(f"Schema validation failed: {error_msg}")
+            errors.append("Hint: Each test_categories entry needs a 'template' field (e.g., 'builtin:navigation')")
+        else:
+            errors.append(f"Schema validation failed: {error_msg}")
+    except ImportError as e:
+        # EvalConfig not available - skip schema validation (shouldn't happen with agent_eval._bootstrap)
+        warnings.append(f"Could not import EvalConfig for schema validation: {e}")
+
     # --- Structure checks ---
-    if not config.get("skill"):
-        errors.append("Missing 'skill' field")
     if not config.get("name"):
         errors.append("Missing 'name' field")
+
+    # Either execution.skill or execution.prompt must be set (with top-level skill as fallback)
+    execution = config.get("execution", {})
+    has_exec_skill = bool(execution.get("skill", "").strip())
+    has_exec_prompt = bool(execution.get("prompt", "").strip())
+    has_top_level_skill = bool(config.get("skill", "").strip())
+
+    # This check is now redundant with the ExecutionConfig validation but kept for backward compat
+    if not has_exec_skill and not has_exec_prompt and not has_top_level_skill:
+        errors.append("Either execution.skill or execution.prompt must be set (or top-level 'skill' for backward compat)")
 
     dataset = config.get("dataset", {})
     outputs = config.get("outputs", [])
@@ -54,18 +182,28 @@ def validate_config(path="eval.yaml"):
         warnings.append("No judges — scoring step will have nothing to run")
 
     # --- Skill reference check ---
-    skill_name = config.get("skill", "")
+    # Check execution.skill first, then fall back to top-level skill
+    skill_name = execution.get("skill", "") or config.get("skill", "")
     if skill_name and not find_skill(skill_name):
         warnings.append(f"skill '{skill_name}' not found in project")
+
+    # --- Documentation structure check ---
+    domain = dataset.get("domain", {})
+    doc_structure = domain.get("documentation_structure", {})
+    entry_point = doc_structure.get("entry_point", "")
+    if entry_point:
+        ep = Path(entry_point)
+        if not ep.exists():
+            errors.append(f"dataset.domain.documentation_structure.entry_point '{entry_point}' does not exist")
 
     # --- File reference checks (resolve relative to config file location) ---
     dataset_path = dataset.get("path", "")
     if dataset_path:
         dp = Path(dataset_path) if Path(dataset_path).is_absolute() else config_dir / dataset_path
         if not dp.exists():
-            errors.append(f"dataset.path '{dataset_path}' does not exist")
+            warnings.append(f"dataset.path '{dataset_path}' does not exist (run /eval-dataset to generate)")
         elif not any(p for p in dp.iterdir() if not p.name.startswith(".")):
-            warnings.append(f"dataset.path '{dataset_path}' is empty")
+            warnings.append(f"dataset.path '{dataset_path}' is empty (run /eval-dataset to generate cases)")
 
     for i, o in enumerate(outputs):
         out_path = o.get("path", "")
@@ -76,8 +214,75 @@ def validate_config(path="eval.yaml"):
             elif ".." in op.parts:
                 errors.append(f"outputs[{i}].path must not traverse parent: {out_path}")
 
+    # Valid judge fields
+    valid_judge_fields = {
+        "name", "description", "builtin", "check", "prompt", "prompt_file",
+        "module", "function", "arguments", "context", "model", "if", "llm_rubric"
+    }
+
     for j in judges:
         name = j.get("name", "unnamed")
+
+        # Check for unknown fields (common mistake: scoring, validation)
+        unknown_fields = set(j.keys()) - valid_judge_fields
+        if unknown_fields:
+            errors.append(
+                f"judges.{name} has unknown field(s): {', '.join(sorted(unknown_fields))}. "
+                f"Valid fields: builtin, check, prompt, prompt_file, module+function, llm_rubric"
+            )
+
+        # Check that exactly one implementation type is specified
+        impl_types = []
+        if j.get("builtin"):
+            impl_types.append("builtin")
+        if j.get("check"):
+            impl_types.append("check")
+        if j.get("prompt"):
+            impl_types.append("prompt")
+        if j.get("prompt_file"):
+            impl_types.append("prompt_file")
+        if j.get("llm_rubric"):
+            impl_types.append("llm_rubric")
+        if j.get("module"):
+            impl_types.append("module")
+
+        if len(impl_types) == 0:
+            errors.append(
+                f"judges.{name} missing implementation. "
+                f"Must have one of: builtin, check, prompt, prompt_file, llm_rubric, or module+function"
+            )
+        elif len(impl_types) > 1:
+            errors.append(
+                f"judges.{name} has multiple implementations: {', '.join(impl_types)}. "
+                f"Choose exactly one."
+            )
+
+        # Module judges must also have function
+        if j.get("module") and not j.get("function"):
+            errors.append(f"judges.{name} has 'module' but missing 'function'")
+
+        # Check for common mistakes in inline check judges
+        check_code = j.get("check", "")
+        if check_code:
+            import re
+            # Flag bare usage of annotations/conversation (should be outputs.get("annotations"/"conversation"))
+            bare_annotations = re.search(r'\bannotations\s*\.', check_code)
+            bare_conversation = re.search(r'\bconversation\b(?!\s*=)', check_code)
+
+            if bare_annotations:
+                errors.append(
+                    f"judges.{name}.check uses bare 'annotations' — "
+                    f"must use outputs.get(\"annotations\", {{}}) instead. "
+                    f"See eval-yaml-template.md for correct pattern."
+                )
+            if bare_conversation:
+                errors.append(
+                    f"judges.{name}.check uses bare 'conversation' — "
+                    f"must use outputs.get(\"conversation\", \"\") instead. "
+                    f"See eval-yaml-template.md for correct pattern."
+                )
+
+        # File reference checks
         prompt_file = j.get("prompt_file", "")
         if prompt_file:
             pf = Path(prompt_file) if Path(prompt_file).is_absolute() else config_dir / prompt_file
@@ -95,13 +300,45 @@ def validate_config(path="eval.yaml"):
             except ImportError:
                 errors.append(f"judges.{name}.module '{module}' not importable")
 
+        # Validate builtin judge arguments
+        builtin_name = j.get("builtin", "")
+        if builtin_name:
+            arguments = j.get("arguments", {})
+            _validate_builtin_arguments(builtin_name, name, arguments, errors, warnings)
+
     # --- Execution config ---
     execution = config.get("execution", {})
     exec_mode = execution.get("mode", "case")
     if exec_mode not in ("case", "batch"):
         errors.append(f"execution.mode must be 'case' or 'batch', got '{exec_mode}'")
-    if not execution.get("arguments"):
+
+    # Check mutual exclusivity of skill and prompt
+    has_skill = bool(execution.get("skill", "").strip())
+    has_prompt = bool(execution.get("prompt", "").strip())
+    top_level_skill = bool(config.get("skill", "").strip())
+
+    if has_skill and has_prompt:
+        errors.append(
+            "execution.skill and execution.prompt are mutually exclusive. "
+            "Use execution.skill for '/skill-name' invocations or execution.prompt for direct prompts."
+        )
+
+    # At least one of skill/prompt must be set (with top-level skill as fallback)
+    if not has_skill and not has_prompt and not top_level_skill:
+        errors.append(
+            "Either execution.skill or execution.prompt must be set. "
+            "Use execution.skill for skill invocations, execution.prompt for direct prompt mode."
+        )
+
+    # Warn if arguments missing for skill mode
+    if (has_skill or top_level_skill) and not has_prompt and not execution.get("arguments"):
         warnings.append("No execution.arguments — skill will be invoked with no arguments")
+
+    # For prompt mode, the prompt template should be valid
+    if has_prompt:
+        prompt = execution.get("prompt", "")
+        if not prompt.strip():
+            errors.append("execution.prompt is set but empty")
 
     # --- Inputs (tool interception) ---
     for t in (config.get("inputs", {}).get("tools") or []):
@@ -141,6 +378,10 @@ def validate_config(path="eval.yaml"):
                 f"thresholds.{thresh_name} references non-existent judge "
                 f"(available: {', '.join(sorted(judge_names)) or 'none'})")
 
+    # --- Field name consistency checks ---
+    _validate_field_consistency(config, judges, dataset_path if dataset_path else None,
+                                config_dir, errors, warnings)
+
     # --- Report ---
     if errors:
         for e in errors:
@@ -153,7 +394,8 @@ def validate_config(path="eval.yaml"):
         status = "INCOMPLETE"
 
     mlflow = config.get("mlflow") or {}
-    print(f"{status}: {config.get('name')} (skill={config.get('skill')})")
+    skill_display = config.get("skill") or f"mode={exec_mode}"
+    print(f"{status}: {config.get('name')} (skill={skill_display})")
     print(f"  execution: mode={exec_mode}, arguments={'yes' if execution.get('arguments') else 'no'}")
     print(f"  runner: {runner.get('type', 'claude-code')}")
     print(f"  models: skill={models.get('skill', 'unset')}, judge={models.get('judge', 'unset')}")
@@ -171,7 +413,7 @@ def validate_config(path="eval.yaml"):
 
 
 def validate_memory(path="eval.md"):
-    """Check if eval.md is fresh (skill hasn't changed)."""
+    """Check if eval.md is fresh (skill or documentation hasn't changed)."""
     p = Path(path)
     if not p.exists():
         print("STALE: eval.md does not exist")
@@ -188,6 +430,30 @@ def validate_memory(path="eval.md"):
         sys.exit(1)
 
     fm = yaml.safe_load(parts[1]) or {}
+    eval_type = fm.get("type", "")
+
+    # Handle documentation-based evals
+    if eval_type == "documentation-eval":
+        stored_hash = fm.get("documentation_hash", "")
+        if not stored_hash:
+            print("STALE: missing documentation_hash in frontmatter")
+            sys.exit(1)
+
+        # Check CLAUDE.md or AGENTS.md (prefer CLAUDE.md)
+        doc_path = Path("CLAUDE.md") if Path("CLAUDE.md").exists() else Path("AGENTS.md")
+        if not doc_path.exists():
+            print("STALE: no CLAUDE.md or AGENTS.md found")
+            sys.exit(1)
+
+        current_hash = hashlib.sha256(doc_path.read_bytes()).hexdigest()[:12]
+        if current_hash == stored_hash:
+            print(f"FRESH: documentation-eval (hash={stored_hash})")
+        else:
+            print(f"STALE: documentation changed ({stored_hash} -> {current_hash})")
+            sys.exit(1)
+        return
+
+    # Handle skill-based evals
     skill_name = fm.get("skill", "")
     stored_hash = fm.get("skill_hash", "")
 

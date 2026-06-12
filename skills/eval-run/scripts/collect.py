@@ -59,6 +59,7 @@ def main():
     output_dir = Path(args.output)
 
     # Per-case mode: outputs are already in case workspaces
+    # (Works for both skill and prompt execution in case mode)
     if config.execution.mode == "case":
         _collect_per_case(workspace, output_dir, config)
         return

@@ -51,7 +51,7 @@ def main():
     config = EvalConfig.from_yaml(args.config)
     mlflow.set_tracking_uri(resolve_tracking_uri(config))
     runs_base = Path(os.environ.get("AGENT_EVAL_RUNS_DIR", "eval/runs"))
-    runs_dir = runs_base / config.skill if config.skill else runs_base
+    runs_dir = runs_base / config.eval_name()
     run_dir = runs_dir / args.run_id
 
     # Load summary
@@ -228,7 +228,7 @@ def main():
     # Build synthetic traces from stdout.log for cases not already covered
     # by existing execution traces.
     exec_mode = run_result.get("execution_mode", "batch")
-    if exec_mode == "case":
+    if exec_mode in ("case", "prompt"):
         cases_dir = run_dir / "cases"
         if cases_dir.exists():
             for case_dir in sorted(d for d in cases_dir.iterdir() if d.is_dir()):

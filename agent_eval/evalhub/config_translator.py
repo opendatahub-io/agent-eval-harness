@@ -52,7 +52,7 @@ def eval_config_to_provider(config: EvalConfig) -> dict:
     benchmark = {
         "id": config.name,
         "name": config.name,
-        "description": config.description or f"Evaluation suite for {config.skill}",
+        "description": config.description or f"Evaluation suite for {config.skill or 'prompt'}",
         "category": "agent-evaluation",
         "metrics": metrics,
         "primary_score": {

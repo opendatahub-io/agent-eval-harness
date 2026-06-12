@@ -48,11 +48,21 @@ Build a list of **judge-driven requirements** — these are the concrete things 
 - A judge checking tool calls → include a case where the skill should (or shouldn't) invoke external tools
 - A cost/efficiency judge → include a case with large input that tests scaling
 
-If eval.yaml doesn't exist, ask the user which skill to evaluate, then invoke `/eval-analyze` to create the config:
+If eval.yaml doesn't exist, determine what to evaluate and invoke `/eval-analyze`:
 
-```text
-Use the Skill tool to invoke /eval-analyze --skill <skill-name>
-```
+1. **Check what's available**:
+   - Skills in `skills/` directory
+   - Agentic documentation (CLAUDE.md, AGENTS.md, ai-docs/)
+
+2. **Ask user which evaluation mode**:
+   - If both exist: offer choice between skill-based and documentation-based evaluation
+   - If only skills: suggest `/eval-analyze --skill <skill-name>`
+   - If only docs: suggest `/eval-analyze --prompt builtin:docs`
+
+3. **Invoke /eval-analyze**:
+   ```text
+   Use the Skill tool to invoke /eval-analyze with the chosen mode
+   ```
 
 Wait for the analysis to complete, then re-read eval.yaml. If /eval-analyze fails or the user skips it, you cannot generate meaningful cases — stop and explain why.
 
@@ -61,6 +71,28 @@ If eval.md doesn't exist, you can still work from eval.yaml's schema description
 ### Assess recommended case count
 
 After reading the skill analysis and judges, estimate whether `--count` is sufficient. Count the skill's distinct execution paths (branches, modes, optional steps), the number of judges, and the number of conditional judges. A rough guideline: you need at least one case per execution path, plus enough variety for each judge to have both passing and failing examples. If the skill has 4 execution paths and 6 judges, 5 cases may be thin — suggest a higher count to the user ("This skill has N distinct paths and M judges — consider `--count 12` for better coverage").
+
+## Step 1.5: Detect Generation Mode
+
+Check if the eval config has `test_categories` defined (use the --config path from Step 0):
+
+```bash
+python3 -c "from pathlib import Path; import yaml; import sys; config = yaml.safe_load(Path(sys.argv[1]).read_text()); print('TAXONOMY' if config.get('dataset', {}).get('test_categories') else 'SKILL')" "<config_path>"
+```
+
+Replace `<config_path>` with the actual value from the --config argument (default: eval.yaml).
+
+**If TAXONOMY mode detected**:
+- This is a taxonomy-based eval config (from `/eval-analyze --prompt`)
+- Use taxonomy-based generation instead of skill-based generation
+- Skip to Step 2-Taxonomy (see below)
+
+**Otherwise**:
+- Continue with skill-based generation (Step 2 below)
+
+---
+
+## SKILL-BASED GENERATION (Default)
 
 ## Step 2: Parse Schema into Generation Template
 
@@ -216,6 +248,71 @@ Tell the user what was created:
   - `/eval-run --model <model>` to test the skill against these cases
   - `/eval-run --model <model> --gold` to generate gold references from the best outputs
   - `/eval-dataset --strategy expand --count 10` to add more cases later
+
+---
+
+## TAXONOMY-BASED GENERATION (Prompt-Mode Evals)
+
+## Step 2-Taxonomy: Generate from Test Categories
+
+**When to use**: When eval.yaml has `dataset.test_categories` defined (from `/eval-analyze --prompt`).
+
+**What it does**: Generates test cases using category templates (navigation, anti-pattern, authoring, component-usage, architecture) combined with repository-specific domain knowledge.
+
+### Execute Taxonomy Generation
+
+Extract the judge model from the eval config and call the taxonomy generation script (use the --config path from Step 0):
+
+```bash
+JUDGE_MODEL=$(python3 -c "from pathlib import Path; import yaml; import sys; config = yaml.safe_load(Path(sys.argv[1]).read_text()); print(config.get('models', {}).get('judge', 'claude-opus-4-6'))" "<config_path>")
+
+python3 ${CLAUDE_SKILL_DIR}/scripts/generate_from_taxonomy.py \
+  --config <config_path> \
+  --output <dataset_path> \
+  --model "${JUDGE_MODEL}"
+```
+
+Replace `<config_path>` with the actual value from the --config argument (default: eval.yaml).
+
+The script will:
+1. Read `test_categories` from the eval config
+2. Resolve each template reference (`builtin:navigation` → template file)
+3. Use Claude API to generate test cases following template instructions
+4. Apply domain knowledge from `dataset.domain` for repository-specific context
+5. Write cases to `<dataset_path>/case-NNN/`
+
+### Report Results
+
+Tell the user:
+
+- **Cases generated**: N cases at `<dataset_path>`
+- **Categories**: List which categories and how many cases per category
+- **Domain context**: What repository-specific knowledge was used
+- **Model used**: Which model generated the cases (from `models.judge` or default)
+- **Next steps**:
+  - Review generated cases in `<dataset_path>/`
+  - Run evaluation: `/eval-run --model <model>`
+  - Generate more if needed: `/eval-dataset --count 20`
+
+### Example Output
+
+```text
+Generated 15 test cases:
+  - navigation (5 cases): Finding documentation in ai-docs/
+  - anti-pattern (5 cases): Rejecting constraint violations
+  - authoring (5 cases): Creating content following templates
+
+Domain context applied:
+  - Documentation structure: CLAUDE.md, ai-docs/workflows/, ai-docs/domain/
+  - Constraints: 3 rules from ai-docs/practices/
+  - APIs: 5 components from domain.apis
+
+Model used: claude-opus-4-6
+
+Next: /eval-run --model opus
+```
+
+---
 
 ## Rules
 

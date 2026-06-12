@@ -1,13 +1,13 @@
 ---
 name: eval-setup
-description: Optional environment configurator for the agent-eval-harness. Configures MLflow tracking, verifies API keys, and troubleshoots dependency issues. Not required for basic usage — dependencies auto-install via SessionStart hook and agent_eval is available via symlinks. Use when the user wants to configure MLflow tracking, troubleshoot import errors, verify the environment, or set up a remote MLflow server. Also triggers on "configure mlflow", "set up tracking", "ModuleNotFoundError", "mlflow not installed", "missing dependencies", or "check my eval environment".
+description: Optional environment configurator for the agent-eval-harness. Configures MLflow tracking, verifies API keys, and troubleshoots dependency issues. Detects available skills and agentic documentation (CLAUDE.md, AGENTS.md, ai-docs/) to suggest appropriate evaluation modes. Not required for basic usage — dependencies auto-install via SessionStart hook and agent_eval is available via symlinks. Use when the user wants to configure MLflow tracking, troubleshoot import errors, verify the environment, or set up a remote MLflow server. Also triggers on "configure mlflow", "set up tracking", "ModuleNotFoundError", "mlflow not installed", "missing dependencies", or "check my eval environment".
 user-invocable: true
 allowed-tools: Read, Bash, Glob, AskUserQuestion
 ---
 
-You are an environment configurator. You verify the evaluation harness environment and configure optional integrations like MLflow. Non-destructive: skip steps that are already done, report status.
+You are an environment configurator. You verify the evaluation harness environment, configure optional integrations like MLflow, and suggest evaluation modes based on what's available in the repository. Non-destructive: skip steps that are already done, report status.
 
-Most users can skip this skill entirely — dependencies auto-install via the plugin's SessionStart hook, and `agent_eval` is available to scripts via symlinks. This skill is useful for configuring MLflow tracking, troubleshooting dependency issues, or verifying the environment.
+Most users can skip this skill entirely — dependencies auto-install via the plugin's SessionStart hook, and `agent_eval` is available to scripts via symlinks. This skill is useful for configuring MLflow tracking, troubleshooting dependency issues, verifying the environment, and discovering what evaluation modes are available.
 
 The eval pipeline is: `/eval-analyze` → `/eval-dataset` → `/eval-run` → `/eval-review` or `/eval-optimize`. `/eval-mlflow` can be invoked at any point after `/eval-run`. MLflow tracing is handled by `/eval-mlflow` after a run completes. No tracing setup is needed here.
 
@@ -177,7 +177,22 @@ else:
 
 If eval.yaml doesn't exist, skip this step — it will be created by `/eval-analyze`.
 
-## Step 7: Final Verification
+## Step 7: Detect Agentic Documentation
+
+Check if the repository has agentic documentation that can be evaluated:
+
+```bash
+HAS_AGENTIC_DOCS=false
+if [ -f CLAUDE.md ] || [ -f AGENTS.md ] || [ -d ai-docs ]; then
+    HAS_AGENTIC_DOCS=true
+    echo "Detected agentic documentation:"
+    [ -f CLAUDE.md ] && echo "  - CLAUDE.md"
+    [ -f AGENTS.md ] && echo "  - AGENTS.md"
+    [ -d ai-docs ] && echo "  - ai-docs/"
+fi
+```
+
+## Step 8: Final Verification
 
 Run the preflight checks again to confirm everything is set up:
 
@@ -191,10 +206,20 @@ If eval.yaml exists, also validate it:
 test -f eval.yaml && python3 ${CLAUDE_SKILL_DIR}/scripts/check_env.py --config eval.yaml
 ```
 
-Report the final status to the user and suggest next steps:
-- If eval.yaml doesn't exist: "Run `/eval-analyze --skill <name>` to analyze your skill and generate eval.yaml"
+Report the final status to the user and suggest next steps.
+
+**If agentic docs were detected**, present both evaluation modes:
+1. **Skill-based evaluation** — analyze and test a specific skill
+2. **Documentation evaluation** — test if agents can use the repository's agentic documentation
+
+**Next steps structure**:
+- If eval.yaml doesn't exist:
+  - Suggest skill-based: `/eval-analyze --skill <name>` (list discovered skills)
+  - If agentic docs exist, also suggest: `/eval-analyze --prompt builtin:docs` for documentation testing
 - If eval.yaml exists but no dataset: "Run `/eval-dataset` to generate test cases"
 - If everything is ready: "Run `/eval-run --model <model>` to execute the evaluation"
+
+Always include the full pipeline path: analyze → dataset → run → review/optimize → mlflow
 
 ## Rules
 
