@@ -1,41 +1,33 @@
 name: harbor-maas-v1-anova
 description: >
-  Phase-2 validation: /eval-anova over a subset of harbor-maas-v1 (real
-  models-as-a-service PR tasks). Judges fixed to read in-place repo edits
-  and compare against the decoded oracle. Lives under gitignored eval/runs/.
+  Harbor-based eval-anova: A:B test comparing agent performance with cognee
+  MCP context (knowledge graph) vs without on models-as-a-service Go bugfix
+  tasks running on OpenShift.
 
 skill: null                      # raw PR prompt is the agent input (no skill)
 
 execution:
   mode: case
-  arguments: |
-    You are an automated software engineer working inside a checked-out clone of
-    the opendatahub-io/models-as-a-service git repository (your current working
-    directory). Implement the change described below by EDITING the repository's
-    source files in place with the Write/Edit tools. Make the actual code changes
-    — do not merely describe them or only read files. Save all edits to disk.
-
-    ---
-    {prompt}
-  timeout: 900
+  arguments: "{prompt}"
+  timeout: 1800
 
 runner:
-  type: claude-code
+  type: cli
+  command: >-
+    harbor run
+    --path {workspace}
+    --agent claude-code
+    --model {model}
+    -e openshift
+    --mcp-config {mcp_config_file}
+    --jobs-dir {output_dir}
+    --job-name harbor-trial
+    --yes
+    --delete
 
 models:
   skill: claude-sonnet-4-6       # overridden per matrix cell
   judge: claude-opus-4-6         # LLM judge model (Vertex)
-
-permissions:
-  allow:                         # headless: pre-approve editing tools
-    - Read
-    - Write
-    - Edit
-    - Bash
-    - Glob
-    - Grep
-  deny:
-    - "mcp__*"
 
 dataset:
   path: dataset                  # relative to this eval.yaml
@@ -44,8 +36,10 @@ dataset:
     oracle.diff (referenced by annotations.yaml for the judge).
 
 outputs:
-  - path: artifacts
-    schema: In-place repo edits captured via git diff into _modified/.
+  - path: harbor_output
+    schema: |
+      Harbor job output: result.json (verifier reward), agent trajectory,
+      and test results.
 
 traces:
   stdout: false
@@ -54,14 +48,22 @@ traces:
   metrics: false
 
 judges:
-  - name: has_code_changes
-    description: Agent produced non-trivial in-place edits.
+  - name: harbor_reward
+    description: Harbor verifier passed (tests pass on agent's fix).
     check: |
-      mods = outputs.get("modified_files") or {}
-      total = sum(len(v) for v in mods.values() if isinstance(v, str))
-      if total < 50:
-          return False, f"Only {total} chars changed across {len(mods)} file(s)"
-      return True, f"{len(mods)} file(s) changed, {total} chars"
+      import json, pathlib
+      harbor_dir = case_dir / "harbor_output"
+      if not harbor_dir.exists():
+          return False, "No harbor output found"
+      for rj in harbor_dir.rglob("result.json"):
+          try:
+              result = json.loads(rj.read_text())
+              reward = result.get("reward", 0)
+              if reward > 0:
+                  return True, f"verifier reward={reward}"
+          except Exception:
+              continue
+      return False, "No result.json with positive reward"
 
   - name: solution_quality
     description: LLM judge — does the agent's diff solve the task vs the oracle?
@@ -89,15 +91,16 @@ judges:
       {"score": <int 1-5>, "rationale": "<one sentence>"}
 
 thresholds:
-  has_code_changes:
-    min_pass_rate: 0.8
+  harbor_reward:
+    min_pass_rate: 0.5
   solution_quality:
     min_mean: 3.0
 
 matrix:
   factors:
     model:
-      - claude-opus-4-6
       - claude-sonnet-4-6
-      - claude-haiku-4-5
+    context:
+      - cognee
+      - none
   replications: 1
