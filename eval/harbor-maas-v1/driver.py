@@ -42,6 +42,8 @@ JUDGE_CONFIGS = {
 
 
 def _normalize(name, value, jtype):
+    if value is None:
+        return 0.0 if jtype != "check" else False
     if name == "solution_quality" and isinstance(value, (int, float)):
         return (value - 1) / 4.0  # 1..5 -> 0..1
     return value

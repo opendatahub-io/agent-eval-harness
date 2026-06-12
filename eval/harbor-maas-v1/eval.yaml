@@ -22,6 +22,7 @@ runner:
     --mcp-config {mcp_config_file}
     --jobs-dir {output_dir}
     --job-name harbor-trial
+    --ae ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
     --yes
     --delete
 
@@ -51,19 +52,22 @@ judges:
   - name: harbor_reward
     description: Harbor verifier passed (tests pass on agent's fix).
     check: |
-      import json, pathlib
-      harbor_dir = case_dir / "harbor_output"
-      if not harbor_dir.exists():
-          return False, "No harbor output found"
-      for rj in harbor_dir.rglob("result.json"):
-          try:
-              result = json.loads(rj.read_text())
-              reward = result.get("reward", 0)
-              if reward > 0:
-                  return True, f"verifier reward={reward}"
-          except Exception:
-              continue
-      return False, "No result.json with positive reward"
+      import json
+      files = outputs.get("files", {})
+      for path, content in files.items():
+          if path.endswith("result.json") and "harbor_output" in path and isinstance(content, str):
+              try:
+                  result = json.loads(content)
+                  vr = result.get("verifier_result") or {}
+                  reward = vr.get("reward", 0)
+                  if reward > 0:
+                      return True, f"verifier reward={reward}"
+                  exc = result.get("exception_info") or {}
+                  msg = exc.get("exception_type", "unknown error")
+                  return False, f"reward={reward}, {msg}"
+              except Exception as e:
+                  continue
+      return False, "No harbor result.json in outputs"
 
   - name: solution_quality
     description: LLM judge — does the agent's diff solve the task vs the oracle?
