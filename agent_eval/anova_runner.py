@@ -150,14 +150,29 @@ def make_run_fn(
         shutil.rmtree(ws, ignore_errors=True)
 
     def run_fn(case_id: str, *, model: str | None = None,
-               effort: str | None = None, **_: Any) -> dict[str, Any]:
+               effort: str | None = None, **extra: Any) -> dict[str, Any]:
         input_data = yaml.safe_load(
             (dataset_root / case_id / "input.yaml").read_text())
         args = _resolve_arguments(eval_config.execution.arguments, input_data)
 
-        cond_slug = _sanitize(model or "default")
+        # Inject config_dir and factor levels into input_data so CliRunner
+        # can resolve them as {placeholder} values in the command template.
+        input_data["config_dir"] = str(dataset_root.parent.resolve())
+        for k, v in extra.items():
+            input_data.setdefault(k, v)  # don't overwrite case data
+
+        # Pre-resolve MCP config path from context factor level
+        context = extra.get("context")
+        if context is not None:
+            mcp_path = dataset_root.parent.resolve() / f"mcp-{context}.json"
+            input_data["mcp_config_file"] = str(mcp_path)
+
+        slug_parts = [_sanitize(model or "default")]
         if effort:
-            cond_slug += f"-{_sanitize(effort)}"
+            slug_parts.append(_sanitize(effort))
+        for k in sorted(extra):
+            slug_parts.append(f"{_sanitize(k)}-{_sanitize(str(extra[k]))}")
+        cond_slug = "-".join(slug_parts)
         cell_case_dir = runs_dir / "cells" / cond_slug / case_id
         cell_case_dir.mkdir(parents=True, exist_ok=True)
 
@@ -166,6 +181,7 @@ def make_run_fn(
             if prepare_workspace:
                 prepare_workspace(ws, case_id, dataset_root)
             _commit_baseline(ws)
+            (ws / "input.yaml").write_text(yaml.dump(input_data, default_flow_style=False))
             runner = runner_cls.from_config(
                 eval_config, log_prefix=log_prefix, effort=effort)
             result = runner.run_skill(
@@ -178,6 +194,10 @@ def make_run_fn(
             )
             changed = collect._collect_modified_files(ws, eval_config)
             n_modified = _copy_modified(changed, cell_case_dir / "_modified")
+            # Copy harbor output artifacts into cell dir before workspace teardown
+            harbor_output = ws / "output"
+            if harbor_output.exists():
+                shutil.copytree(harbor_output, cell_case_dir / "harbor_output", dirs_exist_ok=True)
             (cell_case_dir / "stderr.log").write_text(result.stderr or "")
             (cell_case_dir / "stdout.log").write_text(result.stdout or "")
         finally:
