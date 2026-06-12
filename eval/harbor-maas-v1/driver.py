@@ -36,7 +36,7 @@ RUNS_DIR = REPO / "eval" / "runs"
 TASKS = ["task-0031", "task-0034", "task-0008", "task-0010"]
 
 JUDGE_CONFIGS = {
-    "has_code_changes": {"type": "boolean", "gate": True},
+    "harbor_reward": {"type": "boolean", "gate": True},
     "solution_quality": {"type": "numeric", "weight": 1.0},
 }
 
@@ -155,7 +155,7 @@ def run_smoke():
     print(f"== SMOKE: sonnet x task-0031 -> {run_dir} ==", flush=True)
     res = run_cell(cond, "task-0031", 0, {}, JUDGE_CONFIGS, run_fn=run_fn)
     print(f"== judge_results={res.judge_results} composite={res.composite} ==")
-    ok = bool(res.judge_results.get("has_code_changes")) and \
+    ok = bool(res.judge_results.get("harbor_reward")) and \
         res.judge_results.get("solution_quality") is not None
     print("SMOKE PASS" if ok else "SMOKE FAIL -- diagnose before matrix")
     return 0 if ok else 1
