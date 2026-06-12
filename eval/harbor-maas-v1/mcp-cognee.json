@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cognee": {
+      "type": "sse",
+      "url": "http://cognee-mcp.evalhub.svc:8321/sse"
+    }
+  }
+}
