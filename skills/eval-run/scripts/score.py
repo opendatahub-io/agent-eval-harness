@@ -14,6 +14,7 @@ Usage:
 import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
 
 import argparse
+import ast
 import importlib
 import json
 import os
@@ -747,6 +748,195 @@ def _aggregate_samples(runs, judge_type):
     return result
 
 
+def _parse_inline_check_source(source):
+    """Parse an inline check snippet as the function body used at runtime."""
+    wrapped = f"def _check(outputs, arguments):\n{textwrap.indent(source or '', '    ')}"
+    try:
+        return ast.parse(wrapped)
+    except SyntaxError:
+        return None
+
+
+def _extract_frontmatter_field_refs(source):
+    """Return fm.get("field") references from an inline check snippet."""
+    tree = _parse_inline_check_source(source)
+    if tree is None:
+        return []
+    refs = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "fm"):
+            continue
+        if (node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)):
+            refs.add(node.args[0].value)
+    return sorted(set(refs))
+
+
+def _extract_frontmatter_content_keys(source):
+    """Return outputs['name_content'] keys that flow into an fm assignment."""
+    tree = _parse_inline_check_source(source)
+    if tree is None:
+        return []
+    var_sources = {}
+    fm_sources = set()
+
+    def _content_keys_in_expr(node):
+        if isinstance(node, ast.Subscript) and _is_outputs_name(node.value):
+            key = _literal_string(node.slice)
+            return {key} if key and key.endswith("_content") else set()
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get"
+                and _is_outputs_name(node.func.value)
+                and node.args):
+            key = _literal_string(node.args[0])
+            return {key} if key and key.endswith("_content") else set()
+        if isinstance(node, ast.Name):
+            return var_sources.get(node.id, set())
+        keys = set()
+        for child in ast.iter_child_nodes(node):
+            keys.update(_content_keys_in_expr(child))
+        return keys
+
+    def _record_assignment(target, sources):
+        if not isinstance(target, ast.Name):
+            return
+        if target.id == "fm":
+            fm_sources.update(sources)
+        elif sources:
+            var_sources[target.id] = sources
+        else:
+            var_sources.pop(target.id, None)
+
+    def _visit_statements(statements):
+        for statement in statements:
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if isinstance(statement, ast.Assign):
+                sources = _content_keys_in_expr(statement.value)
+                for target in statement.targets:
+                    _record_assignment(target, sources)
+            elif isinstance(statement, ast.AnnAssign):
+                sources = (_content_keys_in_expr(statement.value)
+                           if statement.value else set())
+                _record_assignment(statement.target, sources)
+            for attr in ("body", "orelse", "finalbody"):
+                nested = getattr(statement, attr, None)
+                if isinstance(nested, list):
+                    _visit_statements(nested)
+            for handler in getattr(statement, "handlers", []):
+                _visit_statements(handler.body)
+
+    function = tree.body[0]
+    _visit_statements(function.body)
+    if fm_sources:
+        return sorted(fm_sources)
+
+    keys = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Subscript) and _is_outputs_name(node.value):
+            key = _literal_string(node.slice)
+            if key and key.endswith("_content"):
+                keys.add(key)
+        elif (isinstance(node, ast.Call)
+              and isinstance(node.func, ast.Attribute)
+              and node.func.attr == "get"
+              and _is_outputs_name(node.func.value)
+              and node.args):
+            key = _literal_string(node.args[0])
+            if key and key.endswith("_content"):
+                keys.add(key)
+    return sorted(keys)
+
+
+def _is_outputs_name(node):
+    return isinstance(node, ast.Name) and node.id == "outputs"
+
+
+def _literal_string(node):
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _extract_yaml_frontmatter_keys(text):
+    """Extract top-level keys from markdown YAML frontmatter."""
+    if not isinstance(text, str) or not text.startswith("---"):
+        return set()
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return set()
+    try:
+        frontmatter = yaml.safe_load(parts[1]) or {}
+    except yaml.YAMLError:
+        return set()
+    if not isinstance(frontmatter, dict):
+        return set()
+    return {str(k) for k in frontmatter}
+
+
+def _collect_frontmatter_keys(record, content_keys=None):
+    """Collect YAML frontmatter keys from loaded text artifacts."""
+    if content_keys:
+        return {
+            key: _extract_yaml_frontmatter_keys(record.get(key))
+            for key in content_keys
+            if key in record
+        }
+
+    keys = set()
+    found_artifact = False
+    for content in record.get("files", {}).values():
+        found_artifact = True
+        keys.update(_extract_yaml_frontmatter_keys(content))
+    for name, content in record.items():
+        if name.endswith("_content"):
+            found_artifact = True
+            keys.update(_extract_yaml_frontmatter_keys(content))
+    return {"collected artifacts": keys} if found_artifact else {}
+
+
+def _warn_stale_inline_field_refs(judges, case_dirs, config, run_id=None):
+    """Warn when inline checks reference absent YAML frontmatter fields."""
+    refs_by_judge = {}
+    for name, scorer, _condition, judge_type, _samples in judges:
+        if judge_type != "check":
+            continue
+        source = getattr(scorer, "_inline_check_source", "")
+        refs = _extract_frontmatter_field_refs(source)
+        if refs:
+            refs_by_judge[name] = (
+                refs, _extract_frontmatter_content_keys(source)
+            )
+    if not refs_by_judge or not case_dirs:
+        return
+
+    try:
+        record = load_case_record(case_dirs[0], config, run_id=run_id)
+    except Exception:
+        return
+
+    for name, (refs, content_keys) in refs_by_judge.items():
+        available_by_source = _collect_frontmatter_keys(record, content_keys)
+        for source, available in available_by_source.items():
+            missing = [ref for ref in refs if ref not in available]
+            if not missing:
+                continue
+            available_text = ", ".join(sorted(available)) or "(none)"
+            missing_text = ", ".join(missing)
+            print(
+                f"  Warning: inline judge '{name}' references "
+                f"frontmatter field(s) not found in {source}: {missing_text}. "
+                f"Available fields: {available_text}",
+                file=sys.stderr,
+            )
+
+
 def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
     """Score all cases with all judges in parallel.
 
@@ -756,6 +946,7 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
     """
     if not case_dirs:
         return {"per_case": {}, "aggregated": {n: {"values": [], "mean": None, "pass_rate": None} for n, *_ in judges}}
+    _warn_stale_inline_field_refs(judges, case_dirs, config, run_id=run_id)
     per_case = {}
     aggregated = {name: {"values": []} for name, *_ in judges}
     parallelism = min(len(case_dirs), os.cpu_count() or 4)
@@ -884,6 +1075,7 @@ def _make_inline_check(jc):
     def scorer(outputs=None, **kwargs):
         return check_fn(outputs or {}, arguments or {})
 
+    scorer._inline_check_source = source
     return scorer
 
 
