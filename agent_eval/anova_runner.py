@@ -26,6 +26,7 @@ Real run artifacts land under ``runs_dir`` (caller passes a gitignored
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -158,6 +159,9 @@ def make_run_fn(
         # Inject config_dir and factor levels into input_data so CliRunner
         # can resolve them as {placeholder} values in the command template.
         input_data["config_dir"] = str(dataset_root.parent.resolve())
+        gcp_key = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
+        if gcp_key:
+            input_data["gcp_adc_path"] = gcp_key
         for k, v in extra.items():
             input_data.setdefault(k, v)  # don't overwrite case data
 
