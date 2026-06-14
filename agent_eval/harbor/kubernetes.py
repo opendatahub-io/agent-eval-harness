@@ -32,6 +32,7 @@ import os
 import re
 import shlex
 import tarfile
+import threading
 import time
 from pathlib import Path
 
@@ -114,12 +115,24 @@ def _returncode_from_status(err_channel: str | None) -> int:
 class KubernetesEnvironment(BaseEnvironment):
     """Single-pod Harbor environment backed by the Kubernetes Python client."""
 
-    # Package-manager patterns Harbor may emit during agent setup.
-    # Matched in exec() when AGENT_EVAL_K8S_SKIP_PKG_INSTALLS=1 so pre-built
-    # images can skip installs that would fail under restricted-v2 SCC.
+    # Patterns Harbor emits during agent setup / install that require root or
+    # a network bootstrap.  Matched in exec() when
+    # AGENT_EVAL_K8S_SKIP_PKG_INSTALLS=1 so pre-built images (which already
+    # have every dependency baked in) can skip commands that would fail under
+    # OpenShift's restricted-v2 SCC (no root, no internet egress).
+    #
+    # Covers all branches of claude_code.install() + BaseInstalledAgent.setup():
+    #   1. Root pkg installs  – apk add / apt-get install / dnf install / yum install
+    #   2. npm global install – npm install -g @anthropic-ai/claude-code
+    #   3. Claude bootstrap   – curl -fsSL https://downloads.claude.ai/…  | bash
     _PKG_INSTALL_RE = re.compile(
-        r"\b(apk\s+add|apt-get\s+(?:update\s*&&\s*apt-get\s+)?install"
-        r"|dnf\s+install|yum\s+install)\b"
+        r"\b(apk\s+add"
+        r"|apt-get\s+(?:update\s*&&\s*apt-get\s+)?install"
+        r"|dnf\s+install"
+        r"|yum\s+install"
+        r"|npm\s+install\s+-g"
+        r")\b"
+        r"|curl\s+-fsSL\s+https://downloads\.claude\.ai"
     )
 
     def __init__(self, *args, keep_pods: bool | None = None, **kwargs):
@@ -314,37 +327,79 @@ class KubernetesEnvironment(BaseEnvironment):
     # --- exec (websocket) ---------------------------------------------------
 
     def _ws_exec_short(self, command: str, timeout_sec: int | None) -> ExecResult:
-        """Single-shot WebSocket exec for commands that complete in < ~30 s.
+        """Single-shot WebSocket exec with a hard wall-clock deadline.
 
-        Not suitable for long-running commands: OpenShift's HAProxy router drops
-        idle WebSocket connections after ≈60 s.  Use _ws_exec for those.
+        The kubernetes WebSocket client can deadlock on resp.close() or
+        read_channel() when HAProxy has silently torn down the connection
+        (sends no TCP FIN / WebSocket close frame). Running the entire
+        session in a daemon thread lets us impose a hard deadline without
+        relying on WebSocket-level close semantics.
+
+        Not suitable for long-running commands: use _ws_exec for those.
         """
-        resp = k8s_stream(
-            self._core.connect_get_namespaced_pod_exec,
-            self._pod, self._namespace, container="main",
-            command=["/bin/sh", "-c", command],
-            stderr=True, stdin=False, stdout=True, tty=False,
-            _preload_content=False,
-        )
-        out: list[str] = []
-        err: list[str] = []
-        deadline = time.monotonic() + timeout_sec if timeout_sec else None
-        while resp.is_open():
-            resp.update(timeout=1)
-            if resp.peek_stdout():
-                out.append(resp.read_stdout())
-            if resp.peek_stderr():
-                err.append(resp.read_stderr())
-            if deadline and time.monotonic() > deadline:
-                resp.close()
-                return ExecResult(
-                    stdout="".join(out),
-                    stderr="".join(err) + f"\n[timed out after {timeout_sec}s]",
-                    return_code=124)
-        err_channel = resp.read_channel(ERROR_CHANNEL)
-        resp.close()
-        return ExecResult(stdout="".join(out), stderr="".join(err),
-                          return_code=_returncode_from_status(err_channel))
+        result_holder: list[ExecResult] = []
+        exc_holder:    list[BaseException] = []
+
+        def _run() -> None:
+            try:
+                resp = k8s_stream(
+                    self._core.connect_get_namespaced_pod_exec,
+                    self._pod, self._namespace, container="main",
+                    command=["/bin/sh", "-c", command],
+                    stderr=True, stdin=False, stdout=True, tty=False,
+                    _preload_content=False,
+                )
+                out: list[str] = []
+                err: list[str] = []
+                deadline = time.monotonic() + timeout_sec if timeout_sec else None
+                while resp.is_open():
+                    resp.update(timeout=1)
+                    if resp.peek_stdout():
+                        out.append(resp.read_stdout())
+                    if resp.peek_stderr():
+                        err.append(resp.read_stderr())
+                    if deadline and time.monotonic() > deadline:
+                        try:
+                            resp.close()
+                        except Exception:
+                            pass
+                        result_holder.append(ExecResult(
+                            stdout="".join(out),
+                            stderr="".join(err) + f"\n[timed out after {timeout_sec}s]",
+                            return_code=124))
+                        return
+                try:
+                    err_channel = resp.read_channel(ERROR_CHANNEL)
+                except Exception:
+                    err_channel = None
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+                result_holder.append(ExecResult(
+                    stdout="".join(out), stderr="".join(err),
+                    return_code=_returncode_from_status(err_channel)))
+            except Exception as exc:  # noqa: BLE001
+                exc_holder.append(exc)
+
+        # 10 s buffer over the soft deadline so the thread's own timeout
+        # fires first; the hard limit is a last-resort escape hatch for
+        # cases where resp.close() / read_channel() never return.
+        hard_limit = (timeout_sec or 60) + 10
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout=hard_limit)
+        if t.is_alive():
+            # Thread is stuck (likely resp.close() on a dead connection).
+            # Daemon flag prevents it from blocking process exit.
+            return ExecResult(
+                stdout="",
+                stderr=f"[ws_exec_short hard timeout after {hard_limit}s]",
+                return_code=124)
+        if exc_holder:
+            raise exc_holder[0]
+        return result_holder[0] if result_holder else ExecResult(
+            stdout="", stderr="[no result from exec thread]", return_code=1)
 
     def _ws_exec(self, command: str, timeout_sec: int | None) -> ExecResult:
         """Fire-and-poll exec that survives HAProxy idle-connection timeouts.
