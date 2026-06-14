@@ -18,6 +18,7 @@ docker_image = "@@IMAGE@@"
 [verifier]
 # tests/test.sh runs the agent-eval-harness judge engine and writes
 # /logs/verifier/reward.json (the judge -> reward bridge).
+script = "tests/test.sh"
 timeout_sec = @@VERIFIER_TIMEOUT@@
 
 [agent]
