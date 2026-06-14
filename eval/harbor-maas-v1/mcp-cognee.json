@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "cognee": {
-      "type": "sse",
-      "url": "http://cognee-mcp.evalhub.svc:8321/sse"
+      "type": "streamable-http",
+      "url": "http://cognee-mcp.cognee.svc:8321/mcp"
     }
   }
 }
