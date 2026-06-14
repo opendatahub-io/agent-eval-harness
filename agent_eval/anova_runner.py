@@ -158,7 +158,8 @@ def make_run_fn(
 
         # Inject config_dir and factor levels into input_data so CliRunner
         # can resolve them as {placeholder} values in the command template.
-        input_data["config_dir"] = str(dataset_root.parent.resolve())
+        eval_dir = eval_config.resolve_path(".").resolve()
+        input_data["config_dir"] = str(eval_dir)
         gcp_key = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
         if gcp_key:
             input_data["gcp_adc_path"] = gcp_key
@@ -168,7 +169,7 @@ def make_run_fn(
         # Pre-resolve MCP config path from context factor level
         context = extra.get("context")
         if context is not None:
-            mcp_path = dataset_root.parent.resolve() / f"mcp-{context}.json"
+            mcp_path = eval_dir / f"mcp-{context}.json"
             input_data["mcp_config_file"] = str(mcp_path)
 
         slug_parts = [_sanitize(model or "default")]
