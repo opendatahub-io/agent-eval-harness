@@ -130,8 +130,10 @@ def generate_interception(
     # Copy interceptor script
     hooks_dir = target_dir / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
-    if _INTERCEPTOR_SCRIPT.is_file():
-        shutil.copy2(_INTERCEPTOR_SCRIPT, hooks_dir / "tools.py")
+    if not _INTERCEPTOR_SCRIPT.is_file():
+        raise FileNotFoundError(
+            f"Tool interceptor script not found: {_INTERCEPTOR_SCRIPT}")
+    shutil.copy2(_INTERCEPTOR_SCRIPT, hooks_dir / "tools.py")
 
     # Handler config: prefer a pre-resolved file (from /eval-analyze, with
     # LLM-resolved input_filters/env_checks/case_overrides), fall back to

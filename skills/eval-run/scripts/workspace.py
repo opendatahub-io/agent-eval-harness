@@ -536,7 +536,7 @@ def _setup_tool_hooks(workspace, config):
     import json as _json
     from agent_eval.tools.interception import generate_interception
 
-    hooks_command = f"python3 {workspace}/hooks/tools.py"
+    hooks_command = f"python3 '{workspace}/hooks/tools.py'"
     resolved = config.config_dir / "tool_handlers.yaml" if config.config_dir else None
     hook_matchers = generate_interception(
         workspace, config, hooks_command,
@@ -547,7 +547,10 @@ def _setup_tool_hooks(workspace, config):
     settings_path = workspace / ".claude" / "settings.json"
     settings = {}
     if settings_path.exists():
-        settings = _json.loads(settings_path.read_text())
+        try:
+            settings = _json.loads(settings_path.read_text())
+        except (_json.JSONDecodeError, OSError):
+            pass
 
     # Carry over project permissions (allow, deny, additionalDirectories)
     _carry_over_permissions(settings)

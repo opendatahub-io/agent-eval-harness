@@ -250,6 +250,7 @@ def run_eval_on_harbor(
     proc = subprocess.run(cmd)
     if proc.returncode != 0:
         print(f"harbor run exited {proc.returncode}", file=sys.stderr)
+        return proc.returncode
 
     # 3. Locate the job dir Harbor just wrote (newest under jobs_dir).
     job_dirs = sorted((d for d in jobs_dir.iterdir() if d.is_dir()),

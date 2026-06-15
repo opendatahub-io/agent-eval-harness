@@ -253,6 +253,9 @@ class PodmanEnvironment(BaseEnvironment):
     # --- file transfer (podman cp) -----------------------------------------
 
     async def upload_file(self, source_path: Path | str, target_path: str) -> None:
+        parent = str(Path(target_path).parent)
+        if parent and parent != ".":
+            await self.exec(f"mkdir -p {shlex.quote(parent)}", user="root")
         await self._cp(str(source_path), f"{self._container}:{target_path}")
 
     async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None:

@@ -77,9 +77,10 @@ def _pod_name(session_id: str) -> str:
 
 def _load_kube_config() -> None:
     """In-cluster config when running in a pod; else local kubeconfig."""
+    from kubernetes.config.config_exception import ConfigException
     try:
         k8s_config.load_incluster_config()
-    except Exception:
+    except ConfigException:
         k8s_config.load_kube_config()
 
 
@@ -109,7 +110,7 @@ def _returncode_from_status(err_channel: str | None) -> int:
     try:
         status = json.loads(err_channel)
     except (json.JSONDecodeError, TypeError):
-        return 0
+        return 1
     if status.get("status") == "Success":
         return 0
     for cause in (status.get("details") or {}).get("causes") or []:

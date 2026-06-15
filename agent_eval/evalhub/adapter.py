@@ -137,10 +137,13 @@ def _configmap_to_dir(cm_data: dict[str, str], dest: Path) -> None:
     ``k8s_resources._collect_files``). This reverses that encoding so the
     directory structure matches the original project layout.
     """
+    dest_resolved = dest.resolve()
     dest.mkdir(parents=True, exist_ok=True)
     for key, content in cm_data.items():
         rel_path = key.replace("--", "/")
-        file_path = dest / rel_path
+        file_path = (dest / rel_path).resolve()
+        if not file_path.is_relative_to(dest_resolved):
+            raise ValueError(f"Path traversal detected in ConfigMap key: {key}")
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(content)
 
@@ -199,7 +202,8 @@ class AgentEvalAdapter(FrameworkAdapter):
 
         # 2. Load dataset (ConfigMap > filesystem > S3)
         dataset_info = self._load_dataset(config, callbacks, eval_config,
-                                          tmp_root, namespace)
+                                          tmp_root, namespace,
+                                          eval_config_path=eval_config_path)
         model_name = config.model.name
 
         # 3. Build runner from eval.yaml runner.type
@@ -300,7 +304,8 @@ class AgentEvalAdapter(FrameworkAdapter):
 
     def _load_dataset(self, config: JobSpec, callbacks: JobCallbacks,
                       eval_config: EvalConfig, tmp_root: Path,
-                      namespace: str) -> DatasetInfo:
+                      namespace: str, eval_config_path: Path | None = None,
+                      ) -> DatasetInfo:
         """Load dataset: ConfigMap parameter > local path > S3."""
         params = config.parameters or {}
 
@@ -316,8 +321,9 @@ class AgentEvalAdapter(FrameworkAdapter):
             log.info("Dataset from ConfigMap: %d cases", len(case_ids))
             return DatasetInfo(num_cases=len(case_ids), case_ids=case_ids, dest=dest)
 
-        # Local filesystem
-        eval_config_dir = Path(self._eval_config_path).parent
+        # Local filesystem — resolve relative to the actual config location
+        config_base = eval_config_path or Path(self._eval_config_path)
+        eval_config_dir = Path(config_base).parent
         local_dataset = eval_config_dir / eval_config.dataset.path
         if local_dataset.is_dir() and any(local_dataset.iterdir()):
             self._report_status(callbacks, JobStatus.RUNNING, JobPhase.LOADING_DATA,

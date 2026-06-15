@@ -27,7 +27,7 @@ Parse `$ARGUMENTS`:
 | `--effort <level>` | no | `runner.effort` from config | Claude Code reasoning effort (Claude Code only; ignored by other runners) |
 | `--runner <type>` | no | local | `local` (default Steps 1–8) or `harbor` (containerized — skips to Harbor runner section) |
 
-If `--runner harbor`: after config discovery, **skip to the Harbor runner section** below. Steps 1–6 are replaced by one `run.py` call.
+If `--runner harbor`: after config discovery, **skip to the Harbor runner section** below. Steps 2–6 are replaced by one `run.py` call.
 
 ### Config Discovery
 

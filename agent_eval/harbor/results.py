@@ -107,8 +107,9 @@ def parse_job(job_dir: Path) -> dict:
         agg["mean"] = sum(vals) / len(vals) if vals else None
 
     # Aggregate agent cost/tokens across trials for run-level metrics.
-    total_cost = sum(t["cost_usd"] for t in trials
-                     if isinstance(t.get("cost_usd"), (int, float))) or None
+    cost_values = [t["cost_usd"] for t in trials
+                   if isinstance(t.get("cost_usd"), (int, float))]
+    total_cost = sum(cost_values) if cost_values else None
     token_usage: dict = {}
     for t in trials:
         for k, v in (t.get("token_usage") or {}).items():
