@@ -34,7 +34,9 @@ def _load_dotenv() -> None:
     """Load .env from cwd or any ancestor, if present.
 
     Uses os.environ.setdefault so explicit exports always win over .env values.
-    Supports KEY=VALUE, KEY="VALUE", KEY='VALUE', and skips comments / blank lines.
+    Supports only simple ``KEY=VALUE``, ``KEY="VALUE"``, and ``KEY='VALUE'`` forms.
+    Does NOT handle: ``export KEY=VALUE``, inline comments (``KEY=val # comment``),
+    multiline values, or escaped quotes inside values.
     """
     for p in [Path.cwd(), *Path.cwd().parents]:
         env_file = p / ".env"

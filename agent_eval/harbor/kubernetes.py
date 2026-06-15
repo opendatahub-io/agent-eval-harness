@@ -336,17 +336,26 @@ class KubernetesEnvironment(BaseEnvironment):
     # --- exec (websocket) ---------------------------------------------------
 
     @staticmethod
-    def _ws_keepalive(resp: object, interval: int, stop: threading.Event) -> None:
+    def _ws_keepalive(
+        resp: object,
+        interval: int,
+        stop: threading.Event,
+        lock: threading.Lock,
+    ) -> None:
         """Send WebSocket ping frames every *interval* seconds.
 
         HAProxy resets its idle-connection timer on any wire-level frame,
         including WebSocket pings.  A ping every 30 s keeps long-running
         agent commands alive without the complexity of fire-and-poll.
+
+        *lock* is shared with the read loop in ``_ws_exec`` so that ping
+        and ``resp.update()`` never race on the underlying socket.
         Stops silently when *stop* is set or the underlying socket is gone.
         """
         while not stop.wait(interval):
             try:
-                resp.sock.ping()  # type: ignore[union-attr]
+                with lock:
+                    resp.sock.ping()  # type: ignore[union-attr]
             except Exception:
                 break
 
@@ -365,6 +374,7 @@ class KubernetesEnvironment(BaseEnvironment):
         result_holder: list[ExecResult] = []
         exc_holder:    list[BaseException] = []
         stop_ping = threading.Event()
+        ws_lock   = threading.Lock()
 
         def _run() -> None:
             try:
@@ -377,14 +387,15 @@ class KubernetesEnvironment(BaseEnvironment):
                 )
                 threading.Thread(
                     target=self._ws_keepalive,
-                    args=(resp, 30, stop_ping),
+                    args=(resp, 30, stop_ping, ws_lock),
                     daemon=True,
                 ).start()
                 out: list[str] = []
                 err: list[str] = []
                 deadline = time.monotonic() + timeout_sec if timeout_sec else None
                 while resp.is_open():
-                    resp.update(timeout=1)
+                    with ws_lock:
+                        resp.update(timeout=1)
                     if resp.peek_stdout():
                         out.append(resp.read_stdout())
                     if resp.peek_stderr():
