@@ -138,8 +138,6 @@ Run the skill headlessly against test cases. In `case` mode (default), execute.p
 
 If `hooks:` is configured in eval.yaml, execute.py automatically runs lifecycle hooks at the appropriate points: `before_all` before any case executes, `before_each`/`after_each` around each case execution, and `after_all` after all cases complete (guaranteed, even on failure). Hook logs are written to `$AGENT_EVAL_RUNS_DIR/<id>/hooks/`.
 
-The execute script handles CLI construction, streaming progress, and result capture:
-
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/execute.py \
   --config <config> \
@@ -156,44 +154,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/execute.py \
   [--parallelism <n>]
 ```
 
-Most flags fall back to the config:
-- `--agent` falls back to `runner.type` (default `claude-code`).
-- `--model` falls back to `models.skill`. If neither is set, execute.py errors out.
-- `--mlflow-experiment` falls back to `mlflow.experiment`.
-- `--skill-args` falls back to `execution.arguments`. In `case` mode, `{field}` placeholders are resolved per case from input.yaml.
-- `--effort` falls back to `runner.effort` (Claude Code only; ignored by other runners).
-- `--parallelism` falls back to `execution.parallelism`. When > 1, cases run concurrently via thread pool. Each case gets its own log prefix (e.g., `eval:case-003`) so interleaved output is distinguishable.
-
-Override via CLI only when testing different combinations than what the config specifies.
-
-### Monitoring Progress
-
-Skill execution can take minutes to hours. Launch execute.py using the Bash tool with `run_in_background: true`. **Do NOT pipe the command** through `tail`, `head`, `grep`, or any other filter — piping buffers all output and prevents progress monitoring. The command must be the bare `python3 ... execute.py ...` invocation with no pipes.
-
-Once launched, the Bash tool returns an output file path. Monitor progress by reading that file periodically:
-
-```bash
-# Check progress (repeat periodically)
-tail -20 <output_file>
-```
-
-Look for phase markers (`## Phase`, `## Step`, `Batch N/M`), agent counts (`N agents launched`, `N/M done`), and completion signals (`Done`). Summarize concisely — e.g., "Batch 2/4: review agents 3/5 complete" rather than dumping raw output.
-
-**Detecting problems**: If the last lines haven't changed across two checks (~2-3 min apart), the pipeline may be stuck. Common signs:
-- Repeated `sleep` commands with no progress change → agents may have timed out or crashed
-- `ERROR` or `Traceback` in the output → script failure, report immediately
-- No new output for 5+ minutes → possible hang, check if the process is still running
-- `exit code` or `EXIT:` appearing → execution finished (check the code)
-
-When you spot an issue, report it to the user with the relevant output lines rather than waiting for completion.
-
-After execution, check `run_result.json` for `exit_code`, `duration_s`, `wall_clock_s`, `cost_usd`, `num_turns`, and per-model token usage. `duration_s` is the sum of per-case durations; `wall_clock_s` is the actual elapsed time (lower when parallelism is used). Read it with `cat` (JSON — do not use `state.py`).
-
-```bash
-cat $AGENT_EVAL_RUNS_DIR/<eval-name>/<id>/run_result.json
-```
-
-If `exit_code` is non-zero, report the failure with the exit code, duration, and the first few lines of `$AGENT_EVAL_RUNS_DIR/<eval-name>/<id>/stderr.log`. Do not continue to scoring.
+Launch with `run_in_background: true` (no pipes). Monitor via `tail -20 <output_file>`. After completion, check `run_result.json` — if `exit_code` is non-zero, report the failure and stop. See `${CLAUDE_SKILL_DIR}/references/execution-monitoring.md` for CLI flag fallbacks, monitoring patterns, and problem detection.
 
 ## Step 5: Collect Artifacts
 
@@ -258,25 +219,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py read $AGENT_EVAL_RUNS_DI
 
 ## Step 7: Interpret and Report
 
-Read the summary and analyze the results. Read `${CLAUDE_SKILL_DIR}/prompts/analyze-results.md` for the full analysis framework — it covers aggregate assessment, failure patterns, root causes, regressions, cost attribution, and recommendations. Lead with the **Recommendation** so the call-to-action is the first thing the reader sees. Be decisive — state assessments, not hedges.
-
-When analyzing failures, note the judge type — builtin judges have fixed, versioned behavior (suggest adjusting `arguments:` in eval.yaml), while inline checks and LLM prompts can be edited directly.
-
-**Save analysis to file** so it persists in the report. Prepend YAML frontmatter recording the agent and model that wrote the analysis, plus the UTC timestamp — the report uses these to attribute the analysis in its subtitle:
-
-```bash
-cat > $AGENT_EVAL_RUNS_DIR/<eval-name>/<id>/analysis.md << 'EOF'
----
-agent: Claude Code        # the agent/runtime writing this analysis (e.g. Claude Code)
-model: <your-model-id>   # e.g. claude-opus-4-7, claude-sonnet-4-6 — the model backing the agent
-date: <UTC ISO 8601>     # e.g. 2026-04-17T14:32:11Z
----
-
-<your full analysis — Recommendation first, then Summary, Failure Patterns, Root Causes, Regressions>
-EOF
-```
-
-Write the analysis body as markdown with these sections in order: `## Recommendation` (verdict + top actions), `## Summary` (aggregate scores, run metrics), `## Failure Patterns`, `## Root Causes`, `## Regressions` (only if `--baseline` was provided), `## Cost Attribution` (always — cite `run_metrics` plus a derived `cost_per_<unit>`). The Recommendation must be self-contained — many readers will only read that section. This file is rendered as a prominent callout near the top of the HTML report; the frontmatter is consumed by the report renderer and not displayed verbatim.
+Read the summary and analyze the results. Read `${CLAUDE_SKILL_DIR}/prompts/analyze-results.md` for the full analysis framework and output format. Lead with **Recommendation** (self-contained — many readers only read this section). Save the analysis to `$AGENT_EVAL_RUNS_DIR/<eval-name>/<id>/analysis.md` with YAML frontmatter (agent, model, date) — see the prompt file for the template.
 
 **Generate HTML report**:
 
