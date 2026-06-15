@@ -138,6 +138,7 @@ def generate_tasks(
             "EVAL_NAME": config.name,
             "CASE_ID": case_id,
             "IMAGE": image,
+            "WORKDIR": workdir,
             "VERIFIER_TIMEOUT": verifier_timeout,
             "AGENT_TIMEOUT": agent_timeout,
         }))

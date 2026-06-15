@@ -14,10 +14,9 @@ case_id = "@@CASE_ID@@"
 
 [environment]
 docker_image = "@@IMAGE@@"
+workdir = "@@WORKDIR@@"
 
 [verifier]
-# tests/test.sh runs the agent-eval-harness judge engine and writes
-# /logs/verifier/reward.json (the judge -> reward bridge).
 timeout_sec = @@VERIFIER_TIMEOUT@@
 
 [agent]

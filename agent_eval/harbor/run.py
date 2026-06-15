@@ -15,6 +15,7 @@ a suite-level step on top (run separately over two run dirs).
 import argparse
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -27,6 +28,32 @@ from agent_eval.harbor import tasks as tasks_mod
 from agent_eval.harbor.reward import _load_score_module
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _load_dotenv() -> None:
+    """Load .env from cwd or any ancestor, if present.
+
+    Uses os.environ.setdefault so explicit exports always win over .env values.
+    Supports only simple ``KEY=VALUE``, ``KEY="VALUE"``, and ``KEY='VALUE'`` forms.
+    Does NOT handle: ``export KEY=VALUE``, inline comments (``KEY=val # comment``),
+    multiline values, or escaped quotes inside values.
+    """
+    for p in [Path.cwd(), *Path.cwd().parents]:
+        env_file = p / ".env"
+        if env_file.is_file():
+            try:
+                for raw in env_file.read_text().splitlines():
+                    line = raw.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, _, v = line.partition("=")
+                    k = k.strip()
+                    v = v.strip().strip('"').strip("'")
+                    if k:
+                        os.environ.setdefault(k, v)
+            except OSError:
+                pass
+            break
 # Mapping from eval.yaml runner.type to Harbor agent name.
 # runner.type is an agent-eval-harness concept; Harbor --agent is Harbor's.
 # Names that match directly (claude-code) need no mapping.
@@ -270,6 +297,7 @@ def run_eval_on_harbor(
 
 
 def main() -> None:
+    _load_dotenv()
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", required=True)

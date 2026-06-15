@@ -51,3 +51,4 @@ credentials/
 .specify/
 !.specify/memory/
 !.specify/memory/constitution.md
+uv.lock
