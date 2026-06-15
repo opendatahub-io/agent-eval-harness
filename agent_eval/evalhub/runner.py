@@ -209,8 +209,9 @@ def _run_with_client(client, config, config_path, ns, provider_id,
     except Exception as exc:
         print(f"WARNING: report generation failed: {exc}", file=sys.stderr)
 
-    # 6. Regression check
-    try:
+    # 6. Regression check — let errors propagate (silent success on broken
+    # detection is worse than a noisy failure)
+    if config.thresholds:
         score = _load_score_module()
         regressions = score.detect_regressions(summary["judges"], config.thresholds)
         if regressions:
@@ -219,8 +220,6 @@ def _run_with_client(client, config, config_path, ns, provider_id,
                 print(f"  [{r.judge_name}] {r.metric}: {r.baseline_value} -> "
                       f"{r.current_value}", file=sys.stderr)
             return 1
-    except Exception as exc:
-        log.warning("Regression check skipped: %s", exc)
 
     print(f"Mapped → {output_dir}/summary.yaml; REGRESSIONS: 0")
     return 0

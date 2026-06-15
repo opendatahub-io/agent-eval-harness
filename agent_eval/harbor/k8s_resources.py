@@ -79,7 +79,7 @@ def _apply_configmap(
     data: dict[str, str], labels: dict | None = None,
 ) -> None:
     """Create or update a ConfigMap."""
-    total = sum(len(v) for v in data.values())
+    total = sum(len(v.encode("utf-8")) for v in data.values())
     if total > _MAX_CONFIGMAP_SIZE:
         raise ValueError(
             f"ConfigMap '{name}' would be {total:,} bytes, exceeding the "
@@ -211,17 +211,26 @@ def create_env_secret(
     _apply_secret(core, name, namespace, data)
 
 
-def cleanup(namespace: str) -> int:
-    """Delete all ConfigMaps and Secrets created by agent-eval-harness."""
+def cleanup(namespace: str, name_prefix: str | None = None) -> int:
+    """Delete ConfigMaps and Secrets created by agent-eval-harness.
+
+    If ``name_prefix`` is given, only delete resources whose name starts with
+    that prefix (scoped cleanup for a specific run/project). Otherwise deletes
+    all harness-managed resources in the namespace.
+    """
     core = _ensure_client()
     selector = "app.kubernetes.io/managed-by=agent-eval-harness"
     deleted = 0
     for cm in core.list_namespaced_config_map(
             namespace, label_selector=selector).items:
+        if name_prefix and not cm.metadata.name.startswith(name_prefix):
+            continue
         core.delete_namespaced_config_map(cm.metadata.name, namespace)
         deleted += 1
     for secret in core.list_namespaced_secret(
             namespace, label_selector=selector).items:
+        if name_prefix and not secret.metadata.name.startswith(name_prefix):
+            continue
         core.delete_namespaced_secret(secret.metadata.name, namespace)
         deleted += 1
     if deleted:
