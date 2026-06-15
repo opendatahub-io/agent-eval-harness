@@ -51,7 +51,8 @@ def main():
     config = EvalConfig.from_yaml(args.config)
     mlflow.set_tracking_uri(resolve_tracking_uri(config))
     runs_base = Path(os.environ.get("AGENT_EVAL_RUNS_DIR", "eval/runs"))
-    runs_dir = runs_base / config.skill if config.skill else runs_base
+    eval_subdir = config.skill or config.name
+    runs_dir = runs_base / eval_subdir if eval_subdir else runs_base
     run_dir = runs_dir / args.run_id
 
     # Load summary

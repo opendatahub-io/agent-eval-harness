@@ -335,19 +335,36 @@ class KubernetesEnvironment(BaseEnvironment):
 
     # --- exec (websocket) ---------------------------------------------------
 
-    def _ws_exec_short(self, command: str, timeout_sec: int | None) -> ExecResult:
-        """Single-shot WebSocket exec with a hard wall-clock deadline.
+    @staticmethod
+    def _ws_keepalive(resp: object, interval: int, stop: threading.Event) -> None:
+        """Send WebSocket ping frames every *interval* seconds.
 
-        The kubernetes WebSocket client can deadlock on resp.close() or
-        read_channel() when HAProxy has silently torn down the connection
-        (sends no TCP FIN / WebSocket close frame). Running the entire
-        session in a daemon thread lets us impose a hard deadline without
-        relying on WebSocket-level close semantics.
+        HAProxy resets its idle-connection timer on any wire-level frame,
+        including WebSocket pings.  A ping every 30 s keeps long-running
+        agent commands alive without the complexity of fire-and-poll.
+        Stops silently when *stop* is set or the underlying socket is gone.
+        """
+        while not stop.wait(interval):
+            try:
+                resp.sock.ping()  # type: ignore[union-attr]
+            except Exception:
+                break
 
-        Not suitable for long-running commands: use _ws_exec for those.
+    def _ws_exec(self, command: str, timeout_sec: int | None) -> ExecResult:
+        """WebSocket exec with a keepalive ping for HAProxy resilience.
+
+        OpenShift's HAProxy router drops WebSocket connections idle for ≥60 s.
+        Sending a ping frame every 30 s resets the idle timer and keeps the
+        single long-lived connection alive for the full agent run.
+
+        A daemon thread with a hard wall-clock deadline guards against the
+        ``resp.close()`` / ``read_channel()`` deadlock that occurs when HAProxy
+        silently tears down a connection without sending a TCP FIN or WebSocket
+        close frame.
         """
         result_holder: list[ExecResult] = []
         exc_holder:    list[BaseException] = []
+        stop_ping = threading.Event()
 
         def _run() -> None:
             try:
@@ -358,6 +375,11 @@ class KubernetesEnvironment(BaseEnvironment):
                     stderr=True, stdin=False, stdout=True, tty=False,
                     _preload_content=False,
                 )
+                threading.Thread(
+                    target=self._ws_keepalive,
+                    args=(resp, 30, stop_ping),
+                    daemon=True,
+                ).start()
                 out: list[str] = []
                 err: list[str] = []
                 deadline = time.monotonic() + timeout_sec if timeout_sec else None
@@ -368,6 +390,7 @@ class KubernetesEnvironment(BaseEnvironment):
                     if resp.peek_stderr():
                         err.append(resp.read_stderr())
                     if deadline and time.monotonic() > deadline:
+                        stop_ping.set()
                         try:
                             resp.close()
                         except Exception:
@@ -377,6 +400,7 @@ class KubernetesEnvironment(BaseEnvironment):
                             stderr="".join(err) + f"\n[timed out after {timeout_sec}s]",
                             return_code=124))
                         return
+                stop_ping.set()
                 try:
                     err_channel = resp.read_channel(ERROR_CHANNEL)
                 except Exception:
@@ -389,125 +413,32 @@ class KubernetesEnvironment(BaseEnvironment):
                     stdout="".join(out), stderr="".join(err),
                     return_code=_returncode_from_status(err_channel)))
             except Exception as exc:  # noqa: BLE001
+                stop_ping.set()
                 exc_holder.append(exc)
 
-        # 10 s buffer over the soft deadline so the thread's own timeout
-        # fires first; the hard limit is a last-resort escape hatch for
-        # cases where resp.close() / read_channel() never return.
-        hard_limit = (timeout_sec or 60) + 10
+        # Hard deadline guards against resp.close() / read_channel() deadlock.
+        # 30 s buffer ensures the soft timeout inside _run fires first.
+        hard_limit = (timeout_sec or 3600) + 30
         t = threading.Thread(target=_run, daemon=True)
         t.start()
         t.join(timeout=hard_limit)
         if t.is_alive():
-            # Thread is stuck (likely resp.close() on a dead connection).
-            # Daemon flag prevents it from blocking process exit.
+            stop_ping.set()
             return ExecResult(
                 stdout="",
-                stderr=f"[ws_exec_short hard timeout after {hard_limit}s]",
+                stderr=f"[ws_exec hard timeout after {hard_limit}s — HAProxy connection dead]",
                 return_code=124)
         if exc_holder:
             raise exc_holder[0]
         return result_holder[0] if result_holder else ExecResult(
             stdout="", stderr="[no result from exec thread]", return_code=1)
 
-    def _ws_exec(self, command: str, timeout_sec: int | None) -> ExecResult:
-        """Fire-and-poll exec that survives HAProxy idle-connection timeouts.
-
-        Long-running commands (e.g. ``claude --print ...``) keep a single
-        WebSocket open for their entire duration.  OpenShift's HAProxy router
-        drops idle WebSocket connections after ≈60 s, which kills the stream
-        mid-execution with ``WebSocketConnectionClosedException``.
-
-        Strategy: launch the command in the background writing stdout/stderr to
-        temp files, then poll with a series of short-lived exec calls (each
-        completes in < 1 s, well below the idle threshold).  Incrementally
-        stream new stdout bytes so callers see progress in logs.
-        """
-        tag = f"_h{abs(hash(command)) % 10 ** 9}_{int(time.monotonic() * 1000) % 10 ** 9}"
-        out_f  = f"/tmp/{tag}.o"
-        err_f  = f"/tmp/{tag}.e"
-        rc_f   = f"/tmp/{tag}.r"
-        pid_f  = f"/tmp/{tag}.p"
-        rpid_f = f"/tmp/{tag}.rp"
-
-        # Pre-create out_f so the relay can tail -f it immediately without
-        # racing against the command's first write.
-        # Launch the main command and a relay in parallel:
-        #   - main: stdout/stderr to temp files; rc written on exit
-        #   - relay: tails out_f → /proc/1/fd/1 (the container's captured
-        #     stdout) so `kubectl logs -f <pod>` shows live agent output.
-        #     Fails silently if /proc/1/fd/1 is not accessible.
-        script = f"( {command} ) >{out_f} 2>{err_f}; printf '%s' $? >{rc_f}"
-        # exec replaces the sh wrapper with tail directly — rpid_f stores the
-        # actual tail PID so kill $rpid reliably terminates the relay process.
-        relay  = f"exec tail -f {out_f} >/proc/1/fd/1 2>/dev/null"
-        self._ws_exec_short(
-            f"touch {out_f}; "
-            f"sh -c {shlex.quote(script)} & printf '%s' $! >{pid_f}; "
-            f"sh -c {shlex.quote(relay)} & printf '%s' $! >{rpid_f}",
-            timeout_sec=15)
-
-        deadline = time.monotonic() + timeout_sec if timeout_sec else None
-        # out_pos tracks the byte offset into out_f already streamed to the
-        # caller.  tail -c +N is 1-indexed so +1 skips nothing on the first
-        # read.  We re-encode the decoded string with UTF-8 to get the byte
-        # count — valid because the exec channel itself uses UTF-8.
-        out_pos = 0
-        out_buf: list[str] = []
-
-        while True:
-            time.sleep(2)
-            timed_out = deadline is not None and time.monotonic() > deadline
-
-            # Incrementally drain new stdout bytes (cheap: returns only new data).
-            chunk = self._ws_exec_short(
-                f"tail -c +{out_pos + 1} {out_f} 2>/dev/null", timeout_sec=15)
-            if chunk.stdout:
-                out_buf.append(chunk.stdout)
-                out_pos += len(chunk.stdout.encode("utf-8"))
-
-            rc_r = self._ws_exec_short(f"cat {rc_f} 2>/dev/null", timeout_sec=10)
-            done = bool(rc_r.stdout.strip())
-
-            if timed_out or done:
-                # Final stdout drain.
-                tail = self._ws_exec_short(
-                    f"tail -c +{out_pos + 1} {out_f} 2>/dev/null", timeout_sec=15)
-                if tail.stdout:
-                    out_buf.append(tail.stdout)
-                err_r = self._ws_exec_short(f"cat {err_f} 2>/dev/null", timeout_sec=15)
-
-                _kill = (f"kill $(cat {pid_f} 2>/dev/null) "
-                         f"$(cat {rpid_f} 2>/dev/null) 2>/dev/null || true")
-                _rm   = f"rm -f {out_f} {err_f} {rc_f} {pid_f} {rpid_f}"
-
-                if timed_out and not done:
-                    # Kill command and relay by stored PIDs — reliable unlike pkill -f.
-                    self._ws_exec_short(_kill, timeout_sec=10)
-                    self._ws_exec_short(_rm,   timeout_sec=10)
-                    return ExecResult(
-                        stdout="".join(out_buf),
-                        stderr=(err_r.stdout or "") + f"\n[timed out after {timeout_sec}s]",
-                        return_code=124)
-
-                # Kill relay (command already exited); clean up temp files.
-                self._ws_exec_short(_kill, timeout_sec=10)
-                self._ws_exec_short(_rm,   timeout_sec=10)
-                try:
-                    rc = int(rc_r.stdout.strip())
-                except (ValueError, AttributeError):
-                    rc = 1
-                return ExecResult(
-                    stdout="".join(out_buf),
-                    stderr=err_r.stdout or "",
-                    return_code=rc)
-
     async def exec(
         self,
         command: str,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
-        timeout_sec: int | None = None,
+        timeout_sec: int | None = 300,
         user: str | int | None = None,
     ) -> ExecResult:
         # `user` is ignored: the pod runs as its SCC-assigned UID and exec can't
