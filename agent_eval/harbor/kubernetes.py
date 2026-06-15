@@ -218,7 +218,7 @@ class KubernetesEnvironment(BaseEnvironment):
         container: dict = {
             "name": "main",
             "image": image,
-            "command": ["tini", "--", "sleep", "infinity"],
+            "command": ["sleep", "infinity"],
             "env": [{"name": k, "value": v} for k, v in env.items()],
             "resources": resources,
             "securityContext": {
