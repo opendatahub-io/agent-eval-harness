@@ -402,24 +402,29 @@ class KubernetesEnvironment(BaseEnvironment):
                         err.append(resp.read_stderr())
                     if deadline and time.monotonic() > deadline:
                         stop_ping.set()
-                        try:
-                            resp.close()
-                        except Exception:
-                            pass
+                        with ws_lock:
+                            try:
+                                resp.close()
+                            except Exception:
+                                pass
                         result_holder.append(ExecResult(
                             stdout="".join(out),
                             stderr="".join(err) + f"\n[timed out after {timeout_sec}s]",
                             return_code=124))
                         return
                 stop_ping.set()
-                try:
-                    err_channel = resp.read_channel(ERROR_CHANNEL)
-                except Exception:
-                    err_channel = None
-                try:
-                    resp.close()
-                except Exception:
-                    pass
+                # Hold ws_lock for the final read_channel + close so we don't
+                # race against a keepalive ping that passed the stop check just
+                # before stop_ping was set.
+                with ws_lock:
+                    try:
+                        err_channel = resp.read_channel(ERROR_CHANNEL)
+                    except Exception:
+                        err_channel = None
+                    try:
+                        resp.close()
+                    except Exception:
+                        pass
                 result_holder.append(ExecResult(
                     stdout="".join(out), stderr="".join(err),
                     return_code=_returncode_from_status(err_channel)))
@@ -428,7 +433,9 @@ class KubernetesEnvironment(BaseEnvironment):
                 exc_holder.append(exc)
 
         # Hard deadline guards against resp.close() / read_channel() deadlock.
-        # 30 s buffer ensures the soft timeout inside _run fires first.
+        # When timeout_sec is set, the +30 s buffer ensures the soft deadline
+        # inside _run fires before the hard limit. When timeout_sec is None
+        # there is no soft deadline and the hard limit alone applies (1 h cap).
         hard_limit = (timeout_sec or 3600) + 30
         t = threading.Thread(target=_run, daemon=True)
         t.start()
@@ -449,7 +456,7 @@ class KubernetesEnvironment(BaseEnvironment):
         command: str,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
-        timeout_sec: int | None = 300,
+        timeout_sec: int | None = None,
         user: str | int | None = None,
     ) -> ExecResult:
         # `user` is ignored: the pod runs as its SCC-assigned UID and exec can't
