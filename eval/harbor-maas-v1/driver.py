@@ -110,16 +110,6 @@ def _prepare_workspace(ws: Path, case_id: str, dataset_root: Path):
     env_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(oracle, env_dir / "oracle.diff")
 
-    # Copy GCP service account key if available (for Vertex AI Claude access)
-    sa_key = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
-    sa_key_line = ""
-    if sa_key and Path(sa_key).exists():
-        shutil.copy2(sa_key, env_dir / "gcp-sa-key.json")
-        sa_key_line = (
-            "COPY gcp-sa-key.json /etc/gcp-sa-key.json\n"
-            'ENV GOOGLE_APPLICATION_CREDENTIALS="/etc/gcp-sa-key.json"\n'
-        )
-
     (env_dir / "Dockerfile").write_text(
         "FROM golang:latest\n"
         "RUN apt-get update && apt-get install -y git\n"
@@ -127,7 +117,6 @@ def _prepare_workspace(ws: Path, case_id: str, dataset_root: Path):
         f"    cd /repo && git checkout {BASE_COMMIT}\n"
         "COPY oracle.diff /tmp/oracle.diff\n"
         "RUN cd /repo && git apply --reverse /tmp/oracle.diff && rm /tmp/oracle.diff\n"
-        f"{sa_key_line}"
         "WORKDIR /repo\n"
     )
 

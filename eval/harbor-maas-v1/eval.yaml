@@ -22,7 +22,11 @@ runner:
     --mcp-config {mcp_config_file}
     --jobs-dir {output_dir}
     --job-name harbor-trial
-    --ae ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
+    --ae CLAUDE_CODE_USE_VERTEX=1
+    --ae CLOUD_ML_REGION=global
+    --ae ANTHROPIC_VERTEX_PROJECT_ID=gcp-jboyer-san-gemini
+    --ae GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp-sa-key.json
+    --mounts '[{"type":"bind","source":"{gcp_sa_key_path}","target":"/etc/gcp-sa-key.json","read_only":true}]'
     --yes
     --delete
 
