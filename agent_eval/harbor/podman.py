@@ -1,15 +1,11 @@
-"""Native Podman BaseEnvironment for Harbor.
+"""Podman BaseEnvironment for Harbor.
 
-A rootless-friendly, compose-free Harbor environment that runs each trial in a
-single Podman container. Harbor's built-in Docker environment shells out to the
-`docker` CLI + `docker compose` (not Podman-compatible on macOS, and a poor fit
-for Red Hat's rootless/OpenShift world); this one uses `podman run`/`exec`/`cp`
-directly. It is the local sibling of the Kubernetes BaseEnvironment used on
-OpenShift — both give Harbor a generic exec/copy surface over one container so
-Harbor still drives the agent + oracle + verifier and the `reward.json` contract
-is preserved.
+A compose-free Harbor environment that runs each trial in a single Podman
+container via ``podman run``/``exec``/``cp``. Like the Kubernetes env it is a
+generic exec/copy surface — Harbor drives the agent, oracle, and verifier,
+preserving the agent zoo and ``reward.json`` contract.
 
-Plug it in without forking Harbor:
+Usage::
 
     harbor run -p <task> --agent claude-code -m <model> \\
       --environment-import-path agent_eval.harbor.podman:PodmanEnvironment
@@ -34,16 +30,18 @@ import os
 
 _PODMAN = os.environ.get("PODMAN_BINARY", "podman")
 
-# NON-SECRET config env forwarded into the trial container so the in-container
-# agent (claude-code) knows how to authenticate — provider selection, project,
-# region, model. SECRETS (API keys, Bedrock tokens, gcloud credentials) are NOT
-# forwarded/copied; they must come from a mounted creds file (Podman) or a
-# Kubernetes Secret / Workload Identity (K8s). This keeps long-lived personal
-# credentials out of trial containers.
+# Env vars forwarded into the Podman trial container. Includes provider config
+# AND API keys — the container runs on the host machine (no security boundary).
+# On K8s, API keys come from a Secret (AGENT_EVAL_K8S_CREDENTIALS_SECRET).
 _FORWARD_ENV = (
+    # Provider config
     "CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION",
     "GOOGLE_CLOUD_PROJECT", "ANTHROPIC_MODEL", "ANTHROPIC_BASE_URL",
     "CLAUDE_CODE_USE_BEDROCK", "AWS_REGION",
+    # API keys
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+    "AWS_BEARER_TOKEN_BEDROCK",
 )
 
 # Where a mounted GCP credentials file lands inside the container.
@@ -172,16 +170,12 @@ class PodmanEnvironment(BaseEnvironment):
         forwarded = {k: os.environ[k] for k in _FORWARD_ENV if os.environ.get(k)}
 
         # Credentials: only via an explicitly provided file, read-only mounted —
-        # never the host's personal ADC. AGENT_EVAL_PODMAN_CREDS_FILE should point at a
+        # never the host's personal ADC. AGENT_EVAL_PODMAN_GCP_CREDENTIALS_FILE should point at a
         # service-account key (or a Workload-Identity credential config).
-        creds_file = os.environ.get("AGENT_EVAL_PODMAN_CREDS_FILE")
+        creds_file = os.environ.get("AGENT_EVAL_PODMAN_GCP_CREDENTIALS_FILE")
         if creds_file and Path(creds_file).is_file():
             run_args += ["-v", f"{Path(creds_file).resolve()}:{_CONTAINER_CREDS}:ro"]
             forwarded["GOOGLE_APPLICATION_CREDENTIALS"] = _CONTAINER_CREDS
-        # API/Bedrock keys for local dev: from a file, not copied env.
-        env_file = os.environ.get("AGENT_EVAL_PODMAN_ENV_FILE")
-        if env_file and Path(env_file).is_file():
-            run_args += ["--env-file", str(Path(env_file).resolve())]
 
         # Project resources from a host directory (bind-mount, read-only).
         # Podman equivalent of AGENT_EVAL_K8S_PROJECT_CONFIGMAP — with this, no

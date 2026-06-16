@@ -1,27 +1,21 @@
-"""Kubernetes/OpenShift BaseEnvironment for Harbor (Python client).
+"""Kubernetes BaseEnvironment for Harbor (Python client).
 
-The OpenShift sibling of the Podman env: each trial runs in a single pod created
-from a prebuilt task image. Like the Podman env it is a generic exec/copy surface
-(Harbor drives the agent + oracle + verifier), so the agent zoo and `reward.json`
-contract are preserved — unlike PR #78's k8s mode, which reimplemented the
-oracle/verifier in bash and scraped rewards from pod logs.
+Each trial runs in a single pod created from a prebuilt task image. Like the
+Podman env it is a generic exec/copy surface — Harbor drives the agent, oracle,
+and verifier, preserving the agent zoo and ``reward.json`` contract.
 
-Uses the **Kubernetes Python client**, not the `oc` CLI, because the real target
-is in-cluster: the EvalHub/TrustyAI provider runs Harbor inside an OpenShift pod
-where there's no `oc` binary or kubeconfig — `load_incluster_config()` uses the
-pod's ServiceAccount token. (Locally it falls back to your kubeconfig.) It runs
-under the restricted-v2 SCC (non-root, arbitrary assigned UID; the task image must
-be UID-agnostic, i.e. group-0 writable).
+Uses the Kubernetes Python client (``load_incluster_config()`` when running
+inside a pod, falling back to local kubeconfig). Compatible with OpenShift's
+restricted-v2 SCC (non-root, arbitrary assigned UID; the task image must be
+UID-agnostic, i.e. group-0 writable).
 
-Plug in without forking Harbor:
+Usage::
 
-    PYTHONPATH=<repo> harbor run -p <task> --agent claude-code -m <model> \\
+    harbor run -p <task> --agent claude-code -m <model> \\
       --environment-import-path agent_eval.harbor.kubernetes:KubernetesEnvironment
 
-Requires the `kubernetes` package in Harbor's environment
-(``uv tool install harbor --with kubernetes``). Config via env:
-AGENT_EVAL_K8S_NAMESPACE, AGENT_EVAL_K8S_SERVICE_ACCOUNT, AGENT_EVAL_K8S_CREDS_SECRET / _KEY / _MOUNT,
-AGENT_EVAL_K8S_ENV_SECRET, AGENT_EVAL_K8S_CPU / _MEMORY, AGENT_EVAL_K8S_KEEP_RUN.
+Requires ``kubernetes`` in Harbor's environment
+(``uv tool install harbor --with kubernetes``).
 """
 
 import asyncio
@@ -43,7 +37,7 @@ from harbor.environments.capabilities import (
 )
 from harbor.models.task.config import TaskOS
 
-# For K8s, env is managed via AGENT_EVAL_K8S_ENV_SECRET (envFrom secretRef).
+# For K8s, env is managed via AGENT_EVAL_K8S_CREDENTIALS_SECRET (envFrom secretRef).
 # Only forward model-routing hints that are safe to inherit from the host.
 # Deliberately excludes cloud-provider auth vars (CLAUDE_CODE_USE_VERTEX,
 # ANTHROPIC_VERTEX_PROJECT_ID, CLAUDE_CODE_USE_BEDROCK, AWS_REGION, etc.)
@@ -64,7 +58,7 @@ except ImportError:
     _K8S_AVAILABLE = False
     ApiException = Exception  # type: ignore[assignment,misc]
 
-_CREDS_MOUNT = os.environ.get("AGENT_EVAL_K8S_CREDS_MOUNT", "/var/creds")
+_CREDS_MOUNT = "/var/creds"
 _INCLUSTER_NS = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
 
 
@@ -235,17 +229,17 @@ class KubernetesEnvironment(BaseEnvironment):
         sa = os.environ.get("AGENT_EVAL_K8S_SERVICE_ACCOUNT")
         if sa:
             pod_spec["serviceAccountName"] = sa
-        creds_secret = os.environ.get("AGENT_EVAL_K8S_CREDS_SECRET")
+        creds_secret = os.environ.get("AGENT_EVAL_K8S_GCP_CREDENTIALS_SECRET")
         if creds_secret:
             container.setdefault("volumeMounts", []).append(
                 {"name": "aeh-creds", "mountPath": _CREDS_MOUNT, "readOnly": True})
             pod_spec.setdefault("volumes", []).append(
                 {"name": "aeh-creds", "secret": {"secretName": creds_secret}})
-            key = os.environ.get("AGENT_EVAL_K8S_CREDS_KEY", "key.json")
+            key = os.environ.get("AGENT_EVAL_K8S_GCP_CREDENTIALS_KEY", "key.json")
             container["env"].append({
                 "name": "GOOGLE_APPLICATION_CREDENTIALS",
                 "value": f"{_CREDS_MOUNT}/{key}"})
-        env_secret = os.environ.get("AGENT_EVAL_K8S_ENV_SECRET")
+        env_secret = os.environ.get("AGENT_EVAL_K8S_CREDENTIALS_SECRET")
         if env_secret:
             container["envFrom"] = [{"secretRef": {"name": env_secret}}]
 

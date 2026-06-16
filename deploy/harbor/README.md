@@ -60,15 +60,11 @@ PYTHONPATH="$(pwd)" harbor run -p harbor-tasks/<case> --agent claude-code -m <mo
 Notes:
 - `PYTHONPATH` must include this repo so Harbor (in its own venv) can import the plug-ins.
 - **Auth** — only NON-SECRET provider config is forwarded from the host
-  (`CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`,
-  `GOOGLE_CLOUD_PROJECT`, `ANTHROPIC_MODEL`, `ANTHROPIC_BASE_URL`, bedrock-enable,
-  `AWS_REGION`). **Credentials are never copied into the container.** Provide them
-  explicitly:
-  - **Podman (local):** `AGENT_EVAL_PODMAN_CREDS_FILE=/path/to/sa-key.json` → read-only
-    mounted at `/var/creds/creds.json` with `GOOGLE_APPLICATION_CREDENTIALS` set;
-    `AGENT_EVAL_PODMAN_ENV_FILE=/path/to/keys.env` for API/Bedrock keys (`--env-file`).
-    Use a **service-account key**, not your personal gcloud ADC.
-  - See the OpenShift section for the Secret / Workload Identity equivalents.
+  Provider config AND API keys (`ANTHROPIC_API_KEY`, `AWS_ACCESS_KEY_ID`, etc.)
+  are forwarded from the host env into the container automatically. For Vertex AI
+  (which needs a credentials file), set
+  `AGENT_EVAL_PODMAN_GCP_CREDENTIALS_FILE=/path/to/sa-key.json` (mounted
+  read-only). See the OpenShift section for Secret / Workload Identity equivalents.
 - Per-case grading writes `reward.json` (boolean judges gate; numeric LLM judges average).
   Pairwise + regression thresholds stay suite-level above Harbor.
 
@@ -107,28 +103,25 @@ back to your local kubeconfig. Install the client into Harbor's environment:
 the API's websocket stream; file copy is tar+base64 over `exec`. The Podman env, by
 contrast, stays on the `podman` CLI (local-dev only, the binary is always present).
 
-### Credentials (no personal creds copied)
+### Credentials (from the cluster, never copied from the host)
 
-Credentials come from the cluster, never from the host. Pick one:
-
-**A. Service-account key in a Secret** (mounted read-only):
+**A. GCP / Vertex AI** — service-account key in a Secret (mounted as a file):
 ```python
 from agent_eval.harbor.k8s_resources import create_creds_secret
 create_creds_secret("/path/to/sa-key.json", "vertex-creds", "<ns>")
-# then: AGENT_EVAL_K8S_CREDS_SECRET=vertex-creds
-# mounts at /var/creds, sets GOOGLE_APPLICATION_CREDENTIALS
+# then: AGENT_EVAL_K8S_GCP_CREDENTIALS_SECRET=vertex-creds
 ```
 
-**B. Workload Identity** (no stored key — preferred):
+**B. GCP / Vertex AI** — Workload Identity (no stored key, preferred):
 ```bash
-AGENT_EVAL_K8S_SERVICE_ACCOUNT=<sa>        # pod runs as this SA, federated to GCP/cloud
+AGENT_EVAL_K8S_SERVICE_ACCOUNT=<sa>        # pod runs as this SA, federated to GCP
 ```
 
-**C. API / Bedrock keys from a Secret** (injected via envFrom, not pod-spec literals):
+**C. API keys / Bedrock** — env vars from a Secret (injected via envFrom):
 ```python
 from agent_eval.harbor.k8s_resources import create_env_secret
 create_env_secret({"ANTHROPIC_API_KEY": "sk-..."}, "model-keys", "<ns>")
-# then: AGENT_EVAL_K8S_ENV_SECRET=model-keys
+# then: AGENT_EVAL_K8S_CREDENTIALS_SECRET=model-keys
 ```
 
 ### Project resources (no project-specific image needed)

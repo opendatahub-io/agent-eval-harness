@@ -191,8 +191,8 @@ def create_creds_secret(
 ) -> None:
     """Create a Secret from a credentials file (e.g. GCP service-account key).
 
-    Mounted into the pod at ``AGENT_EVAL_K8S_CREDS_MOUNT`` with
-    ``GOOGLE_APPLICATION_CREDENTIALS`` pointing at ``<mount>/<key>``.
+    Mounted read-only into the pod with ``GOOGLE_APPLICATION_CREDENTIALS``
+    pointing at the key file.
     """
     core = _ensure_client()
     data = {key: Path(creds_file).read_bytes()}
@@ -204,7 +204,7 @@ def create_env_secret(
 ) -> None:
     """Create a Secret from key-value pairs (e.g. ANTHROPIC_API_KEY).
 
-    Injected into the pod via ``envFrom`` (``AGENT_EVAL_K8S_ENV_SECRET``).
+    Injected into the pod via ``envFrom`` (``AGENT_EVAL_K8S_CREDENTIALS_SECRET``).
     """
     core = _ensure_client()
     data = {k: v.encode() for k, v in env_vars.items()}
