@@ -937,7 +937,8 @@ def _load_llm_judge(jc, config, project_root=None):
 
     # Anthropic path (direct client, supports Vertex AI)
     if (os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID")
-            or os.environ.get("ANTHROPIC_API_KEY")):
+            or os.environ.get("ANTHROPIC_API_KEY")
+            or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
         judge_model = _resolve_judge_model(jc, config)
         feedback_type = "bool" if jc.feedback_type == "bool" else "score"
         arguments = jc.arguments
@@ -1197,11 +1198,12 @@ def _get_anthropic_client():
     if project_id:
         from anthropic import AnthropicVertex
         return AnthropicVertex(project_id=project_id, region=region)
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
     if api_key:
         from anthropic import Anthropic
-        return Anthropic(api_key=api_key)
-    raise RuntimeError("Set ANTHROPIC_VERTEX_PROJECT_ID or ANTHROPIC_API_KEY")
+        base_url = os.environ.get("ANTHROPIC_BASE_URL")
+        return Anthropic(api_key=api_key, **({"base_url": base_url} if base_url else {}))
+    raise RuntimeError("Set ANTHROPIC_VERTEX_PROJECT_ID, ANTHROPIC_API_KEY, or ANTHROPIC_AUTH_TOKEN")
 
 
 # Forced-output tool for the pairwise judge. Using tool_choice guarantees the
