@@ -33,14 +33,14 @@ COPY pyproject.toml /opt/agent-eval-harness/pyproject.toml
 
 ENV PYTHONPATH=/opt/agent-eval-harness \
     HOME=/workspace \
-    PATH=/usr/local/bin:/usr/bin:/bin
+    PATH=/opt/app-root/bin:/usr/local/bin:/usr/bin:/bin
 
 # Writable dirs for arbitrary UID (OpenShift restricted-v2 SCC).
 # /tests and /solution are pre-created because Harbor's verifier uploads there
 # and `oc cp` / tar extract runs as the (non-root) pod user.
-RUN mkdir -p /workspace /logs/verifier /logs/agent /tests /solution \
-    && chgrp -R 0 /workspace /logs /tests /solution /opt/agent-eval-harness \
-    && chmod -R g=u /workspace /logs /tests /solution /opt/agent-eval-harness
+RUN mkdir -p /workspace /logs/verifier /logs/agent /logs/artifacts /tests /solution /installed-agent \
+    && chgrp -R 0 /workspace /logs /tests /solution /installed-agent /opt/agent-eval-harness \
+    && chmod -R g=u /workspace /logs /tests /solution /installed-agent /opt/agent-eval-harness
 
 WORKDIR /workspace
 USER 1001
