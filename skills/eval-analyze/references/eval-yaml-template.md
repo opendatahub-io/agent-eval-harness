@@ -280,9 +280,9 @@ judges:
 
   # LLM judge: assess quality with a prompt
   # All LLM prompts are rendered with Jinja2. Available template variables:
-  #   {{ outputs }}      — file artifacts and modified files as markdown
-  #   {{ conversation }} — root-level assistant text (excludes subagent text)
-  #   {{ annotations }}  — dataset annotations
+  #   {{ outputs }}      — file artifacts and modified files as markdown (NOT outputs.response!)
+  #   {{ conversation }} — root-level assistant text (NOT outputs.conversation!)
+  #   {{ annotations }}  — dataset annotations (use annotations.get('key') in judges)
   #   {{ arguments }}    — judge arguments from eval.yaml (dict)
   - name: <descriptive_name>
     description: |
@@ -507,6 +507,8 @@ Example check judge for in-place edits (skills that edit input files via Edit to
 - `{{ outputs }}` renders all collected file contents (from `outputs[*].path` directories and `_modified/` in-place edits), formatted as markdown sections with file paths as headers.
 - `{{ conversation }}` renders root-level assistant conversation text extracted from the event stream. It filters out subagent messages, tool calls, and non-text events. For stdout-only skills (no file artifacts), this is the primary way to give judges the skill's output.
 - `{{ annotations }}` renders dataset annotations from the case's `annotations.yaml`.
+
+**CRITICAL**: Use `{{ conversation }}` NOT `{{ outputs.conversation }}` or `{{ outputs.response }}`. These DO NOT EXIST and will result in empty judge inputs. The correct variable is the bare `{{ conversation }}` shown above.
 
 All three can be used in the same prompt. Without any template variables, the LLM receives only the raw prompt text and cannot see any output.
 

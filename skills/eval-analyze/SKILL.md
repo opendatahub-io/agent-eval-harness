@@ -1,6 +1,6 @@
 ---
 name: eval-analyze
-description: Generate eval.yaml for the agent eval harness. Supports two evaluation modes - (1) Skill-based - deeply examines skills (SKILL.md, sub-skills, scripts, test cases) to test if implementations work correctly, OR (2) Prompt-based - uses custom analysis prompts to test agent capabilities directly (documentation effectiveness, pattern understanding, API usage, constraint compliance). Produces complete evaluation config — execution mode, dataset schema, output descriptions, judges, models, and thresholds. Use this whenever someone wants to evaluate a skill, test agent capabilities, add quality checks, validate documentation, benchmark performance, or just created a new skill/documentation and needs eval infrastructure. Also triggered automatically by /eval-run when eval.yaml is missing. Even casual questions like "how do I know if my skill/docs are working?" trigger this skill.
+description: Generate eval.yaml for the agent eval harness. Two modes - (1) Skill-based - examines SKILL.md, sub-skills, scripts, test cases to verify implementation quality, OR (2) Prompt-based - tests agent capabilities using custom analysis prompts (documentation effectiveness, pattern understanding, API usage, constraint compliance). Produces complete config with execution mode, dataset schema, outputs, judges, models, thresholds. Use when setting up evaluation, testing skills/documentation, adding quality checks, or benchmarking. Auto-triggered by /eval-run when eval.yaml missing. Triggered by "how do I know if my skill/docs work?"
 user-invocable: true
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, Agent, AskUserQuestion
 ---
@@ -29,73 +29,28 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py init tmp/analyze-config.
 
 ### Config Location Discovery
 
-If `--config` was explicitly provided, use that path directly (skip discovery).
-
-Otherwise, discover existing eval configs:
-
-```bash
-python3 ${CLAUDE_SKILL_DIR}/../../scripts/discover.py
-```
-
-Based on discovery results:
-- **No configs found**: scaffold `eval.yaml` at the project root (simple default for first eval)
-- **One root config exists** and `--skill` targets a different eval than the existing one: offer to reorganize into `eval/` layout. If the user accepts, run the reorganization script (see Phase 7). If declined, ask where to put the new config.
-- **Nested/flat layout already exists**: place the new config at `eval/<skill-name>/eval.yaml` (nested) or alongside existing flat configs
-- **`--config` provided**: use the explicit path, bypass layout logic
+If `--config` provided, use that path. Otherwise run `python3 ${CLAUDE_SKILL_DIR}/../../scripts/discover.py` and decide:
+- **No configs**: Create `eval.yaml` at project root
+- **One root config** and `--skill` targets a different eval than the existing one: offer to reorganize into `eval/` layout. If the user accepts, run the reorganization script (see Phase 7). If declined, ask where to put the new config.
+-- **Nested/flat layout already exists**: place the new config at `eval/<skill-name>/eval.yaml` (nested) or alongside existing flat configs
+-- **`--config` provided**: use the explicit path, bypass layout logic
 
 Set the resolved config path as `<config>` for all subsequent steps. Set `<eval_md_path>` to the same directory as `<config>`, with filename `eval.md`.
 
-**Analysis modes**:
-
-1. **Skill analysis** (default): Analyze a skill's implementation
-   ```bash
-   /eval-analyze --skill my-skill
-   ```
-   Generates `execution.mode: case` or `batch` config
-
-2. **Prompt-based analysis**: Generate eval config from a custom analysis prompt
-   ```bash
-   # Use builtin documentation analysis prompt
-   /eval-analyze --prompt builtin:docs
-   
-   # Use custom analysis prompt
-   /eval-analyze --prompt path/to/analysis-prompt.md
-   ```
-   Generates config with `execution.prompt` (prompt mode)
-
-**Builtin prompts**:
-- `builtin:docs` → Analyze repository documentation structure and generate taxonomy-based eval config
+**Modes**: 
+- `--skill my-skill` → skill-based eval (`execution.skill`, case/batch mode)
+- `--prompt examples/openshift-agentic-docs.md` → prompt-based eval (`execution.prompt`, case mode, tests agent capabilities)
+- See `examples/` for domain-specific analysis prompt recipes
 
 ## Step 1: Determine Analysis Mode
 
-Check arguments and repository contents to decide which mode to use:
-
-**If `--skill` provided**: Go to Step 2 (skill analysis)
-
-**If `--prompt` provided**: Go to Step 2-Prompt (custom prompt analysis)
-
-**If neither provided**: Detect what's available and choose mode
-
-1. **Check for skills**:
-   ```bash
-   python3 ${CLAUDE_SKILL_DIR}/scripts/find_skills.py
-   ```
-
-2. **Check for agentic documentation**:
-   ```bash
-   HAS_DOCS=false
-   if [ -f CLAUDE.md ] || [ -f AGENTS.md ] || [ -d ai-docs ]; then
-       HAS_DOCS=true
-   fi
-   ```
-
-3. **Present options based on what exists**:
-   - **Both skills and docs exist**: Ask user which mode via AskUserQuestion:
-     - "Skill-based evaluation (test specific skill implementation)"
-     - "Documentation evaluation (test if agents can use your agentic docs)"
-   - **Only skills exist**: Auto-select skill mode, proceed to Step 2
-   - **Only docs exist**: Auto-select prompt mode with `builtin:docs`, proceed to Step 2-Prompt
-   - **Neither exists**: Error - "No skills or agentic documentation found. Create a skill in `skills/` or add CLAUDE.md/AGENTS.md/ai-docs/ for documentation testing."
+**If `--skill` provided**: Go to Step 2 (skill analysis)  
+**If `--prompt` provided**: Go to Step 2-Prompt (custom prompt analysis)  
+**If neither**: Detect what exists via `python3 ${CLAUDE_SKILL_DIR}/scripts/find_skills.py` and checking for CLAUDE.md/AGENTS.md/ai-docs/, then:
+- **Both skills and agentic documentation**: Ask user which mode (skill-based vs prompt-based eval)
+- **Only skills**: Auto-select skill mode → Step 2
+- **Only agentic documentation**: Ask user to provide analysis prompt (see examples/ for recipes)
+- **Neither**: Error - no evaluable content found
 
 ---
 
@@ -263,137 +218,51 @@ $ARGUMENTS
 **Objective**: Generate `eval.yaml` using a custom analysis prompt that defines what to evaluate and how.
 
 This is for non-skill evaluations where you want to test agent capabilities directly:
-- **Skill eval**: "Does this skill work correctly?"
+- **Skill eval**: "Does this skill produce the expected outputs?"
 - **Prompt eval**: "Can an agent accomplish X given Y context?"
 
-#### Resolve Prompt Path
+#### Execute Prompt Analysis
 
-If `--prompt` starts with `builtin:`, resolve to builtin prompt:
+1. Resolve prompt: `python3 ${CLAUDE_SKILL_DIR}/scripts/resolve_prompt.py <prompt-ref>`
+2. Launch Explore agent with prompt content defining what to analyze, test categories, judges, and traces
+3. Extract generated eval.yaml and write to `<config>`
+4. Validate: `python3 ${CLAUDE_SKILL_DIR}/scripts/validate_eval.py config <config>` (check execution.prompt set, fields populated, paths resolve)
 
-```bash
-# builtin:docs → ${CLAUDE_SKILL_DIR}/prompts/analyze-docs.md
-```
-
-Otherwise treat as a file path (absolute or relative to project root).
-
-#### Launch Analysis Agent
-
-1. **Resolve the prompt path**:
-```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/resolve_prompt.py <prompt-ref>
-```
-
-This resolves `builtin:docs` → `${CLAUDE_SKILL_DIR}/prompts/analyze-docs.md` or validates custom paths.
-
-2. **Read the analysis prompt**:
-```bash
-cat <resolved-prompt-path>
-```
-
-3. **Launch Explore agent** with the prompt content:
-
-Use the Agent tool with `subagent_type="Explore"` and pass the analysis prompt as the task. The prompt defines:
-- What to analyze (documentation, code patterns, APIs, etc.)
-- What test categories to generate
-- What domain knowledge to extract
-- What judges to configure
-- What traces to capture
-
-Example invocation:
-```python
-Agent(
-  description="Analyzing repository for eval config generation",
-  subagent_type="Explore",
-  prompt=<prompt-content>
-)
-```
-
-The agent explores the repository following the prompt instructions and returns a complete `eval.yaml` configuration in YAML format.
-
-4. **Extract the generated config**:
-
-The agent's response should contain the eval.yaml content. Extract it and write to the config file path (default: `eval.yaml`, or value from `--config` argument).
-
-5. **Write eval.yaml**:
-```bash
-# Write the generated config
-Write(config_path, generated_yaml_content)
-```
-
-**Note**: The builtin `docs` prompt (`prompts/analyze-docs.md`) analyzes repository documentation and generates evaluation config with taxonomy-based test categories, domain knowledge, and documentation tracking. See `analyze-docs.md` for implementation details.
-
-#### Validation
-
-Validate the generated config (use the --config path from Step 0):
-
-```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/validate_eval.py config <config_path>
-```
-
-Replace `<config_path>` with the actual value from the --config argument (default: eval.yaml).
-
-Check for:
-- `execution.prompt` is set (prompt mode)
-- Required fields are populated
-- File paths resolve correctly
-
-#### Next Steps
-
-Tell the user:
-
-- **eval.yaml**: created from `<prompt-name>` analysis
-- **Execution mode**: case (one invocation per test case)
-- **What to execute**: Direct prompt (`execution.prompt`)
+Report to user:
+- **eval.yaml** created from `<prompt-name>` (execution.prompt, case mode)
 - **Test structure**: {summary of test_categories or schema}
-- **Next steps**:
-  1. Review generated config
-  2. Generate test cases: `/eval-dataset --config eval.yaml`
-  3. Run evaluation: `/eval-run --model sonnet --config eval.yaml`
+- **Next**: `/eval-dataset` to generate cases, then `/eval-run --model sonnet`
 
 ---
 
-## Analysis Type Comparison
+## Mode Comparison
 
 | Aspect | Skill Analysis | Prompt-Based Analysis |
 |--------|---------------|----------------------|
-| **Invocation** | `/eval-analyze --skill my-skill` | `/eval-analyze --prompt builtin:docs` |
-| **Analyzes** | SKILL.md, scripts, sub-skills | Whatever the prompt specifies |
-| **What to execute** | `execution.skill` (skill invocation) | `execution.prompt` (direct prompt) |
-| **Execution mode** | `case` or `batch` | `case` |
-| **Dataset** | Schema-based (input/output fields) | Prompt-defined (often taxonomy-based) |
-| **Judges** | Skill-specific (output quality) | Prompt-defined (capability checks) |
-| **Domain config** | Usually empty | Prompt-defined (see Step 3 in prompts/analyze-docs.md) |
-| **Use case** | "Does my skill work?" | "Can agents do X?" |
+| **Command** | `/eval-analyze --skill my-skill` | `/eval-analyze --prompt examples/openshift-agentic-docs.md` |
+| **Analyzes** | SKILL.md, scripts, sub-skills | Docs, patterns, APIs (prompt-defined) |
+| **Executes** | Skill invocation (`execution.skill`) | Direct prompt (`execution.prompt`) |
+| **Mode** | `case` or `batch` | `case` only |
+| **Dataset** | Schema-based (input/output fields) | Taxonomy-based (test categories) |
+| **Judges** | Output quality checks | Capability checks (rubrics) |
+| **Domain config** | Usually empty | Prompt-defined knowledge/constraints |
+| **Purpose** | Does my skill work? | Can agents use my docs? |
 
 ---
 
-## Example Invocations
-
-### Skill Analysis (Default)
-```bash
-# Explicit
-/eval-analyze --skill rfe.create
-
-# Auto-detect (if only one skill exists)
-/eval-analyze
-```
-
-### Prompt-Based Analysis
+## Examples
 
 ```bash
-# Documentation evaluation (builtin prompt)
-/eval-analyze --prompt builtin:docs
+# Skill analysis
+/eval-analyze --skill my-skill              # Explicit skill
+/eval-analyze                                # Auto-detect single skill
 
-# Custom analysis prompt
-/eval-analyze --prompt eval/prompts/my-analysis.md
+# Prompt-based analysis
+/eval-analyze --prompt examples/openshift-agentic-docs.md    # Domain-specific recipe
+/eval-analyze --prompt path/to/prompt.md                     # Custom prompt
 
-# With custom config output path
-/eval-analyze --prompt builtin:docs --config eval-docs.yaml
-```
-
-### Update Existing Config
-```bash
-# Preserve user edits, fill missing sections only
-/eval-analyze --skill my-skill --update
+# Options
+/eval-analyze --skill my-skill --update                      # Preserve user edits
+/eval-analyze --prompt examples/openshift-agentic-docs.md --config eval/docs.yaml  # Custom output path
 ```
 

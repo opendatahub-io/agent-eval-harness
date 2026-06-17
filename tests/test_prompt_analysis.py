@@ -16,26 +16,6 @@ from resolve_prompt import resolve_analysis_prompt
 class TestPromptResolution:
     """Test prompt reference resolution."""
 
-    def test_builtin_docs_resolution(self, monkeypatch):
-        """Test builtin:docs resolves to analyze-docs.md."""
-        skill_dir = Path(__file__).parent.parent / "skills/eval-analyze"
-        monkeypatch.setenv("CLAUDE_SKILL_DIR", str(skill_dir))
-
-        resolved = resolve_analysis_prompt("builtin:docs")
-
-        assert resolved.exists()
-        assert resolved.name == "analyze-docs.md"
-        assert "prompts" in str(resolved)
-
-    def test_builtin_skill_resolution(self, monkeypatch):
-        """Test builtin:skill resolves to analyze-skill.md."""
-        skill_dir = Path(__file__).parent.parent / "skills/eval-analyze"
-        monkeypatch.setenv("CLAUDE_SKILL_DIR", str(skill_dir))
-
-        resolved = resolve_analysis_prompt("builtin:skill")
-
-        assert resolved.exists()
-        assert resolved.name == "analyze-skill.md"
 
     def test_custom_prompt_resolution(self):
         """Test custom prompt path resolution."""
@@ -49,14 +29,6 @@ class TestPromptResolution:
             assert resolved.read_text() == "# Custom Analysis Prompt"
         finally:
             Path(custom_path).unlink()
-
-    def test_builtin_invalid_name(self, monkeypatch):
-        """Test builtin with invalid name raises FileNotFoundError."""
-        skill_dir = Path(__file__).parent.parent / "skills/eval-analyze"
-        monkeypatch.setenv("CLAUDE_SKILL_DIR", str(skill_dir))
-
-        with pytest.raises(FileNotFoundError, match="Builtin prompt 'invalid'"):
-            resolve_analysis_prompt("builtin:invalid")
 
     def test_custom_path_not_found(self):
         """Test custom path that doesn't exist raises FileNotFoundError."""
@@ -98,13 +70,13 @@ class TestPromptBasedConfigGeneration:
                 "test_categories": [
                     {
                         "name": "navigation",
-                        "template": "builtin:navigation",
+                        "template": "documentation/navigation",
                         "count": 2,
                         "description": "Agent finds relevant documentation"
                     },
                     {
                         "name": "anti-pattern",
-                        "template": "builtin:anti-pattern",
+                        "template": "documentation/anti-pattern",
                         "count": 1,
                         "description": "Agent rejects constraint violations"
                     }
@@ -181,7 +153,7 @@ class TestPromptBasedConfigGeneration:
         # Check category structure
         nav_category = dataset["test_categories"][0]
         assert nav_category["name"] == "navigation"
-        assert nav_category["template"] == "builtin:navigation"
+        assert nav_category["template"] == "documentation/navigation"
         assert nav_category["count"] == 2
 
     def test_domain_knowledge_extraction(self, sample_docs_config):
@@ -216,7 +188,7 @@ class TestPromptBasedConfigGeneration:
             # Validate taxonomy fields
             assert len(config.test_categories) == 2
             assert config.test_categories[0].name == "navigation"
-            assert config.test_categories[0].template == "builtin:navigation"
+            assert config.test_categories[0].template == "documentation/navigation"
             assert config.test_categories[0].count == 2
 
             # Validate domain knowledge
@@ -300,34 +272,6 @@ class TestPromptBasedConfigGeneration:
 class TestEndToEndFlow:
     """Test the complete prompt-based analysis flow."""
 
-    def test_analyze_docs_prompt_exists(self):
-        """Test that analyze-docs.md prompt exists and is readable."""
-        prompt_path = Path(__file__).parent.parent / "skills/eval-analyze/prompts/analyze-docs.md"
-
-        assert prompt_path.exists()
-        content = prompt_path.read_text()
-
-        # Check for key sections
-        assert "Documentation Repository Analysis Prompt" in content or "Documentation Analysis Prompt" in content
-        assert "Step 1: Discover Documentation Structure" in content
-        assert "Step 7: Generate eval.yaml" in content
-
-    def test_prompt_contains_yaml_template(self):
-        """Test that analyze-docs.md references eval.yaml template."""
-        prompt_path = Path(__file__).parent.parent / "skills/eval-analyze/prompts/analyze-docs.md"
-        content = prompt_path.read_text()
-
-        # Should reference the template file
-        assert "eval-yaml-template.md" in content
-        assert "test_categories:" in content
-
-        # Verify the template file exists and contains the structure
-        template_path = Path(__file__).parent.parent / "skills/eval-analyze/references/eval-yaml-template.md"
-        template_content = template_path.read_text()
-        assert "execution:" in template_content
-        assert "mode: case" in template_content
-        assert "prompt:" in template_content
-
     def test_workflow_components_exist(self):
         """Test that all required workflow components exist."""
         base = Path(__file__).parent.parent
@@ -335,8 +279,9 @@ class TestEndToEndFlow:
         # Required files
         assert (base / "skills/eval-analyze/SKILL.md").exists()
         assert (base / "skills/eval-analyze/scripts/resolve_prompt.py").exists()
-        assert (base / "skills/eval-analyze/prompts/analyze-docs.md").exists()
+        assert (base / "skills/eval-analyze/prompts/analyze-skill.md").exists()
         assert (base / "skills/eval-analyze/scripts/validate_eval.py").exists()
+        assert (base / "examples/openshift-agentic-docs.md").exists()
 
     def test_skill_md_has_prompt_mode_docs(self):
         """Test that SKILL.md documents prompt mode."""
@@ -344,9 +289,9 @@ class TestEndToEndFlow:
         content = skill_md.read_text()
 
         assert "--prompt" in content
-        assert "builtin:docs" in content
+        assert "examples/" in content
         assert "Step 2-Prompt" in content
-        assert "Prompt-Based Analysis" in content
+        assert "Prompt-Based Analysis" in content or "PROMPT-BASED ANALYSIS" in content
 
 
 if __name__ == "__main__":

@@ -49,7 +49,7 @@ The harness separates **how many invocations** (`execution.mode`) from **what to
 - **Skill mode** (`execution.skill`): Test predefined skill implementations (`/my-skill --args`). Evaluates skill correctness, quality, and cost efficiency.
 - **Prompt mode** (`execution.prompt`) ✨ NEW: Test agent capabilities directly by sending prompts without a skill wrapper. Extensible to any agent evaluation scenario.
 
-**Implemented flavor - Agentic Documentation Testing** (via `/eval-analyze --prompt builtin:docs`):
+**Implemented flavor - Agentic Documentation Testing** (see `examples/openshift-agentic-docs.md`):
 - **Documentation effectiveness**: Can agents navigate and use your docs?
 - **Pattern understanding**: Can agents identify and apply code patterns?
 - **Constraint compliance**: Do agents respect documented rules?
@@ -106,16 +106,16 @@ This examines the skill's SKILL.md, discovers test cases, and generates `eval.ya
 ### 3b. Analyze for prompt mode evaluation
 
 ```bash
-/eval-analyze --prompt builtin:docs
+/eval-analyze --prompt examples/openshift-agentic-docs.md
 ```
 
 This analyzes your repository's documentation (CLAUDE.md, AGENTS.md, ai-docs/) and generates `eval.yaml` with:
 - `execution.prompt: "{{ input.prompt }}"` (prompt mode)
-- Taxonomy-based test case templates (navigation, anti-patterns, authoring, API usage, architecture)
+- Documentation test templates (documentation/navigation, documentation/anti-pattern, etc.)
 - LLM rubric judges for semantic evaluation
 - Documentation tracking to verify agents use docs correctly
 
-**Note**: Prompt mode is extensible. The `builtin:docs` analysis prompt is one implementation. You can create custom analysis prompts for other agent capability testing scenarios.
+**Note**: Prompt mode is extensible. The OpenShift analysis prompt is a domain-specific example. You can create custom analysis prompts for other domains or agent capability testing scenarios.
 
 ### 4. Generate test cases (if needed)
 
@@ -307,7 +307,7 @@ thresholds:
   
   Additional fields: `arguments` template, optional `timeout` (wall-clock seconds per invocation), `max_budget_usd` (cost cap per invocation), `parallelism` (run up to N cases concurrently in case/prompt modes), and `env` for injecting environment variables into workspaces (`$VAR` syntax resolves from caller's environment).
 - **`schema`** — natural language description of structure. Used on `dataset` and each `outputs` entry. Agents and judges read these to understand the data.
-- **`test_categories`** — (prompt mode only) taxonomy-based test generation. Each category has a `name`, `template` (builtin or custom path), `count` (number of cases), and `description`. Used by `/eval-dataset` to generate test cases from templates.
+- **`test_categories`** — (prompt mode only) taxonomy-based test generation. Each category has a `name`, `template` (category/name like `documentation/navigation` or custom path), `count` (number of cases), and `description`. Used by `/eval-dataset` to generate test cases from templates.
 - **`domain`** — (prompt mode only) repository-specific context used during test generation. Can include `type`, `documentation_structure`, `constraints`, `apis`, `components`, etc. Tailors generic templates to your repository.
 - **`inputs.tools`** — tool interception for headless and interactive execution. Each entry has a `match` (what to intercept) and a `prompt` (how to handle it). AskUserQuestion uses 3-tier answering: exact `case_overrides` → LLM call (`models.hook`) with case context (`input.yaml` + `answers.yaml`) → fallback to first option.
 - **`outputs`** — two types: `path` for file artifacts on disk, `tool` for tool call side effects (Jira, APIs). Both have `schema` descriptions. Optional `batch_pattern` maps output files to cases in batch mode using `{n}` as a 1-based index (e.g. `"RFE-{n:03d}"` → `RFE-001`, `RFE-002`).
@@ -512,11 +512,11 @@ dataset:
   # Taxonomy-based dataset: generate test cases from templates
   test_categories:
     - name: navigation
-      template: builtin:navigation
+      template: documentation/navigation
       count: 10
       description: Finding specific documentation
     - name: anti-pattern
-      template: builtin:anti-pattern
+      template: documentation/anti-pattern
       count: 5
       description: Rejecting constraint violations
   
@@ -578,17 +578,17 @@ Analyze a target and generate `eval.yaml`. Two modes:
 - Dataset schema, output descriptions
 - Suggested judges (inline checks + LLM prompts)
 
-**Prompt mode** (`--prompt`): Uses an analysis prompt to generate evaluation config. The `builtin:docs` analysis prompt analyzes repository documentation (CLAUDE.md, AGENTS.md, ai-docs/) and produces:
+**Prompt mode** (`--prompt`): Uses an analysis prompt to generate evaluation config. Domain-specific analysis prompts (see `examples/`) analyze repository documentation (CLAUDE.md, AGENTS.md, ai-docs/) and produce:
 - `execution.prompt: "{{ input.prompt }}"` (direct agent invocation)
-- Taxonomy-based test categories (navigation, anti-pattern, authoring, API usage, architecture)
+- Test categories (navigation, anti-pattern, authoring, component-usage, architecture)
 - LLM rubric judges for semantic evaluation
 - Domain context for test generation
 
 ```bash
-/eval-analyze --skill my-skill          # Skill mode: analyze skill implementation
-/eval-analyze --skill my-skill --update # Update existing skill mode eval.yaml
-/eval-analyze --prompt builtin:docs     # Prompt mode: analyze agentic documentation
-/eval-analyze --prompt custom.md        # Prompt mode: use custom analysis prompt
+/eval-analyze --skill my-skill                           # Skill mode: analyze skill implementation
+/eval-analyze --skill my-skill --update                  # Update existing skill mode eval.yaml
+/eval-analyze --prompt examples/openshift-agentic-docs.md # Prompt mode: analyze agentic documentation
+/eval-analyze --prompt custom.md                         # Prompt mode: use custom analysis prompt
 ```
 
 Prompt mode is extensible. Create custom analysis prompts for other agent capability testing scenarios (code generation, API usage patterns, reasoning quality, etc.).
@@ -608,7 +608,7 @@ Generate evaluation test cases. Two generation strategies:
 /eval-dataset --strategy expand            # Fill coverage gaps (skill mode only)
 ```
 
-**Taxonomy-based generation** (prompt mode) uses test category templates (builtin: navigation, anti-pattern, authoring, component-usage, architecture) combined with repository-specific `domain` knowledge to create targeted test cases. Extensible with custom templates.
+**Taxonomy-based generation** (prompt mode) uses test category templates (documentation/navigation, documentation/anti-pattern, documentation/authoring, documentation/component-usage, documentation/architecture) combined with repository-specific `domain` knowledge to create targeted test cases. Extensible with custom template categories.
 
 ### /eval-run
 

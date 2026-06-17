@@ -7,7 +7,7 @@
 /eval-analyze --prompt examples/openshift-agentic-docs.md
 ```
 
-**For other domains**: Use `builtin:docs` (generic) or create your own recipe by adapting this example.
+**For other domains**: Create your own recipe by adapting this example.
 
 ---
 
@@ -199,23 +199,23 @@ List available templates:
 python3 ${CLAUDE_SKILL_DIR}/../eval-dataset/scripts/list_templates.py
 ```
 
-Based on repository type and content, suggest test categories from the available builtin templates:
+Based on repository type and content, suggest test categories from the available documentation templates:
 
 ### For Type A (Enhancement/Design):
 ```yaml
 test_categories:
   - name: navigation
-    template: builtin:navigation
+    template: documentation/navigation
     count: 2
     description: Agent finds relevant process documentation
     
   - name: authoring
-    template: builtin:authoring
+    template: documentation/authoring
     count: 1
     description: Agent creates content following documented patterns
     
   - name: anti-pattern
-    template: builtin:anti-pattern
+    template: documentation/anti-pattern
     count: 3  # One per major constraint
     description: Agent rejects approaches that violate constraints
 ```
@@ -224,18 +224,18 @@ test_categories:
 ```yaml
 test_categories:
   - name: navigation
-    template: builtin:navigation
+    template: documentation/navigation
     count: 2
     description: Agent finds API/component documentation
     
   - name: component-usage
-    template: builtin:component-usage
+    template: documentation/component-usage
     count: 3  # One per major API
     description: Agent explains how to use APIs with examples
     
   # Optional:
   # - name: architecture
-  #   template: builtin:architecture
+  #   template: documentation/architecture
   #   count: 1
   #   description: Agent explains how components work together
 ```
@@ -244,7 +244,7 @@ test_categories:
 ```yaml
 test_categories:
   - name: navigation
-    template: builtin:navigation
+    template: documentation/navigation
     count: 4
     description: Agent finds information via search and hierarchy
 ```

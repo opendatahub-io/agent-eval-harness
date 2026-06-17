@@ -222,14 +222,14 @@ test -f eval.yaml && python3 ${CLAUDE_SKILL_DIR}/scripts/check_env.py --config e
 
 Report the final status to the user and suggest next steps.
 
-**If agentic docs were detected**, present both evaluation modes:
-1. **Skill-based evaluation** — analyze and test a specific skill
-2. **Documentation evaluation** — test if agents can use the repository's agentic documentation
+**Present evaluation modes**:
+1. **Skill-based** — analyze and test a specific skill (`--skill`)
+2. **Prompt-based** — test agent capabilities directly (`--prompt`, see examples/)
 
 **Next steps structure**:
 - If eval.yaml doesn't exist:
-  - Suggest skill-based: `/eval-analyze --skill <name>` (list discovered skills)
-  - If agentic docs exist, also suggest: `/eval-analyze --prompt builtin:docs` for documentation testing
+  - If skills exist: suggest `/eval-analyze --skill <name>` (list discovered skills)
+  - Also mention: `/eval-analyze --prompt <path>` for prompt-based evaluation
 - If eval.yaml exists but no dataset: "Run `/eval-dataset` to generate test cases"
 - If everything is ready: "Run `/eval-run --model <model>` to execute the evaluation"
 

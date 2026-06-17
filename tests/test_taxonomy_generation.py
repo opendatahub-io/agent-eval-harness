@@ -28,10 +28,10 @@ class TestTemplateResolution:
         monkeypatch.setenv("CLAUDE_SKILL_DIR", str(skill_dir))
 
         for template_name in ["navigation", "anti-pattern", "authoring", "component-usage", "architecture"]:
-            resolved = resolve_template(f"builtin:{template_name}")
+            resolved = resolve_template(f"documentation/{template_name}")
             assert resolved.exists()
             assert resolved.name == f"{template_name}.md"
-            assert "templates/builtin" in str(resolved)
+            assert "templates/documentation" in str(resolved)
 
     def test_all_builtin_templates_have_required_sections(self, monkeypatch):
         """Test that all builtin templates have required documentation."""
@@ -46,7 +46,7 @@ class TestTemplateResolution:
         ]
 
         for template_name in ["navigation", "anti-pattern", "authoring", "component-usage", "architecture"]:
-            template_path = resolve_template(f"builtin:{template_name}")
+            template_path = resolve_template(f"documentation/{template_name}")
             content = template_path.read_text()
 
             for section in required_sections:
@@ -119,7 +119,7 @@ class TestTaxonomyGeneration:
                 "test_categories": [
                     {
                         "name": "navigation",
-                        "template": "builtin:navigation",
+                        "template": "documentation/navigation",
                         "count": 2,
                     }
                 ],
@@ -268,7 +268,7 @@ class TestCLIIntegration:
                 "path": "eval/dataset",
                 "schema": "test",
                 "test_categories": [
-                    {"name": "navigation", "template": "builtin:navigation", "count": 2}
+                    {"name": "navigation", "template": "documentation/navigation", "count": 2}
                 ]
             },
             "outputs": [{"path": "output", "schema": "test"}],

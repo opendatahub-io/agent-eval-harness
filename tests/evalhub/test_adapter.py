@@ -118,7 +118,7 @@ def test_adapter_runs_skill_and_scores():
         _make_case_dir(tmpdir / "cases", "case-002", {"prompt": "goodbye world"})
 
         mock_runner = MagicMock()
-        mock_runner.run_skill.return_value = _make_run_result(exit_code=0)
+        mock_runner.execute.return_value = _make_run_result(exit_code=0)
 
         config = _StubJobSpec(
             id="job-abc", benchmark_id="bench-1", benchmark_index=0,
@@ -128,8 +128,8 @@ def test_adapter_runs_skill_and_scores():
         callbacks = _StubJobCallbacks()
         result = _run_adapter(tmpdir, mock_runner, eval_yaml, config, callbacks)
 
-        assert mock_runner.run_skill.call_count == 2
-        calls = mock_runner.run_skill.call_args_list
+        assert mock_runner.execute.call_count == 2
+        calls = mock_runner.execute.call_args_list
         for call in calls:
             args_val = call.kwargs.get("args", "")
             assert args_val in ("--input hello world", "--input goodbye world")
@@ -148,7 +148,7 @@ def test_adapter_handles_runner_failure():
         _make_case_dir(tmpdir / "cases", "case-001", {"prompt": "fail case"})
 
         mock_runner = MagicMock()
-        mock_runner.run_skill.return_value = _make_run_result(exit_code=1, duration=5.0)
+        mock_runner.execute.return_value = _make_run_result(exit_code=1, duration=5.0)
 
         config = _StubJobSpec(
             id="job-fail", benchmark_id="bench-1",
