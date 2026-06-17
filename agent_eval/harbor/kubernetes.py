@@ -15,7 +15,7 @@ Usage::
       --environment-import-path agent_eval.harbor.kubernetes:KubernetesEnvironment
 
 Requires ``kubernetes`` in Harbor's environment
-(``uv tool install harbor --with kubernetes``).
+(``/eval-setup --harbor`` or ``pip install harbor kubernetes``).
 """
 
 import asyncio
@@ -144,8 +144,7 @@ class KubernetesEnvironment(BaseEnvironment):
         if not _K8S_AVAILABLE:
             raise RuntimeError(
                 "The 'kubernetes' package is required for KubernetesEnvironment. "
-                "Install it in Harbor's environment: "
-                "`uv tool install harbor --with kubernetes` (or pip install kubernetes).")
+                "Run `/eval-setup --harbor` or `pip install harbor kubernetes`.")
         self._pod = _pod_name(self.session_id)
         self._namespace = _default_namespace()
         if keep_pods is None:
@@ -182,8 +181,8 @@ class KubernetesEnvironment(BaseEnvironment):
     def preflight(cls) -> None:
         if not _K8S_AVAILABLE:
             raise SystemExit(
-                "The 'kubernetes' package is required. Install with "
-                "`uv tool install harbor --with kubernetes`.")
+                "The 'kubernetes' package is required. "
+                "Run `/eval-setup --harbor` or `pip install harbor kubernetes`.")
 
     def _validate_definition(self) -> None:
         if not self.task_env_config.docker_image:

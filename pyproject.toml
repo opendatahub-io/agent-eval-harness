@@ -21,16 +21,17 @@ evalhub = [
     "eval-hub-sdk[adapter]>=0.1,<1.0",
     "boto3>=1.34,<2.0",
 ]
-# Harbor Kubernetes BaseEnvironment (agent_eval.harbor.k8s) — used when running
-# evals on OpenShift. Must be present in Harbor's environment, e.g.
-# `uv tool install harbor --with kubernetes`.
-harbor = ["kubernetes>=29.0,<37.0"]
+# Harbor containerized execution — install harbor in the same venv so the
+# Kubernetes environment plugin and k8s_resources.py share one kubernetes client.
+# Requires Python >=3.12 (harbor's minimum).
+harbor = ["harbor>=0.13.0", "kubernetes>=29.0,<37.0"]
 openai = ["openai>=1.70"]
 all = [
     "mlflow[genai]>=3.5",
     "anthropic[vertex]>=0.40",
     "eval-hub-sdk[adapter]>=0.1,<1.0",
     "boto3>=1.34,<2.0",
+    "harbor>=0.13.0",
     "kubernetes>=29.0,<37.0",
     "openai>=1.70",
 ]

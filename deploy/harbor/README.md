@@ -58,7 +58,8 @@ PYTHONPATH="$(pwd)" harbor run -p harbor-tasks/<case> --agent claude-code -m <mo
 ```
 
 Notes:
-- `PYTHONPATH` must include this repo so Harbor (in its own venv) can import the plug-ins.
+- `PYTHONPATH` must include this repo so Harbor can import the environment
+  plug-ins (unnecessary if agent-eval-harness is pip-installed).
 - **Auth** — only NON-SECRET provider config is forwarded from the host
   Provider config AND API keys (`ANTHROPIC_API_KEY`, `AWS_ACCESS_KEY_ID`, etc.)
   are forwarded from the host env into the container automatically. For Vertex AI
@@ -98,10 +99,10 @@ agent_eval.harbor.kubernetes:KubernetesEnvironment` and `AGENT_EVAL_K8S_NAMESPAC
 
 It uses the **Kubernetes Python client** (not the `oc` CLI): `load_incluster_config()`
 when running inside a pod (the EvalHub provider — uses the pod's ServiceAccount), falling
-back to your local kubeconfig. Install the client into Harbor's environment:
-`uv tool install harbor --with kubernetes` (declared as the `harbor` extra). `exec` uses
-the API's websocket stream; file copy is tar+base64 over `exec`. The Podman env, by
-contrast, stays on the `podman` CLI (local-dev only, the binary is always present).
+back to your local kubeconfig. Install with `/eval-setup --harbor` or
+`pip install agent-eval-harness[harbor]`. `exec` uses the API's websocket stream;
+file copy is tar+base64 over `exec`. The Podman env, by contrast, stays on the
+`podman` CLI (local-dev only, the binary is always present).
 
 ### Credentials (from the cluster, never copied from the host)
 
