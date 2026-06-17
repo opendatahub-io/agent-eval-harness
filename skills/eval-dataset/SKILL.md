@@ -15,6 +15,8 @@ You generate evaluation test cases for a skill. You read the skill analysis (eva
 | `--count <N>` | no | 5 | Number of cases to generate |
 | `--strategy <type>` | no | `bootstrap` | Generation strategy (see Step 3) |
 | `--run-id <id>` | no | — | Previous eval run to learn from (used with `expand`) |
+| `--harbor` | no | — | Also generate Harbor task packages (Step 8) |
+| `--image <image>` | with `--harbor` | — | Container image for Harbor task packages |
 
 ### Config Discovery
 
@@ -186,11 +188,18 @@ Tell the user what was created:
   - `/eval-run --model <model> --gold` to generate gold references from the best outputs
   - `/eval-dataset --strategy expand --count 10` to add more cases later
 
-## Step 8 (optional): Emit Harbor task packages
+## Step 8 (if `--harbor`): Emit Harbor task packages
 
-To run on Harbor (containers), generate self-contained task packages. See
-`${CLAUDE_SKILL_DIR}/references/case-generation.md` for the full command and
-details, or run `python3 ${CLAUDE_SKILL_DIR}/scripts/harbor.py --help`.
+If `--harbor` was passed, generate self-contained task packages for
+containerized execution. Run:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/harbor.py \
+  --config <config> --out <dataset_dir>/../harbor-tasks --image <image> \
+  [--judge-model <model>] [--verifier-timeout 900] [--agent-timeout 3600]
+```
+
+See `${CLAUDE_SKILL_DIR}/references/case-generation.md` for details.
 
 ## Rules
 
