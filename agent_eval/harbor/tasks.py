@@ -144,10 +144,8 @@ def generate_tasks(
         }))
 
         # instruction.md
-        input_context = yaml.safe_dump(input_data, sort_keys=False, allow_unicode=True).strip()
         (task_dir / "instruction.md").write_text(_render("instruction.md.tmpl", {
             "COMMAND": command,
-            "INPUT_CONTEXT": input_context or "(no input fields)",
         }))
 
         # tests/test.sh + bundled eval.yaml (verifier)
