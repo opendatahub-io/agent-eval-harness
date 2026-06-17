@@ -488,14 +488,21 @@ class KubernetesEnvironment(BaseEnvironment):
         await self._checked_exec(cmd, f"upload_file -> {target_path}")
 
     async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None:
+        def _reset_perms(info):
+            info.uid = info.gid = 0
+            info.uname = info.gname = "root"
+            info.mode = 0o755 if info.isdir() else 0o644
+            return info
+
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as tf:
             for item in sorted(Path(source_dir).iterdir()):
-                tf.add(item, arcname=item.name)
+                tf.add(item, arcname=item.name, filter=_reset_perms)
         b64 = base64.b64encode(buf.getvalue()).decode()
         tgt = shlex.quote(target_dir)
         cmd = (f"mkdir -p {tgt} && printf %s {shlex.quote(b64)} | base64 -d "
-               f"| tar xmf - -C {tgt}")
+               f"| tar xmf - --no-same-owner --no-same-permissions -C {tgt} 2>/dev/null; "
+               f"true")
         await self._checked_exec(cmd, f"upload_dir -> {target_dir}")
 
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
