@@ -11,27 +11,28 @@ How data flows from dataset cases through execution, collection, and scoring.
 - Builds `batch.yaml` — a list of one entry per case, each entry being the full parsed content of the input file. No field extraction — the entire input file content is included.
 - Builds `case_order.yaml` — maps position to case ID (`[{case_id: "case-001-name"}, ...]`)
 - Creates output directories from `outputs[].path` in eval.yaml
-- Symlinks project resources (`.claude/`, `CLAUDE.md`, `scripts/`, `skills/`, `.context/`)
-- If `inputs.tools` configured, generates `tool_handlers.yaml` and `.claude/settings.json` with hooks
+- Symlinks project directories (`scripts/`, `.context/`) and copies files (`CLAUDE.md`) into workspace. `.claude/` subdirectories (e.g., `skills/`) are symlinked for skill discovery; `settings.json` is always generated.
+- Creates a sibling harness directory (`{run-id}._harness/`) outside the solver workspace for hook scripts and `tool_handlers.yaml`
+- If `inputs.tools` configured, generates `tool_handlers.yaml` and `hooks/tools.py` in the harness dir, and `.claude/settings.json` in the workspace with hook commands pointing to the harness
 
-**Workspace structure**:
+**Workspace structure (batch mode)**:
 ```
 /tmp/agent-eval/{run-id}/
   batch.yaml              # Full input data per case
   case_order.yaml         # Position → case ID mapping
   {output_dirs}/          # Empty dirs for skill outputs
-  .claude/settings.json   # Generated hook config (if inputs.tools)
-  hooks/tools.py          # Hook script (if inputs.tools)
-  tool_handlers.yaml      # Handler config (if inputs.tools)
+  .claude/settings.json   # Generated (hooks + permissions)
   scripts/ → symlink
-  .claude/ → symlink (or generated)
-  CLAUDE.md → symlink
-  skills/ → symlink
+  .claude/skills/ → symlink
+  CLAUDE.md               # Copied from project root
+/tmp/agent-eval/{run-id}._harness/
+  tool_handlers.yaml      # Handler config (if inputs.tools)
+  hooks/tools.py          # Hook script (if inputs.tools)
 ```
 
 ### Case Mode (execution.mode: case)
 
-When `execution.mode` is `case` (default), workspace.py creates a separate workspace per case:
+When `execution.mode` is `case` (default), workspace.py creates a separate workspace per case, with a sibling harness directory for hook isolation:
 
 ```
 /tmp/agent-eval/{run-id}/
@@ -39,19 +40,29 @@ When `execution.mode` is `case` (default), workspace.py creates a separate works
   cases/
     case-001-name/
       input.yaml          # Copied from dataset
-      strategy.md         # Copied from dataset (companion files)
-      answers.yaml        # Copied from dataset (if present)
       {output_dirs}/      # Empty dirs for skill outputs
       .claude/settings.json  # Generated (hooks + permissions)
       subagents/           # SubagentStop hook target
       scripts/ → symlink
-      CLAUDE.md → symlink
-      skills/ → symlink
+      .claude/skills/ → symlink
+      CLAUDE.md            # Copied from project root
     case-002-name/
       ...
+/tmp/agent-eval/{run-id}._harness/
+  case-001-name/
+    tool_handlers.yaml    # Per-case handler config
+    hooks/tools.py        # Per-case hook script
+  case-002-name/
+    ...
 ```
 
-Each case gets ALL files from the dataset case directory (not just input.yaml), plus symlinked project resources and hooks. The skill runs in the case workspace as its working directory.
+Each case gets:
+- The input file from the dataset case directory
+- Files listed in `dataset.workspace.files` (e.g., source code for the agent to work on). Eval-only files (`answers.yaml`, `annotations.yaml`, etc.) are automatically excluded.
+- Symlinked project directories and copied project files
+- Tool interception hooks in the sibling harness dir (inaccessible to the solver via Claude Code file tools)
+
+The skill runs in the case workspace as its working directory.
 
 ## 2. Workspace → Execution
 
@@ -71,9 +82,9 @@ Each case gets ALL files from the dataset case directory (not just input.yaml), 
 
 **What the skill sees (case mode)**:
 - Working directory: the case workspace (`workspace/cases/{case_id}/`)
-- Input: case-specific arguments resolved from `execution.arguments` template + all case files on disk
+- Input: case-specific arguments resolved from `execution.arguments` template + input file + workspace files on disk
 - Output directories: created and ready
-- Hooks: per-case hooks with SubagentStop for transcript capture
+- Hooks: per-case hooks with SubagentStop for transcript capture. Hook scripts live in the sibling harness dir — the solver can see hook commands in `settings.json` but cannot access the harness files via Claude Code file tools.
 
 **Case mode execution**:
 - execute.py iterates `case_order.yaml`, invoking the skill once per case

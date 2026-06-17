@@ -30,11 +30,14 @@ from agent_eval.events import (
     DEFAULT_RESULT_CAP, parse_stream_events, merge_subagent_transcripts,
 )
 
-# Files/dirs created by the harness infrastructure, not by the skill
+# Files/dirs created by the harness infrastructure, not by the skill.
+# CLAUDE.md is copied into the workspace by workspace.py
+# and should not appear as a solver-modified file.
 _HARNESS_PATHS = {
     ".claude", ".git", ".work", "subagents", "hooks",
     "stdout.log", "stderr.log",
     "run_result.json", "batch.yaml", "case_order.yaml",
+    "CLAUDE.md",
 }
 
 
