@@ -18,6 +18,7 @@ import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
 import argparse
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -41,7 +42,7 @@ def main():
         "--symlinks",
         default=None,
         help="Comma-separated dirs/files to symlink into workspace "
-        "(default: scripts,.claude,CLAUDE.md,.context,skills)",
+        "(default: scripts,.claude,CLAUDE.md,.context)",
     )
     args = parser.parse_args()
 
@@ -67,15 +68,21 @@ def main():
         print("ERROR: run-id must match [A-Za-z0-9._-]+", file=sys.stderr)
         sys.exit(1)
 
-    # Create workspace in secure temp directory
+    # Create workspace and sibling harness directory in secure temp directory.
+    # The harness directory stores hook scripts and tool_handlers.yaml
+    # outside the solver workspace so the evaluated agent cannot access them.
     base_dir = (Path(tempfile.gettempdir()) / "agent-eval").resolve()
     workspace = (base_dir / args.run_id).resolve()
+    harness_dir = (base_dir / f"{args.run_id}._harness").resolve()
     if base_dir not in workspace.parents and workspace != base_dir:
         print("ERROR: invalid run-id path", file=sys.stderr)
         sys.exit(1)
     if workspace.exists():
         shutil.rmtree(workspace)
+    if harness_dir.exists():
+        shutil.rmtree(harness_dir)
     workspace.mkdir(parents=True, mode=0o700)
+    harness_dir.mkdir(parents=True, mode=0o700)
 
     # Initialize a bare git repo so Claude Code subagents can discover
     # the project root and load .claude/settings.json with the expanded
@@ -84,7 +91,7 @@ def main():
 
     # Branch on execution mode
     if config.execution.mode == "case":
-        _create_per_case_workspace(workspace, case_dirs, config, args)
+        _create_per_case_workspace(workspace, case_dirs, config, args, harness_dir)
         return
 
     # ── Batch mode (below) ───────────────────────────────────────
@@ -138,20 +145,19 @@ def main():
     with open(workspace / "case_order.yaml", "w") as f:
         yaml.dump(case_order, f, default_flow_style=False)
 
-    # Symlink project resources into workspace
-    # Skip .claude when tool hooks are configured — _setup_tool_hooks
-    # creates its own .claude/settings.json and symlinking would write
-    # into the project's .claude/ directory instead
+    # Symlink project resources into workspace.
+    # .claude is always skipped — we create our own settings.json.
+    # skills is excluded by default (D4) — it exposes judge prompts,
+    # scoring scripts, and tool-interception docs to the solver.
     project_root = Path.cwd()
-    default_symlinks = ["scripts", ".claude", "CLAUDE.md", ".context", "skills"]
-    # Always skip .claude symlink — we create our own settings.json
-    # (for SubagentStop hook at minimum, plus tool interception if configured)
+    default_symlinks = ["scripts", ".claude", "CLAUDE.md", ".context"]
     skip_symlinks = {".claude"}
     symlink_names = (
         [s.strip() for s in args.symlinks.split(",") if s.strip()]
         if args.symlinks
         else default_symlinks
     )
+    symlink_dirs = []
     for name in symlink_names:
         if name in skip_symlinks:
             continue
@@ -160,50 +166,80 @@ def main():
             print(f"WARNING: skipping invalid symlink entry: {name}", file=sys.stderr)
             continue
         target = project_root / name
+        if not target.exists():
+            continue
+        # Copy files instead of symlinking (D3) — additionalDirectories
+        # only accepts directories, so file symlinks would need the
+        # project root in the allowlist
+        if target.is_file():
+            shutil.copy2(target, workspace / name)
+            continue
+        # Symlink directories and track targets for additionalDirectories
         link = workspace / name
-        if target.exists():
-            link.symlink_to(target.resolve())
+        link.symlink_to(target.resolve())
+        symlink_dirs.append(str(target.resolve()))
 
-    # When .claude is skipped for hooks, symlink subdirectories (e.g. skills/)
-    if ".claude" in skip_symlinks:
-        claude_dir = project_root / ".claude"
-        if claude_dir.is_dir():
-            for sub in claude_dir.iterdir():
-                if sub.is_dir() and sub.name != "settings.json":
-                    link = workspace / ".claude" / sub.name
-                    if not link.exists():
-                        link.parent.mkdir(parents=True, exist_ok=True)
-                        link.symlink_to(sub.resolve())
+    # Symlink .claude subdirectories (skills/, etc.) for skill discovery
+    claude_dir = project_root / ".claude"
+    if claude_dir.is_dir():
+        for sub in claude_dir.iterdir():
+            if sub.is_dir() and sub.name != "settings.json":
+                link = workspace / ".claude" / sub.name
+                if not link.exists():
+                    link.parent.mkdir(parents=True, exist_ok=True)
+                    link.symlink_to(sub.resolve())
+                    symlink_dirs.append(str(sub.resolve()))
 
     # Generate tool interception hooks if inputs.tools configured
     if config.inputs.tools:
-        _setup_tool_hooks(workspace, config)
+        _setup_tool_hooks(workspace, config, harness_dir,
+                          symlink_dirs=symlink_dirs)
     else:
         # Even without tool interception, set up SubagentStop hook
         # to capture background agent transcripts for tracing.
-        _setup_subagent_only_hook(workspace, config)
+        _setup_subagent_only_hook(workspace, config, symlink_dirs=symlink_dirs)
 
     print(f"WORKSPACE: {workspace}")
+    print(f"HARNESS: {harness_dir}")
     print(f"CASES: {len(case_dirs)}")
     print(f"BATCH: {workspace / 'batch.yaml'}")
 
 
-def _create_per_case_workspace(workspace, case_dirs, config, args):
+def _create_per_case_workspace(workspace, case_dirs, config, args, harness_dir):
     """Create a separate workspace per case for per-case execution.
 
     Each case gets its own workspace subdirectory with:
-    - All files from the dataset case directory (input.yaml, strategy.md, etc.)
-    - Symlinked project resources (scripts, skills, .context, CLAUDE.md)
-    - Tool interception hooks and SubagentStop hook
+    - Input file from the dataset case directory
+    - Symlinked project resources (scripts, .context, CLAUDE.md)
+    - Tool interception hooks (in sibling harness dir, not workspace)
+    - SubagentStop hook for transcript capture
     - Output directories from eval.yaml
     """
     project_root = Path.cwd()
-    default_symlinks = ["scripts", ".claude", "CLAUDE.md", ".context", "skills"]
+    default_symlinks = ["scripts", ".claude", "CLAUDE.md", ".context"]
     symlink_names = (
         [s.strip() for s in args.symlinks.split(",") if s.strip()]
         if args.symlinks
         else default_symlinks
     )
+
+    # Pre-compute directory symlink targets for scoped additionalDirectories.
+    # Same for all cases since they share the same project resources.
+    symlink_dirs = []
+    for name in symlink_names:
+        if name == ".claude":
+            continue
+        p = Path(name)
+        if p.is_absolute() or ".." in p.parts:
+            continue
+        target = project_root / name
+        if target.is_dir():
+            symlink_dirs.append(str(target.resolve()))
+    claude_dir = project_root / ".claude"
+    if claude_dir.is_dir():
+        for sub in claude_dir.iterdir():
+            if sub.is_dir() and sub.name != "settings.json":
+                symlink_dirs.append(str(sub.resolve()))
 
     case_order = []
 
@@ -213,7 +249,13 @@ def _create_per_case_workspace(workspace, case_dirs, config, args):
         case_ws.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "init", "-q", str(case_ws)], check=True)
 
-        # Copy only the input file and answers.yaml into the workspace.
+        # Create per-case harness subdirectory for hook isolation (D2).
+        case_harness = harness_dir / case_id
+        case_harness.mkdir(parents=True, exist_ok=True)
+
+        # Copy only the input file into the workspace.
+        # answers.yaml stays in the dataset dir — the hook reads it
+        # from --case-dir so the solver cannot access the answer key.
         # Companion files (e.g., source code for autofix skills) should
         # use dataset.input_files_dir (see #70) to explicitly declare
         # which files the skill needs. Everything else (gold standards,
@@ -221,9 +263,6 @@ def _create_per_case_workspace(workspace, case_dirs, config, args):
         input_src = _find_input_file(case_dir)
         if input_src:
             shutil.copy2(input_src, case_ws / input_src.name)
-        answers_src = case_dir / "answers.yaml"
-        if answers_src.is_file():
-            shutil.copy2(answers_src, case_ws / "answers.yaml")
 
         # Copy input files directory if present (e.g., source code for the
         # agent to work on). Contents are placed at the workspace root,
@@ -274,8 +313,17 @@ def _create_per_case_workspace(workspace, case_dirs, config, args):
             if p.is_absolute() or ".." in p.parts:
                 continue
             target = project_root / name
+            if not target.exists():
+                continue
+            # Copy files instead of symlinking (D3)
+            if target.is_file():
+                dest = case_ws / name
+                if not dest.exists():
+                    shutil.copy2(target, dest)
+                continue
+            # Symlink directories
             link = case_ws / name
-            if target.exists() and not link.exists():
+            if not link.exists():
                 link.symlink_to(target.resolve())
 
         # Symlink .claude subdirectories (skills/, etc.)
@@ -290,9 +338,12 @@ def _create_per_case_workspace(workspace, case_dirs, config, args):
 
         # Set up hooks (tool interception + SubagentStop)
         if config.inputs.tools:
-            _setup_tool_hooks(case_ws, config)
+            _setup_tool_hooks(case_ws, config, case_harness,
+                              dataset_case_dir=case_dir,
+                              symlink_dirs=symlink_dirs)
         else:
-            _setup_subagent_only_hook(case_ws, config)
+            _setup_subagent_only_hook(case_ws, config,
+                                     symlink_dirs=symlink_dirs)
 
         case_order.append({"case_id": case_id})
 
@@ -301,6 +352,7 @@ def _create_per_case_workspace(workspace, case_dirs, config, args):
         yaml.dump(case_order, f, default_flow_style=False)
 
     print(f"WORKSPACE: {workspace}")
+    print(f"HARNESS: {harness_dir}")
     print(f"MODE: case")
     print(f"CASES: {len(case_dirs)}")
     for entry in case_order:
@@ -329,6 +381,7 @@ def _read_input(case_dir, config=None):
         ws = getattr(getattr(config, "dataset", None), "workspace", None)
         _SKIP_NAMES = _SKIP_NAMES | {
             Path(f).parts[0] for f in (getattr(ws, "files", None) or [])
+            if Path(f).parts
         }
 
     # First pass: look for a file named 'input.*'
@@ -412,7 +465,12 @@ def _inject_env(settings, config):
 
 
 def _carry_over_permissions(settings):
-    """Copy project permissions (allow, deny, additionalDirectories) into settings."""
+    """Copy project permissions (allow, deny) into workspace settings.
+
+    additionalDirectories are intentionally NOT carried over — the workspace
+    uses scoped directory access based on actual symlink targets.  Copying
+    project additionalDirectories would re-expose the full project root.
+    """
     import json as _json
 
     project_settings = Path.cwd() / ".claude" / "settings.json"
@@ -430,15 +488,13 @@ def _carry_over_permissions(settings):
         settings.setdefault("permissions", {})["allow"] = allow_list
     if proj_perms.get("deny"):
         settings.setdefault("permissions", {})["deny"] = list(proj_perms["deny"])
-    if proj_perms.get("additionalDirectories"):
-        dirs = list(proj_perms["additionalDirectories"])
-        for d in list(dirs):
-            resolved = str(Path(d).resolve())
-            if resolved != d and resolved not in dirs:
-                dirs.append(resolved)
-        settings.setdefault("permissions", {}).setdefault(
-            "additionalDirectories", []
-        ).extend(dirs)
+    # Intentionally skip additionalDirectories — the workspace scopes
+    # access to resolved symlink targets only
+    dropped = proj_perms.get("additionalDirectories", [])
+    if dropped:
+        print(f"WARNING: dropping {len(dropped)} additionalDirectories from "
+              f"project settings (workspace uses scoped access): "
+              f"{', '.join(str(d) for d in dropped)}", file=sys.stderr)
 
 
 def _merge_harness_permissions(settings, config):
@@ -476,13 +532,20 @@ def _apply_runner_settings(settings, config):
     Lets users add Claude Code settings (model defaults, env, MCP servers,
     etc.) to a runner without forking the harness. Merged after harness
     defaults so user overrides win for scalar keys; lists are extended.
+
+    **Isolation note**: this runs after scoped `additionalDirectories`
+    are set.  If `runner.settings` contains
+    `permissions.additionalDirectories`, those entries are appended —
+    intentionally, as an escape hatch for skills that need broader access
+    (e.g., reading project source outside symlinked dirs).  Users who set
+    this accept the isolation trade-off.
     """
     user_settings = getattr(config.runner, "settings", None) or {}
     if user_settings:
         _deep_merge(settings, user_settings)
 
 
-def _setup_subagent_only_hook(workspace, config):
+def _setup_subagent_only_hook(workspace, config, symlink_dirs=None):
     """Set up SubagentStop hook without tool interception.
 
     When there are no inputs.tools, we still need the SubagentStop hook
@@ -497,15 +560,18 @@ def _setup_subagent_only_hook(workspace, config):
 
     settings = {}
 
-    # Carry over project permissions (allow, deny, additionalDirectories)
+    # Carry over project permissions (allow, deny)
     _carry_over_permissions(settings)
     _merge_harness_permissions(settings, config)
 
-    # Grant project root access
-    project_root = str(Path.cwd().resolve())
-    settings.setdefault("permissions", {}).setdefault(
-        "additionalDirectories", []
-    ).append(project_root)
+    # Grant access to resolved symlink directory targets — not the entire
+    # project root, which would expose eval.yaml, judge prompts, etc.
+    if symlink_dirs:
+        additional = settings.setdefault("permissions", {}).setdefault(
+            "additionalDirectories", [])
+        for d in symlink_dirs:
+            if d not in additional:
+                additional.append(d)
 
     # Add SubagentStop hook
     from agent_eval.agent.stream_capture import setup_subagent_hook
@@ -559,8 +625,24 @@ def _extract_tool_patterns(match_text):
     return patterns or ["*"]
 
 
-def _setup_tool_hooks(workspace, config):
-    """Generate settings.json and tool_handlers.yaml for tool interception."""
+def _setup_tool_hooks(workspace, config, harness_dir, dataset_case_dir=None,
+                      symlink_dirs=None):
+    """Generate settings.json and tool_handlers.yaml for tool interception.
+
+    Hook scripts and config are written to ``harness_dir`` (a sibling of the
+    solver workspace) so the evaluated agent cannot read, modify, or delete
+    them.  ``settings.json`` stays in the workspace since Claude Code reads
+    it from CWD.
+
+    Args:
+        workspace: Solver workspace path (receives .claude/settings.json).
+        config: EvalConfig instance.
+        harness_dir: Sibling harness directory for hook files.
+        dataset_case_dir: Dataset case directory containing answers.yaml
+            (case mode only). Passed as ``--case-dir`` to the hook script.
+        symlink_dirs: Resolved directory paths of workspace symlinks.
+            Added to additionalDirectories instead of the project root.
+    """
     import json as _json
 
     # Build handler config with resolved patterns
@@ -581,50 +663,54 @@ def _setup_tool_hooks(workspace, config):
         handlers.append(handler)
         hook_matchers.update(patterns)
 
-    # Write tool_handlers.yaml
+    # Write tool_handlers.yaml to harness dir (outside solver workspace)
     handler_data = {"handlers": handlers}
     if config.models.hook:
         handler_data["hook_model"] = config.models.hook
-    with open(workspace / "tool_handlers.yaml", "w") as f:
+    with open(harness_dir / "tool_handlers.yaml", "w") as f:
         yaml.dump(handler_data, f, default_flow_style=False)
 
-    # Copy interceptor script
-    hooks_dir = workspace / "hooks"
+    # Copy interceptor script to harness dir
+    hooks_dir = harness_dir / "hooks"
     hooks_dir.mkdir(exist_ok=True)
     interceptor_src = Path(__file__).parent / "tools.py"
     if interceptor_src.exists():
         shutil.copy2(interceptor_src, hooks_dir / "tools.py")
 
+    # Build hook command with explicit paths and shell quoting (D6)
+    tools_path = shlex.quote(str((hooks_dir / "tools.py").resolve()))
+    config_path = shlex.quote(str((harness_dir / "tool_handlers.yaml").resolve()))
+    cmd = f"python3 {tools_path} --config {config_path}"
+    if dataset_case_dir:
+        cmd += f" --case-dir {shlex.quote(str(dataset_case_dir.resolve()))}"
+
     # Generate .claude/settings.json with PreToolUse hooks
-    # Don't overwrite if symlinked from project — create alongside
     settings_dir = workspace / ".claude"
     settings_dir.mkdir(parents=True, exist_ok=True)
 
     settings = {"hooks": {"PreToolUse": []}}
     for matcher in sorted(hook_matchers):
-        settings["hooks"]["PreToolUse"].append(
-            {
-                "matcher": matcher,
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": f"python3 {workspace}/hooks/tools.py",
-                    }
-                ],
-            }
-        )
+        settings["hooks"]["PreToolUse"].append({
+            "matcher": matcher,
+            "hooks": [{
+                "type": "command",
+                "command": cmd,
+            }],
+        })
 
-    # Carry over permissions (allow, deny, additionalDirectories)
+    # Carry over permissions (allow, deny)
     _carry_over_permissions(settings)
 
     _merge_harness_permissions(settings, config)
 
-    # Grant access to the project root so symlinked resources (skills,
-    # scripts, context) can be read by the sandbox.
-    project_root = str(Path.cwd().resolve())
-    settings.setdefault("permissions", {}).setdefault(
-        "additionalDirectories", []
-    ).append(project_root)
+    # Grant access to resolved symlink directory targets — not the entire
+    # project root, which would expose eval.yaml, judge prompts, etc.
+    if symlink_dirs:
+        additional = settings.setdefault("permissions", {}).setdefault(
+            "additionalDirectories", [])
+        for d in symlink_dirs:
+            if d not in additional:
+                additional.append(d)
 
     # Add SubagentStop hook to capture background agent transcripts.
     # The hook copies each subagent's .jsonl file to workspace/subagents/.

@@ -341,7 +341,6 @@ class ClaudeCodeRunner(EvalRunner):
         "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT",
         "CLOUDSDK_CONFIG", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
         "MLFLOW_TRACKING_URI", "MLFLOW_EXPERIMENT_NAME",
-        "AGENT_EVAL_RUNS_DIR",
     }
 
     def _build_env(self, extra_env=None):

@@ -246,3 +246,125 @@ def test_copy_workspace_files_skips_symlinked_entry(tmp_path):
 
     assert not os.path.lexists(workspace / "evil")
     assert list(workspace.iterdir()) == []
+
+
+# ── Isolation: eval-only file exclusion ────────────────────────────
+
+
+def test_copy_workspace_files_skips_answers_yaml(tmp_path):
+    """answers.yaml must never be copied into the workspace."""
+    case_dir = tmp_path / "cases" / "case-001"
+    case_dir.mkdir(parents=True)
+    (case_dir / "answers.yaml").write_text("secret: answer")
+    (case_dir / "input.yaml").write_text("prompt: hello")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = EvalConfig(
+        name="t",
+        skill="s",
+        dataset=DatasetConfig(
+            workspace=WorkspaceConfig(files=["answers.yaml", "input.yaml"]),
+        ),
+    )
+    _copy_input_files(case_dir, workspace, config)
+
+    assert not (workspace / "answers.yaml").exists(), \
+        "answers.yaml must not be copied into solver workspace"
+    assert (workspace / "input.yaml").read_text() == "prompt: hello"
+
+
+def test_copy_workspace_files_skips_annotations_yaml(tmp_path):
+    """annotations.yaml must never be copied into the workspace."""
+    case_dir = tmp_path / "cases" / "case-001"
+    case_dir.mkdir(parents=True)
+    (case_dir / "annotations.yaml").write_text("expected: pass")
+    (case_dir / "code.py").write_text("x = 1")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = EvalConfig(
+        name="t",
+        skill="s",
+        dataset=DatasetConfig(
+            workspace=WorkspaceConfig(files=["annotations.yaml", "code.py"]),
+        ),
+    )
+    _copy_input_files(case_dir, workspace, config)
+
+    assert not (workspace / "annotations.yaml").exists()
+    assert (workspace / "code.py").read_text() == "x = 1"
+
+
+def test_copy_workspace_files_skips_eval_only_in_directory(tmp_path):
+    """Eval-only files inside a directory entry are excluded."""
+    case_dir = tmp_path / "cases" / "case-001"
+    (case_dir / "data").mkdir(parents=True)
+    (case_dir / "data" / "config.yaml").write_text("key: val")
+    (case_dir / "data" / "answers.yaml").write_text("secret: answer")
+    (case_dir / "data" / "gold.json").write_text('{"score": 1}')
+    (case_dir / "data" / "reference.md").write_text("expected output")
+    (case_dir / "data" / "expected.txt").write_text("gold standard")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = EvalConfig(
+        name="t",
+        skill="s",
+        dataset=DatasetConfig(workspace=WorkspaceConfig(files=["data"])),
+    )
+    _copy_input_files(case_dir, workspace, config)
+
+    assert (workspace / "data" / "config.yaml").read_text() == "key: val"
+    for name in ("answers.yaml", "gold.json", "reference.md", "expected.txt"):
+        assert not (workspace / "data" / name).exists(), \
+            f"eval-only file '{name}' must not be copied"
+
+
+def test_copy_workspace_files_rejects_dot_entry(tmp_path):
+    """Entry '.' must be skipped with a warning (copies entire case dir)."""
+    case_dir = tmp_path / "cases" / "case-001"
+    case_dir.mkdir(parents=True)
+    (case_dir / "answers.yaml").write_text("secret")
+    (case_dir / "input.yaml").write_text("prompt: hello")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = EvalConfig(
+        name="t",
+        skill="s",
+        dataset=DatasetConfig(workspace=WorkspaceConfig(files=["."])),
+    )
+    _copy_input_files(case_dir, workspace, config)
+
+    # Nothing should be copied — "." is rejected
+    assert list(workspace.iterdir()) == []
+
+
+def test_copy_workspace_files_dir_traversal_blocked(tmp_path):
+    """Directory entries outside case_root are blocked."""
+    case_dir = tmp_path / "cases" / "case-001"
+    case_dir.mkdir(parents=True)
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    # Even if validation is bypassed (e.g. direct EvalConfig construction),
+    # the runtime check rejects directories outside case_root
+    config = EvalConfig(
+        name="t",
+        skill="s",
+        dataset=DatasetConfig(workspace=WorkspaceConfig(files=["../../outside"])),
+    )
+    _copy_input_files(case_dir, workspace, config)
+
+    assert not (workspace / "outside").exists()
+    assert not (workspace / "secret.txt").exists()

@@ -113,21 +113,21 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/workspace.py \
   [--cases <id> [<id> ...]]
 ```
 
-The script prints `WORKSPACE: <path>`, `CASES: <count>`, `BATCH: <path>`. Report these to the user. If `inputs.tools` is configured, it also prints `HOOKS: N tool interceptors configured`.
+The script prints `WORKSPACE: <path>`, `HARNESS: <path>`, `CASES: <count>`, `BATCH: <path>`. Report these to the user. If `inputs.tools` is configured, it also prints `HOOKS: N tool interceptors configured`. The harness directory (`<harness>`) is a sibling of the workspace that stores hook scripts and `tool_handlers.yaml` outside the solver's reach.
 
 If the case count is 0, stop — the filter matched nothing.
 
 ## Step 3b: Resolve Tool Interception (if `inputs.tools` configured)
 
-If eval.yaml has `inputs.tools` entries, this step is **mandatory**. `workspace.py` emits a skeleton in `tool_handlers.yaml`; you must resolve each handler's `prompt` into concrete runtime checks (`input_filters`, `env_checks`, `case_overrides`). Do not skip this even when the eval.yaml is unchanged — the workspace is created fresh each time.
+If eval.yaml has `inputs.tools` entries, this step is **mandatory**. `workspace.py` emits a skeleton in the harness directory's `tool_handlers.yaml`; you must resolve each handler's `prompt` into concrete runtime checks (`input_filters`, `env_checks`, `case_overrides`). Do not skip this even when the eval.yaml is unchanged — the workspace is created fresh each time.
 
-Read `${CLAUDE_SKILL_DIR}/references/tool-interception.md` for the full format, field reference, and resolution examples. Then read `<workspace>/tool_handlers.yaml` and for each handler:
+Read `${CLAUDE_SKILL_DIR}/references/tool-interception.md` for the full format, field reference, and resolution examples. Then read `<harness>/tool_handlers.yaml` (the `HARNESS:` path from Step 3) and for each handler:
 
 1. **Identify type**: AskUserQuestion, Bash, or MCP tool
 2. **Add required fields**: `input_filters` for Bash, `env_checks` for services, `case_overrides` for deterministic answers
 3. **Verify**: every Bash handler has `input_filters` — without them the handler is non-functional
 
-Write the resolved handlers back to `tool_handlers.yaml`.
+Write the resolved handlers back to `<harness>/tool_handlers.yaml`. In `case` mode, each case has its own file at `<harness>/<case-id>/tool_handlers.yaml` — resolve all of them (content starts identical but `case_overrides` may differ per case).
 
 ## Step 4: Execute Skill
 

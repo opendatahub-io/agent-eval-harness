@@ -5,9 +5,9 @@ This documents how `inputs.tools` handlers are resolved and executed during head
 ## Flow
 
 1. **eval.yaml** defines handlers with `match` (what to intercept) and `prompt` (how to handle)
-2. **workspace.py** extracts basic tool name patterns from `match` text, writes `tool_handlers.yaml`, and includes `hook_model` from `models.hook`
-3. **eval-run agent (Step 3b)** reads `tool_handlers.yaml`, interprets the `prompt` field, and adds concrete runtime checks
-4. **tools.py** (PreToolUse hook) executes the checks at runtime. AskUserQuestion uses a 3-tier resolution: exact `case_overrides` match → LLM call (using `hook_model`) → first-option fallback. All other tool checks are deterministic.
+2. **workspace.py** extracts basic tool name patterns from `match` text, writes `tool_handlers.yaml` and `hooks/tools.py` to the harness directory (a sibling of the workspace at `<run-id>._harness/`), and includes `hook_model` from `models.hook`. In case mode, each case gets its own harness subdirectory (`<harness>/<case-id>/`).
+3. **eval-run agent (Step 3b)** reads `<harness>/tool_handlers.yaml`, interprets the `prompt` field, and adds concrete runtime checks
+4. **tools.py** (PreToolUse hook, invoked with `--config <harness>/tool_handlers.yaml`) executes the checks at runtime. AskUserQuestion uses a 3-tier resolution: exact `case_overrides` match → LLM call (using `hook_model`, reading `answers.yaml` from `--case-dir`) → first-option fallback. All other tool checks are deterministic.
 
 ## tool_handlers.yaml Format
 
@@ -56,7 +56,7 @@ case_overrides:
 
 1. Match by pattern: `patterns: ["AskUserQuestion"]`
 2. **Tier 1 — exact match**: look up the question text in `case_overrides`
-3. **Tier 2 — LLM call**: if no exact match and options are available, call the `hook_model` with the question, options, handler `prompt`, and case context (`input.yaml` + `answers.yaml` from CWD). The LLM picks the best option based on context. **Note**: case files are sent to the LLM API — do not put secrets, credentials, or PII in `input.yaml` or `answers.yaml`.
+3. **Tier 2 — LLM call**: if no exact match and options are available, call the `hook_model` with the question, options, handler `prompt`, and case context (`input.yaml` from CWD + `answers.yaml` from `--case-dir` or CWD). The LLM picks the best option based on context. **Note**: case files are sent to the LLM API — do not put secrets, credentials, or PII in `input.yaml` or `answers.yaml`.
 4. **Tier 3 — fallback**: pick the first option, or "yes"
 5. Return `permissionDecision: "allow"` with `updatedInput` containing answers
 

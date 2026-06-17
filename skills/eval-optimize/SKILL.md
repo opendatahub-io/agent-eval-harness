@@ -135,7 +135,7 @@ Apply targeted fixes to the SKILL.md. For each edit:
 
 Show each edit before applying. If the change is risky (could affect passing cases), note it.
 
-**Execution mode context**: check `execution.mode` in eval.yaml. In `case` mode, each case runs in its own isolated workspace with all case files copied in — the skill receives case-specific arguments resolved from input.yaml. In `batch` mode, all cases are in one workspace via batch.yaml. Your edits must work for the configured mode.
+**Execution mode context**: check `execution.mode` in eval.yaml. In `case` mode, each case runs in its own isolated workspace with the input file and any `dataset.workspace.files` entries copied in — the skill receives case-specific arguments resolved from input.yaml. Eval-only files (`answers.yaml`, `annotations.yaml`) stay in the dataset directory and are not visible to the solver. In `batch` mode, all cases are in one workspace via batch.yaml. Your edits must work for the configured mode.
 
 ## Step 5: Re-Run and Verify
 

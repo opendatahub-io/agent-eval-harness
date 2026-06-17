@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """PreToolUse hook script for intercepting tools during headless eval.
 
-Reads tool_handlers.yaml from the workspace. Handlers contain resolved
-patterns and runtime checks (from natural language `match` and `prompt`
-in eval.yaml, resolved by eval-run at workspace setup time).
+Reads tool_handlers.yaml from ``--config`` path (or CWD as fallback).
+Handlers contain resolved patterns and runtime checks (from natural
+language ``match`` and ``prompt`` in eval.yaml, resolved by eval-run
+at workspace setup time).
 
 Supports:
 - Auto-answering AskUserQuestion via per-case overrides
@@ -13,6 +14,7 @@ Supports:
 
 import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
 
+import argparse
 import json
 import os
 import re
@@ -23,14 +25,29 @@ import yaml
 
 
 def main():
+    parser = argparse.ArgumentParser(description="PreToolUse hook interceptor")
+    parser.add_argument("--config", default=None,
+                        help="Path to tool_handlers.yaml (default: CWD)")
+    parser.add_argument("--case-dir", default=None,
+                        help="Dataset case directory containing answers.yaml")
+    args = parser.parse_args()
+
     input_data = json.load(sys.stdin)
     tool_name = input_data.get("tool_name", "")
     tool_input = input_data.get("tool_input", {})
 
-    # Load handler config from workspace
-    config_path = Path("tool_handlers.yaml")
-    if not config_path.exists():
-        sys.exit(0)
+    # Load handler config — from --config if provided, else CWD.
+    # When --config is explicit, missing file is fail-closed (D5):
+    # deny the tool call rather than silently passing through.
+    if args.config:
+        config_path = Path(args.config)
+        if not config_path.exists():
+            _deny(f"Hook config not found: {config_path}")
+            return
+    else:
+        config_path = Path("tool_handlers.yaml")
+        if not config_path.exists():
+            sys.exit(0)
 
     with open(config_path) as f:
         config = yaml.safe_load(f) or {}
@@ -42,7 +59,7 @@ def main():
 
     # --- AskUserQuestion: auto-answer ---
     if tool_name == "AskUserQuestion":
-        _handle_ask_user(tool_input, config, handler)
+        _handle_ask_user(tool_input, config, handler, case_dir=args.case_dir)
         return
 
     # --- Env checks: block if environment doesn't match ---
@@ -58,7 +75,7 @@ def main():
         sys.exit(0)
 
     # --- Default for matched tools without specific handling: block ---
-    _deny(f"Blocked by eval harness: {handler.get('match', 'matched handler')}")
+    _deny(f"Blocked by policy: {handler.get('match', 'matched handler')}")
 
 
 def _find_handler(tool_name, tool_input, handlers):
@@ -100,7 +117,7 @@ def _find_handler(tool_name, tool_input, handlers):
     return None
 
 
-def _handle_ask_user(tool_input, config, handler):
+def _handle_ask_user(tool_input, config, handler, case_dir=None):
     """Auto-answer AskUserQuestion using case overrides, LLM, or first option.
 
     Resolution order for each question:
@@ -126,7 +143,8 @@ def _handle_ask_user(tool_input, config, handler):
 
         # 2. LLM-based answer
         if answer is None and options:
-            answer = _llm_answer(text, options, prompt, model=hook_model)
+            answer = _llm_answer(text, options, prompt, model=hook_model,
+                                 case_dir=case_dir)
 
         # 3. Fallback
         if answer is None:
@@ -147,21 +165,27 @@ def _handle_ask_user(tool_input, config, handler):
     json.dump(output, sys.stdout)
 
 
-def _llm_answer(question, options, handler_prompt, model=None):
+def _llm_answer(question, options, handler_prompt, model=None, case_dir=None):
     """Use an LLM to pick the best answer for a question.
 
-    Reads input.yaml and answers.yaml from CWD for case-specific context.
+    Reads input.yaml from CWD and answers.yaml from ``case_dir`` (or CWD
+    as fallback) for case-specific context.
     Returns the selected option label, or None if the API call fails.
     """
-    # Load case context
+    # Load case context — input.yaml from CWD, answers.yaml from --case-dir
     case_context = ""
-    for fname in ("input.yaml", "answers.yaml"):
-        p = Path(fname)
-        if p.exists():
-            try:
-                case_context += f"\n--- {fname} ---\n{p.read_text()}\n"
-            except OSError:
-                pass
+    input_path = Path("input.yaml")
+    if input_path.exists():
+        try:
+            case_context += f"\n--- input.yaml ---\n{input_path.read_text()}\n"
+        except OSError:
+            pass
+    answers_path = Path(case_dir) / "answers.yaml" if case_dir else Path("answers.yaml")
+    if answers_path.exists():
+        try:
+            case_context += f"\n--- answers.yaml ---\n{answers_path.read_text()}\n"
+        except OSError:
+            pass
 
     option_labels = [o["label"] for o in options]
     option_list = "\n".join(

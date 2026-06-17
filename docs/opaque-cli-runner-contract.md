@@ -87,9 +87,8 @@ Before the command runs, the workspace contains:
 | `output/` | Pre-created output directory (`{output_dir}`) | Yes — write artifacts here |
 | Output dirs from `outputs[*].path` | Pre-created directories matching eval.yaml | Yes — alternative artifact locations |
 | `.claude/settings.json` | Permissions, hooks, env vars | No — Claude Code specific |
-| `.claude/hooks/tools.py` | Tool interception script | No — Claude Code specific |
 | `subagents/` | Subagent transcript capture dir | No — Claude Code specific |
-| Symlinks to `scripts/`, `skills/`, `CLAUDE.md`, `.context/` | Project resources | Maybe — depends on the external command |
+| Symlinks to `scripts/`, `.context/`; copy of `CLAUDE.md` | Project resources | Maybe — depends on the external command |
 
 ## What the harness reads after execution
 
