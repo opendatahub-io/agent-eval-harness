@@ -21,6 +21,47 @@ def _case_id_from_dir(trial_dir: Path) -> str:
     return name.rsplit("__", 1)[0] if "__" in name else name
 
 
+def _extract_transcript_metrics(transcript_path: Path) -> dict:
+    """Extract cost, tokens, turns, duration, version from a stream-json transcript."""
+    result: dict = {
+        "cost_usd": None, "token_usage": None,
+        "num_turns": None, "duration_s": None, "agent_version": None,
+    }
+    if not transcript_path.is_file():
+        return result
+    try:
+        for line in transcript_path.read_text().splitlines():
+            line = line.strip()
+            if not line or not line.startswith("{"):
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (ev.get("type") == "system" and ev.get("subtype") == "init"
+                    and not result["agent_version"]):
+                result["agent_version"] = ev.get("claude_code_version")
+            if ev.get("type") == "result":
+                cost = ev.get("total_cost_usd")
+                if cost is not None:
+                    result["cost_usd"] = float(cost)
+                result["num_turns"] = ev.get("num_turns")
+                duration_ms = ev.get("duration_ms")
+                if duration_ms is not None:
+                    result["duration_s"] = duration_ms / 1000
+                usage = ev.get("usage", {})
+                if usage:
+                    result["token_usage"] = {
+                        "input": usage.get("input_tokens"),
+                        "output": usage.get("output_tokens"),
+                        "cache_read": usage.get("cache_read_input_tokens"),
+                        "cache_create": usage.get("cache_creation_input_tokens"),
+                    }
+    except OSError:
+        pass
+    return result
+
+
 def parse_trial(trial_dir: Path) -> dict | None:
     """Parse one Harbor trial directory. Returns None if it has no reward."""
     reward_path = trial_dir / "verifier" / "reward.json"
@@ -60,6 +101,23 @@ def parse_trial(trial_dir: Path) -> dict | None:
                 }
         except (json.JSONDecodeError, OSError):
             pass
+
+    # Enrich from the agent transcript (turns, duration, version are only
+    # available there; cost/tokens fall back to transcript when result.json
+    # doesn't have them).
+    transcript = trial_dir / "agent" / "claude-code.txt"
+    extracted = _extract_transcript_metrics(transcript)
+    if record["cost_usd"] is None:
+        record["cost_usd"] = extracted["cost_usd"]
+    if record["token_usage"] is None:
+        record["token_usage"] = extracted["token_usage"]
+    elif extracted.get("token_usage"):
+        for k, v in extracted["token_usage"].items():
+            if v is not None and record["token_usage"].get(k) is None:
+                record["token_usage"][k] = v
+    record["num_turns"] = extracted.get("num_turns")
+    record["duration_s"] = extracted.get("duration_s")
+    record["agent_version"] = extracted.get("agent_version")
 
     # Richer sidecar (values + rationales) when present.
     judges_path = trial_dir / "verifier" / "judges.json"
@@ -116,6 +174,16 @@ def parse_job(job_dir: Path) -> dict:
             if isinstance(v, (int, float)):
                 token_usage[k] = token_usage.get(k, 0) + v
 
+    # Aggregate turns, duration, and pick agent version from trials.
+    turn_values = [t["num_turns"] for t in trials
+                   if isinstance(t.get("num_turns"), (int, float))]
+    total_turns = sum(turn_values) if turn_values else None
+    dur_values = [t["duration_s"] for t in trials
+                  if isinstance(t.get("duration_s"), (int, float))]
+    total_duration = sum(dur_values) if dur_values else None
+    agent_version = next((t["agent_version"] for t in trials
+                          if t.get("agent_version")), None)
+
     return {
         "job_dir": str(job_dir),
         "trials": trials,
@@ -125,4 +193,7 @@ def parse_job(job_dir: Path) -> dict:
         "aggregated": aggregated,
         "cost_usd": total_cost,
         "token_usage": token_usage or None,
+        "num_turns": total_turns,
+        "duration_s": total_duration,
+        "agent_version": agent_version,
     }

@@ -402,6 +402,12 @@ def _read_case_input(dataset_path: str, case_id: str) -> str:
     """Read the input file from a dataset case directory."""
     case_dir = Path(dataset_path) / case_id
     if not case_dir.exists():
+        ds = Path(dataset_path)
+        if ds.is_dir():
+            matches = [d for d in ds.iterdir() if d.is_dir() and d.name.startswith(case_id)]
+            if len(matches) == 1:
+                case_dir = matches[0]
+    if not case_dir.exists():
         return ""
     for suffix in (".yaml", ".yml", ".json"):
         candidate = case_dir / f"input{suffix}"
