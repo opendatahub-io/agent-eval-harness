@@ -163,6 +163,13 @@ def generate_tasks(
         if answers.is_file():
             shutil.copy2(answers, env_dir / "answers.yaml")
 
+        # Batch mode: create a 1-item batch.yaml so the same --input batch.yaml
+        # argument works per-case in Harbor as it does in local batch runs.
+        if config.execution.mode == "batch" and input_data:
+            entries = input_data if isinstance(input_data, list) else [input_data]
+            (env_dir / "batch.yaml").write_text(
+                yaml.safe_dump(entries, sort_keys=False, allow_unicode=True))
+
         # Tool interception (hooks + .claude/settings.json)
         _generate_tool_interception(env_dir, config, Path(config_path), workdir)
 
