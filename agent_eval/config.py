@@ -126,7 +126,7 @@ class DatasetConfig:
 
     path: str = ""
     schema: str = ""
-    domain: dict = field(default_factory=dict)  # Repository-specific knowledge
+    domain: Union[str, dict] = field(default_factory=dict)  # Repository-specific knowledge (string for prompt-mode, dict for skill-mode)
     workspace: WorkspaceConfig = field(default_factory=WorkspaceConfig)
 
 
@@ -266,6 +266,7 @@ class ExecutionConfig:
             )
 
 
+
 @dataclass
 class RunnerConfig:
     """Which agent harness runs the skill, and runner-specific knobs.
@@ -334,7 +335,7 @@ class TestCategory:
     Each category references a template that defines how to generate test cases.
     """
     name: str
-    template: str  # Template reference: "builtin:name" or path/to/template.md
+    template: str  # Template reference: "category/name" (e.g., "documentation/navigation") or path/to/template.md
     count: int
     description: str = ""
 
@@ -510,6 +511,10 @@ class EvalConfig:
     run_id: str = ""
     baseline: str = ""
 
+    def __post_init__(self):
+        if self.skill and not self.execution.skill:
+            self.execution.skill = self.skill
+
     def resolve_path(self, relative: Path | str) -> Path:
         """Resolve a path relative to the config file's directory.
 
@@ -581,7 +586,7 @@ class EvalConfig:
         exec_raw = raw.get("execution", {})
         execution = ExecutionConfig(
             mode=exec_raw.get("mode", "case"),
-            skill=exec_raw.get("skill", ""),
+            skill=exec_raw.get("skill", "") or raw.get("skill", ""),
             prompt=exec_raw.get("prompt", ""),
             arguments=exec_raw.get("arguments", ""),
             timeout=exec_raw.get("timeout"),

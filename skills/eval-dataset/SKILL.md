@@ -57,9 +57,8 @@ If eval.yaml doesn't exist, determine what to evaluate and invoke `/eval-analyze
    - Agentic documentation (CLAUDE.md, AGENTS.md, ai-docs/)
 
 2. **Ask user which evaluation mode**:
-   - If both exist: offer choice between skill-based and documentation-based evaluation
-   - If only skills: suggest `/eval-analyze --skill <skill-name>`
-   - If only docs: suggest `/eval-analyze --prompt builtin:docs`
+   - If skills exist: suggest `/eval-analyze --skill <skill-name>`
+   - Otherwise: suggest `/eval-analyze --prompt <path>` (prompt mode, see examples/)
 
 3. **Invoke /eval-analyze**:
    ```text
@@ -240,7 +239,7 @@ See `${CLAUDE_SKILL_DIR}/references/case-generation.md` for details.
 
 **When to use**: When eval.yaml has `dataset.test_categories` defined (from `/eval-analyze --prompt`).
 
-**What it does**: Generates test cases using category templates (navigation, anti-pattern, authoring, component-usage, architecture) combined with repository-specific domain knowledge.
+**What it does**: Generates test cases using template categories (e.g., documentation/navigation, documentation/anti-pattern, etc.) combined with repository-specific domain knowledge from `dataset.domain`.
 
 ### Execute Taxonomy Generation
 
@@ -259,7 +258,7 @@ Replace `<config_path>` with the actual value from the --config argument (defaul
 
 The script will:
 1. Read `test_categories` from the eval config
-2. Resolve each template reference (`builtin:navigation` → template file)
+2. Resolve each template reference (`documentation/navigation` → template file)
 3. Use Claude API to generate test cases following template instructions
 4. Apply domain knowledge from `dataset.domain` for repository-specific context
 5. Write cases to `<dataset_path>/case-NNN/`

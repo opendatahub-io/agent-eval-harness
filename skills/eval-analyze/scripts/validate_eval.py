@@ -19,6 +19,153 @@ sys.path.insert(0, str(Path(__file__).parent))
 from find_skills import find_skill
 
 
+def _extract_template_variables(template_text):
+    """Extract variable names from Jinja2 template (e.g., {{ variable }})."""
+    import re
+    # Match {{ variable }}, {{ variable.field }}, {{ variable['key'] }}, etc.
+    # Capture the root variable name only
+    pattern = r'\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)'
+    matches = re.findall(pattern, template_text)
+    return set(matches)
+
+
+def _validate_template_variables(judges, outputs, dataset_schema, errors, warnings):
+    """Validate that all template variables referenced in judges exist in outputs or are standard."""
+    # Build set of available output names
+    output_names = {o.get("name", "") for o in outputs if o.get("name")}
+
+    # Standard variables that are always available (loaded by scoring infrastructure)
+    standard_vars = {
+        "input",        # Loaded from dataset input.yaml
+        "annotations",  # Loaded from dataset annotations.yaml
+        "conversation", # Common alias for stdout
+        "events",       # Tool call log
+    }
+
+    had_undefined_vars = False
+
+    # Check each judge's templates
+    for j in judges:
+        name = j.get("name", "unnamed")
+        template_text = ""
+
+        # Collect all template text from this judge
+        if j.get("prompt"):
+            template_text += j["prompt"]
+        if j.get("prompt_file"):
+            # Note: prompt_file content isn't available yet, skip for now
+            pass
+        if j.get("llm_rubric"):
+            # llm_rubric might have template variables in criteria
+            template_text += str(j["llm_rubric"])
+
+        if not template_text:
+            continue
+
+        # Extract variables used in templates
+        vars_used = _extract_template_variables(template_text)
+
+        # Check for undefined variables
+        available = output_names | standard_vars
+        undefined = vars_used - available
+
+        if undefined:
+            had_undefined_vars = True
+            errors.append(
+                f"judges.{name} references undefined template variable(s): {', '.join(sorted(undefined))}. "
+                f"Available: {', '.join(sorted(available))}"
+            )
+
+        # Check for common mistakes with input/annotations
+        if "input" in vars_used:
+            # Warn if input.yaml expected fields aren't documented
+            if not dataset_schema or "input.yaml" not in dataset_schema:
+                warnings.append(
+                    f"judges.{name} uses {{{{ input }}}} but dataset.schema doesn't document input.yaml structure. "
+                    f"Document expected fields (prompt, expected_api, expected_documentation, etc.)"
+                )
+
+        if "annotations" in vars_used:
+            # Warn if annotations.yaml expected fields aren't documented
+            if not dataset_schema or "annotations.yaml" not in dataset_schema:
+                warnings.append(
+                    f"judges.{name} uses {{{{ annotations }}}} but dataset.schema doesn't document annotations.yaml structure. "
+                    f"Document expected fields (category, expected_files, complexity, etc.)"
+                )
+
+    # Add helpful guidance if undefined variables were found
+    if had_undefined_vars:
+        errors.append(
+            "\n💡 Template variable errors detected. Common fixes:\n"
+            "   • Ensure all {{ variable }} references match output names or standard variables\n"
+            "   • Standard variables (always available): input, annotations, conversation, events\n"
+            "   • For custom variables, add them to outputs section in eval.yaml\n"
+            "   • Check dataset.schema documents expected structure of input.yaml and annotations.yaml"
+        )
+
+
+def _test_render_judge_templates(judges, outputs, errors, warnings):
+    """Test-render judge templates with mock data to catch Jinja2 errors."""
+    try:
+        from jinja2 import Template, UndefinedError, TemplateSyntaxError
+    except ImportError:
+        # Jinja2 not available, skip test rendering
+        return
+
+    # Build mock outputs dict
+    output_names = {o.get("name", "") for o in outputs if o.get("name")}
+    mock_data = {
+        "conversation": "Mock conversation",
+        "events": [],
+        "input": {"prompt": "Mock prompt", "expected_documentation": []},
+        "annotations": {"category": "test", "expected_files": []},
+    }
+    # Add all declared outputs
+    for name in output_names:
+        if name not in mock_data:
+            mock_data[name] = "mock_value"
+
+    had_template_error = False
+    for j in judges:
+        name = j.get("name", "unnamed")
+        prompt_text = j.get("prompt", "")
+
+        if not prompt_text:
+            continue
+
+        try:
+            template = Template(prompt_text)
+            # Try to render with mock data
+            template.render(**mock_data)
+        except UndefinedError as e:
+            # This catches variables that aren't in mock_data
+            had_template_error = True
+            errors.append(
+                f"judges.{name} template has undefined variable: {e}. "
+                f"This will fail at runtime during scoring."
+            )
+        except TemplateSyntaxError as e:
+            had_template_error = True
+            errors.append(
+                f"judges.{name} template has syntax error: {e}"
+            )
+        except Exception as e:
+            # Other template errors
+            warnings.append(
+                f"judges.{name} template validation warning: {e}"
+            )
+
+    # Add helpful guidance if template errors were found
+    if had_template_error:
+        errors.append(
+            "\nTemplate variable errors detected. Common fixes:\n"
+            "  1. Ensure all {{ variable }} references match output names\n"
+            "  2. For dataset files (input.yaml, annotations.yaml), verify they're loaded by scoring\n"
+            "  3. Check dataset.schema documents the expected structure\n"
+            "  4. Standard variables: input, annotations, conversation, events"
+        )
+
+
 def _validate_builtin_arguments(builtin_name, judge_name, arguments, errors, warnings):
     """Validate that builtin judges only use documented arguments."""
     # Known builtin judges and their valid arguments
@@ -111,6 +258,63 @@ def _validate_field_consistency(config, judges, dataset_path, config_dir, errors
                 )
 
 
+def _validate_prompt_mode_config(config, dataset, test_categories, config_dir, errors, warnings):
+    """Validate prompt-mode specific configuration.
+
+    This includes taxonomy-based generation and domain-specific validation
+    (e.g., documentation_structure for documentation templates).
+    """
+    # --- Taxonomy-based generation checks ---
+    if test_categories:
+        # Check for extra fields that will be silently dropped by TestCategory dataclass
+        known_fields = {"name", "template", "count", "description"}
+        for i, tc in enumerate(test_categories):
+            if not isinstance(tc, dict):
+                continue
+            extra_fields = set(tc.keys()) - known_fields
+            if extra_fields:
+                warnings.append(
+                    f"test_categories[{i}] ({tc.get('name', 'unnamed')}) has extra fields that will be ignored during generation: {', '.join(sorted(extra_fields))}"
+                )
+                warnings.append(
+                    f"  Hint: Move domain-specific metadata (test_prompts, apis, constraints, etc.) to dataset.domain section"
+                )
+
+        # Check if dataset.domain is populated for taxonomy-based generation
+        domain = dataset.get("domain", {})
+        if not domain or (isinstance(domain, dict) and not domain):
+            warnings.append(
+                "Taxonomy-based generation detected (test_categories present) but dataset.domain is empty. "
+                "LLM will generate generic test cases without repository-specific context."
+            )
+            warnings.append(
+                "  Hint: Add dataset.domain section with constraints, apis, components, or documentation_structure"
+            )
+
+        # --- Documentation-specific validation (conditional) ---
+        # Only validate documentation_structure when documentation templates are actually used
+        uses_doc_templates = any(
+            isinstance(tc, dict) and
+            tc.get("template", "").startswith(("documentation/", "builtin:"))
+            for tc in test_categories
+        )
+
+        if uses_doc_templates and isinstance(domain, dict):
+            doc_structure = domain.get("documentation_structure", {})
+            entry_point = doc_structure.get("entry_point", "")
+            if entry_point:
+                ep = Path(entry_point)
+                if not ep.exists():
+                    errors.append(
+                        f"dataset.domain.documentation_structure.entry_point '{entry_point}' does not exist"
+                    )
+            elif not doc_structure:
+                warnings.append(
+                    "Documentation templates detected but dataset.domain.documentation_structure is not defined. "
+                    "Test generation may produce generic documentation test cases without repository-specific structure."
+                )
+
+
 def validate_config(path="eval.yaml"):
     """Validate eval.yaml — structure, completeness, and file references."""
     p = Path(path)
@@ -147,7 +351,7 @@ def validate_config(path="eval.yaml"):
         # Make the error message more user-friendly
         if "test_categories" in error_msg and "template" in error_msg:
             errors.append(f"Schema validation failed: {error_msg}")
-            errors.append("Hint: Each test_categories entry needs a 'template' field (e.g., 'builtin:navigation')")
+            errors.append("Hint: Each test_categories entry needs a 'template' field (e.g., 'documentation/navigation')")
         else:
             errors.append(f"Schema validation failed: {error_msg}")
     except ImportError as e:
@@ -181,20 +385,15 @@ def validate_config(path="eval.yaml"):
     if not judges:
         warnings.append("No judges — scoring step will have nothing to run")
 
+    # --- Prompt-mode validation (taxonomy-based generation, documentation templates) ---
+    test_categories = dataset.get("test_categories", [])
+    _validate_prompt_mode_config(config, dataset, test_categories, config_dir, errors, warnings)
+
     # --- Skill reference check ---
     # Check execution.skill first, then fall back to top-level skill
     skill_name = execution.get("skill", "") or config.get("skill", "")
     if skill_name and not find_skill(skill_name):
         warnings.append(f"skill '{skill_name}' not found in project")
-
-    # --- Documentation structure check ---
-    domain = dataset.get("domain", {})
-    doc_structure = domain.get("documentation_structure", {})
-    entry_point = doc_structure.get("entry_point", "")
-    if entry_point:
-        ep = Path(entry_point)
-        if not ep.exists():
-            errors.append(f"dataset.domain.documentation_structure.entry_point '{entry_point}' does not exist")
 
     # --- File reference checks (resolve relative to config file location) ---
     dataset_path = dataset.get("path", "")
@@ -207,6 +406,20 @@ def validate_config(path="eval.yaml"):
 
     for i, o in enumerate(outputs):
         out_path = o.get("path", "")
+        out_name = o.get("name", f"outputs[{i}]")
+        out_from = o.get("from", "")
+
+        # Check for 'from: dataset' usage (advanced feature)
+        if out_from == "dataset":
+            warnings.append(
+                f"outputs.{out_name} uses 'from: dataset' - ensure scoring infrastructure supports this. "
+                f"Dataset files (input.yaml, annotations.yaml) may be loaded automatically without explicit output declaration."
+            )
+        elif out_from and out_from != "dataset":
+            errors.append(
+                f"outputs.{out_name}.from has unknown value '{out_from}'. Valid values: 'dataset'"
+            )
+
         if out_path:
             op = Path(out_path)
             if op.is_absolute():
@@ -381,6 +594,13 @@ def validate_config(path="eval.yaml"):
     # --- Field name consistency checks ---
     _validate_field_consistency(config, judges, dataset_path if dataset_path else None,
                                 config_dir, errors, warnings)
+
+    # --- Template variable validation ---
+    dataset_schema = dataset.get("schema", "")
+    _validate_template_variables(judges, outputs, dataset_schema, errors, warnings)
+
+    # --- Test-render judge templates ---
+    _test_render_judge_templates(judges, outputs, errors, warnings)
 
     # --- Report ---
     if errors:

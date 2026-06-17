@@ -27,6 +27,7 @@ from pathlib import Path
 import yaml
 
 from agent_eval.config import EvalConfig
+from agent_eval.tools.interception import extract_tool_patterns
 from workspace_files import _copy_input_files
 
 # Resolve git executable to absolute path to prevent PATH hijacking (CWE-426)
@@ -507,7 +508,7 @@ def _setup_in_repo_tool_hooks(case_ws, config, settings):
 
     for tool_cfg in config.inputs.tools:
         handler = {"match": tool_cfg.match}
-        patterns = _extract_tool_patterns(tool_cfg.match)
+        patterns = extract_tool_patterns(tool_cfg.match)
         handler["patterns"] = patterns
         if tool_cfg.prompt:
             handler["prompt"] = tool_cfg.prompt
