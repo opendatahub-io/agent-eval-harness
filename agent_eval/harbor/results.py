@@ -63,7 +63,15 @@ def _extract_transcript_metrics(transcript_path: Path) -> dict:
 
 
 def parse_trial(trial_dir: Path) -> dict | None:
-    """Parse one Harbor trial directory. Returns None if it has no reward."""
+    """Parse one Harbor trial directory. Returns None if it has no reward.
+
+    Supports both single-step trials (reward at ``verifier/reward.json``)
+    and multi-step trials (per-step rewards under ``steps/<name>/verifier/``).
+    """
+    steps_dir = trial_dir / "steps"
+    if steps_dir.is_dir() and any(steps_dir.iterdir()):
+        return _parse_multi_step_trial(trial_dir, steps_dir)
+
     reward_path = trial_dir / "verifier" / "reward.json"
     if not reward_path.is_file():
         return None
@@ -132,6 +140,90 @@ def parse_trial(trial_dir: Path) -> dict | None:
         record["errored"] = True
 
     return record
+
+
+def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
+    """Parse a multi-step Harbor trial into the same shape as a single-step one.
+
+    Aggregates per-step rewards (mean), cost (sum), and tokens (sum) into
+    a single record. Each step's reward becomes a judge keyed by step name.
+    """
+    step_dirs = sorted(d for d in steps_dir.iterdir() if d.is_dir())
+    if not step_dirs:
+        return None
+
+    rewards = []
+    per_judge: dict = {}
+    total_cost = 0.0
+    total_turns = 0
+    total_duration = 0.0
+    token_totals: dict = {}
+    agent_version = None
+
+    for step_dir in step_dirs:
+        step_name = step_dir.name
+
+        reward_path = step_dir / "verifier" / "reward.json"
+        step_reward = None
+        if reward_path.is_file():
+            try:
+                rd = json.loads(reward_path.read_text())
+                step_reward = rd.get("reward")
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        if isinstance(step_reward, (int, float)):
+            rewards.append(step_reward)
+
+        transcript = step_dir / "agent" / "claude-code.txt"
+        extracted = _extract_transcript_metrics(transcript)
+        step_cost = extracted.get("cost_usd")
+        step_turns = extracted.get("num_turns")
+        step_duration = extracted.get("duration_s")
+        if not agent_version:
+            agent_version = extracted.get("agent_version")
+
+        rationale_parts = []
+        if step_turns:
+            rationale_parts.append(f"{step_turns} turns")
+        if step_cost:
+            rationale_parts.append(f"${step_cost:.2f}")
+        if step_duration:
+            rationale_parts.append(f"{step_duration:.0f}s")
+        rationale = ", ".join(rationale_parts) if rationale_parts else ""
+
+        per_judge[step_name] = {
+            "value": step_reward if step_reward is not None else False,
+            "rationale": rationale,
+            "judge_type": "step",
+        }
+
+        if isinstance(step_cost, (int, float)):
+            total_cost += step_cost
+        if isinstance(step_turns, (int, float)):
+            total_turns += int(step_turns)
+        if isinstance(step_duration, (int, float)):
+            total_duration += step_duration
+        for k, v in (extracted.get("token_usage") or {}).items():
+            if isinstance(v, (int, float)):
+                token_totals[k] = token_totals.get(k, 0) + v
+
+    mean_reward = sum(rewards) / len(rewards) if rewards else None
+
+    return {
+        "case_id": _case_id_from_dir(trial_dir),
+        "trial_dir": trial_dir.name,
+        "trial_path": str(trial_dir),
+        "reward": mean_reward,
+        "metrics": {s.name: per_judge[s.name]["value"] for s in step_dirs},
+        "per_judge": per_judge,
+        "errored": (trial_dir / "exception.txt").is_file(),
+        "cost_usd": total_cost or None,
+        "token_usage": token_totals or None,
+        "num_turns": total_turns or None,
+        "duration_s": total_duration or None,
+        "agent_version": agent_version,
+    }
 
 
 def parse_job(job_dir: Path) -> dict:
