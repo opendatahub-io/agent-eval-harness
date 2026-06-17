@@ -136,7 +136,7 @@ class KubernetesEnvironment(BaseEnvironment):
         r"|yum\s+install"
         r"|npm\s+install\s+-g"
         r")\b"
-        r"|curl\s+-fsSL\s+https://downloads\.claude\.ai"
+        r"|curl\s+-fsSL\s+https://(?:downloads\.)?claude\.ai"
     )
 
     def __init__(self, *args, keep_pods: bool | None = None, **kwargs):
