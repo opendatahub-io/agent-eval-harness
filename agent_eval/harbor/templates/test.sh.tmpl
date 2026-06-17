@@ -18,6 +18,7 @@ rc=$?
 
 # Surface the produced artifacts to the host: Harbor downloads /logs/verifier,
 # so the run-mapper can render per-case Output files in the report.
-cp -r "@@WORKDIR@@/artifacts" /logs/verifier/artifacts 2>/dev/null || true
+# Only copy the output paths declared in eval.yaml (not scratch files).
+@@COPY_OUTPUTS@@
 
 exit $rc

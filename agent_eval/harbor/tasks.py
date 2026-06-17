@@ -149,8 +149,18 @@ def generate_tasks(
         }))
 
         # tests/test.sh + bundled eval.yaml (verifier)
+        copy_lines = []
+        for out in config.outputs:
+            if out.path:
+                src = f'"{workdir}/{out.path}"'
+                dst = f'/logs/verifier/{out.path}'
+                copy_lines.append(
+                    f'mkdir -p "$(dirname {dst})" && '
+                    f'cp -r {src} {dst} 2>/dev/null || true')
+        copy_outputs = "\n".join(copy_lines) if copy_lines else "true"
         (task_dir / "tests" / "test.sh").write_text(_render("test.sh.tmpl", {
             "WORKDIR": workdir,
+            "COPY_OUTPUTS": copy_outputs,
         }))
         (task_dir / "tests" / "test.sh").chmod(0o755)
         (task_dir / "tests" / "eval.yaml").write_text(
