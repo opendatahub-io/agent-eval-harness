@@ -213,7 +213,13 @@ class KubernetesEnvironment(BaseEnvironment):
         container: dict = {
             "name": "main",
             "image": image,
-            "command": ["sleep", "infinity"],
+            "command": ["sh", "-c",
+                        'while true; do '
+                        'for f in $(find /logs \\( -name "*.log" -o -name "*.txt" \\) 2>/dev/null); do '
+                        'if ! echo "$TAILED" | grep -qF "$f"; then '
+                        'TAILED="$TAILED $f"; '
+                        'tail -F "$f" & '
+                        'fi; done; sleep 5; done'],
             "env": [{"name": k, "value": v} for k, v in env.items()],
             "resources": resources,
             "securityContext": {
