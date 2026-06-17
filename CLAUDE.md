@@ -43,15 +43,17 @@ execution:
   prompt: "{{ input.prompt }}"
 ```
 
-Prompt mode is extensible to any agent evaluation scenario:
+**Implemented flavor - Agentic Documentation Testing** (see `examples/openshift-agentic-docs.md`):
 - Documentation effectiveness: Can agents navigate and use your docs?
 - Pattern understanding: Can agents identify and apply code patterns?
 - Constraint compliance: Do agents respect documented rules?
 - API usage: Can agents correctly use APIs from documentation alone?
-- Code generation from specifications
-- Reasoning trace quality assessment
 
-Prompt mode provides direct agent invocation with taxonomy-based test generation, LLM rubric judges, and flexible evaluation criteria.
+Includes documentation evaluation templates (navigation, anti-pattern, authoring, component-usage, architecture) for structured evaluation. See `skills/eval-dataset/templates/documentation/`.
+
+**Extensible to other scenarios**: Code generation, API pattern validation, reasoning quality, custom agent benchmarks.
+
+Prompt mode provides direct agent invocation with LLM rubric judges and flexible evaluation criteria.
 
 ## Architecture
 
@@ -92,10 +94,9 @@ skills/eval-analyze/     # Skill: bootstrap eval config
   scripts/
     find_skills.py       # Skill discovery (reads plugin.json for paths)
     validate_eval.py     # Config and memory validation
-    resolve_prompt.py    # Resolve builtin: prompt references
+    resolve_prompt.py    # Resolve prompt file paths
   prompts/
     analyze-skill.md     # Skill analysis prompt (skill mode)
-    analyze-docs.md      # Documentation analysis prompt (prompt mode - builtin:docs)
     generate-eval-md.md  # eval.md generation prompt
   references/
     eval-yaml-template.md # Full eval.yaml template for generation
@@ -106,7 +107,7 @@ skills/eval-dataset/     # Skill: generate test cases
   scripts/
     generate_from_taxonomy.py # Taxonomy-based test case generation (prompt mode)
     harbor.py            # CLI: generate Harbor task packages (thin wrapper → harbor.tasks)
-  templates/builtin/     # Builtin test category templates (prompt mode)
+  templates/documentation/  # Documentation evaluation templates (prompt mode)
     navigation.md        # Finding documentation
     anti-pattern.md      # Rejecting constraint violations
     authoring.md         # Creating content following patterns
@@ -189,7 +190,7 @@ The `schema` descriptions are documentation for the LLM agents and judges. Scrip
 ### Prompt Mode Workflow (Agentic Documentation Testing)
 ```text
 /eval-setup                            # Setup: dependencies, MLflow, API keys
-/eval-analyze --prompt builtin:docs    # Analyze: analyze docs, generate taxonomy-based eval.yaml
+/eval-analyze --prompt examples/openshift-agentic-docs.md # Analyze: analyze docs, generate taxonomy-based eval.yaml
 /eval-dataset                          # Dataset: generate test cases from templates
 /eval-run --model sonnet               # Run: test agent against documentation
 /eval-review --run-id <id>             # Review: analyze documentation effectiveness

@@ -21,8 +21,8 @@ This directory contains domain-specific evaluation recipe examples that users ca
 - Projects using CustomResourceDefinitions (CRDs)
 - Repos with operator-pattern documentation
 
-**Extends**: The core `builtin:docs` methodology with OpenShift-specific:
-- Type B categorization includes "Operator repos"
+**Domain-specific elements**:
+- Repository type examples include "Operator repos"
 - Domain topics include "operator-patterns", "status-conditions", "webhooks"
 - API examples reference MachineConfig, KubeletConfig, etc.
 - Schema examples use YAML (common in OpenShift/K8s ecosystem)
@@ -31,7 +31,7 @@ This directory contains domain-specific evaluation recipe examples that users ca
 
 ## Creating Your Own Recipe
 
-Domain-specific recipes extend the core `builtin:docs` methodology for your ecosystem:
+Adapt existing recipes for your domain:
 
 1. **Start from an example**: Copy `openshift-agentic-docs.md` as a template
 2. **Adapt terminology**: Replace domain-specific terms with your ecosystem's language
@@ -54,14 +54,15 @@ Domain-specific recipes extend the core `builtin:docs` methodology for your ecos
 
 ---
 
-## Generic vs Domain-Specific
+## When to Customize
 
-**Use `builtin:docs`** (generic) when:
-- First time evaluating any documentation
-- No strong domain-specific patterns
-- Want neutral, adaptable output
+**Use an example as-is** when:
+- Your domain closely matches an existing example (e.g., OpenShift/K8s operators)
+- Getting started quickly
+- Prototyping evaluation setup
 
-**Use a domain recipe** when:
+**Create a custom recipe** when:
 - Your domain has specialized terminology that agents should learn
 - Test categories should reflect domain-specific capabilities
 - Examples and schemas benefit from domain context
+- Generic patterns don't capture your documentation structure

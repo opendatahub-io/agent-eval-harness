@@ -49,7 +49,7 @@ def test_full_lifecycle(tmp_path):
 
     mock_runner = MagicMock()
     mock_runner.name = "claude-code"
-    mock_runner.run_skill.return_value = RunResult(
+    mock_runner.execute.return_value = RunResult(
         exit_code=0, stdout="done", stderr="",
         duration_s=20.0, cost_usd=0.08, num_turns=6,
     )
@@ -91,9 +91,9 @@ def test_full_lifecycle(tmp_path):
     mock_runner_cls.from_config.assert_called_once()
 
     # Runner called twice (once per case)
-    assert mock_runner.run_skill.call_count == 2
-    first_call = mock_runner.run_skill.call_args_list[0]
-    actual_skill = first_call.kwargs.get("skill_name")
+    assert mock_runner.execute.call_count == 2
+    first_call = mock_runner.execute.call_args_list[0]
+    actual_skill = first_call.kwargs.get("target")
     assert actual_skill == "test-skill"
 
     assert mock_callbacks.report_status.call_count >= 3

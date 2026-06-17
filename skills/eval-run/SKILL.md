@@ -54,11 +54,9 @@ test -f <config> && echo "CONFIG_EXISTS" || echo "NO_CONFIG"
 
 **If config is missing**: detect what's available and invoke `/eval-analyze`:
 
-1. Check for skills in `skills/` and agentic docs (CLAUDE.md, AGENTS.md, ai-docs/)
-2. If both exist, ask user which evaluation mode:
-   - Skill-based: `/eval-analyze --skill <name>`
-   - Documentation: `/eval-analyze --prompt builtin:docs`
-3. If only one type exists, suggest the appropriate mode
+1. Check for skills in `skills/`
+2. If skills exist: suggest `/eval-analyze --skill <name>`
+3. Otherwise: suggest `/eval-analyze --prompt <path>` (prompt mode, see examples/)
 4. Invoke `/eval-analyze` via Skill tool
 
 ```text

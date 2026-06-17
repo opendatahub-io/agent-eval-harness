@@ -1,16 +1,20 @@
-# Builtin Test Case Templates
+# Documentation Test Case Templates
 
-This directory contains builtin templates for taxonomy-based test case generation.
+Templates for **documentation and knowledge-base evaluation**. These test whether agents can navigate, understand, and apply information from agentic documentation (CLAUDE.md, AGENTS.md, ai-docs/, etc.).
+
+**Domain-agnostic**: Work with any documentation domain (Python, React, Kubernetes, Terraform, etc.). See `examples/openshift-agentic-docs.md` for domain-specific usage.
+
+**Other evaluation scenarios**: For testing other agent capabilities (code generation, reasoning, tool use), create custom template categories following the same structure.
 
 ## Available Templates
 
 | Template | Purpose | Use Case |
 |----------|---------|----------|
 | `navigation.md` | Finding documentation | Test if agents can locate and navigate to relevant docs |
-| `anti-pattern.md` | Rejecting violations | Test if agents reject approaches that violate constraints |
-| `authoring.md` | Creating content | Test if agents can create content following templates |
-| `component-usage.md` | API/component usage | Test if agents can explain APIs with correct examples |
-| `architecture.md` | System design | Test if agents understand component interactions |
+| `anti-pattern.md` | Rejecting violations | Test if agents reject approaches that violate documented constraints |
+| `authoring.md` | Creating content | Test if agents can create content following documented patterns |
+| `component-usage.md` | API/component usage | Test if agents can explain APIs with correct examples from docs |
+| `architecture.md` | System design | Test if agents understand component interactions from architecture docs |
 
 ## Usage
 
@@ -20,12 +24,12 @@ Templates are referenced in `eval.yaml`:
 dataset:
   test_categories:
     - name: navigation
-      template: builtin:navigation
+      template: documentation/navigation
       count: 2
       description: "Agent finds relevant documentation"
 ```
 
-The `builtin:navigation` reference resolves to `skills/eval-dataset/templates/builtin/navigation.md`.
+The `documentation/navigation` reference resolves to `skills/eval-dataset/templates/documentation/navigation.md`.
 
 ## Template Structure
 
@@ -42,7 +46,7 @@ Each template is a markdown file with:
 When `/eval-dataset` runs:
 
 1. Reads `eval.yaml` test_categories
-2. Resolves each template reference (`builtin:name` → file path)
+2. Resolves each template reference (`category/name` → file path)
 3. Reads template content
 4. Uses an LLM to generate `count` test cases following the template
 5. Writes cases to `dataset.path/case-NNN/`
@@ -75,7 +79,7 @@ dataset:
       count: 3
 ```
 
-Custom templates should follow the same structure as builtin templates.
+Custom templates should follow the same structure as these documentation templates.
 
 ## Template Design Principles
 
@@ -84,18 +88,3 @@ Custom templates should follow the same structure as builtin templates.
 3. **Verifiable**: Generated tests should be objectively verifiable
 4. **Realistic**: Test cases should mirror real-world scenarios
 5. **Specific**: Avoid vague or ambiguous prompts
-
-## Example Workflow
-
-```bash
-# 1. Generate eval config with taxonomy
-/eval-analyze --prompt builtin:docs
-# → Creates eval.yaml with test_categories
-
-# 2. Generate test cases from templates
-/eval-dataset --config eval.yaml
-# → Creates eval/dataset/case-001/ through case-N/
-
-# 3. Run evaluation
-/eval-run --model sonnet --config eval.yaml
-```

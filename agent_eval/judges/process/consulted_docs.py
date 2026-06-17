@@ -6,6 +6,11 @@ Failure means: The agent did not read enough of the expected documentation.
 Arguments:
     min_coverage (float): fraction of expected_files that must be read (default 0.8)
     match (str): path match strategy — "suffix" (default), "exact", or "basename"
+
+Note: This judge only tracks Read tool calls. If an agent uses Bash with cat/head/tail
+to read files, those won't appear in the coverage check. When setting min_coverage
+thresholds, consider that some agents (especially non-Claude Code runners) may prefer
+shell-based file access and may show lower coverage than expected.
 """
 
 from agent_eval.events import extract_read_calls
