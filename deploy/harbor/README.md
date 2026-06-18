@@ -39,6 +39,27 @@ podman build -f deploy/Containerfile -t quay.io/rhoai/agent-eval-harness:latest 
 **EvalHub provider** (`deploy/evalhub/Containerfile`): `FROM base` + harbor +
 kubernetes client + eval-hub-sdk. The orchestrator pod that creates trial pods.
 
+## Orchestrated run (eval-run)
+
+The simplest way to run on Harbor is through the eval-run skill:
+
+```bash
+# Kubernetes (default)
+/eval-run --runner harbor --model <model> -n 10
+
+# Podman (local)
+/eval-run --runner harbor --env podman --model <model>
+```
+
+Cluster-specific config is read from a `.env` file in the project root:
+
+```
+AGENT_EVAL_K8S_NAMESPACE=<namespace>
+AGENT_EVAL_K8S_CREDENTIALS_SECRET=<secret-name>
+```
+
+See `docs/harbor-workflow.md` for the full workflow.
+
 ## Local run (Podman)
 
 ```bash

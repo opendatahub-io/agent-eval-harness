@@ -120,10 +120,8 @@ class KubernetesEnvironment(BaseEnvironment):
     """Single-pod Harbor environment backed by the Kubernetes Python client."""
 
     # Patterns Harbor emits during agent setup / install that require root or
-    # a network bootstrap.  Matched in exec() when
-    # AGENT_EVAL_K8S_SKIP_PKG_INSTALLS=1 so pre-built images (which already
-    # have every dependency baked in) can skip commands that would fail under
-    # OpenShift's restricted-v2 SCC (no root, no internet egress).
+    # a network bootstrap.  Skipped by default for pre-built images; opt out
+    # with AGENT_EVAL_K8S_INSTALL_PACKAGES=1 if using a bare image.
     #
     # Covers all branches of claude_code.install() + BaseInstalledAgent.setup():
     #   1. Root pkg installs  – apk add / apt-get install / dnf install / yum install
@@ -461,7 +459,7 @@ class KubernetesEnvironment(BaseEnvironment):
         # `user` is ignored: the pod runs as its SCC-assigned UID and exec can't
         # switch users. cwd/env are folded into the shell command.
         if self._skip_pkg_installs and self._PKG_INSTALL_RE.search(command):
-            self.logger.debug("skip pkg-install: AGENT_EVAL_K8S_SKIP_PKG_INSTALLS=1")
+            self.logger.debug("skip pkg-install (pre-built image, default for K8s)")
             return ExecResult(stdout="[skipped: pre-built image]", stderr="", return_code=0)
         prefix = ""
         effective_cwd = cwd or self.task_env_config.workdir
