@@ -1698,7 +1698,7 @@ def main():
 
     # Validate run_id / baseline to prevent path traversal (CWE-22)
     _validate_path_segment(args.run_id, "--run-id")
-    if getattr(args, "baseline", None):
+    if getattr(args, "baseline", None) is not None:
         _validate_path_segment(args.baseline, "--baseline")
 
     {"judges": cmd_judges, "pairwise": cmd_pairwise,
