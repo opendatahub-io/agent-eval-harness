@@ -105,7 +105,7 @@ def build_summary(parsed_job: dict, config: EvalConfig) -> dict:
             case_judges[name] = {
                 "value": value,
                 "rationale": rec.get("rationale", "") or rec.get("error", ""),
-                "judge_type": types.get(name, "check"),
+                "judge_type": types.get(name) or rec.get("judge_type", "check"),
             }
             if value is not None:
                 agg_values.setdefault(name, []).append(value)
@@ -151,7 +151,18 @@ def _copy_case_artifacts(parsed: dict, output_dir: Path) -> None:
     """
     import shutil
     for trial in parsed["trials"]:
-        src = Path(trial.get("trial_path", "")) / "verifier" / "artifacts"
+        trial_path = Path(trial.get("trial_path", ""))
+        src = trial_path / "verifier" / "artifacts"
+
+        # Multi-step: check each step's artifacts (last non-empty one wins)
+        if not src.is_dir():
+            steps_dir = trial_path / "steps"
+            if steps_dir.is_dir():
+                for step_dir in sorted(steps_dir.iterdir()):
+                    candidate = step_dir / "verifier" / "artifacts"
+                    if candidate.is_dir() and any(candidate.iterdir()):
+                        src = candidate
+
         if not src.is_dir():
             continue
         dst = output_dir / "cases" / trial["case_id"] / "artifacts"

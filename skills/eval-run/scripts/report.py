@@ -1303,8 +1303,11 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
                 status_cls = "pass" if ok else "fail"
                 status_label = "PASS" if ok else "FAIL"
 
-        jtype, jmodel = judge_info.get(judge_name, ("—", "—"))
-        if jtype in ("check", "code", "builtin") and jmodel == "—":
+        jtype, jmodel = judge_info.get(judge_name, (None, "—"))
+        if jtype is None:
+            first_case = next(iter(summary.get("per_case", {}).values()), {})
+            jtype = (first_case.get(judge_name) or {}).get("judge_type", "—")
+        if jtype in ("check", "code", "builtin", "step") and jmodel == "—":
             type_label = jtype
         else:
             type_label = f'{jtype} ({jmodel.split("@")[0]})'
