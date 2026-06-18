@@ -30,7 +30,7 @@ except ImportError:
           file=sys.stderr)
     sys.exit(0)
 
-from agent_eval.config import EvalConfig
+from agent_eval.config import EvalConfig, _validate_path_segment
 from agent_eval.mlflow.experiment import resolve_tracking_uri
 
 
@@ -47,6 +47,9 @@ def main():
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
+
+    # Validate run_id to prevent path traversal (CWE-22)
+    args.run_id = _validate_path_segment(args.run_id, "--run-id")
 
     config = EvalConfig.from_yaml(args.config)
     mlflow.set_tracking_uri(resolve_tracking_uri(config))
