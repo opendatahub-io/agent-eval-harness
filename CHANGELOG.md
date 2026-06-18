@@ -1,3 +1,34 @@
+# [1.14.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.13.2...v1.14.0) (2026-06-18)
+
+
+### Bug Fixes
+
+* address CodeRabbit review findings on Harbor integration ([c02b05f](https://github.com/opendatahub-io/agent-eval-harness/commit/c02b05f3838faf346f897af1893384e1b2e3b54c))
+* address second-round CodeRabbit findings ([7a87c55](https://github.com/opendatahub-io/agent-eval-harness/commit/7a87c550130d3c5b055668eb7cf4d9b483b149ea))
+* **containerfile:** Harbor compatibility fixes ([31064d7](https://github.com/opendatahub-io/agent-eval-harness/commit/31064d72c0e0009353e1444d9adf49a65d254fd9))
+* **harbor/k8s:** fix tar upload permissions for non-root pods ([eaf4981](https://github.com/opendatahub-io/agent-eval-harness/commit/eaf498122163836341a928aba1942218c3b98d64))
+* **harbor/k8s:** match claude.ai/install.sh in skip-pkg-installs regex ([37cc074](https://github.com/opendatahub-io/agent-eval-harness/commit/37cc074c98699287bd05bd2462db83951a3c82a9))
+* **harbor:** only copy declared output paths in verifier test.sh ([3ac0b2f](https://github.com/opendatahub-io/agent-eval-harness/commit/3ac0b2f873797a1216c3c1c767e7048e4f027366))
+* **harbor:** propagate SIGTERM/SIGINT to harbor run subprocess ([d83e76b](https://github.com/opendatahub-io/agent-eval-harness/commit/d83e76b70619f8f01c8500f8f9d2e64b46f59a8f))
+* **harbor:** use wall-clock duration from Harbor job timestamps ([544d54e](https://github.com/opendatahub-io/agent-eval-harness/commit/544d54ef2b795aea9854907569133d3d859022d7))
+* **report:** show judge type for multi-step and non-config judges ([965b2e1](https://github.com/opendatahub-io/agent-eval-harness/commit/965b2e15b7eb03b1c067286f83ad78399460ee2e))
+* update test for simplified instruction.md and fix zero-cost bug ([5e3694f](https://github.com/opendatahub-io/agent-eval-harness/commit/5e3694fe750569140496298f7ce250ac26fc54d6))
+
+
+### Features
+
+* add Harbor integration for containerized eval execution ([96c9fdd](https://github.com/opendatahub-io/agent-eval-harness/commit/96c9fddd1de195b8064a96f4349359cb705e99af))
+* **eval-dataset:** add --harbor flag for task package generation ([63f2c59](https://github.com/opendatahub-io/agent-eval-harness/commit/63f2c599a6980e4cc3f1c60d8eb3c41e5e76139b))
+* **eval-setup:** add --harbor flag for Harbor dependency installation ([abbe3f3](https://github.com/opendatahub-io/agent-eval-harness/commit/abbe3f3d6afb6138da86629c6b99924b351e3ef0))
+* **harbor/k8s:** stream agent logs to pod stdout ([029e1a4](https://github.com/opendatahub-io/agent-eval-harness/commit/029e1a471785149e5dd1a02ec107609b28e932b8))
+* **harbor:** add --env flag and default skip-pkg-installs for K8s ([f79e0c1](https://github.com/opendatahub-io/agent-eval-harness/commit/f79e0c12b73a5d97a78a86487249e3719a2245c4))
+* **harbor:** add multi-step trial parsing ([d0605f5](https://github.com/opendatahub-io/agent-eval-harness/commit/d0605f583ca51f373e636bf41eb5ba75cd7ec6ea))
+* **harbor:** extract turns, duration, version from agent transcripts ([5910342](https://github.com/opendatahub-io/agent-eval-harness/commit/591034229f2fd1557e6c156aa34ba12cc28004b4))
+* **harbor:** generate per-case batch.yaml for batch-mode evals ([75c38c8](https://github.com/opendatahub-io/agent-eval-harness/commit/75c38c8acdec9b2946f29127755852455992616f))
+* **harbor:** merge judge engine results into multi-step trials ([2a25ad9](https://github.com/opendatahub-io/agent-eval-harness/commit/2a25ad9a0a1ddc032969bf72b305a4b679d6ee23))
+* **harbor:** simplify instruction.md template ([3920939](https://github.com/opendatahub-io/agent-eval-harness/commit/3920939c10f01ec6e0f4b632d9702d854ae57d52))
+* **score:** support ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL for LLM judges ([5b4ce15](https://github.com/opendatahub-io/agent-eval-harness/commit/5b4ce15ab901fa8984cac79c95a9b5f1b8618605))
+
 ## [1.13.2](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.13.1...v1.13.2) (2026-06-09)
 
 
