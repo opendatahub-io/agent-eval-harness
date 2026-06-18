@@ -263,7 +263,17 @@ def run_eval_on_harbor(
     if env_import_path:
         cmd += ["--environment-import-path", env_import_path]
     print(f"harbor: {' '.join(cmd)}", file=sys.stderr)
-    proc = subprocess.run(cmd)
+    import signal
+    proc = subprocess.Popen(cmd)
+    def _forward_signal(signum, frame):
+        proc.send_signal(signum)
+    prev_term = signal.signal(signal.SIGTERM, _forward_signal)
+    prev_int = signal.signal(signal.SIGINT, _forward_signal)
+    try:
+        proc.wait()
+    finally:
+        signal.signal(signal.SIGTERM, prev_term)
+        signal.signal(signal.SIGINT, prev_int)
     if proc.returncode != 0:
         print(f"harbor run exited {proc.returncode}", file=sys.stderr)
         return proc.returncode
