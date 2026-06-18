@@ -2475,6 +2475,17 @@ def main():
                       or any(ord(c) < 32 for c in eval_name)):
         print(f"ERROR: invalid skill name: {eval_name!r}", file=sys.stderr)
         sys.exit(1)
+    # Validate run_id / baseline to prevent path traversal (CWE-22)
+    for _arg_name, _arg_val in [("--run-id", args.run_id),
+                                ("--baseline", args.baseline)]:
+        if _arg_val and (not isinstance(_arg_val, str)
+                         or "/" in _arg_val or "\\" in _arg_val
+                         or _arg_val in (".", "..")
+                         or any(ord(c) < 32 for c in _arg_val)):
+            print(f"ERROR: {_arg_name} must be a single path segment: {_arg_val!r}",
+                  file=sys.stderr)
+            sys.exit(1)
+
     runs_base = Path(os.environ.get("AGENT_EVAL_RUNS_DIR", "eval/runs"))
     runs_dir = runs_base / eval_name if eval_name else runs_base
     run_dir = runs_dir / args.run_id

@@ -28,7 +28,7 @@ from typing import Optional
 
 import yaml
 
-from agent_eval.config import EvalConfig, _is_valid_eval_name
+from agent_eval.config import EvalConfig, _is_valid_eval_name, _validate_path_segment
 
 
 def _get_runs_dir(eval_name: str = ""):
@@ -1695,6 +1695,12 @@ def main():
     reg_p.add_argument("--baseline", default=None)
 
     args = parser.parse_args()
+
+    # Validate run_id / baseline to prevent path traversal (CWE-22)
+    _validate_path_segment(args.run_id, "--run-id")
+    if getattr(args, "baseline", None):
+        _validate_path_segment(args.baseline, "--baseline")
+
     {"judges": cmd_judges, "pairwise": cmd_pairwise,
      "regression": cmd_regression}[args.command](args)
 

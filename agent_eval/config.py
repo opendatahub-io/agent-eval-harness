@@ -64,6 +64,42 @@ def _validate_relative_path(
     return value
 
 
+def _validate_path_segment(value: str, name: str) -> str:
+    """Validate that a value is a single path segment (no directory traversal).
+
+    Ensures the value contains no path separators (/ or \\), is not a
+    relative directory reference (. or ..), and contains no control characters.
+    Used to prevent path traversal attacks (CWE-22) when constructing
+    filesystem paths from user-controlled input.
+
+    Args:
+        value: The path segment to validate (e.g., run_id, skill name)
+        name: Parameter name for error messages
+
+    Returns:
+        The validated value
+
+    Raises:
+        ValueError: If value is not a valid single path segment
+    """
+    if not _is_valid_eval_name(value):
+        # Provide detailed error message based on what failed
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{name} must be a non-empty string, got: {value!r}")
+        if "/" in value or "\\" in value:
+            raise ValueError(
+                f"{name} must be a single path segment, "
+                f"cannot contain path separators: {value!r}"
+            )
+        if value in (".", ".."):
+            raise ValueError(
+                f"{name} cannot be a relative directory reference: {value!r}"
+            )
+        # Control characters or other invalid chars
+        raise ValueError(f"{name} contains invalid characters: {value!r}")
+    return value
+
+
 @dataclass
 class DiscoveryResult:
     """A discovered eval config file."""
@@ -580,9 +616,11 @@ class EvalConfig:
                     stacklevel=2,
                 )
 
-        if config.skill and not _is_valid_eval_name(config.skill):
-            raise ValueError(
-                f"Invalid skill name in {path}: {config.skill!r}")
+        if config.skill:
+            try:
+                _validate_path_segment(config.skill, f"skill name in {path}")
+            except ValueError as e:
+                raise ValueError(str(e)) from e
 
         return config
 
