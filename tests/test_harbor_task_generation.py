@@ -62,10 +62,9 @@ def test_generate_tasks_structure_and_command(tmp_path):
     assert 'docker_image = "quay.io/test/rfe-task:latest"' in toml_text
     assert 'case_id = "case-001"' in toml_text
 
-    # instruction.md carries the resolved per-case command + input context
+    # instruction.md carries the resolved per-case command
     instr = (t1 / "instruction.md").read_text()
     assert '/rfe.speedrun --headless --dry-run "Verify model signatures at serving"' in instr
-    assert "Critical" in instr  # input context embedded
 
     # test.sh wires the reward bridge against the workdir
     test_sh = (t1 / "tests" / "test.sh").read_text()

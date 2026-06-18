@@ -235,10 +235,10 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
         "metrics": {s.name: per_judge[s.name]["value"] for s in step_dirs},
         "per_judge": per_judge,
         "errored": (trial_dir / "exception.txt").is_file(),
-        "cost_usd": total_cost or None,
+        "cost_usd": total_cost if total_cost > 0 else None,
         "token_usage": token_totals or None,
-        "num_turns": total_turns or None,
-        "duration_s": total_duration or None,
+        "num_turns": total_turns if total_turns > 0 else None,
+        "duration_s": total_duration if total_duration > 0 else None,
         "agent_version": agent_version,
     }
 
