@@ -53,6 +53,20 @@ eval/harbor-tasks/            ← task packages (one per case)
 
 ## Run
 
+### Credentials (.env file)
+
+Create a `.env` file in the project root with cluster-specific config.
+`run.py` loads it automatically via `_load_dotenv()`:
+
+```
+AGENT_EVAL_K8S_NAMESPACE=<namespace>
+AGENT_EVAL_K8S_CREDENTIALS_SECRET=<secret-name>
+```
+
+The credentials Secret should contain API keys or gateway config
+(e.g. `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` for a LiteLLM
+gateway). See `deploy/harbor/README.md` for credential options.
+
 ### Using eval-run (recommended)
 
 `eval-run --runner harbor` wraps the full flow — reuses pre-generated
@@ -60,8 +74,16 @@ task packages (or generates them if `--image` is provided), calls
 `harbor run`, parses results, generates report, checks regressions:
 
 ```bash
-/eval-run --runner harbor --model <model>
+# Kubernetes (default)
+/eval-run --runner harbor --model <model> -n 10
+
+# Podman (local)
+/eval-run --runner harbor --env podman --model <model>
 ```
+
+The `--env` flag selects the execution environment (`kubernetes` by
+default, also accepts `podman`, `openshift`, `k8s`). The `-n` flag
+sets parallelism (concurrent pods/containers).
 
 Produces the same `runs/<id>/` layout as a local run (summary.yaml,
 report.html, per-case artifacts).
@@ -80,13 +102,10 @@ harbor run -p eval/harbor-tasks \
 
 # Kubernetes / OpenShift
 PYTHONPATH="$(pwd)" \
-AGENT_EVAL_K8S_NAMESPACE=<ns> \
-AGENT_EVAL_K8S_CREDENTIALS_SECRET=<secret> \
-AGENT_EVAL_K8S_SKIP_PKG_INSTALLS=1 \
 harbor run -p eval/harbor-tasks \
   --agent claude-code -m <model> \
   --environment-import-path agent_eval.harbor.kubernetes:KubernetesEnvironment \
-  -n 1 -o eval/harbor-jobs
+  -n 5 -o eval/harbor-jobs
 ```
 
 Run a single case by pointing at its directory:
@@ -139,7 +158,7 @@ runs — these work unchanged:
 | `AGENT_EVAL_K8S_GCP_CREDENTIALS_SECRET` | Secret with GCP SA key (file mount) |
 | `AGENT_EVAL_K8S_SERVICE_ACCOUNT` | Pod ServiceAccount (Workload Identity) |
 | `AGENT_EVAL_K8S_PROJECT_CONFIGMAP` | ConfigMap with project resources (< 1 MB) |
-| `AGENT_EVAL_K8S_SKIP_PKG_INSTALLS` | `1` to skip agent install (pre-built image) |
+| `AGENT_EVAL_K8S_INSTALL_PACKAGES` | `1` to run agent install (default: skip for pre-built images) |
 | `AGENT_EVAL_K8S_KEEP_RUN` | `1` to keep pod after trial for debugging |
 | `AGENT_EVAL_K8S_CPU` / `AGENT_EVAL_K8S_MEMORY` | Resource requests (default: 1 / 2Gi) |
 

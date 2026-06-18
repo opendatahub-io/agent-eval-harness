@@ -264,6 +264,10 @@ PYTHONPATH="$(pwd)" python3 -m agent_eval.harbor.run \
     [--env kubernetes]
 ```
 
+Cluster-specific config (namespace, credentials secret) is read from a
+`.env` file in the project root. Create it with `AGENT_EVAL_K8S_NAMESPACE`
+and `AGENT_EVAL_K8S_CREDENTIALS_SECRET` — `run.py` loads it automatically.
+
 Tasks come from `/eval-dataset` (which emits Harbor task packages via
 `scripts/harbor.py`). If `--tasks-dir` already has them, `run.py` reuses them; if
 empty, it generates on the fly (needs `--image`). The output is a standard
