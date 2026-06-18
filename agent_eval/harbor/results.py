@@ -289,9 +289,26 @@ def parse_job(job_dir: Path) -> dict:
     total_turns = sum(turn_values) if turn_values else None
     dur_values = [t["duration_s"] for t in trials
                   if isinstance(t.get("duration_s"), (int, float))]
-    total_duration = sum(dur_values) if dur_values else None
+    total_agent_duration = sum(dur_values) if dur_values else None
     agent_version = next((t["agent_version"] for t in trials
                           if t.get("agent_version")), None)
+
+    # Wall-clock duration from the Harbor job's result.json timestamps.
+    wall_clock_s = None
+    result_file = job_dir / "result.json"
+    if result_file.exists():
+        try:
+            from datetime import datetime
+            job_result = json.loads(result_file.read_text())
+            started = job_result.get("started_at")
+            finished = job_result.get("finished_at")
+            if started and finished:
+                fmt = "%Y-%m-%dT%H:%M:%S.%f"
+                t0 = datetime.strptime(started.rstrip("Z"), fmt)
+                t1 = datetime.strptime(finished.rstrip("Z"), fmt)
+                wall_clock_s = (t1 - t0).total_seconds()
+        except Exception:
+            pass
 
     return {
         "job_dir": str(job_dir),
@@ -303,6 +320,7 @@ def parse_job(job_dir: Path) -> dict:
         "cost_usd": total_cost,
         "token_usage": token_usage or None,
         "num_turns": total_turns,
-        "duration_s": total_duration,
+        "duration_s": wall_clock_s or total_agent_duration,
+        "agent_duration_s": total_agent_duration,
         "agent_version": agent_version,
     }
