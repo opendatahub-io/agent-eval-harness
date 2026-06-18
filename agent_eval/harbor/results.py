@@ -210,6 +210,23 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
 
     mean_reward = sum(rewards) / len(rewards) if rewards else None
 
+    # If any step has a judges.json (from the full judge engine), merge those
+    # judges into per_judge — they provide richer scoring than step rewards.
+    for step_dir in reversed(step_dirs):
+        judges_path = step_dir / "verifier" / "judges.json"
+        if judges_path.is_file():
+            try:
+                jdata = json.loads(judges_path.read_text())
+                engine_judges = jdata.get("per_judge", {})
+                if engine_judges:
+                    per_judge.update(engine_judges)
+                    engine_reward = jdata.get("reward")
+                    if isinstance(engine_reward, (int, float)):
+                        mean_reward = engine_reward
+                    break
+            except (json.JSONDecodeError, OSError):
+                pass
+
     return {
         "case_id": _case_id_from_dir(trial_dir),
         "trial_dir": trial_dir.name,
