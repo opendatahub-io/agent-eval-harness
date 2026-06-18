@@ -63,7 +63,12 @@ _RUNNER_TO_HARBOR_AGENT = {
     "responses-api": None,  # no Harbor equivalent
 }
 _DEFAULT_AGENT = "claude-code"
-_DEFAULT_ENV_IMPORT = "agent_eval.harbor.podman:PodmanEnvironment"
+_ENV_IMPORT_PATHS = {
+    "podman": "agent_eval.harbor.podman:PodmanEnvironment",
+    "kubernetes": "agent_eval.harbor.kubernetes:KubernetesEnvironment",
+    "k8s": "agent_eval.harbor.kubernetes:KubernetesEnvironment",
+    "openshift": "agent_eval.harbor.kubernetes:KubernetesEnvironment",
+}
 
 
 def _judge_types(config: EvalConfig) -> dict:
@@ -207,7 +212,7 @@ def run_eval_on_harbor(
     n_concurrent: int = 1,
     workdir: str = "/workspace",
     agent_name: str | None = None,
-    env_import_path: str | None = _DEFAULT_ENV_IMPORT,
+    env_import_path: str | None = None,
     harbor_bin: str = "harbor",
     regenerate: bool = False,
 ) -> int:
@@ -332,13 +337,17 @@ def main() -> None:
     p.add_argument("--agent", default=None,
                    help="Harbor agent name (default: from runner.type in eval.yaml; "
                         "e.g. claude-code, opencode)")
-    p.add_argument("--environment-import-path", default=_DEFAULT_ENV_IMPORT,
-                   help="Custom Harbor environment import path (default: Podman; "
-                        "omit to use Harbor's built-in docker env)")
+    p.add_argument("--env", default="kubernetes",
+                   choices=["podman", "kubernetes", "k8s", "openshift"],
+                   help="Execution environment (default: kubernetes)")
+    p.add_argument("--environment-import-path", default=None,
+                   help="Custom Harbor environment import path (overrides --env)")
     p.add_argument("--regenerate", action="store_true",
                    help="Regenerate task packages even if --tasks-dir already has them "
                         "(default: reuse pre-generated tasks, e.g. from /eval-dataset)")
     args = p.parse_args()
+
+    env_import = args.environment_import_path or _ENV_IMPORT_PATHS.get(args.env)
 
     code = run_eval_on_harbor(
         Path(args.config), image=args.image, model=args.model,
@@ -347,7 +356,7 @@ def main() -> None:
         judge_model=args.judge_model, cases=args.cases,
         n_concurrent=args.n_concurrent, workdir=args.workdir,
         agent_name=args.agent,
-        env_import_path=args.environment_import_path,
+        env_import_path=env_import,
         regenerate=args.regenerate,
     )
     sys.exit(code)

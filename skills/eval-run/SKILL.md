@@ -26,6 +26,7 @@ Parse `$ARGUMENTS`:
 | `--gold` | no | false | Save outputs as gold references after run |
 | `--effort <level>` | no | `runner.effort` from config | Claude Code reasoning effort (Claude Code only; ignored by other runners) |
 | `--runner <type>` | no | local | `local` (default Steps 1–8) or `harbor` (containerized — skips to Harbor runner section) |
+| `--env <name>` | no | `kubernetes` | Harbor execution environment: `podman`, `kubernetes`, `openshift` (only with `--runner harbor`) |
 
 If `--runner harbor`: after config discovery, **skip to the Harbor runner section** below. Steps 2–6 are replaced by one `run.py` call.
 
@@ -260,7 +261,7 @@ PYTHONPATH="$(pwd)" python3 -m agent_eval.harbor.run \
     --output $AGENT_EVAL_RUNS_DIR/<eval-name>/<run-id> \
     --tasks-dir <tasks-dir> --jobs-dir <tmp-jobs> \
     [--image <image>] [--agent <agent>] [--n-concurrent N] \
-    [--environment-import-path agent_eval.harbor.kubernetes:KubernetesEnvironment]
+    [--env kubernetes]
 ```
 
 Tasks come from `/eval-dataset` (which emits Harbor task packages via

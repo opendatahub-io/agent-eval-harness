@@ -150,10 +150,9 @@ class KubernetesEnvironment(BaseEnvironment):
         if keep_pods is None:
             keep_pods = os.environ.get("AGENT_EVAL_K8S_KEEP_RUN") == "1"
         self._keep_pods = keep_pods
-        # When the task image is pre-built with all required packages, set
-        # AGENT_EVAL_K8S_SKIP_PKG_INSTALLS=1 to suppress install commands that
-        # would fail under OpenShift's restricted-v2 SCC (no root access).
-        self._skip_pkg_installs = os.environ.get("AGENT_EVAL_K8S_SKIP_PKG_INSTALLS") == "1"
+        # Pre-built images skip install by default (the norm for K8s/OpenShift).
+        # Opt out with AGENT_EVAL_K8S_INSTALL_PACKAGES=1 if using a bare image.
+        self._skip_pkg_installs = os.environ.get("AGENT_EVAL_K8S_INSTALL_PACKAGES") != "1"
         self._started = False
         _load_kube_config()
         self._core = k8s_client.CoreV1Api()
