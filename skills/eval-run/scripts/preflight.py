@@ -73,9 +73,9 @@ def main():
     args = parser.parse_args()
 
     # Validate run_id / baseline to prevent path traversal (CWE-22)
-    if args.run_id:
+    if args.run_id is not None:
         _validate_path_segment(args.run_id, "--run-id")
-    if args.baseline:
+    if args.baseline is not None:
         _validate_path_segment(args.baseline, "--baseline")
 
     config = EvalConfig.from_yaml(args.config)
