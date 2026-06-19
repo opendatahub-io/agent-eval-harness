@@ -11,12 +11,14 @@ container, the verifier (``tests/test.sh``) calls this module, which reuses
 the same engine the local ``/eval-run`` path uses — so per-case grading is
 identical whether run locally or in a Harbor trial.
 
-Reward composition (default, configurable):
-- Boolean judges (inline ``check`` + bool LLM judges) are GATES: if any fails,
-  the overall ``reward`` is 0.0.
-- Numeric judges (score LLM judges, 1-5) are normalized to 0-1 via
-  ``(score - 1) / 4`` and averaged.
-- If all gates pass and there are no numeric judges, ``reward`` is 1.0.
+Reward composition:
+- If a ``grpo_reward`` judge exists in the eval config, its value is used
+  directly as the overall reward. This lets the eval.yaml define the full
+  aggregation formula (weighted layers, gating, efficiency) in one place.
+- Otherwise falls back to the legacy default: boolean judges are GATES
+  (any fail -> 0.0), numeric judges (1-N) are normalized and averaged.
+- Score range is auto-detected from the eval config (``score_range`` field)
+  or defaults to 1-5 for backward compatibility.
 
 Pairwise comparison and regression thresholds are SUITE-level (need >=2 runs /
 the full set) and stay above Harbor — they are not computed here.
@@ -35,10 +37,14 @@ from typing import Optional
 
 from agent_eval.config import EvalConfig
 
-# Numeric LLM judges emit an integer score in this inclusive range
-# (see _SCORE_JUDGE_TOOL in score.py). Used to normalize to 0-1.
-_SCORE_MIN = 1.0
-_SCORE_MAX = 5.0
+# Legacy default score range for backward compatibility.
+# Overridden when a grpo_reward judge handles aggregation, or when
+# the eval config specifies a different range.
+_SCORE_MIN_DEFAULT = 1.0
+_SCORE_MAX_DEFAULT = 5.0
+
+# Judge name that, when present, provides the pre-aggregated reward.
+_GRPO_REWARD_JUDGE = "grpo_reward"
 
 # Harbor's canonical verifier output directory inside the container.
 _DEFAULT_OUT_DIR = "/logs/verifier"
@@ -80,30 +86,52 @@ def score_case(config: EvalConfig, case_dir: Path,
     return result.get("per_case", {}).get(case_dir.name, {})
 
 
-def compose_reward(per_judge: dict) -> tuple[float, dict]:
+def compose_reward(per_judge: dict, *,
+                   score_min: float = _SCORE_MIN_DEFAULT,
+                   score_max: float = _SCORE_MAX_DEFAULT) -> tuple[float, dict]:
     """Collapse per-judge results into an overall reward + flat metric dict.
 
     Returns ``(reward, metrics)`` where ``metrics`` maps each judge name to a
     number (bool -> 1.0/0.0, numeric -> raw score). Judges that were skipped
     (condition false) or errored have ``value is None`` and are recorded with
     no value rather than gated on.
+
+    If a ``grpo_reward`` judge is present and produced a numeric value, that
+    value is used directly as the reward (it already encodes gating, weighted
+    aggregation, and efficiency). Individual judge scores are still recorded
+    in metrics for diagnostics.
     """
-    gate_ok = True
-    normalized_scores: list[float] = []
     metrics: dict[str, float] = {}
 
     for name, rec in per_judge.items():
         value = rec.get("value")
         if value is None:
-            continue  # skipped or errored — don't gate, don't average
+            continue
         if isinstance(value, bool):
             metrics[name] = 1.0 if value else 0.0
-            if not value:
-                gate_ok = False
         elif isinstance(value, (int, float)):
             metrics[name] = float(value)
-            span = _SCORE_MAX - _SCORE_MIN
-            norm = (float(value) - _SCORE_MIN) / span if span else 0.0
+
+    grpo_rec = per_judge.get(_GRPO_REWARD_JUDGE, {})
+    grpo_val = grpo_rec.get("value")
+    if grpo_val is not None and isinstance(grpo_val, (int, float)):
+        reward = max(0.0, min(1.0, float(grpo_val)))
+        return reward, metrics
+
+    gate_ok = True
+    normalized_scores: list[float] = []
+
+    for name, rec in per_judge.items():
+        if name == _GRPO_REWARD_JUDGE:
+            continue
+        value = rec.get("value")
+        if value is None:
+            continue
+        if isinstance(value, bool) and not value:
+            gate_ok = False
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            span = score_max - score_min
+            norm = (float(value) - score_min) / span if span else 0.0
             normalized_scores.append(max(0.0, min(1.0, norm)))
 
     if not gate_ok:
@@ -123,7 +151,13 @@ def build_reward(config: EvalConfig, case_dir: Path,
     the full ``per_judge`` detail (value + rationale) for the sidecar.
     """
     per_judge = score_case(config, case_dir, run_id=run_id)
-    reward, metrics = compose_reward(per_judge)
+
+    score_range = getattr(config, "score_range", None) or {}
+    score_min = float(score_range.get("min", _SCORE_MIN_DEFAULT))
+    score_max = float(score_range.get("max", _SCORE_MAX_DEFAULT))
+
+    reward, metrics = compose_reward(per_judge,
+                                     score_min=score_min, score_max=score_max)
     return {"reward": reward, "metrics": metrics, "per_judge": per_judge}
 
 
