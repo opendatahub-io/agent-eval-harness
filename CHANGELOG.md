@@ -1,3 +1,10 @@
+## [1.14.1](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.14.0...v1.14.1) (2026-06-19)
+
+
+### Bug Fixes
+
+* **harbor:** restore project ConfigMap into workspace directory tree ([051ae16](https://github.com/opendatahub-io/agent-eval-harness/commit/051ae16abf16a9b7882a842c07840ee3972fdd29))
+
 # [1.14.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.13.2...v1.14.0) (2026-06-18)
 
 
