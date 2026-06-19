@@ -289,6 +289,30 @@ class KubernetesEnvironment(BaseEnvironment):
         await self._wait_ready(timeout_sec=300)
         self._started = True
         await self._upload_environment_dir_after_start()
+        await self._restore_project_from_configmap()
+
+    async def _restore_project_from_configmap(self) -> None:
+        """Reconstruct project tree from flat ConfigMap after environment upload.
+
+        ConfigMap keys use ``--`` instead of ``/``. This copies them into
+        /workspace with the original directory structure so Claude finds
+        skills at ``.claude/skills/``, scripts at ``scripts/``, etc.
+        """
+        project_mount = os.environ.get("AGENT_EVAL_K8S_PROJECT_MOUNT",
+                                       "/opt/project") \
+            if os.environ.get("AGENT_EVAL_K8S_PROJECT_CONFIGMAP") else None
+        if not project_mount:
+            return
+        cmd = (
+            f'for f in {project_mount}/* {project_mount}/.*; do '
+            '[ -f "$f" ] || continue; '
+            'n=$(basename "$f"); '
+            't=$(echo "$n" | sed "s/--/\\//g"); '
+            'mkdir -p "$(dirname "/workspace/$t")"; '
+            'cp "$f" "/workspace/$t"; '
+            'done'
+        )
+        await self._checked_exec(cmd, "restore project from configmap")
 
     def _delete_pod_quiet(self) -> None:
         try:
