@@ -588,8 +588,10 @@ def scan_ast_behavioral(skill_dir: Path, base_path: str) -> list[Finding]:
     for py_file in sorted(skill_dir.rglob("*.py")):
         if ".git" in py_file.parts or "__pycache__" in py_file.parts:
             continue
+        source = _read_text_safe(py_file)
+        if not source:
+            continue
         try:
-            source = py_file.read_text(encoding="utf-8", errors="replace")
             tree = ast.parse(source, filename=str(py_file))
         except SyntaxError:
             continue
@@ -659,8 +661,10 @@ def scan_taint_tracking(skill_dir: Path, base_path: str) -> list[Finding]:
     for py_file in sorted(skill_dir.rglob("*.py")):
         if ".git" in py_file.parts or "__pycache__" in py_file.parts:
             continue
+        source = _read_text_safe(py_file)
+        if not source:
+            continue
         try:
-            source = py_file.read_text(encoding="utf-8", errors="replace")
             tree = ast.parse(source, filename=str(py_file))
         except SyntaxError:
             continue
@@ -745,9 +749,8 @@ def _detect_capabilities(skill_dir: Path) -> dict[str, list[str]]:
     for py_file in sorted(skill_dir.rglob("*.py")):
         if ".git" in py_file.parts or "__pycache__" in py_file.parts:
             continue
-        try:
-            content = py_file.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        content = _read_text_safe(py_file)
+        if not content:
             continue
         for cap, patterns in _CAPABILITY_PATTERNS.items():
             for pat in patterns:
@@ -939,10 +942,17 @@ def main() -> int:
     )
     parser.add_argument("--root", default=".", help="Project root directory")
     parser.add_argument("--format", choices=["text", "yaml"], default="text", help="Output format")
+    parser.add_argument("--output", default=None, help="Write output to file instead of stdout")
     parser.add_argument("--fail-on-error", action="store_true", help="Exit code 1 if any errors found")
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
+
+    if args.output:
+        out_path = (root / args.output).resolve()
+        if not out_path.is_relative_to(root):
+            print(f"ERROR: --output path '{args.output}' resolves outside project root", file=sys.stderr)
+            return 1
     results: list[ComponentResult] = []
 
     skills = find_skills(root)
@@ -990,9 +1000,17 @@ def main() -> int:
         results.append(result)
 
     if args.format == "yaml":
-        print(format_yaml(results, TOTAL_RULES))
+        output = format_yaml(results, TOTAL_RULES)
     else:
-        print(format_text(results, TOTAL_RULES))
+        output = format_text(results, TOTAL_RULES)
+
+    if args.output:
+        out_path = (root / args.output).resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(output)
+        print(f"Report written to {args.output}")
+    else:
+        print(output)
 
     if args.fail_on_error:
         has_errors = any(f.severity == "error" for r in results for f in r.findings)
