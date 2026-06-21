@@ -500,7 +500,7 @@ Automated refinement loop: run eval, identify failures, read traces + judge rati
 
 ### /eval-check
 
-Scan the full configuration (skills, commands, CLAUDE.md, hooks) as a system. Finds content overlap, trigger collisions, CLAUDE.md duplication, and type misclassification. Produces an informational report with restructuring suggestions.
+Scan the full configuration (skills, commands, CLAUDE.md, hooks) as a system. Finds content overlap, trigger collisions, CLAUDE.md duplication, type misclassification, and broken cross-component references. Produces an informational report with restructuring suggestions.
 
 ```bash
 /eval-check                        # Scan and report to harness-report.md
