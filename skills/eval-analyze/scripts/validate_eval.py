@@ -574,9 +574,17 @@ def validate_config(path="eval.yaml"):
         if module:
             try:
                 import importlib
-                importlib.import_module(module)
+                mod = importlib.import_module(module)
             except ImportError:
                 errors.append(f"judges.{name}.module '{module}' not importable")
+                mod = None
+            func_name = j.get("function", "")
+            if mod and func_name:
+                fn = getattr(mod, func_name, None)
+                if fn is None:
+                    errors.append(f"judges.{name}.function '{func_name}' not found in module '{module}'")
+                elif not callable(fn):
+                    errors.append(f"judges.{name}.function '{func_name}' in '{module}' is not callable")
 
         # Validate builtin judge arguments
         builtin_name = j.get("builtin", "")
@@ -636,6 +644,14 @@ def validate_config(path="eval.yaml"):
         sp = Path(settings) if Path(settings).is_absolute() else config_dir / settings
         if not sp.exists():
             errors.append(f"runner.settings '{settings}' not found")
+
+    plugin_dirs = runner.get("plugin_dirs") or []
+    for i, pd in enumerate(plugin_dirs):
+        pp = Path(pd) if Path(pd).is_absolute() else config_dir / pd
+        if not pp.exists():
+            warnings.append(f"runner.plugin_dirs[{i}] '{pd}' not found")
+        elif not pp.is_dir():
+            warnings.append(f"runner.plugin_dirs[{i}] '{pd}' is not a directory")
 
     # --- Models ---
     models = config.get("models") or {}

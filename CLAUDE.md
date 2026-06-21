@@ -174,7 +174,8 @@ skills/eval-anova/       # Skill: DoE/ANOVA matrix experiments (orchestrator ove
 skills/eval-check/ # Skill: full-harness configuration health check
   SKILL.md               # Scans all skills, commands, CLAUDE.md, hooks for overlap and issues
   scripts/
-    harness_inventory.py # Project artifact discovery and word counting
+    harness_inventory.py # Project artifact discovery, word counting, eval config discovery
+    reference_checker.py # Cross-component reference validation (broken refs, missing scripts, orphans)
 ```
 
 ## How It Works
