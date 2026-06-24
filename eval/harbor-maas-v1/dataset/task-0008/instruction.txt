@@ -1,0 +1,46 @@
+# fix: maasmodelref endpoint selection in setups with multiple gateways available
+
+https://redhat.atlassian.net/browse/RHOAIENG-52336
+
+## Description
+In `getEndpointFromLLMISvc`, when multiple gateways exist, `llmisvc.Status.Addresses` contains gateway-external entries from **ALL** gateways. The method picks the first HTTPS available, which may belong to the wrong gateway (e.g., `openshift-ai-inference` instead of `maas-default-gateway`).
+
+The proposed fix:
+- In `providers_llmisvc.go` — `getEndpointFromLLMISvc` now accepts `expectedHostnames`. When non-empty, it filters gateway-external addresses to only those whose hostname matches, and skips fallback to unfiltered addresses (which may belong to the wrong gateway, how we do it now, essentially). When empty, old behavior is preserved for single-gateway deployments.
+- Additionally, added 7 test cases covering `providers_llmisvc.go`. Testing the following scenarios: 
+   1) correct hostname selected from multiple gateways
+   2) no match returns empty
+   3) legacy behavior without hostnames
+   4) single gateway with hostnames
+   5) fallback to first address with old logic 
+   6) no fallback when filtering 
+   7) HTTPS preference
+
+## How Has This Been Tested?
+Added unit tests to make the changes work as intended.
+
+## Merge criteria:
+<!--- This PR will be merged by any repository approver when it meets all the points in the checklist -->
+<!--- Go over all the following points, and put an `x` in all the boxes that apply. -->
+
+- [x] The commits are squashed in a cohesive manner and have meaningful messages.
+- [x] Testing instructions have been added in the PR body (for PRs involving changes that are not immediately obvious).
+- [x] The developer has manually tested the changes and verified that the changes work
+
+
+<!-- This is an auto-generated comment: release notes by coderabbit.ai -->
+## Summary by CodeRabbit
+
+* **New Features**
+  * Improved LLM Inference Service endpoint selection to prefer gateway addresses matching expected hostnames and better handle multi-gateway setups.
+
+* **Bug Fixes**
+  * More reliable endpoint fallback behavior when no matching gateway address is found, reducing incorrect endpoint resolution.
+
+* **Tests**
+  * Added unit tests covering hostname selection, TLS preference, case-insensitive matching, and legacy fallback scenarios.
+<!-- end of auto-generated comment: release notes by coderabbit.ai -->
+
+## Files involved
+- `maas-controller/pkg/controller/maas/providers_llmisvc.go`
+- `maas-controller/pkg/controller/maas/providers_llmisvc_test.go`

@@ -26,6 +26,12 @@ evalhub = [
 # Requires Python >=3.12 (harbor's minimum).
 harbor = ["harbor>=0.13.0", "kubernetes>=29.0,<37.0"]
 openai = ["openai>=1.70"]
+anova = [
+    "scipy>=1.17",
+    "statsmodels>=0.14",
+    "pandas>=3.0",
+    "pingouin>=0.6",
+]
 all = [
     "mlflow[genai]>=3.5",
     "anthropic[vertex]>=0.40",
@@ -34,6 +40,10 @@ all = [
     "harbor>=0.13.0",
     "kubernetes>=29.0,<37.0",
     "openai>=1.70",
+    "scipy>=1.17",
+    "statsmodels>=0.14",
+    "pandas>=3.0",
+    "pingouin>=0.6",
 ]
 test = ["pytest>=8.0"]
 

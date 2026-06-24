@@ -1,0 +1,114 @@
+name: harbor-maas-v1-anova
+description: >
+  Harbor-based eval-anova: A:B test comparing agent performance with cognee
+  MCP context (knowledge graph) vs without on models-as-a-service Go bugfix
+  tasks running on OpenShift.
+
+skill: null                      # raw PR prompt is the agent input (no skill)
+
+execution:
+  mode: case
+  arguments: "{prompt}"
+  timeout: 1800
+
+runner:
+  type: cli
+  command: >-
+    harbor run
+    --path {workspace}
+    --agent claude-code
+    --model {model}
+    -e openshift
+    --mcp-config {mcp_config_file}
+    --jobs-dir {output_dir}
+    --job-name harbor-trial
+    --ae CLAUDE_CODE_USE_VERTEX=1
+    --ae CLOUD_ML_REGION=global
+    --ae ANTHROPIC_VERTEX_PROJECT_ID=gcp-jboyer-san-gemini
+    --ae GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp-sa-key.json
+    --mounts '[{"type":"bind","source":"{gcp_sa_key_path}","target":"/etc/gcp-sa-key.json","read_only":true}]'
+    --yes
+    --delete
+
+models:
+  skill: claude-sonnet-4-6       # overridden per matrix cell
+  judge: claude-opus-4-6         # LLM judge model (Vertex)
+
+dataset:
+  path: dataset                  # relative to this eval.yaml
+  schema: |
+    Each case dir (task-NNNN/) has input.yaml (prompt), instruction.txt and
+    oracle.diff (referenced by annotations.yaml for the judge).
+
+outputs:
+  - path: harbor_output
+    schema: |
+      Harbor job output: result.json (verifier reward), agent trajectory,
+      and test results.
+
+traces:
+  stdout: false
+  stderr: true
+  events: false
+  metrics: false
+
+judges:
+  - name: harbor_reward
+    description: Harbor verifier passed (tests pass on agent's fix).
+    check: |
+      import json
+      files = outputs.get("files", {})
+      for path, content in files.items():
+          if path.endswith("result.json") and "harbor_output" in path and isinstance(content, str):
+              try:
+                  result = json.loads(content)
+                  vr = result.get("verifier_result") or {}
+                  reward = vr.get("reward", 0)
+                  if reward > 0:
+                      return True, f"verifier reward={reward}"
+                  exc = result.get("exception_info") or {}
+                  msg = exc.get("exception_type", "unknown error")
+                  return False, f"reward={reward}, {msg}"
+              except Exception as e:
+                  continue
+      return False, "No harbor result.json in outputs"
+
+  - name: solution_quality
+    description: LLM judge — does the agent's diff solve the task vs the oracle?
+    feedback_type: int
+    prompt: |
+      You are scoring an agent's attempt at a coding task on the
+      opendatahub-io/models-as-a-service repository.
+
+      ## Task instruction
+      {{ outputs.annotation_instruction_content }}
+
+      ## Agent's changes (modified files / diff)
+      {{ outputs.modified_files }}
+
+      ## Reference oracle patch (the merged PR; may be empty)
+      {{ outputs.annotation_oracle_content }}
+
+      Assess:
+      1. Does it address the core problem in the instruction?
+      2. Are the changes technically sound?
+      3. Would they plausibly pass the test suite / match the oracle?
+
+      Score 1-5 (1=no meaningful attempt, 3=addresses it with gaps,
+      5=excellent, comparable to the oracle). Respond with a JSON object:
+      {"score": <int 1-5>, "rationale": "<one sentence>"}
+
+thresholds:
+  harbor_reward:
+    min_pass_rate: 0.5
+  solution_quality:
+    min_mean: 3.0
+
+matrix:
+  factors:
+    model:
+      - claude-sonnet-4-6
+    context:
+      - cognee
+      - none
+  replications: 1

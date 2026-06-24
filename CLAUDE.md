@@ -4,7 +4,7 @@ Generic evaluation framework for Claude Code skills projects. Uses MLflow as the
 
 ## Project Status
 
-Phase 1 (core framework) and Phase 2 (scoring integration) are implemented. See `eval/plans/agent-eval-harness-design.md` in the rfe-creator project for the full design doc.
+Phase 1 (core framework), Phase 2 (scoring integration), and Phase 3 (eval-anova DoE/ANOVA) are implemented. See `eval/plans/agent-eval-harness-design.md` in the rfe-creator project for the full design doc.
 
 ## Architecture
 
@@ -34,6 +34,13 @@ agent_eval/              # Python package (config, runner, state)
     trace_builder.py     # Hierarchical trace builder (stream-json → MLflow trace)
   cli/
     trace_run.py         # claude-trace CLI (standalone skill tracing)
+  matrix.py              # Factorial experiment design + cost estimation
+  composite.py           # Composite scoring (bool gates + numeric)
+  anova_runner.py        # Bridge: eval-anova → eval-run execution + scoring
+  archive.py             # Git-backed results archival
+  stats/
+    anova.py             # Repeated-measures, mixed-effects, one-way ANOVA
+    pareto.py            # Cost/quality Pareto frontier
 
 skills/eval-setup/       # Skill: environment setup
   SKILL.md               # Dependencies, MLflow, API keys, directories
@@ -88,10 +95,31 @@ skills/eval-mlflow/      # Skill: MLflow integration
 skills/eval-optimize/    # Skill: automated refinement loop
   SKILL.md               # Composes with /eval-run via Skill tool
 
+skills/eval-anova/       # Skill: DoE/ANOVA experiments
+  SKILL.md               # Full-factorial matrix design → run → analyze → report
+  QUICKSTART.md          # From-scratch setup and run steps
+  scripts/
+    orchestrate.py       # Cell execution, condition application, preflight
+    analyze.py           # ANOVA analysis + archival
+    design.py            # Interactive experiment design + cost estimation
+    report.py            # Per-run ANOVA detail + pooled model comparison HTML
+  prompts/
+    interpret-anova.md   # ANOVA results interpretation prompt
+  references/
+    matrix-schema.md     # Full matrix: config schema reference
+
 skills/eval-check/ # Skill: full-harness configuration health check
   SKILL.md               # Scans all skills, commands, CLAUDE.md, hooks for overlap and issues
   scripts/
     harness_inventory.py # Project artifact discovery and word counting
+
+eval/                    # Committed benchmarks and reproducers
+  harbor-maas-v1/        # SWE-bench-style ANOVA benchmark (4 PR tasks)
+    README.md            # Dataset provenance, usage, results
+    eval.yaml            # Judges, thresholds, matrix config
+    driver.py            # Smoke + full matrix reproducer
+    dataset/             # 4 task dirs (input.yaml, oracle.diff, annotations.yaml)
+  runs/                  # Ephemeral run outputs (gitignored)
 ```
 
 ## How It Works
@@ -109,6 +137,7 @@ Skills projects create an `eval.yaml` config file with:
 - `traces` — execution data to capture: stdout/stderr, events, metrics (exit code, tokens, cost)
 - `judges` — `builtin` reusable judges (from `agent_eval/judges/`), inline `check` scripts, LLM `prompt`/`prompt_file` (Jinja2 rendered), external `module`/`function`. Optional `arguments` dict for parameterization. Optional `if` condition to skip judges per case based on annotations. Judges receive `outputs["annotations"]` from dataset `annotations.yaml`.
 - `thresholds` — per-judge regression detection. Valid keys: `min_mean`, `min_pass_rate`, `min_win_rate`
+- `matrix` — full-factorial experiment design for `/eval-anova`. `factors` (named lists of levels), `replications`. Factor `model` maps to the runner's model; `effort` maps to thinking effort level; other factors pass through as runner kwargs.
 
 Runs are stored in `$AGENT_EVAL_RUNS_DIR` (default `eval/runs`), configured during `/eval-setup`.
 
@@ -124,6 +153,16 @@ The `schema` descriptions are documentation for the LLM agents and judges. Scrip
 /eval-review --run-id <id>             # Review: interactive human feedback + changes
 /eval-mlflow --run-id <id>             # MLflow: sync dataset, log results
 /eval-optimize --model opus            # Optimize: automated refinement loop
+/eval-anova                            # Compare: models × effort × cases → ANOVA
+```
+
+## Setup
+
+```
+pip install -e "."                 # Core only
+pip install -e ".[anthropic]"      # + LLM judges
+pip install -e ".[anova]"          # + eval-anova (scipy, statsmodels, pandas, pingouin)
+pip install -e ".[all]"            # Everything
 ```
 
 ## Tests
@@ -142,6 +181,8 @@ E2E tests invoke real Claude API calls against a fake Jira skill fixture to veri
 2. **Agent-agnostic runner** — `EvalRunner` ABC with `--agent` flag on execute.py; Claude Code included, extensible to OpenCode/Agent SDK
 3. **Four judge types** — `builtin` reusable judges, inline `check` scripts, LLM `prompt`/`prompt_file`, external `module`/`function`
 4. **MLflow as separate skill** — `/eval-mlflow` handles dataset sync, result logging, trace feedback; eval-run works without it
+5. **eval-anova reuses eval-run** — `anova_runner.py` dynamically loads eval-run's `score.py` and `collect.py` modules; no duplication of execution or scoring logic
+6. **Composite scoring** — boolean judges are gates (fail → score 0); numeric judges are weighted-averaged to [0,1]; separation prevents pass/fail from diluting quality scores
 
 ## Brainstorms
 

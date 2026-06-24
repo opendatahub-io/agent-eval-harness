@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cognee": {
+      "type": "streamable-http",
+      "url": "http://cognee-mcp.cognee.svc:8321/mcp"
+    }
+  }
+}
