@@ -11,14 +11,13 @@ container, the verifier (``tests/test.sh``) calls this module, which reuses
 the same engine the local ``/eval-run`` path uses — so per-case grading is
 identical whether run locally or in a Harbor trial.
 
-Reward composition:
-- If a ``grpo_reward`` judge exists in the eval config, its value is used
-  directly as the overall reward. This lets the eval.yaml define the full
-  aggregation formula (weighted layers, gating, efficiency) in one place.
-- Otherwise falls back to the legacy default: boolean judges are GATES
-  (any fail -> 0.0), numeric judges (1-N) are normalized and averaged.
-- Score range is auto-detected from the eval config (``score_range`` field)
-  or defaults to 1-5 for backward compatibility.
+Reward composition (resolution order):
+1. If a ``reward:`` section exists in eval.yaml, use its formula/weights
+   to compose the reward from judge results. Supports ``weighted``,
+   single judge reference, or Python expression modes.
+2. If a ``grpo_reward`` judge exists (legacy), use its value directly.
+3. Otherwise: boolean judges gate (any fail -> 0.0), numeric judges
+   normalized to [0,1] and averaged.
 
 Pairwise comparison and regression thresholds are SUITE-level (need >=2 runs /
 the full set) and stay above Harbor — they are not computed here.
@@ -35,15 +34,11 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from agent_eval.config import EvalConfig
+from agent_eval.config import EvalConfig, RewardConfig
 
-# Legacy default score range for backward compatibility.
-# Overridden when a grpo_reward judge handles aggregation, or when
-# the eval config specifies a different range.
 _SCORE_MIN_DEFAULT = 1.0
 _SCORE_MAX_DEFAULT = 5.0
 
-# Judge name that, when present, provides the pre-aggregated reward.
 _GRPO_REWARD_JUDGE = "grpo_reward"
 
 # Harbor's canonical verifier output directory inside the container.
@@ -86,23 +81,9 @@ def score_case(config: EvalConfig, case_dir: Path,
     return result.get("per_case", {}).get(case_dir.name, {})
 
 
-def compose_reward(per_judge: dict, *,
-                   score_min: float = _SCORE_MIN_DEFAULT,
-                   score_max: float = _SCORE_MAX_DEFAULT) -> tuple[float, dict]:
-    """Collapse per-judge results into an overall reward + flat metric dict.
-
-    Returns ``(reward, metrics)`` where ``metrics`` maps each judge name to a
-    number (bool -> 1.0/0.0, numeric -> raw score). Judges that were skipped
-    (condition false) or errored have ``value is None`` and are recorded with
-    no value rather than gated on.
-
-    If a ``grpo_reward`` judge is present and produced a numeric value, that
-    value is used directly as the reward (it already encodes gating, weighted
-    aggregation, and efficiency). Individual judge scores are still recorded
-    in metrics for diagnostics.
-    """
+def _extract_metrics(per_judge: dict) -> dict[str, float]:
+    """Build flat metric dict from per-judge results."""
     metrics: dict[str, float] = {}
-
     for name, rec in per_judge.items():
         value = rec.get("value")
         if value is None:
@@ -111,6 +92,119 @@ def compose_reward(per_judge: dict, *,
             metrics[name] = 1.0 if value else 0.0
         elif isinstance(value, (int, float)):
             metrics[name] = float(value)
+    return metrics
+
+
+def _normalize(value: float, score_range: list[float]) -> float:
+    """Normalize a score to [0, 1] given a [min, max] range."""
+    lo, hi = score_range
+    span = hi - lo
+    if span <= 0:
+        return 0.0
+    return max(0.0, min(1.0, (value - lo) / span))
+
+
+def _judge_value(per_judge: dict, name: str,
+                 score_range: list[float],
+                 raw_judges: list[str] = ()) -> Optional[float]:
+    """Extract a judge's value as a float in [0, 1]."""
+    rec = per_judge.get(name, {})
+    val = rec.get("value")
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return 1.0 if val else 0.0
+    if isinstance(val, (int, float)):
+        if name in raw_judges:
+            return max(0.0, min(1.0, float(val)))
+        return _normalize(float(val), score_range)
+    return None
+
+
+def compute_reward_from_config(per_judge: dict,
+                               reward_cfg: RewardConfig) -> float:
+    """Compute reward using the eval.yaml reward: section.
+
+    Supports three formula modes:
+    - "weighted": weighted sum of named judges
+    - single judge name: use that judge's value directly
+    - expression: Python expression with judge names as variables
+    """
+    score_range = reward_cfg.score_range
+    raw_judges = reward_cfg.raw
+
+    if reward_cfg.gate:
+        for name, rec in per_judge.items():
+            val = rec.get("value")
+            if isinstance(val, bool) and not val:
+                return 0.0
+
+    formula = reward_cfg.formula.strip()
+
+    if formula == "weighted":
+        if not reward_cfg.weights:
+            return 0.0
+        total = 0.0
+        weight_sum = 0.0
+        for judge_name, weight in reward_cfg.weights.items():
+            jv = _judge_value(per_judge, judge_name, score_range, raw_judges)
+            if jv is not None:
+                total += float(weight) * jv
+                weight_sum += float(weight)
+        return max(0.0, min(1.0, total)) if weight_sum > 0 else 0.0
+
+    if formula in per_judge:
+        rec = per_judge[formula]
+        val = rec.get("value")
+        if isinstance(val, (int, float)):
+            return max(0.0, min(1.0, float(val)))
+        return 0.0
+
+    judge_vars: dict[str, float] = {}
+    for name, rec in per_judge.items():
+        jv = _judge_value(per_judge, name, score_range, raw_judges)
+        if jv is not None:
+            judge_vars[name] = jv
+
+    safe_builtins = {
+        "min": min, "max": max, "abs": abs, "round": round,
+        "sum": sum, "len": len,
+        "mean": lambda xs: sum(xs) / len(xs) if xs else 0.0,
+    }
+    try:
+        ns = {**judge_vars, **safe_builtins}
+        lines = [l for l in formula.splitlines() if l.strip()]
+        if len(lines) > 1:
+            exec(compile("\n".join(lines[:-1]), "<reward>", "exec"),
+                 {"__builtins__": safe_builtins}, ns)
+            result = eval(compile(lines[-1].strip(), "<reward>", "eval"),
+                          {"__builtins__": {}}, ns)
+        else:
+            result = eval(formula, {"__builtins__": {}}, ns)
+        return max(0.0, min(1.0, float(result)))
+    except Exception as exc:
+        import sys
+        print(f"Warning: reward formula evaluation failed: {exc}",
+              file=sys.stderr)
+        return 0.0
+
+
+def compose_reward(per_judge: dict, *,
+                   score_min: float = _SCORE_MIN_DEFAULT,
+                   score_max: float = _SCORE_MAX_DEFAULT,
+                   reward_cfg: Optional[RewardConfig] = None) -> tuple[float, dict]:
+    """Collapse per-judge results into an overall reward + flat metric dict.
+
+    Resolution order:
+    1. If reward_cfg is provided (from eval.yaml reward: section), use it.
+    2. If a grpo_reward judge exists (legacy), use its value directly.
+    3. Otherwise fall back to: boolean gates + average of normalized numerics.
+    """
+    metrics = _extract_metrics(per_judge)
+
+    if reward_cfg is not None:
+        reward = compute_reward_from_config(per_judge, reward_cfg)
+        return reward, metrics
 
     grpo_rec = per_judge.get(_GRPO_REWARD_JUDGE, {})
     grpo_val = grpo_rec.get("value")
@@ -152,12 +246,15 @@ def build_reward(config: EvalConfig, case_dir: Path,
     """
     per_judge = score_case(config, case_dir, run_id=run_id)
 
+    reward_cfg = getattr(config, "reward", None)
+
     score_range = getattr(config, "score_range", None) or {}
     score_min = float(score_range.get("min", _SCORE_MIN_DEFAULT))
     score_max = float(score_range.get("max", _SCORE_MAX_DEFAULT))
 
     reward, metrics = compose_reward(per_judge,
-                                     score_min=score_min, score_max=score_max)
+                                     score_min=score_min, score_max=score_max,
+                                     reward_cfg=reward_cfg)
     return {"reward": reward, "metrics": metrics, "per_judge": per_judge}
 
 

@@ -333,6 +333,28 @@ class JudgeConfig:
 
 
 @dataclass
+class RewardConfig:
+    """Reward composition from judge results for RL training.
+
+    Modes (determined by formula value):
+    - "weighted": weighted sum of named judges, normalized via score_range.
+    - "<judge_name>": use that single judge's value directly.
+    - "<expression>": Python expression with judge names as variables.
+
+    When gate is True, any boolean judge that returned False zeros the reward.
+    score_range normalizes numeric judge scores to [0, 1].
+    raw: list of judge names whose values are already in [0, 1] and should
+         NOT be normalized via score_range (e.g. efficiency).
+    """
+
+    formula: str = "weighted"
+    weights: dict = field(default_factory=dict)
+    gate: bool = True
+    score_range: list = field(default_factory=lambda: [1, 5])
+    raw: list = field(default_factory=list)
+
+
+@dataclass
 class EvalConfig:
     """Complete evaluation suite configuration.
 
@@ -375,6 +397,9 @@ class EvalConfig:
 
     # Judges (inline checks, LLM, pairwise, external code)
     judges: list = field(default_factory=list)
+
+    # Reward composition for RL training (optional)
+    reward: Optional[RewardConfig] = None
 
     # Regression thresholds
     thresholds: dict = field(default_factory=dict)
@@ -571,6 +596,23 @@ class EvalConfig:
                     arguments=args_val,
                     samples=int(j.get("samples", 1)),
                 )
+            )
+
+        # Reward composition
+        reward_raw = raw.get("reward")
+        if reward_raw and isinstance(reward_raw, dict):
+            sr = reward_raw.get("score_range", [1, 5])
+            if not isinstance(sr, list) or len(sr) != 2:
+                raise ValueError("reward.score_range must be a [min, max] list")
+            raw_list = reward_raw.get("raw", []) or []
+            if not isinstance(raw_list, list):
+                raw_list = [raw_list]
+            config.reward = RewardConfig(
+                formula=str(reward_raw.get("formula", "weighted")),
+                weights=reward_raw.get("weights", {}) or {},
+                gate=bool(reward_raw.get("gate", True)),
+                score_range=[float(sr[0]), float(sr[1])],
+                raw=[str(r) for r in raw_list],
             )
 
         # Thresholds
