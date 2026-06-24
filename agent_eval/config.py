@@ -563,19 +563,41 @@ class EvalConfig:
             )
 
         # Reward composition
-        reward_raw = raw.get("reward")
-        if reward_raw and isinstance(reward_raw, dict):
+        if "reward" in raw:
+            reward_raw = raw.get("reward")
+            if not isinstance(reward_raw, dict):
+                raise ValueError("reward must be a mapping when provided")
             sr = reward_raw.get("score_range", [1, 5])
             if not isinstance(sr, list) or len(sr) != 2:
                 raise ValueError("reward.score_range must be a [min, max] list")
+            try:
+                score_min = float(sr[0])
+                score_max = float(sr[1])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "reward.score_range values must be numeric") from exc
+            if not score_min < score_max:
+                raise ValueError(
+                    "reward.score_range must be increasing [min, max]")
+            weights = reward_raw.get("weights", {}) or {}
+            if not isinstance(weights, dict):
+                raise ValueError("reward.weights must be a mapping")
+            try:
+                weights = {str(k): float(v) for k, v in weights.items()}
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "reward.weights values must be numeric") from exc
+            gate = reward_raw.get("gate", True)
+            if not isinstance(gate, bool):
+                raise ValueError("reward.gate must be a boolean")
             raw_list = reward_raw.get("raw", []) or []
             if not isinstance(raw_list, list):
                 raw_list = [raw_list]
             config.reward = RewardConfig(
                 formula=str(reward_raw.get("formula", "weighted")),
-                weights=reward_raw.get("weights", {}) or {},
-                gate=bool(reward_raw.get("gate", True)),
-                score_range=[float(sr[0]), float(sr[1])],
+                weights=weights,
+                gate=gate,
+                score_range=[score_min, score_max],
                 raw=[str(r) for r in raw_list],
             )
 

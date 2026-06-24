@@ -34,12 +34,79 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+import ast
+
 from agent_eval.config import EvalConfig, RewardConfig
 
 _SCORE_MIN_DEFAULT = 1.0
 _SCORE_MAX_DEFAULT = 5.0
 
 _GRPO_REWARD_JUDGE = "grpo_reward"
+
+_SAFE_AST_NODES = (
+    ast.Module, ast.Expr, ast.Expression, ast.Assign,
+    ast.BinOp, ast.UnaryOp, ast.Compare,
+    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
+    ast.USub, ast.UAdd,
+    ast.Gt, ast.GtE, ast.Lt, ast.LtE, ast.Eq, ast.NotEq,
+    ast.Constant, ast.Name, ast.Load, ast.Store,
+    ast.Call, ast.List, ast.Tuple,
+    ast.IfExp, ast.BoolOp, ast.And, ast.Or,
+)
+
+
+def _validate_ast(node: ast.AST, allowed_calls: set[str]) -> None:
+    """Walk AST and reject any node not in the safe allowlist."""
+    if not isinstance(node, _SAFE_AST_NODES):
+        raise ValueError(
+            f"Disallowed expression node: {type(node).__name__}")
+    if isinstance(node, ast.Call):
+        if not (isinstance(node.func, ast.Name)
+                and node.func.id in allowed_calls):
+            func_name = getattr(node.func, 'id', '?')
+            raise ValueError(
+                f"Disallowed function call: {func_name}")
+    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+        if node.id.startswith('_'):
+            raise ValueError(
+                f"Disallowed variable name: {node.id}")
+    for child in ast.iter_child_nodes(node):
+        _validate_ast(child, allowed_calls)
+
+
+def _safe_eval_formula(formula: str, variables: dict[str, float],
+                       safe_funcs: dict) -> float:
+    """Evaluate a reward formula using AST validation (no raw exec/eval).
+
+    The formula is parsed as a Python module. All statements except the
+    last must be assignments. The last statement must be an expression
+    whose value is returned as the reward.
+    """
+    allowed_calls = set(safe_funcs.keys())
+    tree = ast.parse(formula.strip(), mode="exec")
+    _validate_ast(tree, allowed_calls)
+
+    if not tree.body:
+        raise ValueError("Empty reward formula")
+
+    last_stmt = tree.body[-1]
+    if not isinstance(last_stmt, ast.Expr):
+        raise ValueError(
+            "Last line of reward formula must be an expression "
+            "(the return value), not an assignment")
+
+    ns = {**variables, **safe_funcs}
+
+    if len(tree.body) > 1:
+        setup = ast.Module(body=tree.body[:-1], type_ignores=[])
+        ast.fix_missing_locations(setup)
+        code = compile(setup, "<reward>", "exec")
+        exec(code, {"__builtins__": {}}, ns)  # noqa: S102 — AST-validated
+
+    expr = ast.Expression(body=last_stmt.value)
+    ast.fix_missing_locations(expr)
+    code = compile(expr, "<reward>", "eval")
+    return eval(code, {"__builtins__": {}}, ns)  # noqa: S307 — AST-validated
 
 # Harbor's canonical verifier output directory inside the container.
 _DEFAULT_OUT_DIR = "/logs/verifier"
@@ -151,7 +218,7 @@ def compute_reward_from_config(per_judge: dict,
             if jv is not None:
                 total += float(weight) * jv
                 weight_sum += float(weight)
-        return max(0.0, min(1.0, total)) if weight_sum > 0 else 0.0
+        return max(0.0, min(1.0, total / weight_sum)) if weight_sum > 0 else 0.0
 
     if formula in per_judge:
         rec = per_judge[formula]
@@ -166,21 +233,13 @@ def compute_reward_from_config(per_judge: dict,
         if jv is not None:
             judge_vars[name] = jv
 
-    safe_builtins = {
+    safe_funcs = {
         "min": min, "max": max, "abs": abs, "round": round,
         "sum": sum, "len": len,
         "mean": lambda xs: sum(xs) / len(xs) if xs else 0.0,
     }
     try:
-        ns = {**judge_vars, **safe_builtins}
-        lines = [l for l in formula.splitlines() if l.strip()]
-        if len(lines) > 1:
-            exec(compile("\n".join(lines[:-1]), "<reward>", "exec"),
-                 {"__builtins__": safe_builtins}, ns)
-            result = eval(compile(lines[-1].strip(), "<reward>", "eval"),
-                          {"__builtins__": {}}, ns)
-        else:
-            result = eval(formula, {"__builtins__": {}}, ns)
+        result = _safe_eval_formula(formula, judge_vars, safe_funcs)
         return max(0.0, min(1.0, float(result)))
     except Exception as exc:
         import sys
@@ -248,13 +307,7 @@ def build_reward(config: EvalConfig, case_dir: Path,
 
     reward_cfg = getattr(config, "reward", None)
 
-    score_range = getattr(config, "score_range", None) or {}
-    score_min = float(score_range.get("min", _SCORE_MIN_DEFAULT))
-    score_max = float(score_range.get("max", _SCORE_MAX_DEFAULT))
-
-    reward, metrics = compose_reward(per_judge,
-                                     score_min=score_min, score_max=score_max,
-                                     reward_cfg=reward_cfg)
+    reward, metrics = compose_reward(per_judge, reward_cfg=reward_cfg)
     return {"reward": reward, "metrics": metrics, "per_judge": per_judge}
 
 

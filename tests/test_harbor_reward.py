@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agent_eval.config import EvalConfig
+from agent_eval.config import EvalConfig, RewardConfig
 from agent_eval.harbor import reward as reward_mod
 
 
@@ -59,6 +59,46 @@ def test_compose_reward_ignores_skipped_and_errored():
     assert reward == 1.0           # None values neither gate nor average
     assert "skipped" not in metrics
     assert "errored" not in metrics
+
+
+def test_compose_reward_grpo_reward_takes_precedence():
+    """When a grpo_reward judge is present, its value is used directly."""
+    per_judge = {
+        "files_exist": {"value": True, "judge_type": "check"},
+        "frontmatter_valid": {"value": False, "judge_type": "check"},
+        "rfe_quality": {"value": 7, "judge_type": "llm"},
+        "grpo_reward": {"value": 0.73, "judge_type": "check"},
+    }
+    reward, metrics = reward_mod.compose_reward(per_judge)
+    assert reward == pytest.approx(0.73)
+    assert metrics["grpo_reward"] == pytest.approx(0.73)
+    assert metrics["frontmatter_valid"] == 0.0
+
+
+def test_compose_reward_grpo_reward_clamped():
+    """grpo_reward values outside [0, 1] are clamped."""
+    per_judge = {
+        "grpo_reward": {"value": 1.5, "judge_type": "check"},
+    }
+    reward, _ = reward_mod.compose_reward(per_judge)
+    assert reward == 1.0
+
+    per_judge_neg = {
+        "grpo_reward": {"value": -0.2, "judge_type": "check"},
+    }
+    reward_neg, _ = reward_mod.compose_reward(per_judge_neg)
+    assert reward_neg == 0.0
+
+
+def test_compose_reward_grpo_reward_none_falls_back():
+    """If grpo_reward has value=None, fall back to legacy averaging."""
+    per_judge = {
+        "ok": {"value": True, "judge_type": "check"},
+        "rfe_quality": {"value": 5, "judge_type": "llm"},
+        "grpo_reward": {"value": None, "judge_type": "check"},
+    }
+    reward, metrics = reward_mod.compose_reward(per_judge)
+    assert reward == pytest.approx(1.0)  # score 5 -> normalized 1.0 on 1-5 scale
 
 
 # --- end-to-end with inline check judges -------------------------------------
@@ -135,3 +175,192 @@ def test_build_reward_failing_check_zeroes_reward(tmp_path):
     payload = reward_mod.build_reward(config, case_dir)
     assert payload["reward"] == 0.0
     assert payload["metrics"]["requires_missing"] == 0.0
+
+
+# --- RewardConfig: weighted mode ---------------------------------------------
+
+def test_reward_weighted_basic():
+    per_judge = {
+        "a": {"value": 5},
+        "b": {"value": 3},
+    }
+    cfg = RewardConfig(
+        formula="weighted",
+        weights={"a": 0.7, "b": 0.3},
+        gate=False,
+        score_range=[1, 5],
+    )
+    r = reward_mod.compute_reward_from_config(per_judge, cfg)
+    expected = (0.7 * 1.0 + 0.3 * 0.5) / 1.0
+    assert r == pytest.approx(expected)
+
+
+def test_reward_weighted_normalizes_by_weight_sum():
+    """Weights that don't sum to 1.0 are still normalized."""
+    per_judge = {"a": {"value": 5}, "b": {"value": 5}}
+    cfg = RewardConfig(
+        formula="weighted",
+        weights={"a": 1.0, "b": 1.0},
+        gate=False,
+        score_range=[1, 5],
+    )
+    r = reward_mod.compute_reward_from_config(per_judge, cfg)
+    assert r == pytest.approx(1.0)
+
+
+def test_reward_weighted_gate_zeros():
+    per_judge = {
+        "gate": {"value": False},
+        "score": {"value": 5},
+    }
+    cfg = RewardConfig(
+        formula="weighted",
+        weights={"score": 1.0},
+        gate=True,
+        score_range=[1, 5],
+    )
+    r = reward_mod.compute_reward_from_config(per_judge, cfg)
+    assert r == 0.0
+
+
+# --- RewardConfig: expression mode -------------------------------------------
+
+def test_reward_expression_simple():
+    per_judge = {"x": {"value": 3}, "y": {"value": 5}}
+    cfg = RewardConfig(
+        formula="0.5 * x + 0.5 * y",
+        gate=False,
+        score_range=[1, 5],
+    )
+    r = reward_mod.compute_reward_from_config(per_judge, cfg)
+    assert r == pytest.approx(0.5 * 0.5 + 0.5 * 1.0)
+
+
+def test_reward_expression_multiline():
+    per_judge = {
+        "a": {"value": True},
+        "b": {"value": False},
+        "score": {"value": 4},
+    }
+    formula = "gate = mean([a, b])\ngate * score"
+    cfg = RewardConfig(formula=formula, gate=False, score_range=[1, 5])
+    r = reward_mod.compute_reward_from_config(per_judge, cfg)
+    expected = 0.5 * 0.75  # mean([1.0, 0.0]) * (4-1)/(5-1)
+    assert r == pytest.approx(expected)
+
+
+def test_reward_expression_raw_judges():
+    """Judges in the raw list skip score_range normalization."""
+    per_judge = {"eff": {"value": 0.5}, "score": {"value": 4}}
+    cfg = RewardConfig(
+        formula="0.5 * score + 0.5 * eff",
+        gate=False,
+        score_range=[1, 5],
+        raw=["eff"],
+    )
+    r = reward_mod.compute_reward_from_config(per_judge, cfg)
+    expected = 0.5 * 0.75 + 0.5 * 0.5  # score normalized, eff raw
+    assert r == pytest.approx(expected)
+
+
+def test_reward_expression_malformed_returns_zero():
+    per_judge = {"x": {"value": 3}}
+    cfg = RewardConfig(formula="this is not valid python !!!", gate=False)
+    r = reward_mod.compute_reward_from_config(per_judge, cfg)
+    assert r == 0.0
+
+
+def test_reward_expression_rejects_dangerous_code():
+    """AST validation blocks import/attribute access attempts."""
+    per_judge = {"x": {"value": 3}}
+    cfg = RewardConfig(
+        formula='__import__("os").system("id")',
+        gate=False,
+        score_range=[1, 5],
+    )
+    r = reward_mod.compute_reward_from_config(per_judge, cfg)
+    assert r == 0.0
+
+
+# --- RewardConfig: single judge reference ------------------------------------
+
+def test_reward_single_judge_ref():
+    """Single judge reference returns raw value clamped to [0, 1]."""
+    per_judge = {"my_score": {"value": 0.73}}
+    cfg = RewardConfig(formula="my_score", gate=False, score_range=[1, 5])
+    r = reward_mod.compute_reward_from_config(per_judge, cfg)
+    assert r == pytest.approx(0.73)
+
+
+# --- RewardConfig: compose_reward integration --------------------------------
+
+def test_compose_reward_uses_reward_cfg():
+    per_judge = {"a": {"value": 5}, "b": {"value": 3}}
+    cfg = RewardConfig(
+        formula="weighted",
+        weights={"a": 0.6, "b": 0.4},
+        gate=False,
+        score_range=[1, 5],
+    )
+    reward, metrics = reward_mod.compose_reward(per_judge, reward_cfg=cfg)
+    expected = (0.6 * 1.0 + 0.4 * 0.5) / 1.0
+    assert reward == pytest.approx(expected)
+    assert metrics["a"] == 5.0
+    assert metrics["b"] == 3.0
+
+
+def test_compose_reward_falls_back_without_cfg():
+    """No reward_cfg = legacy gate+average behavior."""
+    per_judge = {
+        "gate": {"value": True},
+        "s": {"value": 3},
+    }
+    reward, _ = reward_mod.compose_reward(per_judge)
+    assert reward == pytest.approx(0.5)  # (3-1)/(5-1)
+
+
+# --- EvalConfig parsing ------------------------------------------------------
+
+def test_reward_config_parsed_from_yaml(tmp_path):
+    raw = {
+        "name": "t", "skill": "t",
+        "reward": {
+            "formula": "weighted",
+            "weights": {"a": 0.5, "b": 0.5},
+            "gate": False,
+            "score_range": [1, 10],
+            "raw": ["b"],
+        },
+    }
+    cfg_path = tmp_path / "eval.yaml"
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    config = EvalConfig.from_yaml(cfg_path)
+
+    assert config.reward is not None
+    assert config.reward.formula == "weighted"
+    assert config.reward.weights == {"a": 0.5, "b": 0.5}
+    assert config.reward.gate is False
+    assert config.reward.score_range == [1.0, 10.0]
+    assert config.reward.raw == ["b"]
+
+
+def test_reward_config_rejects_bad_gate(tmp_path):
+    raw = {
+        "name": "t", "skill": "t",
+        "reward": {"gate": "false"},
+    }
+    cfg_path = tmp_path / "eval.yaml"
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    with pytest.raises(ValueError, match="gate must be a boolean"):
+        EvalConfig.from_yaml(cfg_path)
+
+
+def test_reward_config_rejects_inverted_range(tmp_path):
+    raw = {
+        "name": "t", "skill": "t",
+        "reward": {"score_range": [5, 1]},
+    }
+    cfg_path = tmp_path / "eval.yaml"
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    with pytest.raises(ValueError, match="increasing"):
+        EvalConfig.from_yaml(cfg_path)
