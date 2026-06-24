@@ -1,3 +1,11 @@
+## [1.14.2](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.14.1...v1.14.2) (2026-06-24)
+
+
+### Bug Fixes
+
+* use explicit None checks so empty strings are not skipped ([5e518e7](https://github.com/opendatahub-io/agent-eval-harness/commit/5e518e798f1da08b350ac3121e514815f2a53c3e))
+* validate run_id and baseline as single path segments before path construction (CWE-22) ([017b66a](https://github.com/opendatahub-io/agent-eval-harness/commit/017b66a94194c85ebf9afd9054d2498dac6786ec))
+
 ## [1.14.1](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.14.0...v1.14.1) (2026-06-19)
 
 
