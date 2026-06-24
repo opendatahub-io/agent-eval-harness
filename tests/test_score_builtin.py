@@ -8,8 +8,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agent_eval.config import EvalConfig, JudgeConfig, ModelsConfig
-from score import load_judges
+from agent_eval.config import EvalConfig, JudgeConfig, ModelsConfig, OutputConfig
+from score import load_judges, score_cases
 
 
 class TestLoadJudgesBuiltin:
@@ -406,6 +406,204 @@ class TestLoadJudgesTypes:
 
         result = scorer(outputs={"content": "this is too long"})
         assert result[0] is False
+
+
+class TestInlineJudgeFieldValidation:
+
+    def test_warns_before_scoring_when_frontmatter_field_is_stale(
+            self, tmp_path, capsys):
+        config = EvalConfig(name="test", skill="test")
+        config.outputs = [OutputConfig(path="artifacts")]
+        config.judges = [
+            JudgeConfig(
+                name="frontmatter_valid",
+                check=(
+                    "import yaml\n"
+                    "task = outputs['artifacts_content']\n"
+                    "fm = yaml.safe_load(task.split('---', 2)[1])\n"
+                    "if not fm.get('strat_key'):\n"
+                    "    return False, 'bad strat_key'\n"
+                    "return True, 'ok'"
+                ),
+            ),
+        ]
+        case_dir = tmp_path / "case-001"
+        artifact_dir = case_dir / "artifacts"
+        artifact_dir.mkdir(parents=True)
+        (artifact_dir / "result.md").write_text(
+            "---\nsource_key: alpha\n---\nbody\n"
+        )
+
+        judges = load_judges(config)
+        score_cases(judges, [case_dir], config)
+
+        captured = capsys.readouterr()
+        assert "frontmatter_valid" in captured.err
+        assert "strat_key" in captured.err
+        assert "source_key" in captured.err
+
+    def test_warning_probe_does_not_abort_scoring_on_loader_error(
+            self, tmp_path):
+        config = EvalConfig(name="test", skill="test")
+        config.outputs = [OutputConfig(path="..")]
+        config.judges = [
+            JudgeConfig(
+                name="frontmatter_valid",
+                check=(
+                    "fm = {}\n"
+                    "if not fm.get('strat_key'):\n"
+                    "    return False, 'bad strat_key'\n"
+                    "return True, 'ok'"
+                ),
+            ),
+        ]
+        case_dir = tmp_path / "case-001"
+        case_dir.mkdir()
+
+        judges = load_judges(config)
+        results = score_cases(judges, [case_dir], config)
+
+        assert "Path escapes root directory" in (
+            results["per_case"]["case-001"]["frontmatter_valid"]["error"]
+        )
+
+    def test_referenced_artifact_field_is_checked_independently(
+            self, tmp_path, capsys):
+        config = EvalConfig(name="test", skill="test")
+        config.outputs = [
+            OutputConfig(path="artifacts"),
+            OutputConfig(path="other"),
+        ]
+        config.judges = [
+            JudgeConfig(
+                name="frontmatter_valid",
+                check=(
+                    "import yaml\n"
+                    "task = outputs['artifacts_content']\n"
+                    "fm = yaml.safe_load(task.split('---', 2)[1])\n"
+                    "if not fm.get('strat_key'):\n"
+                    "    return False, 'bad strat_key'\n"
+                    "return True, 'ok'"
+                ),
+            ),
+        ]
+        case_dir = tmp_path / "case-001"
+        artifact_dir = case_dir / "artifacts"
+        other_dir = case_dir / "other"
+        artifact_dir.mkdir(parents=True)
+        other_dir.mkdir(parents=True)
+        (artifact_dir / "result.md").write_text(
+            "---\nsource_key: alpha\n---\nbody\n"
+        )
+        (other_dir / "result.md").write_text(
+            "---\nstrat_key: legacy\n---\nbody\n"
+        )
+
+        judges = load_judges(config)
+        score_cases(judges, [case_dir], config)
+
+        captured = capsys.readouterr()
+        assert "frontmatter_valid" in captured.err
+        assert "strat_key" in captured.err
+        assert "source_key" in captured.err
+
+    def test_commented_field_reference_does_not_warn(self, tmp_path, capsys):
+        config = EvalConfig(name="test", skill="test")
+        config.outputs = [OutputConfig(path="artifacts")]
+        config.judges = [
+            JudgeConfig(
+                name="frontmatter_valid",
+                check=(
+                    "import yaml\n"
+                    "task = outputs['artifacts_content']\n"
+                    "fm = yaml.safe_load(task.split('---', 2)[1])\n"
+                    "# fm.get('strat_key') used to be checked here\n"
+                    "if not fm.get('source_key'):\n"
+                    "    return False, 'bad source_key'\n"
+                    "return True, 'ok'"
+                ),
+            ),
+        ]
+        case_dir = tmp_path / "case-001"
+        artifact_dir = case_dir / "artifacts"
+        artifact_dir.mkdir(parents=True)
+        (artifact_dir / "result.md").write_text(
+            "---\nsource_key: alpha\n---\nbody\n"
+        )
+
+        judges = load_judges(config)
+        score_cases(judges, [case_dir], config)
+
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_referenced_artifact_without_frontmatter_warns(
+            self, tmp_path, capsys):
+        config = EvalConfig(name="test", skill="test")
+        config.outputs = [OutputConfig(path="artifacts")]
+        config.judges = [
+            JudgeConfig(
+                name="frontmatter_valid",
+                check=(
+                    "import yaml\n"
+                    "task = outputs['artifacts_content']\n"
+                    "fm = yaml.safe_load(task.split('---', 2)[1]) or {}\n"
+                    "if not fm.get('strat_key'):\n"
+                    "    return False, 'bad strat_key'\n"
+                    "return True, 'ok'"
+                ),
+            ),
+        ]
+        case_dir = tmp_path / "case-001"
+        artifact_dir = case_dir / "artifacts"
+        artifact_dir.mkdir(parents=True)
+        (artifact_dir / "result.md").write_text("body without frontmatter\n")
+
+        judges = load_judges(config)
+        score_cases(judges, [case_dir], config)
+
+        captured = capsys.readouterr()
+        assert "frontmatter_valid" in captured.err
+        assert "strat_key" in captured.err
+
+    def test_extra_content_read_does_not_imply_frontmatter_source(
+            self, tmp_path, capsys):
+        config = EvalConfig(name="test", skill="test")
+        config.outputs = [
+            OutputConfig(path="artifacts"),
+            OutputConfig(path="other"),
+        ]
+        config.judges = [
+            JudgeConfig(
+                name="frontmatter_valid",
+                check=(
+                    "import yaml\n"
+                    "task = outputs['artifacts_content']\n"
+                    "comparison = outputs['other_content']\n"
+                    "fm = yaml.safe_load(task.split('---', 2)[1])\n"
+                    "if comparison and not fm.get('strat_key'):\n"
+                    "    return False, 'bad strat_key'\n"
+                    "return True, 'ok'"
+                ),
+            ),
+        ]
+        case_dir = tmp_path / "case-001"
+        artifact_dir = case_dir / "artifacts"
+        other_dir = case_dir / "other"
+        artifact_dir.mkdir(parents=True)
+        other_dir.mkdir(parents=True)
+        (artifact_dir / "result.md").write_text(
+            "---\nstrat_key: alpha\n---\nbody\n"
+        )
+        (other_dir / "result.md").write_text(
+            "---\nsource_key: beta\n---\nbody\n"
+        )
+
+        judges = load_judges(config)
+        score_cases(judges, [case_dir], config)
+
+        captured = capsys.readouterr()
+        assert captured.err == ""
 
 
 class TestJudgeTypeMetadata:
