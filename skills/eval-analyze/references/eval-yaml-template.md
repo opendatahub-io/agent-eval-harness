@@ -266,10 +266,11 @@ reward:
 ```
 
 Resolution order at scoring time: (1) a `reward:` section if present, else
-(2) a judge literally named `grpo_reward` (its value is used directly, legacy),
-else (3) the default — boolean judges gate, numeric judges are normalized and
-averaged. Invalid expression formulas are rejected at config load, not silently
-scored as 0.0.
+(2) a judge literally named `grpo_reward` (its numeric value is clamped to
+[0, 1], legacy), else (3) the default — boolean judges gate, numeric judges are
+normalized and averaged. Syntax- or AST-invalid formulas are rejected at config
+load; evaluation-time errors (e.g. an undefined judge name) still warn and
+return 0.0.
 
 ## Writing Good Schema Descriptions
 
