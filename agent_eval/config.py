@@ -336,17 +336,22 @@ class JudgeConfig:
 class RewardConfig:
     """Reward composition from judge results for RL training.
 
-    Modes (determined by formula value):
-    - "weighted": weighted sum of named judges, normalized via score_range.
-    - "<judge_name>": that single judge's value, normalized via score_range
-      (list it in ``raw`` if it is already in [0, 1]).
-    - "<expression>": Python expression with judge names as variables.
+    Two ways to produce the reward, mutually exclusive:
+
+    1. ``judge``: a single judge whose value IS the reward. By default the
+       value is used as-is, clamped to [0, 1] (for a judge that already emits
+       a [0, 1] reward, e.g. a learned reward model). Set ``normalize: true``
+       to instead map it from ``score_range`` to [0, 1].
+    2. ``formula`` (+ ``weights``): compose from multiple judges —
+       - "weighted": weighted sum of ``weights``, each normalized via
+         ``score_range`` (or clamped if listed in ``raw``).
+       - "<expression>": Python expression with judge names as variables.
 
     When gate is True, any boolean judge that returned False zeros the reward.
     Note this gates on *every* boolean judge, independent of whether the
     formula references it — so an ``<expression>`` that uses booleans as its
     own gate (e.g. ``passed * score``) usually wants ``gate: false`` to avoid
-    double-gating.
+    double-gating. ``gate`` defaults to False in ``judge`` mode.
     score_range normalizes numeric judge scores to [0, 1].
     raw: list of judge names whose values are already in [0, 1] and should
          NOT be normalized via score_range (e.g. efficiency).
@@ -357,6 +362,10 @@ class RewardConfig:
     gate: bool = True
     score_range: list = field(default_factory=lambda: [1, 5])
     raw: list = field(default_factory=list)
+    # Single-judge mode: name of the judge whose value is the reward.
+    judge: Optional[str] = None
+    # In judge mode, map the value from score_range instead of clamping as-is.
+    normalize: bool = False
 
 
 @dataclass
@@ -630,19 +639,42 @@ class EvalConfig:
                     "reward.weights values must be numeric") from exc
             if any(v < 0 for v in weights.values()):
                 raise ValueError("reward.weights values must be non-negative")
-            gate = reward_raw.get("gate", True)
-            if not isinstance(gate, bool):
-                raise ValueError("reward.gate must be a boolean")
             raw_list = reward_raw.get("raw", []) or []
             if not isinstance(raw_list, list):
                 raw_list = [raw_list]
+            # Single-judge mode: one judge's value is the reward. Mutually
+            # exclusive with the composition inputs.
+            judge = reward_raw.get("judge")
+            if judge is not None:
+                if not isinstance(judge, str) or not judge.strip():
+                    raise ValueError(
+                        "reward.judge must be a non-empty judge name")
+                conflicting = [k for k in ("formula", "weights", "raw")
+                               if k in reward_raw]
+                if conflicting:
+                    raise ValueError(
+                        "reward.judge cannot be combined with "
+                        f"{'/'.join(conflicting)}")
+                judge_names = {j.name for j in config.judges if j.name}
+                if judge not in judge_names:
+                    raise ValueError(
+                        f"reward.judge '{judge}' does not match any defined "
+                        "judge")
+            normalize = reward_raw.get("normalize", False)
+            if not isinstance(normalize, bool):
+                raise ValueError("reward.normalize must be a boolean")
+            # gate defaults to False in judge mode, True for composition.
+            gate = reward_raw.get("gate", judge is None)
+            if not isinstance(gate, bool):
+                raise ValueError("reward.gate must be a boolean")
             formula = str(reward_raw.get("formula", "weighted"))
             # Validate expression formulas now so a typo or unsafe construct
             # fails loudly here, not silently as reward 0.0 on every case at
-            # run time. Bare references ("weighted" or a single judge name —
-            # which may legitimately contain dots/dashes) are resolved by name
-            # at compute time, so skip the expression check for them.
-            if not re.fullmatch(r"[A-Za-z_][\w.\-]*", formula.strip()):
+            # run time. Bare references ("weighted") are resolved at compute
+            # time, so skip the expression check for them. Skipped in judge
+            # mode, where formula is unused.
+            if judge is None and not re.fullmatch(
+                    r"[A-Za-z_][\w.\-]*", formula.strip()):
                 from agent_eval.harbor.reward import validate_formula
                 try:
                     validate_formula(formula)
@@ -655,6 +687,8 @@ class EvalConfig:
                 gate=gate,
                 score_range=[score_min, score_max],
                 raw=[str(r) for r in raw_list],
+                judge=judge,
+                normalize=normalize,
             )
 
         # Thresholds

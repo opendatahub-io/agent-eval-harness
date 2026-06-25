@@ -242,27 +242,47 @@ def test_reward_expression_rejects_dangerous_code():
     assert r == 0.0
 
 
-# --- RewardConfig: single judge reference ------------------------------------
+# --- RewardConfig: single-judge (judge:) mode --------------------------------
 
-def test_reward_single_judge_ref_raw():
-    """A single judge listed in raw is clamped to [0, 1], not normalized."""
+def test_reward_judge_clamped_by_default():
+    """judge mode uses the value as-is, clamped to [0, 1]."""
     per_judge = {"my_score": {"value": 0.73}}
-    cfg = RewardConfig(formula="my_score", gate=False,
-                       score_range=[1, 5], raw=["my_score"])
+    cfg = RewardConfig(judge="my_score", gate=False)
     r = reward_mod.compute_reward_from_config(per_judge, cfg)
     assert r == pytest.approx(0.73)
 
 
-def test_reward_single_judge_ref_normalized():
-    """A single judge not in raw is normalized via score_range.
+def test_reward_judge_clamps_out_of_range():
+    """A judge value above 1.0 is clamped, not normalized."""
+    per_judge = {"my_score": {"value": 1.5}}
+    cfg = RewardConfig(judge="my_score", gate=False)
+    r = reward_mod.compute_reward_from_config(per_judge, cfg)
+    assert r == 1.0
 
-    This keeps single-judge mode consistent with weighted/expression modes
-    rather than silently clamping a 1-5 score to ~1.0.
-    """
+
+def test_reward_judge_normalize_via_score_range():
+    """normalize=true maps the value from score_range to [0, 1]."""
     per_judge = {"rfe_quality": {"value": 4}}
-    cfg = RewardConfig(formula="rfe_quality", gate=False, score_range=[1, 5])
+    cfg = RewardConfig(judge="rfe_quality", gate=False,
+                       score_range=[1, 5], normalize=True)
     r = reward_mod.compute_reward_from_config(per_judge, cfg)
     assert r == pytest.approx(0.75)  # (4-1)/(5-1)
+
+
+def test_reward_judge_missing_scores_zero():
+    """A skipped/errored judge (value None or absent) scores 0.0."""
+    cfg = RewardConfig(judge="my_score", gate=False)
+    assert reward_mod.compute_reward_from_config(
+        {"my_score": {"value": None}}, cfg) == 0.0
+    assert reward_mod.compute_reward_from_config({}, cfg) == 0.0
+
+
+def test_reward_judge_gate_still_applies():
+    """gate=true zeros the reward when a boolean judge fails, even in judge mode."""
+    per_judge = {"my_score": {"value": 0.9}, "passed": {"value": False}}
+    cfg = RewardConfig(judge="my_score", gate=True)
+    r = reward_mod.compute_reward_from_config(per_judge, cfg)
+    assert r == 0.0
 
 
 # --- RewardConfig: compose_reward integration --------------------------------
@@ -315,6 +335,58 @@ def test_reward_config_parsed_from_yaml(tmp_path):
     assert config.reward.gate is False
     assert config.reward.score_range == [1.0, 10.0]
     assert config.reward.raw == ["b"]
+
+
+def _judge_cfg(reward, judges=None):
+    """Build a raw eval.yaml dict with a reward block and defined judges."""
+    return {
+        "name": "t", "skill": "t",
+        "judges": judges or [{"name": "my_reward", "check": "x"}],
+        "reward": reward,
+    }
+
+
+def test_reward_config_judge_parsed(tmp_path):
+    raw = _judge_cfg({"judge": "my_reward"})
+    cfg_path = tmp_path / "eval.yaml"
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    config = EvalConfig.from_yaml(cfg_path)
+    assert config.reward.judge == "my_reward"
+    assert config.reward.normalize is False
+    assert config.reward.gate is False  # defaults to False in judge mode
+
+
+def test_reward_config_judge_normalize(tmp_path):
+    raw = _judge_cfg({"judge": "my_reward", "normalize": True, "gate": True})
+    cfg_path = tmp_path / "eval.yaml"
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    config = EvalConfig.from_yaml(cfg_path)
+    assert config.reward.normalize is True
+    assert config.reward.gate is True  # explicit override respected
+
+
+def test_reward_config_judge_rejects_unknown(tmp_path):
+    raw = _judge_cfg({"judge": "nope"})
+    cfg_path = tmp_path / "eval.yaml"
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    with pytest.raises(ValueError, match="does not match any defined judge"):
+        EvalConfig.from_yaml(cfg_path)
+
+
+def test_reward_config_judge_conflicts_with_formula(tmp_path):
+    raw = _judge_cfg({"judge": "my_reward", "formula": "weighted"})
+    cfg_path = tmp_path / "eval.yaml"
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    with pytest.raises(ValueError, match="cannot be combined with"):
+        EvalConfig.from_yaml(cfg_path)
+
+
+def test_reward_config_judge_rejects_bad_normalize(tmp_path):
+    raw = _judge_cfg({"judge": "my_reward", "normalize": "yes"})
+    cfg_path = tmp_path / "eval.yaml"
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    with pytest.raises(ValueError, match="normalize must be a boolean"):
+        EvalConfig.from_yaml(cfg_path)
 
 
 def test_reward_config_rejects_bad_gate(tmp_path):

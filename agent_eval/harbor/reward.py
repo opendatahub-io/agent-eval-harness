@@ -246,11 +246,11 @@ def compute_reward_from_config(per_judge: dict,
                                reward_cfg: RewardConfig) -> float:
     """Compute reward using the eval.yaml reward: section.
 
-    Supports three formula modes:
-    - "weighted": weighted sum of named judges
-    - single judge name: that judge's value, normalized via score_range
-      (list it in ``raw`` if it is already in [0, 1])
-    - expression: Python expression with judge names as variables
+    Resolution within the section:
+    - ``judge``: that single judge's value is the reward (clamped to [0, 1],
+      or normalized via score_range when ``normalize`` is set).
+    - "weighted": weighted sum of ``weights``.
+    - "<expression>": Python expression with judge names as variables.
     """
     score_range = reward_cfg.score_range
     raw_judges = reward_cfg.raw
@@ -260,6 +260,14 @@ def compute_reward_from_config(per_judge: dict,
             val = rec.get("value")
             if isinstance(val, bool) and not val:
                 return 0.0
+
+    # Single-judge mode: the judge's value IS the reward. Clamp as-is by
+    # default; normalize via score_range only when asked. A missing/skipped
+    # judge (value None) scores 0.0.
+    if reward_cfg.judge is not None:
+        clamp_raw = () if reward_cfg.normalize else (reward_cfg.judge,)
+        jv = _judge_value(per_judge, reward_cfg.judge, score_range, clamp_raw)
+        return jv if jv is not None else 0.0
 
     formula = reward_cfg.formula.strip()
 
@@ -274,10 +282,6 @@ def compute_reward_from_config(per_judge: dict,
                 total += float(weight) * jv
                 weight_sum += float(weight)
         return max(0.0, min(1.0, total / weight_sum)) if weight_sum > 0 else 0.0
-
-    if formula in per_judge:
-        jv = _judge_value(per_judge, formula, score_range, raw_judges)
-        return jv if jv is not None else 0.0
 
     judge_vars: dict[str, float] = {}
     for name, rec in per_judge.items():

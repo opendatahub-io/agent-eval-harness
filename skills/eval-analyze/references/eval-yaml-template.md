@@ -243,11 +243,21 @@ thresholds:
 # Reward composition (OPTIONAL) — collapse per-judge results into a single
 # scalar in [0, 1] for RL training (GRPO). Only needed when training; the
 # normal /eval-run report path does not require it.
+#
+# Two mutually exclusive ways to produce the reward:
+#
+# (a) A single judge whose value IS the reward (e.g. a learned reward model
+#     that already emits [0, 1]):
+#   reward:
+#     judge: my_reward_model   # name of a judge defined above
+#     normalize: false         # default: use the value as-is, clamped to [0,1]
+#                              # true: map it from score_range to [0,1] instead
+#     gate: false              # default false in judge mode
+#
+# (b) Compose from multiple judges via formula (shown below):
 reward:
   # formula selects the mode:
   #   "weighted"      weighted sum of the judges named in `weights`
-  #   "<judge_name>"  a single judge's value (normalized via score_range;
-  #                   list it in `raw` if it is already in [0, 1])
   #   "<expression>"  a Python expression over judge names as variables,
   #                   e.g. "0.6 * quality + 0.4 * efficiency".
   #                   Allowed calls: min, max, abs, round, sum, len, mean.
@@ -265,14 +275,13 @@ reward:
                            # gate: false to avoid double-gating.
 ```
 
-Resolution order at scoring time: (1) a `reward:` section if present, else
-(2) the default — boolean judges gate, numeric judges are normalized and
-averaged. Syntax- or AST-invalid formulas are rejected at config load;
-evaluation-time errors (e.g. an undefined judge name) still warn and return 0.0.
-
-To use a single judge that already emits the final reward, point a `reward:`
-section at it: `formula: <judge_name>` with that judge in `raw` (and usually
-`gate: false`).
+Resolution order at scoring time: (1) a `reward:` section if present —
+`judge` mode if `judge` is set, otherwise the `formula`/`weights` composition —
+else (2) the default: boolean judges gate, numeric judges are normalized and
+averaged. `reward.judge` is validated against the defined judges at config load;
+syntax- or AST-invalid formulas are also rejected at config load, while
+evaluation-time errors (e.g. an undefined name in an expression) warn and
+return 0.0.
 
 ## Writing Good Schema Descriptions
 
