@@ -46,13 +46,19 @@ _GRPO_REWARD_JUDGE = "grpo_reward"
 _SAFE_AST_NODES = (
     ast.Module, ast.Expr, ast.Expression, ast.Assign,
     ast.BinOp, ast.UnaryOp, ast.Compare,
-    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
+    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod,
     ast.USub, ast.UAdd,
     ast.Gt, ast.GtE, ast.Lt, ast.LtE, ast.Eq, ast.NotEq,
     ast.Constant, ast.Name, ast.Load, ast.Store,
     ast.Call, ast.List, ast.Tuple,
     ast.IfExp, ast.BoolOp, ast.And, ast.Or,
 )
+# ast.Pow (**) is intentionally excluded: integer exponentiation is the cheap
+# path to a CPU/memory blow-up (e.g. 2 ** 10**9) and reward formulas never need
+# it. Reward formulas are bounded numeric arithmetic, so cap overall size and
+# literal magnitude as defence-in-depth even though eval.yaml is trusted config.
+_MAX_FORMULA_NODES = 200
+_MAX_CONSTANT_ABS = 1e6
 
 # Functions callable from within a reward formula expression. The keys double
 # as the allow-list of permitted call names during AST validation.
@@ -78,8 +84,46 @@ def _validate_ast(node: ast.AST, allowed_calls: set[str]) -> None:
         if node.id.startswith('_'):
             raise ValueError(
                 f"Disallowed variable name: {node.id}")
+    if isinstance(node, ast.Constant):
+        v = node.value
+        if isinstance(v, bool) or v is None:
+            pass  # bool/None are fine (e.g. ternary fallbacks)
+        elif isinstance(v, (int, float)):
+            if abs(v) > _MAX_CONSTANT_ABS:
+                raise ValueError(f"Constant magnitude too large: {v}")
+        else:
+            # Reject str/bytes constants — they have no place in numeric
+            # arithmetic and enable repetition blow-ups (e.g. "x" * 10**6).
+            raise ValueError(
+                f"Disallowed constant type: {type(v).__name__}")
     for child in ast.iter_child_nodes(node):
         _validate_ast(child, allowed_calls)
+
+
+def _parse_and_validate(formula: str, allowed_calls: set[str]) -> ast.Module:
+    """Parse a formula and reject anything outside the safe subset.
+
+    Enforces: parses cleanly, stays under the node-count cap, uses only
+    allow-listed AST nodes/calls/constants, and ends in an expression (the
+    return value). Returns the parsed module for evaluation.
+    """
+    try:
+        tree = ast.parse(formula.strip(), mode="exec")
+    except SyntaxError as exc:
+        raise ValueError(f"could not parse formula: {exc}") from exc
+    node_count = sum(1 for _ in ast.walk(tree))
+    if node_count > _MAX_FORMULA_NODES:
+        raise ValueError(
+            f"reward formula too complex ({node_count} nodes > "
+            f"{_MAX_FORMULA_NODES})")
+    _validate_ast(tree, allowed_calls)
+    if not tree.body:
+        raise ValueError("Empty reward formula")
+    if not isinstance(tree.body[-1], ast.Expr):
+        raise ValueError(
+            "Last line of reward formula must be an expression "
+            "(the return value), not an assignment")
+    return tree
 
 
 def _safe_eval_formula(formula: str, variables: dict[str, float],
@@ -90,18 +134,8 @@ def _safe_eval_formula(formula: str, variables: dict[str, float],
     last must be assignments. The last statement must be an expression
     whose value is returned as the reward.
     """
-    allowed_calls = set(safe_funcs.keys())
-    tree = ast.parse(formula.strip(), mode="exec")
-    _validate_ast(tree, allowed_calls)
-
-    if not tree.body:
-        raise ValueError("Empty reward formula")
-
+    tree = _parse_and_validate(formula, set(safe_funcs.keys()))
     last_stmt = tree.body[-1]
-    if not isinstance(last_stmt, ast.Expr):
-        raise ValueError(
-            "Last line of reward formula must be an expression "
-            "(the return value), not an assignment")
 
     ns = {**variables, **safe_funcs}
 
@@ -124,19 +158,11 @@ def validate_formula(formula: str) -> None:
     disallowed construct/function, or does not end in an expression. Called at
     config-load time (see ``EvalConfig.from_yaml``) so a malformed or unsafe
     formula fails loudly there instead of silently yielding reward 0.0 on
-    every case during a run.
+    every case during a run. Note this validates structure only; runtime
+    failures (e.g. an undefined judge name, division by zero) are still
+    caught at evaluation time and degrade to reward 0.0 with a warning.
     """
-    try:
-        tree = ast.parse(formula.strip(), mode="exec")
-    except SyntaxError as exc:
-        raise ValueError(f"could not parse formula: {exc}") from exc
-    _validate_ast(tree, set(_SAFE_FUNCS))
-    if not tree.body:
-        raise ValueError("Empty reward formula")
-    if not isinstance(tree.body[-1], ast.Expr):
-        raise ValueError(
-            "Last line of reward formula must be an expression "
-            "(the return value), not an assignment")
+    _parse_and_validate(formula, set(_SAFE_FUNCS))
 
 
 # Harbor's canonical verifier output directory inside the container.

@@ -425,3 +425,42 @@ def test_reward_config_accepts_valid_expression(tmp_path):
     cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
     config = EvalConfig.from_yaml(cfg_path)
     assert config.reward.formula == "0.6 * quality + 0.4 * efficiency"
+
+
+# --- formula sandbox hardening (bounded numeric arithmetic) ------------------
+
+def _expect_invalid_formula(tmp_path, formula):
+    raw = {"name": "t", "skill": "t", "reward": {"formula": formula}}
+    cfg_path = tmp_path / "eval.yaml"
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    with pytest.raises(ValueError, match="formula is invalid"):
+        EvalConfig.from_yaml(cfg_path)
+
+
+def test_reward_formula_rejects_power_operator(tmp_path):
+    """** is excluded — integer exponentiation is a cheap CPU/memory blow-up."""
+    _expect_invalid_formula(tmp_path, "2 ** quality")
+
+
+def test_reward_formula_rejects_huge_constant(tmp_path):
+    _expect_invalid_formula(tmp_path, "9999999999 * quality")
+
+
+def test_reward_formula_rejects_string_constant(tmp_path):
+    """String literals (and thus "x" * N repetition blow-ups) are rejected."""
+    _expect_invalid_formula(tmp_path, '"x" * 5 + quality')
+
+
+def test_reward_formula_rejects_oversized_ast(tmp_path):
+    """A formula past the node-count cap is rejected at config load."""
+    _expect_invalid_formula(tmp_path, " + ".join(["quality"] * 300))
+
+
+def test_reward_formula_allows_list_for_mean():
+    """List literals stay allowed so mean([...]) keeps working."""
+    reward_mod.validate_formula("mean([a, b, c])")  # must not raise
+    per_judge = {"a": {"value": 5}, "b": {"value": 3}, "c": {"value": 1}}
+    cfg = RewardConfig(formula="mean([a, b, c])", gate=False,
+                       score_range=[1, 5])
+    r = reward_mod.compute_reward_from_config(per_judge, cfg)
+    assert r == pytest.approx((1.0 + 0.5 + 0.0) / 3)
