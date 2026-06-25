@@ -302,10 +302,15 @@ class RewardConfig:
 
     Modes (determined by formula value):
     - "weighted": weighted sum of named judges, normalized via score_range.
-    - "<judge_name>": use that single judge's value directly.
+    - "<judge_name>": that single judge's value, normalized via score_range
+      (list it in ``raw`` if it is already in [0, 1]).
     - "<expression>": Python expression with judge names as variables.
 
     When gate is True, any boolean judge that returned False zeros the reward.
+    Note this gates on *every* boolean judge, independent of whether the
+    formula references it — so an ``<expression>`` that uses booleans as its
+    own gate (e.g. ``passed * score``) usually wants ``gate: false`` to avoid
+    double-gating.
     score_range normalizes numeric judge scores to [0, 1].
     raw: list of judge names whose values are already in [0, 1] and should
          NOT be normalized via score_range (e.g. efficiency).
@@ -587,14 +592,29 @@ class EvalConfig:
             except (TypeError, ValueError) as exc:
                 raise ValueError(
                     "reward.weights values must be numeric") from exc
+            if any(v < 0 for v in weights.values()):
+                raise ValueError("reward.weights values must be non-negative")
             gate = reward_raw.get("gate", True)
             if not isinstance(gate, bool):
                 raise ValueError("reward.gate must be a boolean")
             raw_list = reward_raw.get("raw", []) or []
             if not isinstance(raw_list, list):
                 raw_list = [raw_list]
+            formula = str(reward_raw.get("formula", "weighted"))
+            # Validate expression formulas now so a typo or unsafe construct
+            # fails loudly here, not silently as reward 0.0 on every case at
+            # run time. Bare references ("weighted" or a single judge name —
+            # which may legitimately contain dots/dashes) are resolved by name
+            # at compute time, so skip the expression check for them.
+            if not re.fullmatch(r"[A-Za-z_][\w.\-]*", formula.strip()):
+                from agent_eval.harbor.reward import validate_formula
+                try:
+                    validate_formula(formula)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"reward.formula is invalid: {exc}") from exc
             config.reward = RewardConfig(
-                formula=str(reward_raw.get("formula", "weighted")),
+                formula=formula,
                 weights=weights,
                 gate=gate,
                 score_range=[score_min, score_max],

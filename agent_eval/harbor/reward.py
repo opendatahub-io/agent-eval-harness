@@ -54,6 +54,14 @@ _SAFE_AST_NODES = (
     ast.IfExp, ast.BoolOp, ast.And, ast.Or,
 )
 
+# Functions callable from within a reward formula expression. The keys double
+# as the allow-list of permitted call names during AST validation.
+_SAFE_FUNCS = {
+    "min": min, "max": max, "abs": abs, "round": round,
+    "sum": sum, "len": len,
+    "mean": lambda xs: sum(xs) / len(xs) if xs else 0.0,
+}
+
 
 def _validate_ast(node: ast.AST, allowed_calls: set[str]) -> None:
     """Walk AST and reject any node not in the safe allowlist."""
@@ -107,6 +115,29 @@ def _safe_eval_formula(formula: str, variables: dict[str, float],
     ast.fix_missing_locations(expr)
     code = compile(expr, "<reward>", "eval")
     return eval(code, {"__builtins__": {}}, ns)  # noqa: S307 — AST-validated
+
+
+def validate_formula(formula: str) -> None:
+    """Parse and AST-validate a reward formula without evaluating it.
+
+    Raises ``ValueError`` if the formula is syntactically invalid, uses a
+    disallowed construct/function, or does not end in an expression. Called at
+    config-load time (see ``EvalConfig.from_yaml``) so a malformed or unsafe
+    formula fails loudly there instead of silently yielding reward 0.0 on
+    every case during a run.
+    """
+    try:
+        tree = ast.parse(formula.strip(), mode="exec")
+    except SyntaxError as exc:
+        raise ValueError(f"could not parse formula: {exc}") from exc
+    _validate_ast(tree, set(_SAFE_FUNCS))
+    if not tree.body:
+        raise ValueError("Empty reward formula")
+    if not isinstance(tree.body[-1], ast.Expr):
+        raise ValueError(
+            "Last line of reward formula must be an expression "
+            "(the return value), not an assignment")
+
 
 # Harbor's canonical verifier output directory inside the container.
 _DEFAULT_OUT_DIR = "/logs/verifier"
@@ -194,7 +225,8 @@ def compute_reward_from_config(per_judge: dict,
 
     Supports three formula modes:
     - "weighted": weighted sum of named judges
-    - single judge name: use that judge's value directly
+    - single judge name: that judge's value, normalized via score_range
+      (list it in ``raw`` if it is already in [0, 1])
     - expression: Python expression with judge names as variables
     """
     score_range = reward_cfg.score_range
@@ -221,11 +253,8 @@ def compute_reward_from_config(per_judge: dict,
         return max(0.0, min(1.0, total / weight_sum)) if weight_sum > 0 else 0.0
 
     if formula in per_judge:
-        rec = per_judge[formula]
-        val = rec.get("value")
-        if isinstance(val, (int, float)):
-            return max(0.0, min(1.0, float(val)))
-        return 0.0
+        jv = _judge_value(per_judge, formula, score_range, raw_judges)
+        return jv if jv is not None else 0.0
 
     judge_vars: dict[str, float] = {}
     for name, rec in per_judge.items():
@@ -233,16 +262,10 @@ def compute_reward_from_config(per_judge: dict,
         if jv is not None:
             judge_vars[name] = jv
 
-    safe_funcs = {
-        "min": min, "max": max, "abs": abs, "round": round,
-        "sum": sum, "len": len,
-        "mean": lambda xs: sum(xs) / len(xs) if xs else 0.0,
-    }
     try:
-        result = _safe_eval_formula(formula, judge_vars, safe_funcs)
+        result = _safe_eval_formula(formula, judge_vars, _SAFE_FUNCS)
         return max(0.0, min(1.0, float(result)))
     except Exception as exc:
-        import sys
         print(f"Warning: reward formula evaluation failed: {exc}",
               file=sys.stderr)
         return 0.0

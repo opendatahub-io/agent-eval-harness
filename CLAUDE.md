@@ -109,6 +109,7 @@ Skills projects create an `eval.yaml` config file with:
 - `traces` — execution data to capture: stdout/stderr, events, metrics (exit code, tokens, cost)
 - `judges` — `builtin` reusable judges (from `agent_eval/judges/`), inline `check` scripts, LLM `prompt`/`prompt_file` (Jinja2 rendered), external `module`/`function`. Optional `arguments` dict for parameterization. Optional `if` condition to skip judges per case based on annotations. Judges receive `outputs["annotations"]` from dataset `annotations.yaml`.
 - `thresholds` — per-judge regression detection. Valid keys: `min_mean`, `min_pass_rate`, `min_win_rate`
+- `reward` — optional. Collapses per-judge results into a single scalar in `[0, 1]` for RL training (GRPO). `formula` selects the mode: `weighted` (weighted sum of `weights`), a single `<judge_name>` (normalized via `score_range`; list in `raw` if already `[0, 1]`), or a Python `<expression>` over judge names (allowed calls: `min`/`max`/`abs`/`round`/`sum`/`len`/`mean`). `gate: true` zeros the reward on any false boolean judge — it gates on *every* boolean judge, so expressions using booleans as their own gate want `gate: false`. Expressions are AST-validated and checked at config load. Resolution order: `reward:` section → legacy `grpo_reward` judge → default (boolean gates + averaged normalized numerics).
 
 Runs are stored in `$AGENT_EVAL_RUNS_DIR` (default `eval/runs`), configured during `/eval-setup`.
 

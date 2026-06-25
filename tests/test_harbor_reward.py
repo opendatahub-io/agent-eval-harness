@@ -284,12 +284,25 @@ def test_reward_expression_rejects_dangerous_code():
 
 # --- RewardConfig: single judge reference ------------------------------------
 
-def test_reward_single_judge_ref():
-    """Single judge reference returns raw value clamped to [0, 1]."""
+def test_reward_single_judge_ref_raw():
+    """A single judge listed in raw is clamped to [0, 1], not normalized."""
     per_judge = {"my_score": {"value": 0.73}}
-    cfg = RewardConfig(formula="my_score", gate=False, score_range=[1, 5])
+    cfg = RewardConfig(formula="my_score", gate=False,
+                       score_range=[1, 5], raw=["my_score"])
     r = reward_mod.compute_reward_from_config(per_judge, cfg)
     assert r == pytest.approx(0.73)
+
+
+def test_reward_single_judge_ref_normalized():
+    """A single judge not in raw is normalized via score_range.
+
+    This keeps single-judge mode consistent with weighted/expression modes
+    rather than silently clamping a 1-5 score to ~1.0.
+    """
+    per_judge = {"rfe_quality": {"value": 4}}
+    cfg = RewardConfig(formula="rfe_quality", gate=False, score_range=[1, 5])
+    r = reward_mod.compute_reward_from_config(per_judge, cfg)
+    assert r == pytest.approx(0.75)  # (4-1)/(5-1)
 
 
 # --- RewardConfig: compose_reward integration --------------------------------
@@ -364,3 +377,51 @@ def test_reward_config_rejects_inverted_range(tmp_path):
     cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
     with pytest.raises(ValueError, match="increasing"):
         EvalConfig.from_yaml(cfg_path)
+
+
+def test_reward_config_rejects_negative_weight(tmp_path):
+    raw = {
+        "name": "t", "skill": "t",
+        "reward": {"formula": "weighted", "weights": {"a": -0.5, "b": 1.0}},
+    }
+    cfg_path = tmp_path / "eval.yaml"
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    with pytest.raises(ValueError, match="non-negative"):
+        EvalConfig.from_yaml(cfg_path)
+
+
+def test_reward_config_rejects_malformed_formula(tmp_path):
+    """A syntactically invalid expression fails at config load, not silently."""
+    raw = {
+        "name": "t", "skill": "t",
+        "reward": {"formula": "0.5 * quality + "},
+    }
+    cfg_path = tmp_path / "eval.yaml"
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    with pytest.raises(ValueError, match="formula is invalid"):
+        EvalConfig.from_yaml(cfg_path)
+
+
+def test_reward_config_rejects_unsafe_formula(tmp_path):
+    """An unsafe construct is rejected at config load."""
+    raw = {
+        "name": "t", "skill": "t",
+        "reward": {"formula": '__import__("os").system("id")'},
+    }
+    cfg_path = tmp_path / "eval.yaml"
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    with pytest.raises(ValueError, match="formula is invalid"):
+        EvalConfig.from_yaml(cfg_path)
+
+
+def test_reward_config_accepts_valid_expression(tmp_path):
+    """A valid expression formula parses and is stored verbatim."""
+    raw = {
+        "name": "t", "skill": "t",
+        "reward": {"formula": "0.6 * quality + 0.4 * efficiency",
+                   "raw": ["efficiency"]},
+    }
+    cfg_path = tmp_path / "eval.yaml"
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    config = EvalConfig.from_yaml(cfg_path)
+    assert config.reward.formula == "0.6 * quality + 0.4 * efficiency"
