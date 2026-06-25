@@ -239,7 +239,37 @@ thresholds:
   <judge_name>:
     min_pass_rate: 1.0     # for boolean judges (check, builtin)
     # min_mean: 3.5        # for numeric judges (llm)
+
+# Reward composition (OPTIONAL) — collapse per-judge results into a single
+# scalar in [0, 1] for RL training (GRPO). Only needed when training; the
+# normal /eval-run report path does not require it.
+reward:
+  # formula selects the mode:
+  #   "weighted"      weighted sum of the judges named in `weights`
+  #   "<judge_name>"  a single judge's value (normalized via score_range;
+  #                   list it in `raw` if it is already in [0, 1])
+  #   "<expression>"  a Python expression over judge names as variables,
+  #                   e.g. "0.6 * quality + 0.4 * efficiency".
+  #                   Allowed calls: min, max, abs, round, sum, len, mean.
+  #                   Multi-line is allowed; the last line is the result.
+  formula: weighted
+  weights:                 # used only by the "weighted" formula
+    quality: 0.7
+    efficiency: 0.3
+  score_range: [1, 5]      # numeric judge range, normalized to [0, 1]
+  raw: [efficiency]        # judges already in [0, 1] — skip normalization
+  gate: true               # any boolean judge returning false zeros the reward.
+                           # Gates on EVERY boolean judge regardless of the
+                           # formula — for an expression that uses booleans as
+                           # its own gate (e.g. "passed * quality"), set
+                           # gate: false to avoid double-gating.
 ```
+
+Resolution order at scoring time: (1) a `reward:` section if present, else
+(2) a judge literally named `grpo_reward` (its value is used directly, legacy),
+else (3) the default — boolean judges gate, numeric judges are normalized and
+averaged. Invalid expression formulas are rejected at config load, not silently
+scored as 0.0.
 
 ## Writing Good Schema Descriptions
 
