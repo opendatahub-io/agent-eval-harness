@@ -1,3 +1,12 @@
+# [1.15.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.14.2...v1.15.0) (2026-06-25)
+
+
+### Features
+
+* **harbor:** add grpo_reward judge and configurable ([633a8b3](https://github.com/opendatahub-io/agent-eval-harness/commit/633a8b36d1b4204c9ac69897b00eb0361eb4c484))
+* **harbor:** bound reward-formula sandbox; fix reward doc accuracy ([0a252a7](https://github.com/opendatahub-io/agent-eval-harness/commit/0a252a783514918622d5183b4b2104666dd67169))
+* **harbor:** harden reward config — normalize single-judge, validate formulas ([fcf6a9a](https://github.com/opendatahub-io/agent-eval-harness/commit/fcf6a9ac0cfe29a4180e2517a09ad70726c3365f))
+
 ## [1.14.2](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.14.1...v1.14.2) (2026-06-24)
 
 
