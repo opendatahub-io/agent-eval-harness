@@ -1,3 +1,10 @@
+# [1.16.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.15.0...v1.16.0) (2026-06-25)
+
+
+### Features
+
+* **harbor:** add reward.judge single-judge mode ([f4c2ec7](https://github.com/opendatahub-io/agent-eval-harness/commit/f4c2ec737556d5707b272abfc592e39827a2c128))
+
 # [1.15.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.14.2...v1.15.0) (2026-06-25)
 
 
