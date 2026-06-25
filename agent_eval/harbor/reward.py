@@ -15,8 +15,7 @@ Reward composition (resolution order):
 1. If a ``reward:`` section exists in eval.yaml, use its formula/weights
    to compose the reward from judge results. Supports ``weighted``,
    single judge reference, or Python expression modes.
-2. If a ``grpo_reward`` judge exists (legacy), use its value directly.
-3. Otherwise: boolean judges gate (any fail -> 0.0), numeric judges
+2. Otherwise: boolean judges gate (any fail -> 0.0), numeric judges
    normalized to [0,1] and averaged.
 
 Pairwise comparison and regression thresholds are SUITE-level (need >=2 runs /
@@ -40,8 +39,6 @@ from agent_eval.config import EvalConfig, RewardConfig
 
 _SCORE_MIN_DEFAULT = 1.0
 _SCORE_MAX_DEFAULT = 5.0
-
-_GRPO_REWARD_JUDGE = "grpo_reward"
 
 _SAFE_AST_NODES = (
     ast.Module, ast.Expr, ast.Expression, ast.Assign,
@@ -305,8 +302,7 @@ def compose_reward(per_judge: dict, *,
 
     Resolution order:
     1. If reward_cfg is provided (from eval.yaml reward: section), use it.
-    2. If a grpo_reward judge exists (legacy), use its value directly.
-    3. Otherwise fall back to: boolean gates + average of normalized numerics.
+    2. Otherwise fall back to: boolean gates + average of normalized numerics.
     """
     metrics = _extract_metrics(per_judge)
 
@@ -314,18 +310,10 @@ def compose_reward(per_judge: dict, *,
         reward = compute_reward_from_config(per_judge, reward_cfg)
         return reward, metrics
 
-    grpo_rec = per_judge.get(_GRPO_REWARD_JUDGE, {})
-    grpo_val = grpo_rec.get("value")
-    if grpo_val is not None and isinstance(grpo_val, (int, float)):
-        reward = max(0.0, min(1.0, float(grpo_val)))
-        return reward, metrics
-
     gate_ok = True
     normalized_scores: list[float] = []
 
     for name, rec in per_judge.items():
-        if name == _GRPO_REWARD_JUDGE:
-            continue
         value = rec.get("value")
         if value is None:
             continue

@@ -61,46 +61,6 @@ def test_compose_reward_ignores_skipped_and_errored():
     assert "errored" not in metrics
 
 
-def test_compose_reward_grpo_reward_takes_precedence():
-    """When a grpo_reward judge is present, its value is used directly."""
-    per_judge = {
-        "files_exist": {"value": True, "judge_type": "check"},
-        "frontmatter_valid": {"value": False, "judge_type": "check"},
-        "rfe_quality": {"value": 7, "judge_type": "llm"},
-        "grpo_reward": {"value": 0.73, "judge_type": "check"},
-    }
-    reward, metrics = reward_mod.compose_reward(per_judge)
-    assert reward == pytest.approx(0.73)
-    assert metrics["grpo_reward"] == pytest.approx(0.73)
-    assert metrics["frontmatter_valid"] == 0.0
-
-
-def test_compose_reward_grpo_reward_clamped():
-    """grpo_reward values outside [0, 1] are clamped."""
-    per_judge = {
-        "grpo_reward": {"value": 1.5, "judge_type": "check"},
-    }
-    reward, _ = reward_mod.compose_reward(per_judge)
-    assert reward == 1.0
-
-    per_judge_neg = {
-        "grpo_reward": {"value": -0.2, "judge_type": "check"},
-    }
-    reward_neg, _ = reward_mod.compose_reward(per_judge_neg)
-    assert reward_neg == 0.0
-
-
-def test_compose_reward_grpo_reward_none_falls_back():
-    """If grpo_reward has value=None, fall back to legacy averaging."""
-    per_judge = {
-        "ok": {"value": True, "judge_type": "check"},
-        "rfe_quality": {"value": 5, "judge_type": "llm"},
-        "grpo_reward": {"value": None, "judge_type": "check"},
-    }
-    reward, metrics = reward_mod.compose_reward(per_judge)
-    assert reward == pytest.approx(1.0)  # score 5 -> normalized 1.0 on 1-5 scale
-
-
 # --- end-to-end with inline check judges -------------------------------------
 
 def _write_config(tmp_path: Path, judges: list) -> EvalConfig:
