@@ -17,6 +17,7 @@ OpenShift). The server creates the Job pod; the adapter runs in-process inside
 it (no sub-pods, no Harbor).
 """
 
+import agent_eval._bootstrap  # noqa: F401 — auto-activate venv before 3p imports
 import argparse
 import importlib.util
 import json

@@ -4,6 +4,7 @@ Runs user-defined shell commands at well-defined points in the eval
 lifecycle (before_all, before_each, after_each, before_scoring, after_all).
 """
 
+import agent_eval._bootstrap  # noqa: F401 — auto-activate venv before 3p imports
 import os
 import signal
 import subprocess

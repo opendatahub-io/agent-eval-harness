@@ -12,11 +12,6 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Neutralize _bootstrap before importing execute.py/score.py — prevents
-# os.execv from replacing the pytest process when running under system python.
-_real_execv = os.execv
-os.execv = lambda *a, **kw: None  # no-op during import
-
 from agent_eval.agent.base import RunResult
 from agent_eval.config import DatasetConfig, EvalConfig, HookEntry, HooksConfig
 from agent_eval.hooks import (
@@ -25,8 +20,6 @@ from agent_eval.hooks import (
 )
 from execute import _run_single_case
 from score import load_case_record
-
-os.execv = _real_execv  # restore
 
 
 # ---------------------------------------------------------------------------
