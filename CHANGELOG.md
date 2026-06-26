@@ -1,3 +1,10 @@
+## [1.17.1](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.17.0...v1.17.1) (2026-06-26)
+
+
+### Bug Fixes
+
+* **harbor:** upload files in chunks to avoid E2BIG on large dirs ([aa395ed](https://github.com/opendatahub-io/agent-eval-harness/commit/aa395ed6d4a9e9bfb630f675aedc269a6603a236))
+
 # [1.17.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.16.1...v1.17.0) (2026-06-26)
 
 
