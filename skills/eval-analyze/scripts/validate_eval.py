@@ -170,7 +170,7 @@ def _validate_builtin_arguments(builtin_name, judge_name, arguments, errors, war
     """Validate that builtin judges only use documented arguments."""
     # Known builtin judges and their valid arguments
     BUILTIN_ARGS = {
-        "consulted_docs": {"min_coverage", "match"},
+        "consulted_docs": {"min_coverage", "match", "include_subagents"},
         "cost_budget": {"max_cost_usd"},
         "no_harmful_content": set(),  # No custom arguments
         "output_completeness": set(),  # No custom arguments
@@ -479,8 +479,9 @@ def validate_config(path="eval.yaml"):
         if check_code:
             import re
             # Flag bare usage of annotations/conversation (should be outputs.get("annotations"/"conversation"))
-            bare_annotations = re.search(r'\bannotations\s*\.', check_code)
-            bare_conversation = re.search(r'\bconversation\b(?!\s*=)', check_code)
+            # Exclude occurrences inside string literals — e.g., outputs.get("annotations") is correct
+            bare_annotations = re.search(r'(?<!["\'])\bannotations\s*\.', check_code)
+            bare_conversation = re.search(r'(?<!["\'])\bconversation\b(?!["\'])(?!\s*=)', check_code)
 
             if bare_annotations:
                 errors.append(
