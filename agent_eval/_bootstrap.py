@@ -63,17 +63,23 @@ def _patch_syspath(site_dirs):
 
 
 def _is_true_script_entry():
-    """True only for `python script.py` (not `-m`, not `-c`, not exec_module).
+    """True only for `python script.py` (not `-m`, `-c`, `-`, REPL, exec_module).
 
     `python script.py` -> __main__.__spec__ is None, argv[0] is the script.
     `python -m pkg.mod` -> __main__.__spec__ is a ModuleSpec (non-None).
     `python -c "..."`   -> __main__.__spec__ is None, argv[0] == '-c'.
+    `python -` / stdin  -> argv[0] == '-'.
+    REPL / embedded     -> argv[0] == '' (or argv empty).
     exec_module'd file  -> runs under its loader name, __main__ is unchanged.
+
+    Only a real script file can be re-exec'd; the other forms have nothing to
+    rerun, so they must not take the execv path.
     """
     main = sys.modules.get("__main__")
     if main is None or getattr(main, "__spec__", None) is not None:
         return False
-    if sys.argv[:1] == ["-c"]:
+    argv0 = sys.argv[0] if sys.argv else ""
+    if argv0 in {"", "-", "-c"}:
         return False
     return True
 

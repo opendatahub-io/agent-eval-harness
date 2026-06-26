@@ -1,12 +1,14 @@
 """Tests for agent_eval._bootstrap venv activation.
 
 Regression coverage for the duplicate-run bug: _bootstrap must NEVER os.execv
-when it is reached via `python -m`, `python -c`, or importlib exec_module —
-only for a genuine top-level script entry under an ABI-mismatched interpreter.
-The default action is sys.path patching, which is re-entrant and side-effect-free.
+when it is reached via `python -m`, `python -c`, `python -`, the REPL, or
+importlib exec_module — only for a genuine top-level script entry under an
+ABI-mismatched interpreter. The default action is sys.path patching, which is
+re-entrant and side-effect-free.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -18,7 +20,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agent_eval import _bootstrap
 
-_REPO = Path(__file__).parent.parent
 _RUNNING = f"{sys.version_info.major}.{sys.version_info.minor}"
 
 
@@ -35,7 +36,6 @@ def _set_main_spec(monkeypatch, spec):
 
 # ---------------------------------------------------------------------------
 # _venv_pyver — guards the '.../lib/pythonX.Y/site-packages' parse
-# (a dirname-too-deep bug here silently disables ABI-mismatch detection)
 # ---------------------------------------------------------------------------
 
 def test_venv_pyver_extracts_version():
@@ -61,6 +61,15 @@ def test_script_entry_false_for_dash_c(monkeypatch):
     _set_main_spec(monkeypatch, None)
     monkeypatch.setattr(sys, "argv", ["-c"])
     assert _bootstrap._is_true_script_entry() is False
+
+
+def test_script_entry_false_for_stdin_repl_empty(monkeypatch):
+    # `python -` (stdin), REPL/embedded (argv[0] == ''), and an empty argv have
+    # no real script file to re-exec, so they must not take the execv path.
+    _set_main_spec(monkeypatch, None)
+    for argv in (["-"], [""], []):
+        monkeypatch.setattr(sys, "argv", argv)
+        assert _bootstrap._is_true_script_entry() is False, argv
 
 
 def test_script_entry_false_for_dash_m(monkeypatch):
@@ -133,39 +142,84 @@ def test_activate_no_venv_is_noop(clean_sentinel, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Integration: faithfully reproduce the harbor path in a fresh process —
-# deferred first import of _bootstrap via exec_module must NOT os.execv.
+# Integration: a fresh process with a *fake ABI-mismatched* .eval-venv, so the
+# mismatch branch is exercised regardless of the test runner's interpreter
+# (no skip, never vacuous). The `-m` case faithfully reproduces how the harbor
+# runner is launched; the true-script case is a positive control proving the
+# mismatch branch is actually reachable in this harness.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(not (_REPO / ".eval-venv").is_dir(),
-                    reason="no .eval-venv to activate")
-def test_exec_module_deferred_import_never_execs(tmp_path):
-    loaded = tmp_path / "loaded.py"
-    loaded.write_text("import agent_eval._bootstrap\nVALUE = 42\n")
+# Spy installed before any agent_eval import: records an execv attempt to a
+# marker file instead of replacing the process.
+_EXECV_SPY = textwrap.dedent("""
+    import os
+    def _spy(*a, **k):
+        with open(os.environ["EXECV_MARKER"], "w") as f:
+            f.write("EXECV")
+        raise SystemExit("execv-attempted")
+    os.execv = _spy
+""")
 
-    child = tmp_path / "child.py"
-    child.write_text(textwrap.dedent(f"""
-        import os, sys, importlib.util
-        # Detect any process replacement attempt without performing it.
-        os.execv = lambda *a, **k: (_ for _ in ()).throw(
-            SystemExit("EXECV_CALLED"))
-        # Mimic run.py: import agent_eval WITHOUT _bootstrap, then load a file
-        # by path whose first line imports _bootstrap (the deferred first import).
+
+def _make_fake_plugin(tmp_path, venv_pyver="0.0"):
+    """Throwaway plugin root: a copy of _bootstrap plus a fake .eval-venv whose
+    python<venv_pyver> never matches the runner -> always the ABI-mismatch path."""
+    root = tmp_path / "plugin"
+    pkg = root / "agent_eval"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")  # no _bootstrap import (mirrors real __init__)
+    shutil.copy(_bootstrap.__file__, pkg / "_bootstrap.py")
+    venv = root / ".eval-venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python3").write_text("")  # only needs to be a regular file
+    (venv / "lib" / f"python{venv_pyver}" / "site-packages").mkdir(parents=True)
+    return root
+
+
+def _run_child(root, code, module=None):
+    marker = root / "execv.marker"
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(root)          # isolate: only the fake agent_eval
+    env["EXECV_MARKER"] = str(marker)
+    env.pop("_AGENT_EVAL_BOOTSTRAP_DONE", None)
+    if module:
+        (root / f"{module}.py").write_text(code)
+        cmd = [sys.executable, "-m", module]
+    else:
+        script = root / "child_script.py"
+        script.write_text(code)
+        cmd = [sys.executable, str(script)]
+    proc = subprocess.run(cmd, cwd=str(root), env=env,
+                          capture_output=True, text=True, timeout=120)
+    return proc, marker.exists()
+
+
+def test_dash_m_under_abi_mismatch_does_not_exec(tmp_path):
+    # `python -m childmod` -> __main__.__spec__ non-None (like the harbor runner).
+    # The deferred exec_module import of _bootstrap must NOT execv even though the
+    # fake venv is ABI-mismatched.
+    root = _make_fake_plugin(tmp_path)
+    (root / "loaded.py").write_text("import agent_eval._bootstrap\nVALUE = 42\n")
+    code = _EXECV_SPY + textwrap.dedent("""
+        import sys, os, importlib.util
         import agent_eval
         assert "agent_eval._bootstrap" not in sys.modules, "bootstrap leaked early"
-        spec = importlib.util.spec_from_file_location("loaded_mod", {str(loaded)!r})
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        print("OK", mod.VALUE)
-    """))
+        p = os.path.join(os.path.dirname(__file__), "loaded.py")
+        spec = importlib.util.spec_from_file_location("loaded_mod", p)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        print("OK", m.VALUE)
+    """)
+    proc, execd = _run_child(root, code, module="childmod")
+    assert not execd, f"execv fired on the -m path:\n{proc.stdout}\n{proc.stderr}"
+    assert proc.returncode == 0 and "OK 42" in proc.stdout, \
+        f"child failed:\n{proc.stdout}\n{proc.stderr}"
 
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(_REPO)
-    env.pop("_AGENT_EVAL_BOOTSTRAP_DONE", None)
-    # Run from a neutral cwd under the SYSTEM python (the bug's trigger).
-    proc = subprocess.run([sys.executable, str(child)], cwd=str(tmp_path),
-                          env=env, capture_output=True, text=True, timeout=120)
-    assert "EXECV_CALLED" not in (proc.stdout + proc.stderr), \
-        f"os.execv fired on the exec_module path:\n{proc.stdout}\n{proc.stderr}"
-    assert proc.returncode == 0, f"child failed:\n{proc.stdout}\n{proc.stderr}"
-    assert "OK 42" in proc.stdout
+
+def test_true_script_under_abi_mismatch_execs(tmp_path):
+    # Positive control: a real top-level script under the SAME fake ABI-mismatch
+    # venv DOES take the execv path — so the -m test above is not passing vacuously.
+    root = _make_fake_plugin(tmp_path)
+    code = _EXECV_SPY + "import agent_eval._bootstrap\nprint('NO EXEC')\n"
+    proc, execd = _run_child(root, code)  # plain `python child_script.py`
+    assert execd, f"expected execv on true-script ABI mismatch:\n{proc.stdout}\n{proc.stderr}"
