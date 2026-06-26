@@ -1,3 +1,17 @@
+# [1.17.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.16.1...v1.17.0) (2026-06-26)
+
+
+### Bug Fixes
+
+* **harbor:** address review on exec retry and infra-error surfacing ([54db1e3](https://github.com/opendatahub-io/agent-eval-harness/commit/54db1e3ffbf006c42aaba669de2ee08bc0a1ab82))
+
+
+### Features
+
+* **harbor:** don't score a missing verifier reward as 0 ([1b41578](https://github.com/opendatahub-io/agent-eval-harness/commit/1b415783ffe4b7c2bbf038cfae299753beeeb3c0))
+* **harbor:** retry transient k8s exec establishment failures ([1b121aa](https://github.com/opendatahub-io/agent-eval-harness/commit/1b121aa61d63ec93cbe5e3cbb55c3b7f1e062d68)), closes [hi#parallelism](https://github.com/hi/issues/parallelism)
+* **harbor:** surface trials that failed before producing any reward ([e750281](https://github.com/opendatahub-io/agent-eval-harness/commit/e750281566f60b3db9d39e6a5f6b742b1d9db8c7))
+
 ## [1.16.1](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.16.0...v1.16.1) (2026-06-26)
 
 
