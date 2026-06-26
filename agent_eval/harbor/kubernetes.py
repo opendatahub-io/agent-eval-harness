@@ -512,8 +512,19 @@ class KubernetesEnvironment(BaseEnvironment):
         rc = getattr(result, "return_code", None)
         cmd = (command.strip().splitlines() or [""])[0][:160]
         if exc is None and rc in (None, 0):
-            self.logger.debug("exec ok: rc=0 dur=%.2fs attempts=%d cmd=%r",
-                              duration, attempts, cmd)
+            # Successful execs are quiet by default. AGENT_EVAL_EXEC_TRACE=1 logs
+            # every exec (at warning, so it is captured regardless of log level)
+            # to reconstruct the full per-step exec sequence when diagnosing why
+            # a verifier produced no reward.
+            if os.environ.get("AGENT_EVAL_EXEC_TRACE") == "1":
+                out = len(getattr(result, "stdout", "") or "")
+                err = len(getattr(result, "stderr", "") or "")
+                self.logger.warning(
+                    "exec trace: rc=0 dur=%.2fs attempts=%d out=%dB err=%dB cmd=%r",
+                    duration, attempts, out, err, cmd)
+            else:
+                self.logger.debug("exec ok: rc=0 dur=%.2fs attempts=%d cmd=%r",
+                                  duration, attempts, cmd)
             return
         detail = (f"{type(exc).__name__}: {exc}" if exc is not None
                   else (result.stderr or ""))
@@ -640,27 +651,56 @@ class KubernetesEnvironment(BaseEnvironment):
         qtmp = shlex.quote(tmp)
         await self._checked_exec(f"mkdir -p {tgt}", f"upload_dir mkdir -> {target_dir}")
         await self._write_b64_chunked(b64, tmp, f"upload_dir -> {target_dir}")
-        await self._checked_exec(
-            f"base64 -d {qtmp} | tar xzmf - --no-same-owner --no-same-permissions "
-            f"-C {tgt} 2>/dev/null; rm -f {qtmp}; true",
-            f"upload_dir extract -> {target_dir}")
+        # `set -o pipefail` + no trailing `; true` so a failed decode/extract
+        # surfaces (it used to be masked, silently producing a partial upload —
+        # e.g. an incomplete tests dir whose verifier then writes no reward).
+        # Best-effort: log and continue rather than abort the whole step.
+        extract = (f"set -o pipefail; base64 -d {qtmp} | "
+                   f"tar xzmf - --no-same-owner --no-same-permissions -C {tgt}")
+        try:
+            await self._checked_exec(extract, f"upload_dir extract -> {target_dir}")
+        except RuntimeError as e:
+            self.logger.warning("upload_dir extract failed (continuing): %s", self._esc(str(e), 300))
+        finally:
+            await self.exec(f"rm -f {qtmp}")
+
+    @staticmethod
+    def _esc(text: str | None, limit: int = 200) -> str:
+        return (text or "").encode("unicode_escape").decode("ascii")[:limit]
 
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
         res = await self.exec(f"base64 -w0 {shlex.quote(source_path)}")
         if res.return_code != 0:
+            self.logger.warning("download_file %s: rc=%s stderr=%r",
+                                source_path, res.return_code, self._esc(res.stderr))
             raise RuntimeError(f"download_file {source_path}: {res.stderr}")
         Path(target_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(target_path).write_bytes(base64.b64decode(res.stdout))
+        try:
+            Path(target_path).write_bytes(base64.b64decode(res.stdout))
+        except Exception as e:
+            self.logger.warning("download_file %s: decode failed (stdout=%dB): %s",
+                                source_path, len(res.stdout or ""), e)
+            raise
 
     async def download_dir(self, source_dir: str, target_dir: Path | str) -> None:
+        # `set -o pipefail` so a failing `tar` surfaces as a non-zero rc — without
+        # it the pipe's rc is base64's (0), masking a truncated/empty download and
+        # silently producing an empty target dir.
         res = await self.exec(
-            f"tar cf - -C {shlex.quote(source_dir)} . | base64 -w0")
+            f"set -o pipefail; tar cf - -C {shlex.quote(source_dir)} . | base64 -w0")
         if res.return_code != 0:
+            self.logger.warning("download_dir %s: rc=%s stderr=%r",
+                                source_dir, res.return_code, self._esc(res.stderr))
             raise RuntimeError(f"download_dir {source_dir}: {res.stderr}")
         Path(target_dir).mkdir(parents=True, exist_ok=True)
-        raw = base64.b64decode(res.stdout)
-        with tarfile.open(fileobj=io.BytesIO(raw), mode="r") as tf:
-            tf.extractall(target_dir, filter="data")
+        try:
+            raw = base64.b64decode(res.stdout)
+            with tarfile.open(fileobj=io.BytesIO(raw), mode="r") as tf:
+                tf.extractall(target_dir, filter="data")
+        except Exception as e:
+            self.logger.warning("download_dir %s: decode/extract failed (stdout=%dB): %s",
+                                source_dir, len(res.stdout or ""), e)
+            raise
 
     async def _checked_exec(self, command: str, what: str) -> None:
         res = await self.exec(command, timeout_sec=300)

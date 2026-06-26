@@ -155,6 +155,29 @@ def test_successful_exec_does_not_warn(monkeypatch, caplog):
     assert not any("exec FAILED" in r.getMessage() for r in caplog.records)
 
 
+def test_exec_trace_logs_successful_execs(monkeypatch, caplog):
+    # AGENT_EVAL_EXEC_TRACE=1 logs every (successful) exec so the full per-step
+    # exec sequence can be reconstructed when diagnosing a missing reward.
+    env = _env()
+    monkeypatch.setenv("AGENT_EVAL_EXEC_TRACE", "1")
+    monkeypatch.setattr(env, "_ws_exec_once",
+                        lambda c, t: (ExecResult(stdout="ok", stderr="", return_code=0), True, None))
+    with caplog.at_level(logging.WARNING, logger="test-exec-retry"):
+        env._ws_exec("cd /workspace && ./tests/test.sh", None)
+    assert any("exec trace" in r.getMessage() and "test.sh" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_no_trace_for_success_by_default(monkeypatch, caplog):
+    env = _env()
+    monkeypatch.delenv("AGENT_EVAL_EXEC_TRACE", raising=False)
+    monkeypatch.setattr(env, "_ws_exec_once",
+                        lambda c, t: (ExecResult(stdout="ok", stderr="", return_code=0), True, None))
+    with caplog.at_level(logging.WARNING, logger="test-exec-retry"):
+        env._ws_exec("ls", None)
+    assert not any("exec trace" in r.getMessage() for r in caplog.records)
+
+
 def test_sensitive_exec_stderr_is_sanitized(monkeypatch, caplog):
     # stderr is untrusted container output: control chars / ANSI must be escaped
     # and the detail bounded before it reaches the log.
