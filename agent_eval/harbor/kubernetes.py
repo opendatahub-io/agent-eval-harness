@@ -388,6 +388,12 @@ class KubernetesEnvironment(BaseEnvironment):
     # unsafe; long connections are protected by the keepalive instead.
     _EXEC_ESTABLISH_RETRIES = 2      # total attempts = retries + 1
     _EXEC_RETRY_BACKOFF_SEC = 0.5    # 0.5s, 1.0s, ...
+    # Max time to *establish* the connection before treating it as a hung
+    # connection (retryable). Establishment is normally <1s; a longer wait means
+    # HAProxy isn't responding. Kept well under typical caller (verifier)
+    # timeouts so the retry actually runs before the caller gives up — otherwise
+    # a hang blocks until the long hard limit and the caller cancels first.
+    _EXEC_ESTABLISH_TIMEOUT_SEC = 30
 
     def _ws_exec_once(
         self, command: str, timeout_sec: int | None
@@ -473,16 +479,35 @@ class KubernetesEnvironment(BaseEnvironment):
         # inside _run fires before the hard limit. When timeout_sec is None
         # there is no soft deadline and the hard limit alone applies (1 h cap).
         hard_limit = (timeout_sec or 3600) + 30
+        establish_timeout = min(self._EXEC_ESTABLISH_TIMEOUT_SEC, hard_limit)
         t = threading.Thread(target=_run, daemon=True)
         t.start()
-        t.join(timeout=hard_limit)
+
+        # Phase 1 — establishment. join() returns as soon as the command
+        # finishes (so short commands add no latency); if it's still running and
+        # the connection never came up, the connection is hung. Report it as a
+        # fast, retryable establishment failure rather than blocking until the
+        # long hard limit — by which point the caller's (verifier) timeout would
+        # have cancelled us and the retry would never run.
+        t.join(timeout=establish_timeout)
+        if t.is_alive() and not established:
+            stop_ping.set()
+            return ExecResult(
+                stdout="",
+                stderr=f"[establishment timeout after {establish_timeout}s — "
+                       f"connection never established]",
+                return_code=124), False, None
+
+        # Phase 2 — established (or finished); wait for completion up to the
+        # remaining hard limit.
+        if t.is_alive():
+            t.join(timeout=max(hard_limit - establish_timeout, 0))
         if t.is_alive():
             stop_ping.set()
-            # The worker is still alive (likely wedged in k8s_stream). It may yet
-            # establish the connection and run the command after we return, so we
-            # must NOT report "never established" — that would let the caller
-            # retry and double-execute a non-idempotent command. Force
-            # established=True so this attempt is treated as non-retryable.
+            # The worker is still alive (likely wedged after establishing). It
+            # may yet finish the command, so we must NOT report "never
+            # established" — that would let the caller retry and double-execute a
+            # non-idempotent command. Force established=True (non-retryable).
             return ExecResult(
                 stdout="",
                 stderr=f"[ws_exec hard timeout after {hard_limit}s — HAProxy connection dead]",

@@ -11,7 +11,9 @@ own interpreter rather than the eval venv — skip cleanly where it is absent.
 
 import logging
 import sys
+import time
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -32,6 +34,33 @@ def _env():
     env = object.__new__(KubernetesEnvironment)
     env.logger = logging.getLogger("test-exec-retry")
     return env
+
+
+def test_establishment_hang_fails_fast_and_retryable(monkeypatch):
+    # A connection that hangs at establishment must fail fast as a *retryable*
+    # not-established result — not block until the long hard limit (by which
+    # point the caller's verifier timeout would have cancelled it). This is the
+    # real verifier-flake fix.
+    import agent_eval.harbor.kubernetes as K
+
+    env = _env()
+    env._pod = "p"
+    env._namespace = "ns"
+    env._core = MagicMock()
+    env._EXEC_ESTABLISH_TIMEOUT_SEC = 0.2  # tiny cap for the test
+
+    # Simulate a hung establishment: k8s_stream never returns.
+    monkeypatch.setattr(K, "k8s_stream", lambda *a, **k: time.sleep(60))
+
+    start = time.perf_counter()
+    result, established, exc = env._ws_exec_once("./tests/test.sh", None)
+    elapsed = time.perf_counter() - start
+
+    assert established is False          # retryable
+    assert exc is None
+    assert result.return_code == 124
+    assert "establishment timeout" in result.stderr
+    assert elapsed < 5                  # ~0.2s, NOT the 3600s hard limit
 
 
 def test_retries_establishment_failure_then_succeeds(monkeypatch):
