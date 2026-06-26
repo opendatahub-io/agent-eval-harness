@@ -380,20 +380,34 @@ class KubernetesEnvironment(BaseEnvironment):
             except Exception:
                 break
 
-    def _ws_exec(self, command: str, timeout_sec: int | None) -> ExecResult:
-        """WebSocket exec with a keepalive ping for HAProxy resilience.
+    # Retry only failures that happen BEFORE the command starts executing
+    # (the WebSocket never established). At that point nothing ran in the
+    # container, so a retry is safe even for non-idempotent commands like the
+    # agent run. Post-establishment drops/timeouts are NEVER retried here —
+    # re-running a command that may have already executed (the agent!) would be
+    # unsafe; long connections are protected by the keepalive instead.
+    _EXEC_ESTABLISH_RETRIES = 2      # total attempts = retries + 1
+    _EXEC_RETRY_BACKOFF_SEC = 0.5    # 0.5s, 1.0s, ...
 
-        OpenShift's HAProxy router drops WebSocket connections idle for ≥60 s.
-        Sending a ping frame every 30 s resets the idle timer and keeps the
-        single long-lived connection alive for the full agent run.
+    def _ws_exec_once(
+        self, command: str, timeout_sec: int | None
+    ) -> tuple[ExecResult, bool, BaseException | None]:
+        """Single WebSocket exec attempt.
 
-        A daemon thread with a hard wall-clock deadline guards against the
-        ``resp.close()`` / ``read_channel()`` deadlock that occurs when HAProxy
-        silently tears down a connection without sending a TCP FIN or WebSocket
-        close frame.
+        Returns ``(result, established, exc)`` where *established* is True once
+        ``k8s_stream`` has returned a live connection (i.e. the command has been
+        handed to the container). When *established* is False the command
+        provably never ran, so the caller may safely retry.
+
+        A keepalive ping every 30 s resets HAProxy's ≥60 s idle timer so a long
+        agent run survives on a single connection. A daemon thread with a hard
+        wall-clock deadline guards against the ``resp.close()`` /
+        ``read_channel()`` deadlock that occurs when HAProxy silently tears down
+        a connection without a TCP FIN or WebSocket close frame.
         """
         result_holder: list[ExecResult] = []
         exc_holder:    list[BaseException] = []
+        established:   list[bool] = []
         stop_ping = threading.Event()
         ws_lock   = threading.Lock()
 
@@ -406,6 +420,7 @@ class KubernetesEnvironment(BaseEnvironment):
                     stderr=True, stdin=False, stdout=True, tty=False,
                     _preload_content=False,
                 )
+                established.append(True)  # connection up — command is now running
                 threading.Thread(
                     target=self._ws_keepalive,
                     args=(resp, 30, stop_ping, ws_lock),
@@ -461,16 +476,49 @@ class KubernetesEnvironment(BaseEnvironment):
         t = threading.Thread(target=_run, daemon=True)
         t.start()
         t.join(timeout=hard_limit)
+        is_established = bool(established)
         if t.is_alive():
             stop_ping.set()
             return ExecResult(
                 stdout="",
                 stderr=f"[ws_exec hard timeout after {hard_limit}s — HAProxy connection dead]",
-                return_code=124)
+                return_code=124), is_established, None
         if exc_holder:
-            raise exc_holder[0]
-        return result_holder[0] if result_holder else ExecResult(
+            return ExecResult(
+                stdout="", stderr=f"[exec error: {exc_holder[0]}]",
+                return_code=1), is_established, exc_holder[0]
+        result = result_holder[0] if result_holder else ExecResult(
             stdout="", stderr="[no result from exec thread]", return_code=1)
+        return result, is_established, None
+
+    def _ws_exec(self, command: str, timeout_sec: int | None) -> ExecResult:
+        """WebSocket exec, retrying only pre-execution (establishment) failures.
+
+        Wraps :meth:`_ws_exec_once`. A failure where the connection never
+        established (transient HAProxy refusal/drop during ``k8s_stream``) is
+        retried with backoff because the command provably never ran. Any failure
+        after the command started — timeout, mid-stream drop, non-zero exit — is
+        returned/raised as-is so a possibly-executed command is never re-run.
+        """
+        attempts = self._EXEC_ESTABLISH_RETRIES + 1
+        for attempt in range(1, attempts + 1):
+            result, established, exc = self._ws_exec_once(command, timeout_sec)
+            if established:
+                if exc is not None:
+                    raise exc  # post-establishment failure — preserve old contract
+                return result
+            # Not established: the command never started — safe to retry.
+            if attempt < attempts:
+                backoff = self._EXEC_RETRY_BACKOFF_SEC * (2 ** (attempt - 1))
+                self.logger.warning(
+                    "exec failed to establish (attempt %d/%d); retrying in %.1fs: %s",
+                    attempt, attempts, backoff, (result.stderr or "")[:160])
+                time.sleep(backoff)
+                continue
+            # Exhausted retries with no establishment.
+            if exc is not None:
+                raise exc
+            return result
 
     async def exec(
         self,
