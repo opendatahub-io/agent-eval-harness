@@ -317,15 +317,8 @@ def run_eval_on_harbor(
     # 4b. Generate the HTML report (same renderer as the local path).
     _write_report(config_path, output_dir, summary, run_meta)
 
-    # 5. Regression detection (suite-level), mirroring score.py regression.
-    score = _load_score_module()
-    regressions = score.detect_regressions(summary["judges"], config.thresholds)
-    if regressions:
-        print(f"REGRESSIONS: {len(regressions)} detected", file=sys.stderr)
-        for r in regressions:
-            print(f"  [{r.judge_name}] {r.metric}: {r.baseline_value} -> {r.current_value}",
-                  file=sys.stderr)
-        return 1
+    # 5. Surface Harbor infra/trial errors first, so they appear even when the
+    # run also regresses (the regression check below early-returns).
     infra = parsed.get("infra_errors", [])
     if infra:
         print(f"INFRA-ERRORS: {len(infra)} step(s) had no verifier reward "
@@ -339,6 +332,16 @@ def run_eval_on_harbor(
               f"a reward (e.g. pod never Ready):", file=sys.stderr)
         for case_id, reason in trial_errs:
             print(f"  [{case_id}] {reason}", file=sys.stderr)
+
+    # 6. Regression detection (suite-level), mirroring score.py regression.
+    score = _load_score_module()
+    regressions = score.detect_regressions(summary["judges"], config.thresholds)
+    if regressions:
+        print(f"REGRESSIONS: {len(regressions)} detected", file=sys.stderr)
+        for r in regressions:
+            print(f"  [{r.judge_name}] {r.metric}: {r.baseline_value} -> {r.current_value}",
+                  file=sys.stderr)
+        return 1
     print(f"Mapped {parsed['n_completed']} case(s) → {output_dir}/summary.yaml "
           f"(mean_reward={parsed['mean_reward']}); "
           f"REGRESSIONS: 0; INFRA-ERRORS: {len(infra)}; TRIAL-ERRORS: {len(trial_errs)}")

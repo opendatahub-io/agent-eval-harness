@@ -476,13 +476,18 @@ class KubernetesEnvironment(BaseEnvironment):
         t = threading.Thread(target=_run, daemon=True)
         t.start()
         t.join(timeout=hard_limit)
-        is_established = bool(established)
         if t.is_alive():
             stop_ping.set()
+            # The worker is still alive (likely wedged in k8s_stream). It may yet
+            # establish the connection and run the command after we return, so we
+            # must NOT report "never established" — that would let the caller
+            # retry and double-execute a non-idempotent command. Force
+            # established=True so this attempt is treated as non-retryable.
             return ExecResult(
                 stdout="",
                 stderr=f"[ws_exec hard timeout after {hard_limit}s — HAProxy connection dead]",
-                return_code=124), is_established, None
+                return_code=124), True, None
+        is_established = bool(established)
         if exc_holder:
             return ExecResult(
                 stdout="", stderr=f"[exec error: {exc_holder[0]}]",
