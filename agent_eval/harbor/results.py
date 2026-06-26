@@ -77,7 +77,11 @@ def _errored_trial_record(trial_dir: Path) -> dict:
                  (trial_dir / "exception.txt").read_text().splitlines()
                  if ln.strip()]
         if lines:
-            reason = lines[-1][:200]
+            # exception.txt is untrusted (a failing container controls it).
+            # Escape control chars / ANSI / newlines and bound the length before
+            # it flows into run_result.json and CI logs — prevents log injection
+            # (CWE-117) and avoids dumping unbounded/secret text (CWE-532).
+            reason = lines[-1].encode("unicode_escape").decode("ascii")[:200]
     except OSError:
         pass
     return {
@@ -125,6 +129,11 @@ def parse_trial(trial_dir: Path) -> dict | None:
     try:
         reward_data = json.loads(reward_path.read_text())
     except (json.JSONDecodeError, OSError):
+        # reward.json present but truncated/unreadable. Same as the missing case:
+        # surface it as an errored trial when Harbor recorded a failure, so it is
+        # not silently dropped from the case total.
+        if (trial_dir / "exception.txt").is_file():
+            return _errored_trial_record(trial_dir)
         return None
 
     metrics = {k: v for k, v in reward_data.items() if k != "reward"}

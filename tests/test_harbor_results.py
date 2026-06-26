@@ -160,3 +160,46 @@ def test_trial_with_no_reward_and_no_exception_is_dropped(tmp_path):
     parsed = R.parse_job(job)
     assert parsed["n_completed"] == 1
     assert parsed["n_trial_errors"] == 0
+
+
+def test_single_step_unreadable_reward_with_exception_is_surfaced(tmp_path):
+    # reward.json present but corrupt + exception.txt -> errored trial, not dropped.
+    job = tmp_path / "job"
+    job.mkdir()
+    bad = job / "case-099__z"
+    (bad / "verifier").mkdir(parents=True)
+    (bad / "verifier" / "reward.json").write_text("{ truncated")  # invalid JSON
+    (bad / "exception.txt").write_text("RuntimeError: boom\n")
+    parsed = R.parse_job(job)
+    assert parsed["n_completed"] == 1
+    assert parsed["n_trial_errors"] == 1
+    assert parsed["trial_errors"][0] == ("case-099", "RuntimeError: boom")
+    t = parsed["trials"][0]
+    assert t["errored"] is True and t["reward"] is None
+
+
+def test_single_step_unreadable_reward_without_exception_is_dropped(tmp_path):
+    # Corrupt reward.json but no exception.txt -> still nothing to surface.
+    job = tmp_path / "job"
+    job.mkdir()
+    bad = job / "case-099__z"
+    (bad / "verifier").mkdir(parents=True)
+    (bad / "verifier" / "reward.json").write_text("{ truncated")
+    parsed = R.parse_job(job)
+    assert parsed["n_completed"] == 0
+    assert parsed["n_trial_errors"] == 0
+
+
+def test_trial_error_reason_is_sanitized(tmp_path):
+    # exception.txt is untrusted: control chars / ANSI / newlines must be escaped
+    # and the reason bounded before it reaches run_result.json or CI logs.
+    job = tmp_path / "job"
+    job.mkdir()
+    bad = job / "case-007__z"
+    bad.mkdir()
+    (bad / "exception.txt").write_text("RuntimeError: \x1b[31mboom\x1b[0m\twith\ttabs\n")
+    parsed = R.parse_job(job)
+    reason = parsed["trial_errors"][0][1]
+    assert "\x1b" not in reason and "\t" not in reason   # raw control chars gone
+    assert "\\x1b" in reason                              # escaped form retained
+    assert len(reason) <= 200
