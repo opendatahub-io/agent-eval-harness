@@ -90,6 +90,7 @@ def parse_trial(trial_dir: Path) -> dict | None:
         "metrics": metrics,
         "per_judge": {},
         "errored": False,
+        "infra_error_steps": [],
         "cost_usd": None,
         "token_usage": None,
     }
@@ -154,6 +155,7 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
 
     rewards = []
     per_judge: dict = {}
+    infra_error_steps: list[str] = []
     total_cost = 0.0
     total_turns = 0
     total_duration = 0.0
@@ -163,6 +165,11 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
     for step_dir in step_dirs:
         step_name = step_dir.name
 
+        # The verifier (test.sh) always writes reward.json as its last action,
+        # so a present-and-parseable reward means the verifier actually ran.
+        # A missing/unreadable reward.json means the verifier never completed —
+        # almost always a transient k8s exec / HAProxy connection drop, NOT a
+        # genuine score of 0. We must not conflate the two.
         reward_path = step_dir / "verifier" / "reward.json"
         step_reward = None
         if reward_path.is_file():
@@ -172,7 +179,10 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
             except (json.JSONDecodeError, OSError):
                 pass
 
-        if isinstance(step_reward, (int, float)):
+        # bool is an int subclass — guard so a genuine reward of 0.0 still
+        # counts toward the mean while a missing reward never does.
+        verifier_ran = isinstance(step_reward, (int, float)) and not isinstance(step_reward, bool)
+        if verifier_ran:
             rewards.append(step_reward)
 
         transcript = step_dir / "agent" / "claude-code.txt"
@@ -192,11 +202,23 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
             rationale_parts.append(f"{step_duration:.0f}s")
         rationale = ", ".join(rationale_parts) if rationale_parts else ""
 
-        per_judge[step_name] = {
-            "value": step_reward if step_reward is not None else False,
-            "rationale": rationale,
-            "judge_type": "step",
-        }
+        if verifier_ran:
+            per_judge[step_name] = {
+                "value": step_reward,
+                "rationale": rationale,
+                "judge_type": "step",
+            }
+        else:
+            # value=None (not False) so it is excluded from the judge mean and
+            # not counted as a real 0. Flagged so the run can surface it.
+            per_judge[step_name] = {
+                "value": None,
+                "rationale": (rationale + "; " if rationale else "")
+                + "verifier produced no reward (infra/exec failure, not a score)",
+                "judge_type": "step",
+                "error": "no_verifier_reward",
+            }
+            infra_error_steps.append(step_name)
 
         if isinstance(step_cost, (int, float)):
             total_cost += step_cost
@@ -235,6 +257,7 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
         "metrics": {s.name: per_judge[s.name]["value"] for s in step_dirs},
         "per_judge": per_judge,
         "errored": (trial_dir / "exception.txt").is_file(),
+        "infra_error_steps": infra_error_steps,
         "cost_usd": total_cost if total_cost > 0 else None,
         "token_usage": token_totals or None,
         "num_turns": total_turns if total_turns > 0 else None,
@@ -262,6 +285,12 @@ def parse_job(job_dir: Path) -> dict:
 
     rewards = [t["reward"] for t in trials if isinstance(t.get("reward"), (int, float))]
     mean_reward = sum(rewards) / len(rewards) if rewards else None
+
+    # Steps whose verifier never produced a reward (transient k8s exec / HAProxy
+    # drop). Surfaced separately so they are visible rather than silently scored 0.
+    infra_errors = [(t["case_id"], step)
+                    for t in trials
+                    for step in t.get("infra_error_steps", [])]
 
     # Aggregate each metric across trials (mean), mirroring score.py's shape.
     aggregated: dict[str, dict] = {}
@@ -316,6 +345,8 @@ def parse_job(job_dir: Path) -> dict:
         "mean_reward": mean_reward,
         "n_completed": len(trials),
         "n_errored": sum(1 for t in trials if t["errored"]),
+        "infra_errors": infra_errors,
+        "n_infra_errors": len(infra_errors),
         "aggregated": aggregated,
         "cost_usd": total_cost,
         "token_usage": token_usage or None,

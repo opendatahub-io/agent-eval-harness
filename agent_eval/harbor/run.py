@@ -304,6 +304,8 @@ def run_eval_on_harbor(
         "cost_usd": parsed.get("cost_usd"),
         "token_usage": parsed.get("token_usage"),
         "harbor_job_dir": parsed["job_dir"],
+        "n_infra_errors": parsed.get("n_infra_errors", 0),
+        "infra_errors": parsed.get("infra_errors", []),
     }
     (output_dir / "run_result.json").write_text(json.dumps(run_meta, indent=2) + "\n")
     (output_dir / "summary.yaml").write_text(
@@ -322,8 +324,16 @@ def run_eval_on_harbor(
             print(f"  [{r.judge_name}] {r.metric}: {r.baseline_value} -> {r.current_value}",
                   file=sys.stderr)
         return 1
+    infra = parsed.get("infra_errors", [])
+    if infra:
+        print(f"INFRA-ERRORS: {len(infra)} step(s) had no verifier reward "
+              f"(transient k8s exec; excluded from judge means, not scored 0):",
+              file=sys.stderr)
+        for case_id, step in infra:
+            print(f"  [{case_id}] {step}", file=sys.stderr)
     print(f"Mapped {parsed['n_completed']} case(s) → {output_dir}/summary.yaml "
-          f"(mean_reward={parsed['mean_reward']}); REGRESSIONS: 0")
+          f"(mean_reward={parsed['mean_reward']}); "
+          f"REGRESSIONS: 0; INFRA-ERRORS: {len(infra)}")
     return 0
 
 
