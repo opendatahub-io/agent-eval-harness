@@ -10,15 +10,16 @@ from pathlib import Path
 DEFAULT_RESULT_CAP = 50000
 
 
-def extract_read_calls(events):
+def extract_read_calls(events, include_subagents=True):
     """Extract Read tool calls from parsed events for documentation tracking.
 
     Args:
         events: List of event dicts from parse_stream_events().
+        include_subagents: If True (default), include reads from subagent events.
+            Set to False to only return top-level reads.
 
     Returns:
         List of dicts with {file_path, timestamp, offset, limit, pages} for each Read call.
-        Only includes top-level Read calls (not those made by subagents).
     """
     if not events:
         return []
@@ -29,8 +30,7 @@ def extract_read_calls(events):
         if event.get("type") != "assistant":
             continue
 
-        # Skip subagent tool calls (parent_tool_use_id indicates delegation)
-        if event.get("parent_tool_use_id"):
+        if not include_subagents and event.get("parent_tool_use_id"):
             continue
 
         timestamp = event.get("timestamp")

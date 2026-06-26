@@ -229,25 +229,36 @@ Generate exactly {count} test case(s) following the template instructions above.
 
 **IMPORTANT**: Return ONLY a valid JSON array with no additional text, markdown formatting, or explanation.
 
-Each test case should be a JSON object with:
-- "input": dict matching the template's input schema
-- "annotations": optional dict with metadata (category, difficulty, etc.)
+Each test case MUST be a JSON object with exactly two top-level keys:
+- "input": dict with fields the agent receives (typically just "prompt" — the question or task).
+  Do NOT put evaluation metadata here.
+- "annotations": dict with evaluation metadata used by judges to score the response.
+  This includes: category, difficulty, expected_files, expected_mentions,
+  expected_rejection, expected_guidance, severity, constraint_type, topic, and
+  any other scoring criteria.
 
 Example format:
 ```json
 [
   {{
     "input": {{
-      "prompt": "User question here",
-      "expected_files": ["path/to/doc.md"]
+      "prompt": "User question or task for the agent"
     }},
     "annotations": {{
-      "category": "navigation",
-      "difficulty": "easy"
+      "category": "{category.name}",
+      "difficulty": "medium",
+      "expected_files": ["path/to/relevant-doc.md"],
+      "expected_mentions": ["keyword1", "keyword2"]
     }}
   }}
 ]
 ```
+
+CRITICAL RULES:
+- "input" contains ONLY what the agent sees (typically just "prompt")
+- "annotations" contains ALL evaluation metadata (expected_files, expected_mentions,
+  expected_rejection, expected_guidance, category, difficulty, etc.)
+- NEVER put expected_files, expected_mentions, or any expected_* fields in "input"
 
 Generate realistic, varied test cases that:
 1. Use actual paths/topics from the domain context (if available)
@@ -290,7 +301,34 @@ Return the JSON array now:"""
             file=sys.stderr,
         )
 
+    # Move annotation fields that the LLM misplaced into input
+    _fix_misplaced_annotation_fields(cases)
+
     return cases
+
+
+_ANNOTATION_FIELDS = {
+    "expected_files", "expected_mentions", "expected_rejection",
+    "expected_guidance", "category", "difficulty", "severity",
+    "constraint_type", "topic",
+}
+
+
+def _fix_misplaced_annotation_fields(cases: list[dict]) -> None:
+    """Move known annotation fields from input to annotations if the LLM misplaced them."""
+    for case in cases:
+        if not isinstance(case.get("input"), dict):
+            continue
+        misplaced = _ANNOTATION_FIELDS & set(case["input"].keys())
+        if misplaced:
+            if "annotations" not in case:
+                case["annotations"] = {}
+            for field in misplaced:
+                case["annotations"][field] = case["input"].pop(field)
+            print(
+                f"  WARNING: Moved {misplaced} from input to annotations",
+                file=sys.stderr,
+            )
 
 
 def _extract_json_from_response(text: str) -> list:

@@ -6,6 +6,9 @@ Failure means: The agent did not read enough of the expected documentation.
 Arguments:
     min_coverage (float): fraction of expected_files that must be read (default 0.8)
     match (str): path match strategy — "suffix" (default), "exact", or "basename"
+    include_subagents (bool): include reads from subagent/Explore events (default true).
+        Agents in prompt mode typically delegate file reads to Explore subagents,
+        so disabling this will miss most reads.
 
 Note: This judge only tracks Read tool calls. If an agent uses Bash with cat/head/tail
 to read files, those won't appear in the coverage check. When setting min_coverage
@@ -26,14 +29,15 @@ def _normalize(path, match):
 def judge(outputs, **kwargs):
     min_coverage = kwargs.get("min_coverage", 0.8)
     match = kwargs.get("match", "suffix")
+    include_subagents = kwargs.get("include_subagents", True)
 
     expected = [_normalize(p, match)
                 for p in outputs.get("annotations", {}).get("expected_files", [])]
     if not expected:
         return (True, "No expected_files specified — nothing to verify")
 
-    # Derive read_calls from events on demand (same pattern as conversation/tool_calls)
-    read_calls = extract_read_calls(outputs.get("events", []))
+    read_calls = extract_read_calls(outputs.get("events", []),
+                                    include_subagents=include_subagents)
     read = [_normalize(c.get("file_path"), match) for c in read_calls]
 
     def _hit(exp):

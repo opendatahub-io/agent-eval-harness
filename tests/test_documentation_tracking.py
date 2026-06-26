@@ -172,8 +172,8 @@ class TestExtractReadCalls:
         assert len(read_calls) == 1
         assert read_calls[0]["file_path"] == "/path/to/file.md"
 
-    def test_skip_subagent_read_calls(self):
-        """Test that Read calls from subagents are excluded."""
+    def test_include_subagent_read_calls_by_default(self):
+        """Test that Read calls from subagents are included by default."""
         events = [
             {
                 "type": "assistant",
@@ -211,9 +211,13 @@ class TestExtractReadCalls:
             }
         ]
 
+        # Default: include subagent reads
         read_calls = extract_read_calls(events)
+        assert len(read_calls) == 3
+        assert read_calls[1]["file_path"] == "/path/to/subagent-file.md"
 
-        # Should only have the 2 main-level Read calls, not the subagent one
+        # Opt-out: exclude subagent reads
+        read_calls = extract_read_calls(events, include_subagents=False)
         assert len(read_calls) == 2
         assert read_calls[0]["file_path"] == "/path/to/main-file.md"
         assert read_calls[1]["file_path"] == "/path/to/another-main-file.md"
