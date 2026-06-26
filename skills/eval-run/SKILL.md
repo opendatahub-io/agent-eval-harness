@@ -264,7 +264,7 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$CLAUDE_SKILL_DIR/../..}"
 VENV_PY="$PLUGIN_ROOT/.eval-venv/bin/python3"
 [ -x "$VENV_PY" ] || VENV_PY=python3
 
-PYTHONPATH="$PLUGIN_ROOT:$(pwd)" "$VENV_PY" -m agent_eval.harbor.run \
+PYTHONPATH="$PLUGIN_ROOT:$(pwd)${PYTHONPATH:+:$PYTHONPATH}" "$VENV_PY" -m agent_eval.harbor.run \
     --config <config> --model <model> \
     --output $AGENT_EVAL_RUNS_DIR/<eval-name>/<run-id> \
     --tasks-dir <tasks-dir> --jobs-dir <tmp-jobs> \
@@ -294,7 +294,7 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$CLAUDE_SKILL_DIR/../..}"
 VENV_PY="$PLUGIN_ROOT/.eval-venv/bin/python3"
 [ -x "$VENV_PY" ] || VENV_PY=python3
 
-PYTHONPATH="$PLUGIN_ROOT:$(pwd)" "$VENV_PY" -m agent_eval.evalhub.runner \
+PYTHONPATH="$PLUGIN_ROOT:$(pwd)${PYTHONPATH:+:$PYTHONPATH}" "$VENV_PY" -m agent_eval.evalhub.runner \
     --config <config> --model <model> \
     --output $AGENT_EVAL_RUNS_DIR/<eval-name>/<run-id> \
     [--evalhub-url <url>] [--namespace <ns>] [--project-dir <path>]
