@@ -123,3 +123,40 @@ def test_multistep_infra_excluded_from_step_mean(tmp_path):
     assert parsed["aggregated"]["create"]["values"] == [1.0]
     assert parsed["aggregated"]["create"]["mean"] == 1.0
     assert parsed["n_infra_errors"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Trial that failed before producing any reward (e.g. pod never Ready) must be
+# surfaced as an errored trial, not silently dropped from the case total.
+# ---------------------------------------------------------------------------
+
+def test_trial_failed_before_reward_is_surfaced(tmp_path):
+    job = tmp_path / "job"
+    job.mkdir()
+    # A healthy single-step trial.
+    _make_trial(job, "case-001__a", 1.0, {"files_exist": 1.0})
+    # A trial that never produced steps/ or reward.json but has exception.txt.
+    bad = job / "case-013__b"
+    bad.mkdir()
+    (bad / "exception.txt").write_text("pod aeh-case-013-... not Ready after 300s\n")
+
+    parsed = R.parse_job(job)
+    assert parsed["n_completed"] == 2                      # not dropped
+    assert parsed["n_trial_errors"] == 1
+    assert parsed["trial_errors"][0][0] == "case-013"
+    assert "not Ready" in parsed["trial_errors"][0][1]
+    bad_trial = next(t for t in parsed["trials"] if t["case_id"] == "case-013")
+    assert bad_trial["errored"] is True
+    assert bad_trial["reward"] is None
+    assert parsed["mean_reward"] == 1.0                    # errored trial excluded
+
+
+def test_trial_with_no_reward_and_no_exception_is_dropped(tmp_path):
+    # Without an exception.txt there's nothing to surface — keep returning None.
+    job = tmp_path / "job"
+    job.mkdir()
+    _make_trial(job, "case-001__a", 1.0, {})
+    (job / "case-002__b").mkdir()  # empty, no reward, no exception
+    parsed = R.parse_job(job)
+    assert parsed["n_completed"] == 1
+    assert parsed["n_trial_errors"] == 0

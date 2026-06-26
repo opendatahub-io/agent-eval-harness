@@ -62,18 +62,64 @@ def _extract_transcript_metrics(transcript_path: Path) -> dict:
     return result
 
 
+def _errored_trial_record(trial_dir: Path) -> dict:
+    """Minimal record for a trial that failed before producing any reward.
+
+    Used when Harbor wrote an ``exception.txt`` but no ``steps/`` or
+    ``reward.json`` (e.g. the pod never became Ready). Surfaced rather than
+    dropped so the run counts all attempted cases and the failure is visible.
+    """
+    reason = "trial failed before producing a reward"
+    try:
+        # exception.txt is usually a Python traceback; the last non-empty line
+        # carries the actual error (e.g. "RuntimeError: pod ... not Ready").
+        lines = [ln.strip() for ln in
+                 (trial_dir / "exception.txt").read_text().splitlines()
+                 if ln.strip()]
+        if lines:
+            reason = lines[-1][:200]
+    except OSError:
+        pass
+    return {
+        "case_id": _case_id_from_dir(trial_dir),
+        "trial_dir": trial_dir.name,
+        "trial_path": str(trial_dir),
+        "reward": None,
+        "metrics": {},
+        "per_judge": {},
+        "errored": True,
+        "infra_error_steps": [],
+        "trial_error": reason,
+        "cost_usd": None,
+        "token_usage": None,
+        "num_turns": None,
+        "duration_s": None,
+        "agent_version": None,
+    }
+
+
 def parse_trial(trial_dir: Path) -> dict | None:
     """Parse one Harbor trial directory. Returns None if it has no reward.
 
     Supports both single-step trials (reward at ``verifier/reward.json``)
     and multi-step trials (per-step rewards under ``steps/<name>/verifier/``).
+    A trial that failed before producing any reward but has Harbor's
+    ``exception.txt`` is returned as a minimal errored record (not None).
     """
     steps_dir = trial_dir / "steps"
     if steps_dir.is_dir() and any(steps_dir.iterdir()):
-        return _parse_multi_step_trial(trial_dir, steps_dir)
+        rec = _parse_multi_step_trial(trial_dir, steps_dir)
+        if rec is not None:
+            return rec
 
     reward_path = trial_dir / "verifier" / "reward.json"
     if not reward_path.is_file():
+        # No reward at all. If Harbor recorded a trial-level failure
+        # (exception.txt), surface it as an errored trial rather than dropping
+        # it silently — a pod that never became Ready would otherwise vanish
+        # from the run and under-count the case total.
+        if (trial_dir / "exception.txt").is_file():
+            return _errored_trial_record(trial_dir)
         return None
 
     try:
@@ -292,6 +338,11 @@ def parse_job(job_dir: Path) -> dict:
                     for t in trials
                     for step in t.get("infra_error_steps", [])]
 
+    # Trials that failed before producing any reward (e.g. pod never Ready).
+    # Surfaced so they are visible rather than dropped from the case total.
+    trial_errors = [(t["case_id"], t["trial_error"])
+                    for t in trials if t.get("trial_error")]
+
     # Aggregate each metric across trials (mean), mirroring score.py's shape.
     aggregated: dict[str, dict] = {}
     for trial in trials:
@@ -347,6 +398,8 @@ def parse_job(job_dir: Path) -> dict:
         "n_errored": sum(1 for t in trials if t["errored"]),
         "infra_errors": infra_errors,
         "n_infra_errors": len(infra_errors),
+        "trial_errors": trial_errors,
+        "n_trial_errors": len(trial_errors),
         "aggregated": aggregated,
         "cost_usd": total_cost,
         "token_usage": token_usage or None,
