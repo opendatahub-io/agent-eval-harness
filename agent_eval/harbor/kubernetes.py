@@ -550,15 +550,45 @@ class KubernetesEnvironment(BaseEnvironment):
     # --- file transfer (tar + base64 over exec) -----------------------------
     #
     # cp goes through `exec` + base64 rather than the websocket stdin channel
-    # (which has no clean half-close for tar's EOF). Uploads (env dir, tests)
-    # are small; downloads stream a base64'd tar out via stdout.
+    # (which has no clean half-close for tar's EOF). The base64 blob is written
+    # to a temp file in chunks (see _write_b64_chunked) rather than passed as a
+    # single argument: Linux caps one argv entry at MAX_ARG_STRLEN (128 KiB)
+    # regardless of the larger total ARG_MAX, so a big blob as one `printf` arg
+    # fails with E2BIG (this silently broke "upload agent logs back to
+    # environment" for every multi-step trial). Downloads stream out via stdout,
+    # which has no such limit.
+
+    # Stay well under Linux's 128 KiB single-argument cap (MAX_ARG_STRLEN), with
+    # headroom for the rest of the command line.
+    _B64_CHUNK = 100_000
+
+    async def _write_b64_chunked(self, b64: str, remote_path: str, what: str) -> None:
+        """Write a base64 string to *remote_path* in sub-arg-limit chunks.
+
+        Each chunk is one exec (`printf %s <chunk> >> file`); the first truncates,
+        the rest append. Transient establishment failures are retried by _ws_exec.
+        """
+        q = shlex.quote(remote_path)
+        if not b64:
+            await self._checked_exec(f": > {q}", f"{what}: create empty")
+            return
+        for offset in range(0, len(b64), self._B64_CHUNK):
+            chunk = b64[offset:offset + self._B64_CHUNK]
+            redir = ">" if offset == 0 else ">>"
+            await self._checked_exec(
+                f"printf %s {shlex.quote(chunk)} {redir} {q}",
+                f"{what}: chunk @{offset}")
 
     async def upload_file(self, source_path: Path | str, target_path: str) -> None:
         b64 = base64.b64encode(Path(source_path).read_bytes()).decode()
         parent = shlex.quote(str(Path(target_path).parent))
-        cmd = (f"mkdir -p {parent} && printf %s {shlex.quote(b64)} | base64 -d "
-               f"> {shlex.quote(target_path)}")
-        await self._checked_exec(cmd, f"upload_file -> {target_path}")
+        tmp = f"{target_path}.aeh-b64.tmp"
+        qt, qtmp = shlex.quote(target_path), shlex.quote(tmp)
+        await self._checked_exec(f"mkdir -p {parent}", f"upload_file mkdir -> {target_path}")
+        await self._write_b64_chunked(b64, tmp, f"upload_file -> {target_path}")
+        await self._checked_exec(
+            f"base64 -d {qtmp} > {qt} && rm -f {qtmp}",
+            f"upload_file decode -> {target_path}")
 
     async def upload_dir(self, source_dir: Path | str, target_dir: str) -> None:
         def _reset_perms(info):
@@ -567,16 +597,22 @@ class KubernetesEnvironment(BaseEnvironment):
             info.mode = 0o755 if info.isdir() else 0o644
             return info
 
+        # gzip the tar — agent-log dirs are text and compress ~5-10x, which keeps
+        # the chunk count (and thus exec count) low.
         buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w") as tf:
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
             for item in sorted(Path(source_dir).iterdir()):
                 tf.add(item, arcname=item.name, filter=_reset_perms)
         b64 = base64.b64encode(buf.getvalue()).decode()
         tgt = shlex.quote(target_dir)
-        cmd = (f"mkdir -p {tgt} && printf %s {shlex.quote(b64)} | base64 -d "
-               f"| tar xmf - --no-same-owner --no-same-permissions -C {tgt} 2>/dev/null; "
-               f"true")
-        await self._checked_exec(cmd, f"upload_dir -> {target_dir}")
+        tmp = "/tmp/aeh-upload-dir.b64"
+        qtmp = shlex.quote(tmp)
+        await self._checked_exec(f"mkdir -p {tgt}", f"upload_dir mkdir -> {target_dir}")
+        await self._write_b64_chunked(b64, tmp, f"upload_dir -> {target_dir}")
+        await self._checked_exec(
+            f"base64 -d {qtmp} | tar xzmf - --no-same-owner --no-same-permissions "
+            f"-C {tgt} 2>/dev/null; rm -f {qtmp}; true",
+            f"upload_dir extract -> {target_dir}")
 
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
         res = await self.exec(f"base64 -w0 {shlex.quote(source_path)}")
