@@ -12,6 +12,7 @@ so this step does not re-run judges; it aggregates their results. Pairwise stays
 a suite-level step on top (run separately over two run dirs).
 """
 
+import agent_eval._bootstrap  # noqa: F401 — auto-activate venv before 3p imports
 import argparse
 import importlib.util
 import json

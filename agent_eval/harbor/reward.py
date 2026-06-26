@@ -26,6 +26,7 @@ Usage:
         [--run-id <id>] [--out-dir /logs/verifier]
 """
 
+import agent_eval._bootstrap  # noqa: F401 — auto-activate venv before 3p imports
 import argparse
 import importlib.util
 import json

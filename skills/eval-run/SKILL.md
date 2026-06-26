@@ -256,7 +256,15 @@ it handles task generation (or reuse), `harbor run`, per-case judging (in-contai
 result mapping, and report generation in one call:
 
 ```bash
-PYTHONPATH="$(pwd)" python3 -m agent_eval.harbor.run \
+# Run under the eval-harness venv interpreter so compiled deps load with the
+# correct ABI and the process is never re-exec'd mid-run. Falls back to system
+# python3 if the venv is absent. The venv holds only third-party deps, so the
+# plugin root (source of the agent_eval package) must be on PYTHONPATH.
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$CLAUDE_SKILL_DIR/../..}"
+VENV_PY="$PLUGIN_ROOT/.eval-venv/bin/python3"
+[ -x "$VENV_PY" ] || VENV_PY=python3
+
+PYTHONPATH="$PLUGIN_ROOT:$(pwd)" "$VENV_PY" -m agent_eval.harbor.run \
     --config <config> --model <model> \
     --output $AGENT_EVAL_RUNS_DIR/<eval-name>/<run-id> \
     --tasks-dir <tasks-dir> --jobs-dir <tmp-jobs> \
@@ -282,7 +290,11 @@ runner instead — it creates ConfigMaps, submits a job to EvalHub, polls for
 completion, and maps the results back:
 
 ```bash
-python3 -m agent_eval.evalhub.runner \
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$CLAUDE_SKILL_DIR/../..}"
+VENV_PY="$PLUGIN_ROOT/.eval-venv/bin/python3"
+[ -x "$VENV_PY" ] || VENV_PY=python3
+
+PYTHONPATH="$PLUGIN_ROOT:$(pwd)" "$VENV_PY" -m agent_eval.evalhub.runner \
     --config <config> --model <model> \
     --output $AGENT_EVAL_RUNS_DIR/<eval-name>/<run-id> \
     [--evalhub-url <url>] [--namespace <ns>] [--project-dir <path>]
