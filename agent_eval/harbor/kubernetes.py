@@ -496,6 +496,32 @@ class KubernetesEnvironment(BaseEnvironment):
             stdout="", stderr="[no result from exec thread]", return_code=1)
         return result, is_established, None
 
+    def _log_exec(self, command: str, result: ExecResult, established: bool,
+                  exc: BaseException | None, duration: float, attempts: int) -> None:
+        """Record the outcome of an exec so failures are diagnosable.
+
+        Harbor calls ``exec`` for everything (agent, verifier, file transfer) and
+        only surfaces a generic "step failed" on error, so without this the
+        return code / stderr / establishment state of a failed exec is lost.
+        Successful execs log at debug; failures log at warning with the fields
+        that explain *why* (rc, established vs post-establishment drop, duration,
+        retry count). ``cmd`` is the first line truncated so a large upload chunk
+        doesn't flood the log; ``detail`` is escaped (untrusted container output,
+        CWE-117) and bounded (CWE-532).
+        """
+        rc = getattr(result, "return_code", None)
+        cmd = (command.strip().splitlines() or [""])[0][:160]
+        if exc is None and rc in (None, 0):
+            self.logger.debug("exec ok: rc=0 dur=%.2fs attempts=%d cmd=%r",
+                              duration, attempts, cmd)
+            return
+        detail = (f"{type(exc).__name__}: {exc}" if exc is not None
+                  else (result.stderr or ""))
+        detail = detail.encode("unicode_escape").decode("ascii")[:300]
+        self.logger.warning(
+            "exec FAILED: rc=%s established=%s dur=%.2fs attempts=%d cmd=%r detail=%r",
+            rc, established, duration, attempts, cmd, detail)
+
     def _ws_exec(self, command: str, timeout_sec: int | None) -> ExecResult:
         """WebSocket exec, retrying only pre-execution (establishment) failures.
 
@@ -506,9 +532,12 @@ class KubernetesEnvironment(BaseEnvironment):
         returned/raised as-is so a possibly-executed command is never re-run.
         """
         attempts = self._EXEC_ESTABLISH_RETRIES + 1
+        start = time.monotonic()
         for attempt in range(1, attempts + 1):
             result, established, exc = self._ws_exec_once(command, timeout_sec)
             if established:
+                self._log_exec(command, result, established, exc,
+                               time.monotonic() - start, attempt)
                 if exc is not None:
                     raise exc  # post-establishment failure — preserve old contract
                 return result
@@ -521,6 +550,8 @@ class KubernetesEnvironment(BaseEnvironment):
                 time.sleep(backoff)
                 continue
             # Exhausted retries with no establishment.
+            self._log_exec(command, result, established, exc,
+                           time.monotonic() - start, attempt)
             if exc is not None:
                 raise exc
             return result

@@ -127,3 +127,43 @@ def test_establishment_failure_without_exception_returns_result(monkeypatch):
     res = env._ws_exec("test.sh", None)
     assert res.return_code == 124
     assert len(calls) == env._EXEC_ESTABLISH_RETRIES + 1
+
+
+def test_failed_exec_is_logged_with_diagnostics(monkeypatch, caplog):
+    # A post-establishment failure must be logged (rc, established, cmd, detail)
+    # so the reason is diagnosable rather than vanishing into "step failed".
+    env = _env()
+
+    def fake_once(cmd, timeout):
+        return ExecResult(stdout="", stderr="oom-killed", return_code=137), True, None
+
+    monkeypatch.setattr(env, "_ws_exec_once", fake_once)
+    with caplog.at_level(logging.WARNING, logger="test-exec-retry"):
+        res = env._ws_exec("cd /workspace && ./steps/auto-fix/tests/test.sh", None)
+    assert res.return_code == 137
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("exec FAILED" in m and "rc=137" in m and "established=True" in m
+               and "test.sh" in m for m in msgs), msgs
+
+
+def test_successful_exec_does_not_warn(monkeypatch, caplog):
+    env = _env()
+    monkeypatch.setattr(env, "_ws_exec_once",
+                        lambda c, t: (ExecResult(stdout="ok", stderr="", return_code=0), True, None))
+    with caplog.at_level(logging.WARNING, logger="test-exec-retry"):
+        env._ws_exec("ls", None)
+    assert not any("exec FAILED" in r.getMessage() for r in caplog.records)
+
+
+def test_sensitive_exec_stderr_is_sanitized(monkeypatch, caplog):
+    # stderr is untrusted container output: control chars / ANSI must be escaped
+    # and the detail bounded before it reaches the log.
+    env = _env()
+    payload = "secret\x1b[31m\nLEAKED: token=abc\t" + "x" * 500
+    monkeypatch.setattr(env, "_ws_exec_once",
+                        lambda c, t: (ExecResult(stdout="", stderr=payload, return_code=1), True, None))
+    with caplog.at_level(logging.WARNING, logger="test-exec-retry"):
+        env._ws_exec("./test.sh", None)
+    detail = next(r.getMessage() for r in caplog.records if "exec FAILED" in r.getMessage())
+    assert "\x1b" not in detail and "\n" not in detail.split("detail=")[-1]
+    assert "\\x1b" in detail  # escaped form retained
