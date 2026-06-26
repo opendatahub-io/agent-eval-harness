@@ -1,3 +1,11 @@
+## [1.16.1](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.16.0...v1.16.1) (2026-06-26)
+
+
+### Bug Fixes
+
+* **harbor:** address review on the venv-activation guard ([526ba2c](https://github.com/opendatahub-io/agent-eval-harness/commit/526ba2c3ba399439c5883d7c80cb32a3015a5533))
+* **harbor:** prevent duplicate pod creation from mid-run venv re-exec ([9d0fca6](https://github.com/opendatahub-io/agent-eval-harness/commit/9d0fca65b22bcb9df5cf2908e085636f9dfc17d8))
+
 # [1.16.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.15.0...v1.16.0) (2026-06-25)
 
 
