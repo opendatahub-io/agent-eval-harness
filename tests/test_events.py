@@ -583,7 +583,17 @@ class TestEdgeCases:
         assert _sanitize_text(b"hello") == "hello"
 
     def test_benchmark_parse_linear_scaling(self):
-        """T027: verify parsing scales linearly with input size."""
+        """T027: parsing scales ~linearly (not O(n^2)) with input size.
+
+        Compares *per-line* parse cost between two adequately-sized inputs,
+        taking the best of several iterations to damp scheduler/GC jitter.
+
+        A sub-millisecond baseline (e.g. 10 lines ~= 50us) is deliberately
+        avoided: dividing by such a tiny number makes the ratio dominated by
+        timer noise, which is flaky under CI load. Linear parsing keeps the
+        per-line cost roughly constant (ratio ~1); an O(n^2) regression would
+        scale per-line cost ~10x between these sizes, which the 4x bound catches.
+        """
         import time
 
         def make_stdout(n_lines):
@@ -595,18 +605,22 @@ class TestEdgeCases:
                 events.append(make_user(tool_results=[(f"tu_{i}", f"content {i}")]))
             return _to_stdout(events)
 
-        sizes = [10, 100, 1000]
-        times = []
-        for n in sizes:
-            stdout = make_stdout(n)
-            start = time.perf_counter()
-            parse_stream_events(stdout)
-            elapsed = time.perf_counter() - start
-            times.append(elapsed)
+        def best_per_line(n_lines, iterations=5):
+            stdout = make_stdout(n_lines)
+            parse_stream_events(stdout)  # warm up caches/imports
+            best = float("inf")
+            for _ in range(iterations):
+                start = time.perf_counter()
+                parse_stream_events(stdout)
+                best = min(best, time.perf_counter() - start)
+            return best / n_lines
 
-        # 100x more input should take less than 200x the time (allowing overhead)
-        ratio = times[2] / max(times[0], 1e-9)
-        assert ratio < 200, f"Non-linear scaling: {sizes[0]} lines={times[0]:.4f}s, {sizes[2]} lines={times[2]:.4f}s, ratio={ratio:.1f}"
+        small = best_per_line(100)
+        large = best_per_line(1000)
+        ratio = large / small if small > 0 else 1.0
+        assert ratio < 4.0, (
+            f"Parsing appears super-linear: per-line 100 lines={small * 1e6:.2f}us, "
+            f"1000 lines={large * 1e6:.2f}us, ratio={ratio:.2f}")
 
     def test_mixed_valid_and_invalid_lines(self):
         """Lines that aren't valid JSON are silently skipped."""
