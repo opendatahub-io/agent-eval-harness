@@ -306,6 +306,8 @@ def run_eval_on_harbor(
         "harbor_job_dir": parsed["job_dir"],
         "n_infra_errors": parsed.get("n_infra_errors", 0),
         "infra_errors": parsed.get("infra_errors", []),
+        "n_trial_errors": parsed.get("n_trial_errors", 0),
+        "trial_errors": parsed.get("trial_errors", []),
     }
     (output_dir / "run_result.json").write_text(json.dumps(run_meta, indent=2) + "\n")
     (output_dir / "summary.yaml").write_text(
@@ -331,9 +333,15 @@ def run_eval_on_harbor(
               file=sys.stderr)
         for case_id, step in infra:
             print(f"  [{case_id}] {step}", file=sys.stderr)
+    trial_errs = parsed.get("trial_errors", [])
+    if trial_errs:
+        print(f"TRIAL-ERRORS: {len(trial_errs)} trial(s) failed before producing "
+              f"a reward (e.g. pod never Ready):", file=sys.stderr)
+        for case_id, reason in trial_errs:
+            print(f"  [{case_id}] {reason}", file=sys.stderr)
     print(f"Mapped {parsed['n_completed']} case(s) → {output_dir}/summary.yaml "
           f"(mean_reward={parsed['mean_reward']}); "
-          f"REGRESSIONS: 0; INFRA-ERRORS: {len(infra)}")
+          f"REGRESSIONS: 0; INFRA-ERRORS: {len(infra)}; TRIAL-ERRORS: {len(trial_errs)}")
     return 0
 
 
