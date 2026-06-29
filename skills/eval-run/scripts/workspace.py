@@ -26,7 +26,7 @@ from pathlib import Path
 
 import yaml
 
-from agent_eval.config import EvalConfig
+from agent_eval.config import EvalConfig, _validate_path_segment
 from workspace_files import _copy_input_files
 
 
@@ -77,6 +77,13 @@ def main():
     # its own random directory so re-runs with the same run-id never
     # silently destroy a previous workspace's uncollected artifacts.
     if args.force:
+        # Defense-in-depth: validate run_id is a single safe path segment
+        # before using it in a deterministic path that gets shutil.rmtree'd.
+        try:
+            _validate_path_segment(args.run_id, "run-id")
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            sys.exit(1)
         # Deterministic path — caller explicitly accepts overwrite risk.
         workspace = (Path(tempfile.gettempdir()) / "agent-eval" / args.run_id).resolve()
         if workspace.exists():
