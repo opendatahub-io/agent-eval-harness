@@ -136,13 +136,23 @@ def _inject_os_trust():
     importable (and after any os.execv in ``_activate``) — a no-op if truststore
     is absent, e.g. the in-pod harbor verifier that has no venv.
     """
-    if os.environ.get("REQUESTS_CA_BUNDLE") or os.environ.get("SSL_CERT_FILE"):
+    # Respect any explicit CA configuration — requests also falls back to
+    # CURL_CA_BUNDLE and OpenSSL honors SSL_CERT_FILE / SSL_CERT_DIR — so an
+    # operator-supplied trust store is never silently replaced by the OS store.
+    if any(os.environ.get(v) for v in
+           ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+            "SSL_CERT_FILE", "SSL_CERT_DIR")):
         return
     try:
         import truststore
         truststore.inject_into_ssl()
-    except Exception:
-        pass
+    except ImportError:
+        pass  # truststore not installed — fall back to certifi
+    except Exception as e:
+        # Injection itself failed (unsupported platform / API change). Warn
+        # rather than silently fall back, so a real CA-chain problem is visible.
+        print(f"WARNING: truststore.inject_into_ssl() failed: {e}",
+              file=sys.stderr)
 
 
 _activate()

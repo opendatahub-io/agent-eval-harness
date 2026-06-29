@@ -15,7 +15,7 @@ dependencies = [
     # Verify TLS against the OS trust store (see agent_eval/_bootstrap.py) so the
     # harness reaches internal-CA endpoints (e.g. a Red Hat-issued MLflow server)
     # without REQUESTS_CA_BUNDLE. Pure-Python, requires-python>=3.11 covers it.
-    "truststore>=0.9",
+    "truststore>=0.9,<1.0",
 ]
 
 [project.optional-dependencies]
