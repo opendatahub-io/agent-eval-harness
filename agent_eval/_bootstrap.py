@@ -122,4 +122,28 @@ def _activate():
         _patch_syspath(site_dirs)
 
 
+def _inject_os_trust():
+    """Verify TLS against the OS trust store instead of certifi's bundle.
+
+    This lets the harness reach endpoints fronted by an internal CA — notably a
+    Red Hat-issued MLflow tracking server — without anyone setting
+    ``REQUESTS_CA_BUNDLE``, because the OS store (macOS keychain, Linux system
+    certs) already trusts both public and internal roots.
+
+    Gated on the CA-bundle env vars: when one is set (CI, containers) we leave
+    verification untouched, since truststore makes the OS store authoritative and
+    would otherwise override that bundle. Best-effort and called after deps are
+    importable (and after any os.execv in ``_activate``) — a no-op if truststore
+    is absent, e.g. the in-pod harbor verifier that has no venv.
+    """
+    if os.environ.get("REQUESTS_CA_BUNDLE") or os.environ.get("SSL_CERT_FILE"):
+        return
+    try:
+        import truststore
+        truststore.inject_into_ssl()
+    except Exception:
+        pass
+
+
 _activate()
+_inject_os_trust()
