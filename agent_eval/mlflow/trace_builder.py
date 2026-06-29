@@ -785,21 +785,26 @@ def build_trace(stdout_path, run_result, run_id, experiment_id,
                     trace_cost[m_name] = m_stats["cost_usd"]
         trace_metadata["mlflow.trace.cost"] = json.dumps(trace_cost)
     if token_usage:
-        # Total input INCLUDING cache reads, matching report.py's "Input tokens
-        # (total)" so the MLflow Usage dashboard reflects total input volume
-        # ("what the eval used"). Cost is tracked separately (mlflow.llm.cost /
-        # mlflow.trace.cost) and the fresh/cached split stays in the run-level
-        # tokens/{input,cache_read,cache_create} metrics — so excluding cache
-        # reads here would understate usage and diverge from the report.
-        input_tokens = (token_usage.get("input", 0)
-                        + token_usage.get("cache_create", 0)
-                        + token_usage.get("cache_read", 0))
+        # Follow MLflow's anthropic / claude_code token-usage convention so the
+        # Usage dashboard renders Input / Output / Cache Read / Cache Write as
+        # distinct lines: input_tokens is the NON-cached (fresh) input, cache
+        # tokens are separate optional keys, and total_tokens = input + output
+        # (cache excluded). The cache lines carry the bulk of the volume; cost
+        # stays separate via mlflow.llm.cost / mlflow.trace.cost.
+        input_tokens = token_usage.get("input", 0)
         output_tokens = token_usage.get("output", 0)
-        trace_metadata["mlflow.trace.tokenUsage"] = json.dumps({
+        usage = {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": input_tokens + output_tokens,
-        })
+        }
+        cache_read = token_usage.get("cache_read", 0)
+        cache_create = token_usage.get("cache_create", 0)
+        if cache_read:
+            usage["cache_read_input_tokens"] = cache_read
+        if cache_create:
+            usage["cache_creation_input_tokens"] = cache_create
+        trace_metadata["mlflow.trace.tokenUsage"] = json.dumps(usage)
     if session_id:
         trace_metadata["mlflow.trace.session"] = session_id
 
