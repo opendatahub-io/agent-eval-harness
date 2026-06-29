@@ -1,11 +1,34 @@
 """Evaluation suite configuration loaded from eval.yaml files."""
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Union
 import sys
 
 import yaml
+
+
+def resolve_arguments(template: str, input_data: dict) -> str:
+    """Resolve {field} / {field?} placeholders from input.yaml data.
+
+    {field}  — required; raises KeyError if missing.
+    {field?} — optional; omitted (empty) if missing.
+    """
+    def _replacer(match):
+        f = match.group(1)
+        optional = f.endswith("?")
+        if optional:
+            f = f[:-1]
+        value = input_data.get(f)
+        if value is None:
+            if optional:
+                return ""
+            raise KeyError(f"Required field '{f}' not found in input.yaml")
+        return str(value)
+
+    result = re.sub(r"\{([^}]+)\}", _replacer, template)
+    return re.sub(r"[ \t]+", " ", result).strip()
 
 
 def _validate_relative_path(
@@ -38,6 +61,42 @@ def _validate_relative_path(
             f"Outputs must be in a named subdirectory so the harness can "
             f"identify, collect, and clean them without affecting the project."
         )
+    return value
+
+
+def _validate_path_segment(value: str, name: str) -> str:
+    """Validate that a value is a single path segment (no directory traversal).
+
+    Ensures the value contains no path separators (/ or \\), is not a
+    relative directory reference (. or ..), and contains no control characters.
+    Used to prevent path traversal attacks (CWE-22) when constructing
+    filesystem paths from user-controlled input.
+
+    Args:
+        value: The path segment to validate (e.g., run_id, skill name)
+        name: Parameter name for error messages
+
+    Returns:
+        The validated value
+
+    Raises:
+        ValueError: If value is not a valid single path segment
+    """
+    if not _is_valid_eval_name(value):
+        # Provide detailed error message based on what failed
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{name} must be a non-empty string, got: {value!r}")
+        if "/" in value or "\\" in value:
+            raise ValueError(
+                f"{name} must be a single path segment, "
+                f"cannot contain path separators: {value!r}"
+            )
+        if value in (".", ".."):
+            raise ValueError(
+                f"{name} cannot be a relative directory reference: {value!r}"
+            )
+        # Control characters or other invalid chars
+        raise ValueError(f"{name} contains invalid characters: {value!r}")
     return value
 
 
@@ -274,6 +333,42 @@ class JudgeConfig:
 
 
 @dataclass
+class RewardConfig:
+    """Reward composition from judge results for RL training.
+
+    Two ways to produce the reward, mutually exclusive:
+
+    1. ``judge``: a single judge whose value IS the reward. By default the
+       value is used as-is, clamped to [0, 1] (for a judge that already emits
+       a [0, 1] reward, e.g. a learned reward model). Set ``normalize: true``
+       to instead map it from ``score_range`` to [0, 1].
+    2. ``formula`` (+ ``weights``): compose from multiple judges —
+       - "weighted": weighted sum of ``weights``, each normalized via
+         ``score_range`` (or clamped if listed in ``raw``).
+       - "<expression>": Python expression with judge names as variables.
+
+    When gate is True, any boolean judge that returned False zeros the reward.
+    Note this gates on *every* boolean judge, independent of whether the
+    formula references it — so an ``<expression>`` that uses booleans as its
+    own gate (e.g. ``passed * score``) usually wants ``gate: false`` to avoid
+    double-gating. ``gate`` defaults to False in ``judge`` mode.
+    score_range normalizes numeric judge scores to [0, 1].
+    raw: list of judge names whose values are already in [0, 1] and should
+         NOT be normalized via score_range (e.g. efficiency).
+    """
+
+    formula: str = "weighted"
+    weights: dict = field(default_factory=dict)
+    gate: bool = True
+    score_range: list = field(default_factory=lambda: [1, 5])
+    raw: list = field(default_factory=list)
+    # Single-judge mode: name of the judge whose value is the reward.
+    judge: Optional[str] = None
+    # In judge mode, map the value from score_range instead of clamping as-is.
+    normalize: bool = False
+
+
+@dataclass
 class EvalConfig:
     """Complete evaluation suite configuration.
 
@@ -316,6 +411,9 @@ class EvalConfig:
 
     # Judges (inline checks, LLM, pairwise, external code)
     judges: list = field(default_factory=list)
+
+    # Reward composition for RL training (optional)
+    reward: Optional[RewardConfig] = None
 
     # Regression thresholds
     thresholds: dict = field(default_factory=dict)
@@ -514,6 +612,85 @@ class EvalConfig:
                 )
             )
 
+        # Reward composition
+        if "reward" in raw:
+            reward_raw = raw.get("reward")
+            if not isinstance(reward_raw, dict):
+                raise ValueError("reward must be a mapping when provided")
+            sr = reward_raw.get("score_range", [1, 5])
+            if not isinstance(sr, list) or len(sr) != 2:
+                raise ValueError("reward.score_range must be a [min, max] list")
+            try:
+                score_min = float(sr[0])
+                score_max = float(sr[1])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "reward.score_range values must be numeric") from exc
+            if not score_min < score_max:
+                raise ValueError(
+                    "reward.score_range must be increasing [min, max]")
+            weights = reward_raw.get("weights", {}) or {}
+            if not isinstance(weights, dict):
+                raise ValueError("reward.weights must be a mapping")
+            try:
+                weights = {str(k): float(v) for k, v in weights.items()}
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "reward.weights values must be numeric") from exc
+            if any(v < 0 for v in weights.values()):
+                raise ValueError("reward.weights values must be non-negative")
+            raw_list = reward_raw.get("raw", []) or []
+            if not isinstance(raw_list, list):
+                raw_list = [raw_list]
+            # Single-judge mode: one judge's value is the reward. Mutually
+            # exclusive with the composition inputs.
+            judge = reward_raw.get("judge")
+            if judge is not None:
+                if not isinstance(judge, str) or not judge.strip():
+                    raise ValueError(
+                        "reward.judge must be a non-empty judge name")
+                conflicting = [k for k in ("formula", "weights", "raw")
+                               if k in reward_raw]
+                if conflicting:
+                    raise ValueError(
+                        "reward.judge cannot be combined with "
+                        f"{'/'.join(conflicting)}")
+                judge_names = {j.name for j in config.judges if j.name}
+                if judge not in judge_names:
+                    raise ValueError(
+                        f"reward.judge '{judge}' does not match any defined "
+                        "judge")
+            normalize = reward_raw.get("normalize", False)
+            if not isinstance(normalize, bool):
+                raise ValueError("reward.normalize must be a boolean")
+            # gate defaults to False in judge mode, True for composition.
+            gate = reward_raw.get("gate", judge is None)
+            if not isinstance(gate, bool):
+                raise ValueError("reward.gate must be a boolean")
+            formula = str(reward_raw.get("formula", "weighted"))
+            # Validate expression formulas now so a typo or unsafe construct
+            # fails loudly here, not silently as reward 0.0 on every case at
+            # run time. Bare references ("weighted") are resolved at compute
+            # time, so skip the expression check for them. Skipped in judge
+            # mode, where formula is unused.
+            if judge is None and not re.fullmatch(
+                    r"[A-Za-z_][\w.\-]*", formula.strip()):
+                from agent_eval.harbor.reward import validate_formula
+                try:
+                    validate_formula(formula)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"reward.formula is invalid: {exc}") from exc
+            config.reward = RewardConfig(
+                formula=formula,
+                weights=weights,
+                gate=gate,
+                score_range=[score_min, score_max],
+                raw=[str(r) for r in raw_list],
+                judge=judge,
+                normalize=normalize,
+            )
+
         # Thresholds
         config.thresholds = raw.get("thresholds", {})
 
@@ -557,9 +734,11 @@ class EvalConfig:
                     stacklevel=2,
                 )
 
-        if config.skill and not _is_valid_eval_name(config.skill):
-            raise ValueError(
-                f"Invalid skill name in {path}: {config.skill!r}")
+        if config.skill:
+            try:
+                _validate_path_segment(config.skill, f"skill name in {path}")
+            except ValueError as e:
+                raise ValueError(str(e)) from e
 
         return config
 

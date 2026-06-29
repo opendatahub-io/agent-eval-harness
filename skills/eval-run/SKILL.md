@@ -25,6 +25,10 @@ Parse `$ARGUMENTS`:
 | `--no-llm-judges` | no | false | Skip LLM judges (prompt, prompt_file, LLM builtins). Run deterministic judges (check, Python builtins, external code). |
 | `--gold` | no | false | Save outputs as gold references after run |
 | `--effort <level>` | no | `runner.effort` from config | Claude Code reasoning effort (Claude Code only; ignored by other runners) |
+| `--runner <type>` | no | local | `local` (default Steps 1–8) or `harbor` (containerized — skips to Harbor runner section) |
+| `--env <name>` | no | `kubernetes` | Harbor execution environment: `podman`, `kubernetes`, `openshift` (only with `--runner harbor`) |
+
+If `--runner harbor`: after config discovery, **skip to the Harbor runner section** below. Steps 2–6 are replaced by one `run.py` call.
 
 ### Config Discovery
 
@@ -135,8 +139,6 @@ Run the skill headlessly against test cases. In `case` mode (default), execute.p
 
 If `hooks:` is configured in eval.yaml, execute.py automatically runs lifecycle hooks at the appropriate points: `before_all` before any case executes, `before_each`/`after_each` around each case execution, and `after_all` after all cases complete (guaranteed, even on failure). Hook logs are written to `$AGENT_EVAL_RUNS_DIR/<id>/hooks/`.
 
-The execute script handles CLI construction, streaming progress, and result capture:
-
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/execute.py \
   --config <config> \
@@ -153,44 +155,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/execute.py \
   [--parallelism <n>]
 ```
 
-Most flags fall back to the config:
-- `--agent` falls back to `runner.type` (default `claude-code`).
-- `--model` falls back to `models.skill`. If neither is set, execute.py errors out.
-- `--mlflow-experiment` falls back to `mlflow.experiment`.
-- `--skill-args` falls back to `execution.arguments`. In `case` mode, `{field}` placeholders are resolved per case from input.yaml.
-- `--effort` falls back to `runner.effort` (Claude Code only; ignored by other runners).
-- `--parallelism` falls back to `execution.parallelism`. When > 1, cases run concurrently via thread pool. Each case gets its own log prefix (e.g., `eval:case-003`) so interleaved output is distinguishable.
-
-Override via CLI only when testing different combinations than what the config specifies.
-
-### Monitoring Progress
-
-Skill execution can take minutes to hours. Launch execute.py using the Bash tool with `run_in_background: true`. **Do NOT pipe the command** through `tail`, `head`, `grep`, or any other filter — piping buffers all output and prevents progress monitoring. The command must be the bare `python3 ... execute.py ...` invocation with no pipes.
-
-Once launched, the Bash tool returns an output file path. Monitor progress by reading that file periodically:
-
-```bash
-# Check progress (repeat periodically)
-tail -20 <output_file>
-```
-
-Look for phase markers (`## Phase`, `## Step`, `Batch N/M`), agent counts (`N agents launched`, `N/M done`), and completion signals (`Done`). Summarize concisely — e.g., "Batch 2/4: review agents 3/5 complete" rather than dumping raw output.
-
-**Detecting problems**: If the last lines haven't changed across two checks (~2-3 min apart), the pipeline may be stuck. Common signs:
-- Repeated `sleep` commands with no progress change → agents may have timed out or crashed
-- `ERROR` or `Traceback` in the output → script failure, report immediately
-- No new output for 5+ minutes → possible hang, check if the process is still running
-- `exit code` or `EXIT:` appearing → execution finished (check the code)
-
-When you spot an issue, report it to the user with the relevant output lines rather than waiting for completion.
-
-After execution, check `run_result.json` for `exit_code`, `duration_s`, `wall_clock_s`, `cost_usd`, `num_turns`, and per-model token usage. `duration_s` is the sum of per-case durations; `wall_clock_s` is the actual elapsed time (lower when parallelism is used). Read it with `cat` (JSON — do not use `state.py`).
-
-```bash
-cat $AGENT_EVAL_RUNS_DIR/<eval-name>/<id>/run_result.json
-```
-
-If `exit_code` is non-zero, report the failure with the exit code, duration, and the first few lines of `$AGENT_EVAL_RUNS_DIR/<eval-name>/<id>/stderr.log`. Do not continue to scoring.
+Launch with `run_in_background: true` (no pipes). Monitor via `tail -20 <output_file>`. After completion, check `run_result.json` — if `exit_code` is non-zero, report the failure and stop. See `${CLAUDE_SKILL_DIR}/references/execution-monitoring.md` for CLI flag fallbacks, monitoring patterns, and problem detection.
 
 ## Step 5: Collect Artifacts
 
@@ -255,25 +220,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py read $AGENT_EVAL_RUNS_DI
 
 ## Step 7: Interpret and Report
 
-Read the summary and analyze the results. Read `${CLAUDE_SKILL_DIR}/prompts/analyze-results.md` for the full analysis framework — it covers aggregate assessment, failure patterns, root causes, regressions, cost attribution, and recommendations. Lead with the **Recommendation** so the call-to-action is the first thing the reader sees. Be decisive — state assessments, not hedges.
-
-When analyzing failures, note the judge type — builtin judges have fixed, versioned behavior (suggest adjusting `arguments:` in eval.yaml), while inline checks and LLM prompts can be edited directly.
-
-**Save analysis to file** so it persists in the report. Prepend YAML frontmatter recording the agent and model that wrote the analysis, plus the UTC timestamp — the report uses these to attribute the analysis in its subtitle:
-
-```bash
-cat > $AGENT_EVAL_RUNS_DIR/<eval-name>/<id>/analysis.md << 'EOF'
----
-agent: Claude Code        # the agent/runtime writing this analysis (e.g. Claude Code)
-model: <your-model-id>   # e.g. claude-opus-4-7, claude-sonnet-4-6 — the model backing the agent
-date: <UTC ISO 8601>     # e.g. 2026-04-17T14:32:11Z
----
-
-<your full analysis — Recommendation first, then Summary, Failure Patterns, Root Causes, Regressions>
-EOF
-```
-
-Write the analysis body as markdown with these sections in order: `## Recommendation` (verdict + top actions), `## Summary` (aggregate scores, run metrics), `## Failure Patterns`, `## Root Causes`, `## Regressions` (only if `--baseline` was provided), `## Cost Attribution` (always — cite `run_metrics` plus a derived `cost_per_<unit>`). The Recommendation must be self-contained — many readers will only read that section. This file is rendered as a prominent callout near the top of the HTML report; the frontmatter is consumed by the report renderer and not displayed verbatim.
+Read the summary and analyze the results. Read `${CLAUDE_SKILL_DIR}/prompts/analyze-results.md` for the full analysis framework and output format. Lead with **Recommendation** (self-contained — many readers only read this section). Save the analysis to `$AGENT_EVAL_RUNS_DIR/<eval-name>/<id>/analysis.md` with YAML frontmatter (agent, model, date) — see the prompt file for the template.
 
 **Generate HTML report**:
 
@@ -301,6 +248,63 @@ If `mlflow.experiment` is configured in eval.yaml:
 ```text
 Use the Skill tool to invoke /eval-mlflow --action log-results --run-id <id> --config <config>
 ```
+
+## Harbor runner (`--runner harbor`)
+
+When `--runner harbor` is specified, **skip Steps 2–6** and call `run.py` instead —
+it handles task generation (or reuse), `harbor run`, per-case judging (in-container),
+result mapping, and report generation in one call:
+
+```bash
+# Run under the eval-harness venv interpreter so compiled deps load with the
+# correct ABI and the process is never re-exec'd mid-run. Falls back to system
+# python3 if the venv is absent. The venv holds only third-party deps, so the
+# plugin root (source of the agent_eval package) must be on PYTHONPATH.
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$CLAUDE_SKILL_DIR/../..}"
+VENV_PY="$PLUGIN_ROOT/.eval-venv/bin/python3"
+[ -x "$VENV_PY" ] || VENV_PY=python3
+
+PYTHONPATH="$PLUGIN_ROOT:$(pwd)${PYTHONPATH:+:$PYTHONPATH}" "$VENV_PY" -m agent_eval.harbor.run \
+    --config <config> --model <model> \
+    --output $AGENT_EVAL_RUNS_DIR/<eval-name>/<run-id> \
+    --tasks-dir <tasks-dir> --jobs-dir <tmp-jobs> \
+    [--image <image>] [--agent <agent>] [--n-concurrent N] \
+    [--env kubernetes]
+```
+
+Cluster-specific config (namespace, credentials secret) is read from a
+`.env` file in the project root. Create it with `AGENT_EVAL_K8S_NAMESPACE`
+and `AGENT_EVAL_K8S_CREDENTIALS_SECRET` — `run.py` loads it automatically.
+
+Tasks come from `/eval-dataset` (which emits Harbor task packages via
+`scripts/harbor.py`). If `--tasks-dir` already has them, `run.py` reuses them; if
+empty, it generates on the fly (needs `--image`). The output is a standard
+`run_result.json` + `summary.yaml` + `report.html` — then continue with **Step 6
+pairwise** (if `--baseline`) and **Step 8 (MLflow)** as normal. See
+`deploy/harbor/README.md` for image build, credentials, and environment setup.
+
+## EvalHub runner (`--runner evalhub`)
+
+When `--runner evalhub` is specified, **skip Steps 2–8** and call the EvalHub
+runner instead — it creates ConfigMaps, submits a job to EvalHub, polls for
+completion, and maps the results back:
+
+```bash
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$CLAUDE_SKILL_DIR/../..}"
+VENV_PY="$PLUGIN_ROOT/.eval-venv/bin/python3"
+[ -x "$VENV_PY" ] || VENV_PY=python3
+
+PYTHONPATH="$PLUGIN_ROOT:$(pwd)${PYTHONPATH:+:$PYTHONPATH}" "$VENV_PY" -m agent_eval.evalhub.runner \
+    --config <config> --model <model> \
+    --output $AGENT_EVAL_RUNS_DIR/<eval-name>/<run-id> \
+    [--evalhub-url <url>] [--namespace <ns>] [--project-dir <path>]
+```
+
+The runner creates K8s ConfigMaps for the eval config and project resources
+(via `k8s_resources`), submits the job to EvalHub (which creates a Job pod
+running the adapter in-process), polls until completion, and maps the results
+into the standard `summary.yaml` + `report.html`. No image rebuild needed —
+ConfigMaps carry the project-specific content.
 
 ## Rules
 

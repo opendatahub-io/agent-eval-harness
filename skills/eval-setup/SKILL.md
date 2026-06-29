@@ -20,6 +20,7 @@ Parse `$ARGUMENTS` for:
 | `--tracking-uri <uri>` | no | auto-detect | MLflow tracking URI (skips interactive setup) |
 | `--skip-mlflow` | no | false | Skip MLflow setup entirely |
 | `--runs-dir <path>` | no | `eval/runs` | Directory where eval runs are stored |
+| `--harbor` | no | false | Install Harbor + Kubernetes for containerized execution (~650 MB) |
 
 ## Step 1: Install Dependencies (if needed)
 
@@ -48,6 +49,19 @@ if command -v uv &>/dev/null; then
   uv pip install --python "$VENV_DIR/bin/python3" 'mlflow[genai]>=3.5' 'anthropic[vertex]>=0.40'
 else
   "$VENV_DIR/bin/pip" install 'mlflow[genai]>=3.5' 'anthropic[vertex]>=0.40'
+fi
+```
+
+If `--harbor` was passed, also install Harbor and the Kubernetes client
+for containerized execution (`/eval-run --runner harbor`,
+`/eval-dataset --harbor`):
+
+```bash
+VENV_DIR="${CLAUDE_SKILL_DIR}/../../.eval-venv"
+if command -v uv &>/dev/null; then
+  uv pip install --python "$VENV_DIR/bin/python3" harbor 'kubernetes>=29.0,<37.0'
+else
+  "$VENV_DIR/bin/pip" install harbor 'kubernetes>=29.0,<37.0'
 fi
 ```
 

@@ -1,45 +1,125 @@
-"""Auto-activate the eval harness venv if available.
+"""Make the eval-harness venv's third-party deps importable.
 
-Imported by __init__.py before any third-party deps. Uses only stdlib.
+Imported (as the first line) by every skill script and by score.py/report.py.
 
-For script invocations (python3 script.py), replaces the process with
-the venv python via os.execv(). For inline code (python3 -c "..."),
-patches sys.path so third-party imports resolve from the venv.
+The venv at ``<plugin_root>/.eval-venv`` contains ONLY third-party deps — the
+``agent_eval`` package itself is always resolved from the source tree via
+PYTHONPATH. So the DEFAULT and correct action is to put the venv's
+site-packages on ``sys.path`` of the running interpreter: no process
+replacement, fully re-entrant, safe under pytest and under
+``importlib.util.exec_module`` (how run.py loads report.py / score.py by path).
+
+We re-exec into the venv interpreter via ``os.execv`` ONLY in the single case
+where ``sys.path`` patching is insufficient AND re-exec is safe:
+
+  * INSUFFICIENT: the running interpreter's ABI (major.minor) differs from the
+    venv's, so the venv's compiled wheels (cpXY ``.so`` files) cannot be
+    imported under the running interpreter.
+  * SAFE: this is a genuine top-level *script* entry (``python script.py``),
+    detected via ``__main__.__spec__ is None`` — so the re-exec happens at
+    import time, before the script does any work. ``python -m`` yields a
+    non-None ``__spec__`` and ``-c``/exec_module are likewise excluded, because
+    re-exec there would either re-run ``__main__`` after side effects (the
+    duplicate-run bug) or have no script to re-run.
+
+The env-var sentinel makes activation idempotent and survives ``os.execv``
+(env is inherited by the new process image), so the re-exec'd process
+short-circuits instead of looping.
 """
 import glob
 import os
 import sys
 
+_SENTINEL = "_AGENT_EVAL_BOOTSTRAP_DONE"
+
+
+def _venv_python_and_site(plugin_root):
+    """Return (venv_python_path_or_None, [site_packages_dirs])."""
+    venv_dir = os.path.join(plugin_root, ".eval-venv")
+    v = sys.version_info
+    candidates = [
+        os.path.join(venv_dir, "bin", "python3"),
+        os.path.join(venv_dir, "bin", f"python{v.major}.{v.minor}"),
+    ]
+    venv_python = next((p for p in candidates if os.path.isfile(p)), None)
+    site_dirs = glob.glob(os.path.join(venv_dir, "lib", "python*", "site-packages"))
+    return venv_python, site_dirs
+
+
+def _venv_pyver(site_dirs):
+    """Extract 'X.Y' from a '.../lib/pythonX.Y/site-packages' path."""
+    for d in site_dirs:
+        name = os.path.basename(os.path.dirname(d))  # 'pythonX.Y'
+        if name.startswith("python"):
+            return name[len("python"):]
+    return None
+
+
+def _patch_syspath(site_dirs):
+    real = {os.path.realpath(p) for p in sys.path}
+    for d in site_dirs:
+        if os.path.realpath(d) not in real:
+            sys.path.insert(0, d)
+
+
+def _is_true_script_entry():
+    """True only for `python script.py` (not `-m`, `-c`, `-`, REPL, exec_module).
+
+    `python script.py` -> __main__.__spec__ is None, argv[0] is the script.
+    `python -m pkg.mod` -> __main__.__spec__ is a ModuleSpec (non-None).
+    `python -c "..."`   -> __main__.__spec__ is None, argv[0] == '-c'.
+    `python -` / stdin  -> argv[0] == '-'.
+    REPL / embedded     -> argv[0] == '' (or argv empty).
+    exec_module'd file  -> runs under its loader name, __main__ is unchanged.
+
+    Only a real script file can be re-exec'd; the other forms have nothing to
+    rerun, so they must not take the execv path.
+    """
+    main = sys.modules.get("__main__")
+    if main is None or getattr(main, "__spec__", None) is not None:
+        return False
+    argv0 = sys.argv[0] if sys.argv else ""
+    if argv0 in {"", "-", "-c"}:
+        return False
+    return True
+
 
 def _activate():
+    # Idempotent across re-import and across os.execv (env inherited).
+    if os.environ.get(_SENTINEL):
+        return
+
     pkg_dir = os.path.dirname(os.path.abspath(__file__))
     plugin_root = os.path.dirname(pkg_dir)
-    venv_dir = os.path.join(plugin_root, '.eval-venv')
-    venv_python = os.path.join(venv_dir, 'bin', 'python3')
-    if not os.path.isfile(venv_python):
-        # uv venvs may use versioned name (e.g., python3.14)
-        v = sys.version_info
-        venv_python = os.path.join(venv_dir, 'bin', f'python{v.major}.{v.minor}')
+    venv_python, site_dirs = _venv_python_and_site(plugin_root)
 
-    if not os.path.isfile(venv_python):
+    # No venv (e.g. in-container harbor verifier / evalhub pod) — nothing to do.
+    if not venv_python or not site_dirs:
+        os.environ[_SENTINEL] = "1"
         return
 
-    site_dirs = glob.glob(os.path.join(
-        venv_dir, 'lib', 'python*', 'site-packages'))
+    running = f"{sys.version_info.major}.{sys.version_info.minor}"
+    venv_ver = _venv_pyver(site_dirs)
+    abi_mismatch = venv_ver is not None and venv_ver != running
 
-    # Already activated (venv site-packages on sys.path)
-    if site_dirs and all(d in sys.path for d in site_dirs):
+    # Set before any potential execv so the re-exec'd image short-circuits.
+    os.environ[_SENTINEL] = "1"
+
+    # Default, always-safe path: make deps importable in THIS process.
+    if not abi_mismatch:
+        _patch_syspath(site_dirs)
         return
 
-    # For -c invocations, we can't re-exec (the inline code isn't in
-    # sys.argv). Patch sys.path instead so third-party imports resolve.
-    if sys.argv[:1] == ['-c']:
-        for d in site_dirs:
-            if d not in sys.path:
-                sys.path.insert(0, d)
-        return
-
-    os.execv(venv_python, [venv_python] + sys.argv)
+    # ABI mismatch: sys.path patching would load incompatible compiled wheels.
+    # Re-exec into the venv interpreter ONLY when it is provably safe — a true
+    # top-level script entry, before any side effects. For -m / -c / exec_module
+    # we must NOT execv (it would re-run __main__ after side effects, or there's
+    # no script to re-run); fall back to patching and let an incompatible .so
+    # import fail loudly rather than silently double-running.
+    if _is_true_script_entry():
+        os.execv(venv_python, [venv_python] + sys.argv)
+    else:
+        _patch_syspath(site_dirs)
 
 
 _activate()

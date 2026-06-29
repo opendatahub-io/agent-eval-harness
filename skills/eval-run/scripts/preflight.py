@@ -30,7 +30,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from agent_eval.config import EvalConfig
+from agent_eval.config import EvalConfig, _validate_path_segment
 
 
 # State directories that skills write to between runs
@@ -71,6 +71,12 @@ def main():
     parser.add_argument("--baseline", default=None,
                         help="Verify the given baseline run-id exists before continuing")
     args = parser.parse_args()
+
+    # Validate run_id / baseline to prevent path traversal (CWE-22)
+    if args.run_id is not None:
+        _validate_path_segment(args.run_id, "--run-id")
+    if args.baseline is not None:
+        _validate_path_segment(args.baseline, "--baseline")
 
     config = EvalConfig.from_yaml(args.config)
     project_root = Path.cwd()

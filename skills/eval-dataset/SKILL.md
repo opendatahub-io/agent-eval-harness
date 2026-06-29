@@ -15,6 +15,8 @@ You generate evaluation test cases for a skill. You read the skill analysis (eva
 | `--count <N>` | no | 5 | Number of cases to generate |
 | `--strategy <type>` | no | `bootstrap` | Generation strategy (see Step 3) |
 | `--run-id <id>` | no | — | Previous eval run to learn from (used with `expand`) |
+| `--harbor` | no | — | Also generate Harbor task packages (Step 8) |
+| `--image <image>` | with `--harbor` | — | Container image for Harbor task packages |
 
 ### Config Discovery
 
@@ -155,38 +157,7 @@ case-005-ambiguous-phrasing/
 
 **External-state placeholders**: For fields marked `[EXTERNAL: System]` in the schema, use `TODO_<SYSTEM>_<FIELD>` as the value (e.g., `project_key: "TODO_JIRA_PROJECT_KEY"`). If you want to show a plausible real value, put it in a YAML comment (e.g., `# replace with real key, such as MYPROJECT`). The `TODO_` prefix signals that this must be replaced with a real value from the target system before execution. List all placeholders in Step 7 so the user knows what needs manual review.
 
-**Answers for interactive skills**: If eval.yaml has `inputs.tools` entries for AskUserQuestion, the skill asks questions during execution. The hook uses LLM-based answering (via `models.hook`) that reads `input.yaml` and `answers.yaml` from each case as context. Create `answers.yaml` with **guidance** that tells the LLM how to answer domain-specific questions for this case:
-
-```yaml
-# answers.yaml — LLM answerer guidance for this case
-dedup_is_duplicate: true
-dedup_guidance: >
-  This RFE is intentionally a rephrased version of an existing RFE
-  about model signature verification. If asked whether existing RFEs
-  cover this need, the answer is yes.
-```
-
-The LLM reads these fields alongside the question and options to pick the right answer. For general clarifying questions, the LLM uses `input.yaml` context — no `answers.yaml` needed. Only create `answers.yaml` when the case has domain-specific decisions (e.g., "is this a duplicate?", "should this be split?") where the correct answer depends on the test scenario.
-
-If unsure what questions the skill asks, you can leave `answers.yaml` out — the hook still calls the LLM using `input.yaml` context and the handler prompt, falling back to the first option only if the LLM call fails.
-
-**Annotations for outcome-aware judges**: Judges receive `outputs["annotations"]` — the parsed `annotations.yaml` from each case. If the eval config has judges that check expected outcomes (e.g., `annotations.get("dedup_is_duplicate")` to determine whether no output is correct), add the relevant fields to each case's `annotations.yaml`:
-
-```yaml
-# annotations.yaml — fields for outcome-aware judges
-dedup_is_duplicate: true   # or false — tells judges whether no RFE is expected
-tags: [dedup, high-overlap]
-known_issues:
-  - dedup should flag this as overlapping with RHAIRFE-1001
-```
-
-Check the eval.yaml `judges` section for:
-- Any `check` snippets that access `outputs.get("annotations", {})` — those fields must exist in annotations.yaml for the judge to work.
-- Any `if` conditions (e.g., `if: "annotations.get('dedup_is_duplicate')"`) — these control which judges run per case based on annotation values. Create cases that exercise **both branches** of each conditional judge: some cases where the condition is true (judge runs) and some where it's false (judge is skipped). If all cases have the same annotation value, a conditional judge either always runs or never runs — both are gaps in coverage.
-
-**Companion files**: If eval.md lists `companion_files` (files the skill reads from disk at runtime — e.g., `strategy.md`, `adr.md`), each test case must include them. In `case` mode, the harness copies all case files into the workspace, so the skill will find them at their expected relative paths. Generate realistic content for these files appropriate to each case's scenario.
-
-**Reference outputs**: Only include gold standard reference files if you can confidently produce a correct output. It's better to leave references out (the user can generate them later with `/eval-run --gold`) than to include incorrect ones that mislead judges.
+**Answers, annotations, companion files, and reference outputs**: See `${CLAUDE_SKILL_DIR}/references/case-generation.md` for `answers.yaml` (interactive skills), `annotations.yaml` (outcome-aware judges with `if` conditions), companion files, and reference output guidance.
 
 ## Step 6: Validate
 
@@ -216,6 +187,19 @@ Tell the user what was created:
   - `/eval-run --model <model>` to test the skill against these cases
   - `/eval-run --model <model> --gold` to generate gold references from the best outputs
   - `/eval-dataset --strategy expand --count 10` to add more cases later
+
+## Step 8 (if `--harbor`): Emit Harbor task packages
+
+If `--harbor` was passed, generate self-contained task packages for
+containerized execution. Run:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/harbor.py \
+  --config <config> --out <dataset_dir>/../harbor-tasks --image <image> \
+  [--judge-model <model>] [--verifier-timeout 900] [--agent-timeout 3600]
+```
+
+See `${CLAUDE_SKILL_DIR}/references/case-generation.md` for details.
 
 ## Rules
 

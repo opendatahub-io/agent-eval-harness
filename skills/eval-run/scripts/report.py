@@ -402,6 +402,12 @@ def _read_case_input(dataset_path: str, case_id: str) -> str:
     """Read the input file from a dataset case directory."""
     case_dir = Path(dataset_path) / case_id
     if not case_dir.exists():
+        ds = Path(dataset_path)
+        if ds.is_dir():
+            matches = [d for d in ds.iterdir() if d.is_dir() and d.name.startswith(case_id)]
+            if len(matches) == 1:
+                case_dir = matches[0]
+    if not case_dir.exists():
         return ""
     for suffix in (".yaml", ".yml", ".json"):
         candidate = case_dir / f"input{suffix}"
@@ -1297,8 +1303,11 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
                 status_cls = "pass" if ok else "fail"
                 status_label = "PASS" if ok else "FAIL"
 
-        jtype, jmodel = judge_info.get(judge_name, ("—", "—"))
-        if jtype in ("check", "code", "builtin") and jmodel == "—":
+        jtype, jmodel = judge_info.get(judge_name, (None, "—"))
+        if jtype is None:
+            first_case = next(iter(summary.get("per_case", {}).values()), {})
+            jtype = (first_case.get(judge_name) or {}).get("judge_type", "—")
+        if jtype in ("check", "code", "builtin", "step") and jmodel == "—":
             type_label = jtype
         else:
             type_label = f'{jtype} ({jmodel.split("@")[0]})'
@@ -2466,6 +2475,19 @@ def main():
                       or any(ord(c) < 32 for c in eval_name)):
         print(f"ERROR: invalid skill name: {eval_name!r}", file=sys.stderr)
         sys.exit(1)
+    # Validate run_id / baseline to prevent path traversal (CWE-22)
+    for _arg_name, _arg_val in [("--run-id", args.run_id),
+                                ("--baseline", args.baseline)]:
+        if _arg_val is None:
+            continue
+        if (not isinstance(_arg_val, str) or not _arg_val
+                or "/" in _arg_val or "\\" in _arg_val
+                or _arg_val in (".", "..")
+                or any(ord(c) < 32 for c in _arg_val)):
+            print(f"ERROR: {_arg_name} must be a single path segment: {_arg_val!r}",
+                  file=sys.stderr)
+            sys.exit(1)
+
     runs_base = Path(os.environ.get("AGENT_EVAL_RUNS_DIR", "eval/runs"))
     runs_dir = runs_base / eval_name if eval_name else runs_base
     run_dir = runs_dir / args.run_id

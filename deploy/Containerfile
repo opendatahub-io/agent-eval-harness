@@ -1,0 +1,46 @@
+# agent-eval-harness base image.
+#
+# Generic runtime for agent evaluation trial pods. Contains the agent CLIs
+# (claude-code, opencode) and the agent-eval-harness package (judge engine,
+# reward bridge, tool interception). No project code — project resources are
+# delivered via ConfigMap (K8s), bind-mount (Podman), or a thin FROM-this
+# Containerfile in the project's own repo.
+#
+# Build:
+#   podman build -f deploy/Containerfile -t quay.io/rhoai/agent-eval-harness:latest .
+#
+# OpenShift-friendly: runnable under an arbitrary non-root UID (restricted-v2
+# SCC). Files are group(0)-writable; HOME is writable.
+FROM registry.access.redhat.com/ubi9/python-312:latest
+
+USER 0
+
+# System deps: Node (for claude-code / opencode) + git + tar.
+RUN dnf install -y nodejs npm git tar && dnf clean all
+
+# Agent CLIs.
+RUN npm install -g @anthropic-ai/claude-code
+
+# Python deps for the judge engine + LLM judges (Vertex + direct API).
+# Installed BEFORE the source COPY so editing agent_eval/ doesn't invalidate
+# this (slow) layer.
+RUN pip install --no-cache-dir pyyaml "anthropic[vertex]" jinja2
+
+# agent-eval-harness package: judge engine, reward bridge, tool interception.
+COPY agent_eval /opt/agent-eval-harness/agent_eval
+COPY skills /opt/agent-eval-harness/skills
+COPY pyproject.toml /opt/agent-eval-harness/pyproject.toml
+
+ENV PYTHONPATH=/opt/agent-eval-harness \
+    HOME=/workspace \
+    PATH=/opt/app-root/bin:/usr/local/bin:/usr/bin:/bin
+
+# Writable dirs for arbitrary UID (OpenShift restricted-v2 SCC).
+# /tests and /solution are pre-created because Harbor's verifier uploads there
+# and `oc cp` / tar extract runs as the (non-root) pod user.
+RUN mkdir -p /workspace /logs/verifier /logs/agent /logs/artifacts /tests /solution /installed-agent \
+    && chgrp -R 0 /workspace /logs /tests /solution /installed-agent /opt/agent-eval-harness \
+    && chmod -R g=u /workspace /logs /tests /solution /installed-agent /opt/agent-eval-harness
+
+WORKDIR /workspace
+USER 1001
