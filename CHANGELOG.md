@@ -1,3 +1,16 @@
+# [1.18.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.17.1...v1.18.0) (2026-06-29)
+
+
+### Bug Fixes
+
+* **mlflow:** address CodeRabbit review on harbor traces ([1c9e0b7](https://github.com/opendatahub-io/agent-eval-harness/commit/1c9e0b75f947b9b38d85fe7fca8b67a60b00de2f))
+* **mlflow:** source harbor trace cost/tokens from the transcript ([be78da3](https://github.com/opendatahub-io/agent-eval-harness/commit/be78da3c74a8801560468350f9ccda951806fcaf))
+
+
+### Features
+
+* **mlflow:** build per-step MLflow traces for harbor runs ([815c615](https://github.com/opendatahub-io/agent-eval-harness/commit/815c6153f8049f1e0d65101a3e02deb04ebeca33))
+
 ## [1.17.1](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.17.0...v1.17.1) (2026-06-26)
 
 
