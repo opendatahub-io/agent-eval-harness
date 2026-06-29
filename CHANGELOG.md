@@ -1,3 +1,15 @@
+# [1.19.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.18.0...v1.19.0) (2026-06-29)
+
+
+### Bug Fixes
+
+* **bootstrap:** address CodeRabbit review on OS trust store ([617f62f](https://github.com/opendatahub-io/agent-eval-harness/commit/617f62f99e1efc81bb7b7d0f387b3166288414b0))
+
+
+### Features
+
+* **bootstrap:** verify TLS against OS trust store when no CA bundle set ([df134af](https://github.com/opendatahub-io/agent-eval-harness/commit/df134af7e4231e1e9553647482bd4f67a9504d71))
+
 # [1.18.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.17.1...v1.18.0) (2026-06-29)
 
 
