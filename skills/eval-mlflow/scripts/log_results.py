@@ -36,6 +36,9 @@ from agent_eval.mlflow.experiment import resolve_tracking_uri
 
 # ── Trace builder (extracted to agent_eval/mlflow/trace_builder.py) ──
 from agent_eval.mlflow.trace_builder import build_trace, log_trace
+# Same transcript metric extractor the run-level aggregation uses, so per-step
+# trace cost/tokens match the run `cost_usd` metric and the HTML report.
+from agent_eval.harbor.results import _extract_transcript_metrics
 
 
 def _is_within(path, root):
@@ -103,54 +106,54 @@ def _harbor_steps(job_dir):
                    subs[0] if len(subs) == 1 else None)
 
 
-def _harbor_step_run_result(case_dir, step_name, base):
-    """Per-step run_result for trace annotation (model + that step's agent cost)."""
+def _harbor_step_run_result(case_dir, step_name, base, transcript):
+    """Per-step run_result for trace annotation: model, exit code, cost, tokens.
+
+    Cost and tokens are read from the step transcript with the SAME extractor
+    the run-level aggregation uses (_extract_transcript_metrics -> the result
+    event's total_cost_usd / usage), so the trace cost matches the run
+    `cost_usd` metric and the HTML report. Crucially total_cost_usd includes
+    background subagent cost (e.g. the auto-fix step's subagents), which
+    result.json's agent_result.cost_usd omits — so this is the accurate total.
+    result.json is still consulted for the step's exit code. Token usage already
+    arrives in the {input, output, cache_read, cache_create} schema build_trace
+    expects, so no remapping is needed.
+    """
     rr = {"model": base.get("model", ""), "exit_code": 0}
+
+    metrics = _extract_transcript_metrics(transcript)
+    cost = metrics.get("cost_usd")
+    if cost:
+        rr["cost_usd"] = cost
+    tu = metrics.get("token_usage") or {}
+    token_usage = {k: (tu.get(k) or 0)
+                   for k in ("input", "output", "cache_read", "cache_create")}
+    if any(token_usage.values()):
+        rr["token_usage"] = token_usage
+        # per_model_usage drives the per-span mlflow.llm.cost distribution that
+        # the Cost Breakdown / Cost Over Time charts aggregate.
+        if cost and rr["model"]:
+            rr["per_model_usage"] = {
+                rr["model"]: {**token_usage, "cost_usd": cost},
+            }
+
+    # exit_code comes from the step's exception_info in result.json (best-effort).
     result_path = case_dir / "result.json"
-    if not result_path.exists():
-        return rr
-    try:
-        data = json.loads(result_path.read_text())
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
-        print(f"WARNING: failed to parse Harbor result {result_path}: {e}",
-              file=sys.stderr)
-        return rr
-    steps = data.get("step_results") or []
-    match = next((s for s in steps if s.get("step_name") == step_name), None)
-    if match is None and not step_name:
-        match = data  # single-step trial
-    if match:
-        ar = match.get("agent_result") or {}
-        cost = ar.get("cost_usd")
-        if cost:
-            rr["cost_usd"] = cost
-        # Harbor's agent_result reports aggregate token counts: n_input_tokens
-        # is total input *including* cache, n_cache_tokens is the cached portion
-        # (read + create). Map to the {input, output, cache_read, cache_create}
-        # schema build_trace expects — lumping fresh+create into "input" since
-        # the split is not reported (matches local-run rendering). Without this,
-        # build_trace omits mlflow.trace.tokenUsage and the dashboard's Token
-        # Usage / Tokens per Trace panels show 0.
-        n_in = ar.get("n_input_tokens") or 0
-        n_cache = ar.get("n_cache_tokens") or 0
-        n_out = ar.get("n_output_tokens") or 0
-        token_usage = {
-            "input": max(n_in - n_cache, 0),
-            "output": n_out,
-            "cache_read": n_cache,
-            "cache_create": 0,
-        }
-        if any(token_usage.values()):
-            rr["token_usage"] = token_usage
-            # per_model_usage drives the per-span mlflow.llm.cost distribution
-            # that the Cost Breakdown / Cost Over Time charts aggregate
-            # (trace-level mlflow.trace.cost alone is not used by those charts).
-            if cost and rr["model"]:
-                rr["per_model_usage"] = {
-                    rr["model"]: {**token_usage, "cost_usd": cost},
-                }
-        if match.get("exception_info"):
-            rr["exit_code"] = 1
+    if result_path.is_file():
+        try:
+            data = json.loads(result_path.read_text())
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+            print(f"WARNING: failed to parse Harbor result {result_path}: {e}",
+                  file=sys.stderr)
+            data = None
+        if data:
+            steps = data.get("step_results") or []
+            match = next((s for s in steps
+                          if s.get("step_name") == step_name), None)
+            if match is None and not step_name:
+                match = data  # single-step trial
+            if match and match.get("exception_info"):
+                rr["exit_code"] = 1
     return rr
 
 
@@ -384,7 +387,8 @@ def main():
                 step_key = f"{case_id}/{step_name}" if step_name else case_id
                 if step_key in case_trace_map:
                     continue
-                step_rr = _harbor_step_run_result(case_dir, step_name, run_result)
+                step_rr = _harbor_step_run_result(case_dir, step_name,
+                                                  run_result, transcript)
                 trace_name = (f"{config.skill} ({step_key})"
                               if config.skill else step_key)
                 trace_dict = build_trace(transcript, step_rr, step_key,
