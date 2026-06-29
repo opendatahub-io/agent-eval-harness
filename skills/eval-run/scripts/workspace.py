@@ -85,7 +85,17 @@ def main():
             print(f"ERROR: {exc}", file=sys.stderr)
             sys.exit(1)
         # Deterministic path — caller explicitly accepts overwrite risk.
-        workspace = (Path(tempfile.gettempdir()) / "agent-eval" / args.run_id).resolve()
+        base_dir = Path(tempfile.gettempdir()) / "agent-eval"
+        workspace = base_dir / args.run_id
+        # Reject symlinks anywhere in the workspace path to prevent
+        # symlink-following attacks (CWE-59) before shutil.rmtree.
+        if base_dir.is_symlink() or workspace.is_symlink():
+            print(
+                f"ERROR: symlink detected in workspace path {workspace} — "
+                "refusing to proceed (possible symlink attack)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         if workspace.exists():
             print(
                 f"WARNING: --force specified, deleting existing workspace {workspace}",
