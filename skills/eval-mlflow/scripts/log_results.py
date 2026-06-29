@@ -38,16 +38,32 @@ from agent_eval.mlflow.experiment import resolve_tracking_uri
 from agent_eval.mlflow.trace_builder import build_trace, log_trace
 
 
+def _is_within(path, root):
+    """True if ``path`` resolves to ``root`` or a descendant (symlinks resolved)."""
+    try:
+        path.resolve(strict=True).relative_to(root.resolve(strict=True))
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def _resolve_harbor_job_dir(raw, run_dir):
-    """Resolve harbor_job_dir (stored repo-root-relative) to an existing path."""
+    """Resolve harbor_job_dir (stored repo-root-relative) to an existing dir.
+
+    The job dir is local harness output, but we still reject absolute paths,
+    ``..`` traversal, and symlinks, and require the resolved directory to live
+    under one of run_dir's ancestors — so a tampered run_result.json can't point
+    trace collection at files outside the expected tree (CWE-22/CWE-59).
+    """
     if not raw:
         return None
     p = Path(raw)
-    if p.exists():
-        return p
-    for ancestor in run_dir.resolve().parents:
-        candidate = ancestor / raw
-        if candidate.exists():
+    if p.is_absolute() or ".." in p.parts:
+        return None
+    for root in run_dir.resolve().parents:
+        candidate = root / p
+        if (candidate.is_dir() and not candidate.is_symlink()
+                and _is_within(candidate, root)):
             return candidate
     return None
 
@@ -61,8 +77,10 @@ def _harbor_steps(job_dir):
     transcripts live under ``.../agent/sessions/projects/*/*/subagents/``.
     The case_id (name before ``__``) matches the summary.yaml per_case keys.
     """
+    job_root = job_dir.resolve(strict=True)
     for case_dir in sorted(d for d in job_dir.iterdir()
-                           if d.is_dir() and "__" in d.name):
+                           if d.is_dir() and not d.is_symlink()
+                           and "__" in d.name and _is_within(d, job_root)):
         case_id = case_dir.name.split("__")[0]
         steps_dir = case_dir / "steps"
         if steps_dir.is_dir():
@@ -74,10 +92,13 @@ def _harbor_steps(job_dir):
         for sd in step_dirs:
             agent_dir = sd / "agent"
             transcript = agent_dir / "claude-code.txt"
-            if not transcript.exists():
+            if not (transcript.is_file() and not transcript.is_symlink()
+                    and _is_within(transcript, job_root)):
                 continue
             step_name = "" if sd is case_dir else sd.name
-            subs = list(agent_dir.glob("sessions/projects/*/*/subagents"))
+            subs = [p for p in agent_dir.glob("sessions/projects/*/*/subagents")
+                    if p.is_dir() and not p.is_symlink()
+                    and _is_within(p, job_root)]
             yield (case_id, case_dir, step_name, transcript,
                    subs[0] if len(subs) == 1 else None)
 
@@ -90,7 +111,9 @@ def _harbor_step_run_result(case_dir, step_name, base):
         return rr
     try:
         data = json.loads(result_path.read_text())
-    except Exception:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+        print(f"WARNING: failed to parse Harbor result {result_path}: {e}",
+              file=sys.stderr)
         return rr
     steps = data.get("step_results") or []
     match = next((s for s in steps if s.get("step_name") == step_name), None)
@@ -452,9 +475,10 @@ def main():
             # overall judge to the final step; non-harbor runs use the
             # per-case trace.
             if steps_for_case:
+                step_trace_ids = list(steps_for_case.values())
                 trace_id = (steps_for_case.get(judge_name)
                             or steps_for_case.get("submit")
-                            or next(iter(steps_for_case.values()), None))
+                            or (step_trace_ids[-1] if step_trace_ids else None))
             else:
                 trace_id = case_trace_map.get(case_id, main_trace_id)
             if not trace_id:
