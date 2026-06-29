@@ -38,6 +38,98 @@ from agent_eval.mlflow.experiment import resolve_tracking_uri
 from agent_eval.mlflow.trace_builder import build_trace, log_trace
 
 
+def _resolve_harbor_job_dir(raw, run_dir):
+    """Resolve harbor_job_dir (stored repo-root-relative) to an existing path."""
+    if not raw:
+        return None
+    p = Path(raw)
+    if p.exists():
+        return p
+    for ancestor in run_dir.resolve().parents:
+        candidate = ancestor / raw
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _harbor_steps(job_dir):
+    """Yield (case_id, case_dir, step_name, transcript_path, subagent_dir) per step.
+
+    Harbor writes each step's Claude stream-json to
+    ``<case>__<hash>/steps/<step>/agent/claude-code.txt`` (multi-step) or
+    ``<case>__<hash>/agent/claude-code.txt`` (single-step). Background subagent
+    transcripts live under ``.../agent/sessions/projects/*/*/subagents/``.
+    The case_id (name before ``__``) matches the summary.yaml per_case keys.
+    """
+    for case_dir in sorted(d for d in job_dir.iterdir()
+                           if d.is_dir() and "__" in d.name):
+        case_id = case_dir.name.split("__")[0]
+        steps_dir = case_dir / "steps"
+        if steps_dir.is_dir():
+            step_dirs = sorted(steps_dir.iterdir(), key=lambda p: p.stat().st_mtime)
+        elif (case_dir / "agent" / "claude-code.txt").exists():
+            step_dirs = [case_dir]  # single-step layout
+        else:
+            step_dirs = []
+        for sd in step_dirs:
+            agent_dir = sd / "agent"
+            transcript = agent_dir / "claude-code.txt"
+            if not transcript.exists():
+                continue
+            step_name = "" if sd is case_dir else sd.name
+            subs = list(agent_dir.glob("sessions/projects/*/*/subagents"))
+            yield (case_id, case_dir, step_name, transcript,
+                   subs[0] if len(subs) == 1 else None)
+
+
+def _harbor_step_run_result(case_dir, step_name, base):
+    """Per-step run_result for trace annotation (model + that step's agent cost)."""
+    rr = {"model": base.get("model", ""), "exit_code": 0}
+    result_path = case_dir / "result.json"
+    if not result_path.exists():
+        return rr
+    try:
+        data = json.loads(result_path.read_text())
+    except Exception:
+        return rr
+    steps = data.get("step_results") or []
+    match = next((s for s in steps if s.get("step_name") == step_name), None)
+    if match is None and not step_name:
+        match = data  # single-step trial
+    if match:
+        ar = match.get("agent_result") or {}
+        cost = ar.get("cost_usd")
+        if cost:
+            rr["cost_usd"] = cost
+        # Harbor's agent_result reports aggregate token counts: n_input_tokens
+        # is total input *including* cache, n_cache_tokens is the cached portion
+        # (read + create). Map to the {input, output, cache_read, cache_create}
+        # schema build_trace expects — lumping fresh+create into "input" since
+        # the split is not reported (matches local-run rendering). Without this,
+        # build_trace omits mlflow.trace.tokenUsage and the dashboard's Token
+        # Usage / Tokens per Trace panels show 0.
+        n_in = ar.get("n_input_tokens") or 0
+        n_cache = ar.get("n_cache_tokens") or 0
+        n_out = ar.get("n_output_tokens") or 0
+        token_usage = {
+            "input": max(n_in - n_cache, 0),
+            "output": n_out,
+            "cache_read": n_cache,
+            "cache_create": 0,
+        }
+        if any(token_usage.values()):
+            rr["token_usage"] = token_usage
+            # per_model_usage drives the per-span mlflow.llm.cost distribution
+            # that the Cost Breakdown / Cost Over Time charts aggregate
+            # (trace-level mlflow.trace.cost alone is not used by those charts).
+            if cost and rr["model"]:
+                rr["per_model_usage"] = {
+                    rr["model"]: {**token_usage, "cost_usd": cost},
+                }
+        if match.get("exception_info"):
+            rr["exit_code"] = 1
+    return rr
+
 
 # ── Main ─────────────────────────────────────────────────────────────
 
@@ -211,6 +303,7 @@ def main():
     # because they already exist in the DB (no async queue issues).
     main_trace_id = None
     case_trace_map = {}  # case_id -> trace_id
+    harbor_step_traces = {}  # case_id -> {step_name: trace_id} (harbor per-step)
     trace_ids = []
 
     # TODO: paginate via page_token for experiments with >500 unlinked traces
@@ -253,6 +346,36 @@ def main():
                         trace_ids.append(tid)
                         num_spans = len(trace_dict["data"]["spans"])
                         print(f"TRACE: {tid} ({num_spans} spans) — {case_id}")
+    elif exec_mode == "harbor":
+        # Harbor runs in-pod and writes no cases/<id>/stdout.log; the Claude
+        # stream-json lives per step in the harbor job dir. Build one trace per
+        # step (same build_trace path as local runs), nesting background
+        # subagents from the step session's subagents/ dir.
+        job_dir = _resolve_harbor_job_dir(run_result.get("harbor_job_dir"), run_dir)
+        if job_dir is None:
+            print("WARNING: harbor_job_dir not found; skipping trace build",
+                  file=sys.stderr)
+        else:
+            for case_id, case_dir, step_name, transcript, sub_dir in \
+                    _harbor_steps(job_dir):
+                step_key = f"{case_id}/{step_name}" if step_name else case_id
+                if step_key in case_trace_map:
+                    continue
+                step_rr = _harbor_step_run_result(case_dir, step_name, run_result)
+                trace_name = (f"{config.skill} ({step_key})"
+                              if config.skill else step_key)
+                trace_dict = build_trace(transcript, step_rr, step_key,
+                                         experiment_id, trace_name=trace_name,
+                                         subagent_dir=sub_dir)
+                if trace_dict:
+                    tid = log_trace(trace_dict)
+                    if tid:
+                        case_trace_map[step_key] = tid
+                        harbor_step_traces.setdefault(case_id, {})[step_name] = tid
+                        trace_ids.append(tid)
+                        num_spans = len(trace_dict["data"]["spans"])
+                        print(f"TRACE: {tid} ({num_spans} spans) — {step_key}"
+                              + (" +subagents" if sub_dir else ""))
     else:
         stdout_path = run_dir / "stdout.log"
         if stdout_path.exists() and run_result:
@@ -312,9 +435,9 @@ def main():
         return None
 
     for case_id, case_results in per_case.items():
-        trace_id = case_trace_map.get(case_id, main_trace_id)
-        if not trace_id or not isinstance(case_results, dict):
+        if not isinstance(case_results, dict):
             continue
+        steps_for_case = harbor_step_traces.get(case_id)
         for judge_name, result in case_results.items():
             if not isinstance(result, dict):
                 continue
@@ -323,6 +446,18 @@ def main():
                 continue
             fb_value = _to_feedback_value(value)
             if fb_value is None:
+                continue
+            # Route feedback: for harbor per-step traces, a step judge
+            # (create/auto-fix/submit) attaches to its own step trace and any
+            # overall judge to the final step; non-harbor runs use the
+            # per-case trace.
+            if steps_for_case:
+                trace_id = (steps_for_case.get(judge_name)
+                            or steps_for_case.get("submit")
+                            or next(iter(steps_for_case.values()), None))
+            else:
+                trace_id = case_trace_map.get(case_id, main_trace_id)
+            if not trace_id:
                 continue
             try:
                 mlflow.log_feedback(
