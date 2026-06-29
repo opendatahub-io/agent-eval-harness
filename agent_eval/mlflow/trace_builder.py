@@ -785,8 +785,15 @@ def build_trace(stdout_path, run_result, run_id, experiment_id,
                     trace_cost[m_name] = m_stats["cost_usd"]
         trace_metadata["mlflow.trace.cost"] = json.dumps(trace_cost)
     if token_usage:
+        # Total input INCLUDING cache reads, matching report.py's "Input tokens
+        # (total)" so the MLflow Usage dashboard reflects total input volume
+        # ("what the eval used"). Cost is tracked separately (mlflow.llm.cost /
+        # mlflow.trace.cost) and the fresh/cached split stays in the run-level
+        # tokens/{input,cache_read,cache_create} metrics — so excluding cache
+        # reads here would understate usage and diverge from the report.
         input_tokens = (token_usage.get("input", 0)
-                        + token_usage.get("cache_create", 0))
+                        + token_usage.get("cache_create", 0)
+                        + token_usage.get("cache_read", 0))
         output_tokens = token_usage.get("output", 0)
         trace_metadata["mlflow.trace.tokenUsage"] = json.dumps({
             "input_tokens": input_tokens,
