@@ -53,7 +53,7 @@ pip install -e ./agent-eval-harness
 claude --plugin-dir ./agent-eval-harness
 ```
 
-This makes all eval skills available: `/eval-setup`, `/eval-analyze`, `/eval-dataset`, `/eval-run`, `/eval-review`, `/eval-mlflow`, `/eval-optimize`, and `/eval-check`.
+This makes all eval skills available: `/eval-setup`, `/eval-analyze`, `/eval-dataset`, `/eval-run`, `/eval-review`, `/eval-mlflow`, `/eval-optimize`, `/eval-check`, and `/eval-security`.
 
 ### 2. Set up environment
 
@@ -508,6 +508,16 @@ Scan the full configuration (skills, commands, CLAUDE.md, hooks) as a system. Fi
 /eval-check --output my-report.md  # Custom output path
 ```
 
+### /eval-security
+
+Security audit of agent setup components. Runs 9 deterministic security checks (prompt injection, credential access, data exfiltration, reverse shells, obfuscation, AST behavioral analysis, taint tracking, tool poisoning, MCP least privilege) against all skills, commands, hooks, and CLAUDE.md. Then performs a semantic security review of flagged components.
+
+```bash
+/eval-security                          # Scan and report to security-report.md
+/eval-security --output my-audit.md     # Custom output path
+/eval-security --fail-on-error          # Exit code 1 if any errors (CI mode)
+```
+
 ## Architecture
 
 ```
@@ -533,6 +543,7 @@ skills/
   eval-mlflow/           # MLflow integration
   eval-optimize/         # Automated refinement loop
   eval-check/    # Full-harness configuration health check
+  eval-security/ # Deterministic security scanning
 ```
 
 ## Agent Support
