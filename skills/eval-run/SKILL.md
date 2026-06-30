@@ -52,10 +52,15 @@ Check if the resolved config file exists:
 test -f <config> && echo "CONFIG_EXISTS" || echo "NO_CONFIG"
 ```
 
-**If config is missing**: invoke eval-analyze to bootstrap:
+**If config is missing**: detect what's available and invoke `/eval-analyze`:
+
+1. Check for skills in `skills/`
+2. If skills exist: suggest `/eval-analyze --skill <name>`
+3. Otherwise: suggest `/eval-analyze --prompt <path>` (prompt mode, see examples/)
+4. Invoke `/eval-analyze` via Skill tool
 
 ```text
-Use the Skill tool to invoke /eval-analyze [--skill <skill>]
+Use the Skill tool to invoke /eval-analyze with the chosen mode
 ```
 
 Once config exists, read it to understand the eval setup — the skill under test, runner, dataset, outputs, judges, models, and any tool interception. The downstream scripts read the same config; you don't need to pass these fields through, just confirm they're present and warn the user about anything missing or surprising.

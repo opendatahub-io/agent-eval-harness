@@ -2457,6 +2457,12 @@ def main():
                         help="Open report in browser")
     args = parser.parse_args()
 
+    # Load config as EvalConfig object to access eval_name() method
+    from agent_eval.config import EvalConfig
+    config_obj = EvalConfig.from_yaml(Path(args.config))
+    eval_name = config_obj.eval_name()
+
+    # Also load as dict for backward compat with report template
     config = _load_yaml(Path(args.config))
     config_dir = Path(args.config).resolve().parent
 
@@ -2467,8 +2473,6 @@ def main():
         ds_path = ds.get("path", "")
         if ds_path and not Path(ds_path).is_absolute():
             ds["path"] = str((config_dir / ds_path).resolve())
-
-    eval_name = config.get("skill", "") if config else ""
     if eval_name and (not isinstance(eval_name, str)
                       or "/" in eval_name or "\\" in eval_name
                       or eval_name in (".", "..")

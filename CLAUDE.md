@@ -1,10 +1,59 @@
 # Agent Eval Harness
 
-Generic evaluation framework for Claude Code skills projects. Uses MLflow as the backbone for tracing, evaluation, datasets, and reporting.
+Generic evaluation framework for Claude Code skills and agent capabilities. Uses MLflow as the backbone for tracing, evaluation, datasets, and reporting.
 
 ## Project Status
 
-Phase 1 (core framework) and Phase 2 (scoring integration) are implemented. See `eval/plans/agent-eval-harness-design.md` in the rfe-creator project for the full design doc.
+Phase 1 (core framework), Phase 2 (scoring integration), and Phase 3 (prompt-based evaluation) are implemented. See `eval/plans/agent-eval-harness-design.md` in the rfe-creator project for the full design doc.
+
+## Execution Model
+
+The harness separates **how many invocations** (`execution.mode`) from **what to execute** (`execution.skill` or `execution.prompt`):
+
+### Execution Mode (case vs batch)
+- **case**: One invocation per test case (default). The harness loops over cases.
+- **batch**: One invocation for all cases via batch.yaml. The skill/agent loops internally.
+
+### What to Execute (skill vs prompt)
+- **Skill mode** (`execution.skill`): Test predefined skill implementations (`/my-skill --args`). Evaluates skill correctness, quality, and cost efficiency.
+- **Prompt mode** (`execution.prompt`): Test agent capabilities directly by sending prompts without a skill wrapper.
+
+### Common Patterns
+
+**Skill evaluation (case mode)**:
+```yaml
+execution:
+  mode: case
+  skill: rfe.create
+  arguments: '--priority {{ input.priority }} "{{ input.prompt }}"'
+```
+
+**Skill evaluation (batch mode)**:
+```yaml
+execution:
+  mode: batch
+  skill: rfe.speedrun
+  arguments: '--input batch.yaml --headless'
+```
+
+**Agentic documentation testing (prompt mode)** ✨:
+```yaml
+execution:
+  mode: case
+  prompt: "{{ input.prompt }}"
+```
+
+**Implemented flavor - Agentic Documentation Testing** (see `examples/openshift-agentic-docs.md`):
+- Documentation effectiveness: Can agents navigate and use your docs?
+- Pattern understanding: Can agents identify and apply code patterns?
+- Constraint compliance: Do agents respect documented rules?
+- API usage: Can agents correctly use APIs from documentation alone?
+
+Includes documentation evaluation templates (navigation, anti-pattern, authoring, component-usage, architecture) for structured evaluation. See `skills/eval-dataset/templates/documentation/`.
+
+**Extensible to other scenarios**: Code generation, API pattern validation, reasoning quality, custom agent benchmarks.
+
+Prompt mode provides direct agent invocation with LLM rubric judges and flexible evaluation criteria.
 
 ## Architecture
 
@@ -41,20 +90,30 @@ skills/eval-setup/       # Skill: environment setup
     check_env.py         # Preflight environment checks
 
 skills/eval-analyze/     # Skill: bootstrap eval config
-  SKILL.md               # Analyze skill, generate eval.yaml + eval.md
+  SKILL.md               # Analyze skill or docs, generate eval.yaml + eval.md
   scripts/
     find_skills.py       # Skill discovery (reads plugin.json for paths)
     validate_eval.py     # Config and memory validation
+    resolve_prompt.py    # Resolve prompt file paths
   prompts/
-    analyze-skill.md     # Skill analysis prompt
+    analyze-skill.md     # Skill analysis prompt (skill mode)
     generate-eval-md.md  # eval.md generation prompt
   references/
     eval-yaml-template.md # Full eval.yaml template for generation
 
 skills/eval-dataset/     # Skill: generate test cases
-  SKILL.md               # Bootstrap, expand, or extract cases from traces
+  SKILL.md               # Bootstrap, expand, or extract cases from traces (skill mode)
+                         # OR taxonomy-based generation from templates (prompt mode)
   scripts/
+    generate_from_taxonomy.py # Taxonomy-based test case generation (prompt mode)
     harbor.py            # CLI: generate Harbor task packages (thin wrapper → harbor.tasks)
+  templates/documentation/  # Documentation evaluation templates (prompt mode)
+    navigation.md        # Finding documentation
+    anti-pattern.md      # Rejecting constraint violations
+    authoring.md         # Creating content following patterns
+    component-usage.md   # API/component usage with examples
+    architecture.md      # System design and component interactions
+    README.md            # Template documentation
 
 skills/eval-run/         # Skill: execute eval suite
   SKILL.md               # Prepare, execute, collect, score, report
@@ -96,18 +155,18 @@ skills/eval-check/ # Skill: full-harness configuration health check
 
 ## How It Works
 
-Skills projects create an `eval.yaml` config file with:
-- `skill` — skill to evaluate
-- `execution` — `mode` (`case` or `batch`), `arguments` template with `{field}` placeholders, optional `timeout`/`max_budget_usd`/`parallelism` (concurrent case execution), and `env` for injecting environment variables into workspaces (`$VAR` syntax resolves from caller's env)
+Projects create an `eval.yaml` config file with:
+- `skill` — skill to evaluate (required for skill mode, omitted for prompt mode)
+- `execution` — `mode` (`case` or `batch`), `skill` or `prompt` (mutually exclusive), `arguments` template with `{field}` placeholders, optional `timeout`/`max_budget_usd`/`parallelism` (concurrent case execution), and `env` for injecting environment variables into workspaces (`$VAR` syntax resolves from caller's env)
 - `runner` — `type` discriminator (`claude-code`, etc.) plus runner-specific `effort`/`settings`/`plugin_dirs`/`env`/`system_prompt`
 - `models` — defaults for `skill`/`subagent`/`judge`/`hook` roles (CLI flags override). `hook` is the model for LLM-based AskUserQuestion answering.
 - `mlflow` — `experiment`, optional `tracking_uri`/`tags`
 - `permissions` — `allow`/`deny` tool patterns for headless execution
-- `dataset` — `path` to test cases directory, `schema` describing case structure in natural language
+- `dataset` — `path` to test cases directory, `schema` describing case structure in natural language. Optional `test_categories` for taxonomy-based test generation (used with `prompt` mode).
 - `inputs.tools` — tool interception: `match` describes what to intercept, `prompt` how to handle it. AskUserQuestion uses 3-tier answering: exact `case_overrides` → LLM call (`models.hook`) with case context (`input.yaml` + `answers.yaml`) → fallback
 - `outputs` — list of artifact dirs (`path`) and/or tool calls (`tool`) with natural language schemas. Optional `batch_pattern` maps output files to cases in batch mode using `{n}` as a 1-based index
 - `traces` — execution data to capture: stdout/stderr, events, metrics (exit code, tokens, cost)
-- `judges` — `builtin` reusable judges (from `agent_eval/judges/`), inline `check` scripts, LLM `prompt`/`prompt_file` (Jinja2 rendered), external `module`/`function`. Optional `arguments` dict for parameterization. Optional `if` condition to skip judges per case based on annotations. Judges receive `outputs["annotations"]` from dataset `annotations.yaml`.
+- `judges` — `builtin` reusable judges (from `agent_eval/judges/`), inline `check` scripts, LLM `prompt`/`prompt_file` (Jinja2 rendered), /`llm_rubric`, external `module`/`function`. Optional `arguments` dict for parameterization. Optional `if` condition to skip judges per case based on annotations. Judges receive `outputs["annotations"]` from dataset `annotations.yaml`.
 - `thresholds` — per-judge regression detection. Valid keys: `min_mean`, `min_pass_rate`, `min_win_rate`
 - `reward` — optional. Collapses per-judge results into a single scalar in `[0, 1]` for RL training (GRPO). Two mutually exclusive modes: `judge` names a single judge whose value is the reward (clamped to `[0, 1]` as-is, or set `normalize: true` to map it from `score_range`; `gate` defaults to false here), validated against the defined judges at config load. Otherwise `formula` composes from multiple judges: `weighted` (weighted sum of `weights`) or a Python `<expression>` over judge names (allowed calls: `min`/`max`/`abs`/`round`/`sum`/`len`/`mean`, AST-validated at config load). `gate: true` zeros the reward on any false boolean judge — it gates on *every* boolean judge, so expressions using booleans as their own gate want `gate: false`. Resolution order: `reward:` section → default (boolean gates + averaged normalized numerics).
 
@@ -117,6 +176,7 @@ The `schema` descriptions are documentation for the LLM agents and judges. Scrip
 
 ## Usage
 
+### Skill Mode Workflow
 ```
 /eval-setup                            # Setup: dependencies, MLflow, API keys
 /eval-analyze --skill my-skill         # Analyze: understand skill, generate eval.yaml
@@ -127,9 +187,19 @@ The `schema` descriptions are documentation for the LLM agents and judges. Scrip
 /eval-optimize --model opus            # Optimize: automated refinement loop
 ```
 
+### Prompt Mode Workflow (Agentic Documentation Testing)
+```text
+/eval-setup                            # Setup: dependencies, MLflow, API keys
+/eval-analyze --prompt examples/openshift-agentic-docs.md # Analyze: analyze docs, generate taxonomy-based eval.yaml
+/eval-dataset                          # Dataset: generate test cases from templates
+/eval-run --model sonnet               # Run: test agent against documentation
+/eval-review --run-id <id>             # Review: analyze documentation effectiveness
+/eval-mlflow --run-id <id>             # MLflow: sync dataset, log results
+```
+
 ## Tests
 
-```
+```bash
 python3 -m pytest tests/ -v                # Unit tests only (e2e skipped by default)
 python3 -m pytest tests/e2e/ -v -s -m e2e  # E2E tests (requires ANTHROPIC_API_KEY, ~$0.50)
 python3 -m pytest tests/ -v -s -m ""       # Everything

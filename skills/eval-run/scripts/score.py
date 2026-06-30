@@ -63,7 +63,7 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
     - Logs: stdout, stderr (if traces config enables them)
     """
     runs_dir = Path(runs_dir) if runs_dir else _get_runs_dir(
-        config.skill if config else "")
+        config.eval_name() if config else "")
     case_dir = Path(case_dir).resolve()
     record = {"files": {}, "tool_calls": [], "case_dir": str(case_dir)}
 
@@ -339,7 +339,8 @@ def _render_jinja2_template(template_text, arguments, outputs):
     - {{ outputs }} - formatted file listings (via __str__) or dict access
     - {{ outputs.files }}, {{ outputs.events }}, etc. - structured access
     - {{ arguments }} - judge arguments from eval.yaml
-    - {{ annotations }} - formatted annotation text
+    - {{ annotations }} - dict for .get() access (e.g., {{ annotations.get('category') }})
+    - {{ annotations_text }} - formatted annotation text for display
     - {{ conversation }} - root-level assistant text from events
     """
     from jinja2 import Environment
@@ -368,7 +369,8 @@ def _render_jinja2_template(template_text, arguments, outputs):
     return template.render(
         arguments=arguments or {},
         outputs=out,
-        annotations=ann_text,
+        annotations=ann,  # Dict for .get() access
+        annotations_text=ann_text,  # Formatted text for display
         conversation=conversation,
     )
 
@@ -419,14 +421,14 @@ def load_judges(config, project_root=None):
         elif jc.check:
             scorer = _make_inline_check(jc)
             judge_type = "check"
-        elif jc.prompt or jc.prompt_file:
+        elif jc.prompt or jc.prompt_file or jc.llm_rubric:
             scorer = _load_llm_judge(jc, config, project_root)
             judge_type = "llm"
         elif jc.module and jc.function:
             scorer = _load_code_judge(jc, project_root)
             judge_type = "code"
         else:
-            print(f"  Warning: judge '{jc.name}' has no check, prompt, or module",
+            print(f"  Warning: judge '{jc.name}' has no check, prompt, llm_rubric, or module",
                   file=sys.stderr)
             continue
         if scorer:
@@ -915,7 +917,11 @@ def _resolve_judge_model(jc, config):
 
 def _load_llm_judge(jc, config, project_root=None):
     root = Path(project_root).resolve() if project_root else Path.cwd().resolve()
-    prompt = jc.prompt
+    # Check llm_rubric first (preferred in taxonomy configs), then prompt
+    prompt = jc.llm_rubric or jc.prompt
+    if jc.llm_rubric and "{{ conversation }}" not in prompt:
+        # Auto-wrap llm_rubric with conversation template
+        prompt += "\n\n# Agent Response to Evaluate\n\n{{ conversation }}"
     if not prompt and jc.prompt_file:
         prompt_path = Path(jc.prompt_file)
         if not prompt_path.is_absolute():
@@ -925,7 +931,7 @@ def _load_llm_judge(jc, config, project_root=None):
             raise FileNotFoundError(f"Judge prompt not found: {prompt_path}")
         prompt = prompt_path.read_text()
     if not prompt:
-        raise ValueError(f"LLM judge '{jc.name}' requires prompt or prompt_file")
+        raise ValueError(f"LLM judge '{jc.name}' requires prompt, llm_rubric, or prompt_file")
     # Append context files to the prompt
     for ctx_path in jc.context:
         path = Path(ctx_path)
@@ -1368,7 +1374,7 @@ def detect_regressions(current_results, thresholds, baseline_results=None):
             continue
         if "min_pass_rate" in threshold:
             rate = current.get("pass_rate", 1.0)
-            if rate < threshold["min_pass_rate"]:
+            if rate is not None and rate < threshold["min_pass_rate"]:
                 regressions.append(Regression(judge_name, "pass_rate",
                                               f">= {threshold['min_pass_rate']}", str(rate)))
         if "min_mean" in threshold:
@@ -1378,7 +1384,7 @@ def detect_regressions(current_results, thresholds, baseline_results=None):
                                               f">= {threshold['min_mean']}", str(mean)))
         if "min_win_rate" in threshold:
             win_rate = current.get("win_rate", 0)
-            if win_rate < threshold["min_win_rate"]:
+            if win_rate is not None and win_rate < threshold["min_win_rate"]:
                 regressions.append(Regression(judge_name, "win_rate",
                                               f">= {threshold['min_win_rate']}", str(win_rate)))
         if baseline_results:
@@ -1461,7 +1467,7 @@ def compute_run_metrics(run_result):
 
 def cmd_judges(args):
     config = EvalConfig.from_yaml(args.config)
-    runs_dir = _get_runs_dir(config.skill)
+    runs_dir = _get_runs_dir(config.eval_name())
     case_dirs = _get_case_dirs(args.run_id, runs_dir)
     project_root = Path.cwd()
 
@@ -1549,7 +1555,7 @@ def cmd_judges(args):
 
 def cmd_pairwise(args):
     config = EvalConfig.from_yaml(args.config)
-    runs_dir = _get_runs_dir(config.skill)
+    runs_dir = _get_runs_dir(config.eval_name())
     case_dirs = _get_case_dirs(args.run_id, runs_dir)
     case_ids = [d.name for d in case_dirs]
 
@@ -1624,7 +1630,7 @@ def cmd_pairwise(args):
 
 def cmd_regression(args):
     config = EvalConfig.from_yaml(args.config)
-    runs_dir = _get_runs_dir(config.skill)
+    runs_dir = _get_runs_dir(config.eval_name())
     summary_path = runs_dir / args.run_id / "summary.yaml"
     if not summary_path.exists():
         print(f"No summary found. Run judges first.", file=sys.stderr)

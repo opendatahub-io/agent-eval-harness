@@ -20,6 +20,29 @@ _global_skill_cache: dict[tuple[str, str], str] = {}
 _global_skill_lock = threading.Lock()
 
 
+def _sanitize_prompt(prompt: str, max_preview: int = 50) -> str:
+    """Sanitize prompt for logging to prevent PII/credential exposure.
+
+    Returns a safe string showing only length and a masked preview.
+
+    Args:
+        prompt: The raw prompt text
+        max_preview: Maximum characters to show in preview (default 50)
+
+    Returns:
+        Sanitized string like: "<prompt: 245 chars, preview: 'Create a new...'"
+    """
+    if not prompt:
+        return "<empty prompt>"
+
+    length = len(prompt)
+    preview = prompt[:max_preview].replace('\n', ' ').replace('\r', ' ')
+    if length > max_preview:
+        preview += "..."
+
+    return f"<prompt: {length} chars, preview: '{preview}'>"
+
+
 class ResponsesAPIRunner(EvalRunner):
     """Runs skills via OpenAI Responses API with Shell tool + Skills API.
 
@@ -138,13 +161,18 @@ class ResponsesAPIRunner(EvalRunner):
                 return label
         return "64g"
 
-    def _create_container(self, client, skill_id: str) -> str:
-        """Create an isolated container for one eval case with skill attached."""
+    def _create_container(self, client, skill_id: Optional[str]) -> str:
+        """Create an isolated container for one eval case.
+
+        If skill_id is provided (case/batch mode), attach the skill.
+        If None (prompt mode), create container without skills.
+        """
         kwargs = {
             "name": f"eval-{uuid.uuid4().hex[:12]}",
             "memory_limit": self._pick_memory_limit(self._memory_limit_mb),
-            "skills": [{"type": "skill_reference", "skill_id": skill_id}],
         }
+        if skill_id:
+            kwargs["skills"] = [{"type": "skill_reference", "skill_id": skill_id}]
         if self._network_policy:
             kwargs["network_policy"] = self._network_policy
         container = client.containers.create(**kwargs)
@@ -253,9 +281,9 @@ class ResponsesAPIRunner(EvalRunner):
             with _print_lock:
                 print(f"  {self._log_prefix} | {msg}", flush=True)
 
-    def run_skill(
+    def execute(
         self,
-        skill_name: str,
+        target: Optional[str],
         args: str,
         workspace: Path,
         model: str,
@@ -277,9 +305,14 @@ class ResponsesAPIRunner(EvalRunner):
 
         try:
             client = self._get_client()
-            skill_dir = self._find_skill_dir(workspace, skill_name)
-            skill_id = self._upload_skill(client, skill_dir, skill_name)
-            self._log(f"Skill uploaded: {skill_name} -> {skill_id}")
+
+            # Skill upload only for case/batch mode (target is skill name)
+            # For prompt mode (target is None), skip skill upload
+            skill_id = None
+            if target:
+                skill_dir = self._find_skill_dir(workspace, target)
+                skill_id = self._upload_skill(client, skill_dir, target)
+                self._log(f"Skill uploaded: {target} -> {skill_id}")
 
             container_id = self._create_container(client, skill_id)
             self._log(f"Container created: {container_id}")
@@ -288,9 +321,13 @@ class ResponsesAPIRunner(EvalRunner):
                 client, container_id, workspace)
             self._log(f"Uploaded {len(uploaded)} files to container")
 
-            prompt = f"/{skill_name}"
-            if args:
-                prompt += f" {args}"
+            # Build prompt: /{skill} {args} for case/batch, or {args} for prompt mode
+            if target:
+                prompt = f"/{target}"
+                if args:
+                    prompt += f" {args}"
+            else:
+                prompt = args or ""
 
             input_messages = []
             if system_prompt:
@@ -303,7 +340,7 @@ class ResponsesAPIRunner(EvalRunner):
                 "content": prompt,
             })
 
-            self._log(f"Executing: {prompt}")
+            self._log(f"Executing: {_sanitize_prompt(prompt)}")
             response = client.responses.create(
                 model=effective_model,
                 input=input_messages,

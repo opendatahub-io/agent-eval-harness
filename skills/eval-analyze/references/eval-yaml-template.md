@@ -7,9 +7,16 @@ Use this template when generating eval.yaml. Fill in every field from what you o
 ```yaml
 name: <project-name>
 description: <one line: what is being evaluated>
-skill: <skill-name>
 
-# Execution — how the skill processes test cases (runner-agnostic)
+# Execution — how to invoke the eval target (skill or prompt)
+#
+# MODE (how many invocations):
+# - case: one invocation per test case (default)
+# - batch: one invocation for all cases via batch.yaml
+#
+# WHAT TO EXECUTE (mutually exclusive):
+# - skill: skill name for '/skill-name' invocations
+# - prompt: direct prompt template for prompt-based evaluation
 #
 # How to choose the mode — look at the skill's INTERNAL LOGIC:
 #
@@ -30,21 +37,72 @@ skill: <skill-name>
 #   Examples: /test-plan.create RHAISTRAT-1520, /rfe.create "problem..."
 #
 # When in doubt, ask the user — don't silently default to case.
+#
+# EXAMPLES:
+#
+# ── Skill mode: case ──
 execution:
   mode: case
-  arguments: <argument template with {field} placeholders from input.yaml>
-  # Case examples: "{prompt}", "{strat_key} {adr_file?}"
-  # Batch example: "--input batch.yaml --headless --dry-run"
+  skill: rfe.create
+  arguments: '--priority {{ input.priority }} "{{ input.prompt }}"'
+  # → sends: /rfe.create --priority High "Add signature verification"
+  # Uses isolated /tmp workspace (skill + input.yaml + symlinked resources)
+
+# ── Skill mode: batch ──
+# execution:
+#   mode: batch
+#   skill: rfe.speedrun
+#   arguments: '--input batch.yaml --headless --dry-run'
+#   # → sends: /rfe.speedrun --input batch.yaml --headless --dry-run
+#   # Uses isolated /tmp workspace
+
+# ── Prompt mode: case (common for doc testing, agent capability testing) ──
+# execution:
+#   mode: case
+#   prompt: "{{ input.prompt }}"
+#   # → sends: Add signature verification
+#   # Workspace: DEPENDS on what you're testing (see Runner section below)
+#   # Same input.yaml feeds both (prompt, priority); one Jinja2 dialect; mode stays case/batch.
+
+# ── Prompt mode: batch (uncommon, but structurally valid) ──
+# execution:
+#   mode: batch
+#   prompt: "{{ input.prompt }}"
+#   # → batch.yaml contains all prompts; agent processes sequentially in one conversation
+#   # Workspace: DEPENDS on what you're testing (see Runner section below)
+
+# Additional execution options:
   # timeout: 3600           # Per-invocation wall-clock timeout (seconds)
   # max_budget_usd: 5.0     # Per-invocation cost cap
-  # parallelism: 3           # Run up to N cases concurrently (case mode only)
-  # env:                     # Inject env vars into workspace .claude/settings.json
+  # parallelism: 3          # Run up to N cases concurrently (case mode only)
+  # env:                    # Inject env vars into workspace .claude/settings.json
   #   JIRA_SERVER: http://localhost:8080   # Literal value
   #   JIRA_TOKEN: $JIRA_TOKEN              # $VAR resolved from caller's environment
 
 # Runner — agent harness + runner-specific knobs
+#
+# WORKSPACE_MODE determines execution context — choose based on WHAT you're testing:
+#
+# - (unset/omitted): Isolated /tmp workspace with input.yaml + symlinked resources
+#                    DEFAULT and CORRECT for:
+#                    • All skill-based evaluations (safe, reproducible, no repo contamination)
+#                    • Prompt-based tests that don't need full repo access
+#
+# - repo: Run agents in actual repository directory with full file tree access
+#         USE WHEN TESTING:
+#         • Documentation navigation (agents need ai-docs/, docs/ at real paths)
+#         • In-repo code understanding (agents need pkg/, cmd/, internal/)
+#         • Repository structure/organization (grep across files, find patterns)
+#         Requires permissions.deny rules to prevent repo modification
+#
+# DECISION GUIDE:
+# Ask: "Does the agent need to navigate the real repository structure to answer correctly?"
+#   YES (doc navigation, code exploration) → workspace_mode: repo
+#   NO  (skill testing, isolated capabilities) → omit workspace_mode (use default)
+#
 runner:
   type: claude-code         # Discriminator: claude-code, opencode, etc.
+  # workspace_mode: repo    # Set ONLY when testing requires full repo access (see above)
   # settings: {}            # Runner-specific settings overrides
   # plugin_dirs: []         # Plugin dirs the evaluated skill needs
   # env:                     # Extra env vars for the runner ($VAR resolves from caller)
@@ -64,9 +122,28 @@ models:
 # If the skill under test invokes sub-skills via the Skill tool
 # (check its allowed-tools frontmatter for "Skill"), add "Skill"
 # to the allow list — otherwise nested skill calls silently fail.
+#
+# IMPORTANT: Deny rules are ONLY for PROMPT-MODE evaluations (workspace_mode: repo).
+# For SKILL-based evaluations: OMIT deny rules entirely (skill runs in isolated workspace).
+# For PROMPT-based evaluations: Add deny blocks to prevent test cheating.
 permissions:
   allow: []     # Tool patterns to allow (e.g., "Skill", "Write(artifacts/**)")
-  deny: []      # Tool patterns to block (e.g., "mcp__*")
+  # deny: []    # ONLY for prompt-mode evals - see note above
+  
+  # Example deny rules for PROMPT-MODE evaluations (workspace_mode: repo):
+  # deny:
+  #   - path: "eval/"
+  #     tools: ["Read", "Grep", "Glob", "Bash"]
+  #     reason: "Test cases contain answer keys and run results from other agents"
+  #   - path: "eval.yaml"
+  #     tools: ["Read", "Grep", "Bash"]
+  #     reason: "Eval config contains domain knowledge and expected schemas"
+  #   - path: "eval.md"
+  #     tools: ["Read", "Grep", "Bash"]
+  #     reason: "Analysis cache contains documentation structure maps"
+  #   - path: "tmp/"
+  #     tools: ["Read", "Grep", "Glob", "Bash"]
+  #     reason: "Harness state files not relevant to execution"
 
 # MLflow logging target (optional)
 mlflow:
@@ -161,10 +238,19 @@ traces:
 # Judges — evaluate output quality
 # Four judge types (determined by which field is set):
 #   builtin:     reusable judge from the harness library
-#   check:       inline Python snippet
+#   check:       inline Python snippet (receives outputs, arguments)
 #   prompt/prompt_file: LLM judge (Jinja2 rendered)
 #   module/function:   external Python module
-# All judge types support optional `arguments:` for parameterization.
+# All judge types support optional `arguments:` and `if:` (conditional).
+#
+# CONDITIONAL EXECUTION: Add `if: "expression"` to skip judges on certain cases.
+# Available in if expressions: annotations, outputs (direct access, no .get() needed)
+#   if: "annotations.get('category') == 'navigation'"
+#
+# CRITICAL: Inside check blocks, use outputs.get("annotations", {}) — NOT bare annotations
+#   check: |
+#     cat = outputs.get("annotations", {}).get("category")  # Correct
+#     # annotations.get("category")  # WRONG - NameError
 judges:
   # Builtin judge: reusable judge from the harness library
   # List available: python3 ${CLAUDE_SKILL_DIR}/scripts/list_builtins.py
@@ -194,9 +280,9 @@ judges:
 
   # LLM judge: assess quality with a prompt
   # All LLM prompts are rendered with Jinja2. Available template variables:
-  #   {{ outputs }}      — file artifacts and modified files as markdown
-  #   {{ conversation }} — root-level assistant text (excludes subagent text)
-  #   {{ annotations }}  — dataset annotations
+  #   {{ outputs }}      — file artifacts and modified files as markdown (NOT outputs.response!)
+  #   {{ conversation }} — root-level assistant text (NOT outputs.conversation!)
+  #   {{ annotations }}  — dataset annotations (use annotations.get('key') in judges)
   #   {{ arguments }}    — judge arguments from eval.yaml (dict)
   - name: <descriptive_name>
     description: |
@@ -421,6 +507,8 @@ Example check judge for in-place edits (skills that edit input files via Edit to
 - `{{ outputs }}` renders all collected file contents (from `outputs[*].path` directories and `_modified/` in-place edits), formatted as markdown sections with file paths as headers.
 - `{{ conversation }}` renders root-level assistant conversation text extracted from the event stream. It filters out subagent messages, tool calls, and non-text events. For stdout-only skills (no file artifacts), this is the primary way to give judges the skill's output.
 - `{{ annotations }}` renders dataset annotations from the case's `annotations.yaml`.
+
+**CRITICAL**: Use `{{ conversation }}` NOT `{{ outputs.conversation }}` or `{{ outputs.response }}`. These DO NOT EXIST and will result in empty judge inputs. The correct variable is the bare `{{ conversation }}` shown above.
 
 All three can be used in the same prompt. Without any template variables, the LLM receives only the raw prompt text and cannot see any output.
 
