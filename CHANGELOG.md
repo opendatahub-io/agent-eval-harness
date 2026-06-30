@@ -1,3 +1,10 @@
+# [1.20.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.19.0...v1.20.0) (2026-06-30)
+
+
+### Features
+
+* **mlflow:** break out cache tokens in trace token usage ([4b9ac26](https://github.com/opendatahub-io/agent-eval-harness/commit/4b9ac2628c61c9fb5c3196192d3b1c3a4df8c1db))
+
 # [1.19.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.18.0...v1.19.0) (2026-06-29)
 
 
