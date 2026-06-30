@@ -8,6 +8,7 @@ Usage:
 
 import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
 
+import ast
 import hashlib
 import sys
 from pathlib import Path
@@ -17,6 +18,24 @@ import yaml
 # Import skill lookup from sibling module
 sys.path.insert(0, str(Path(__file__).parent))
 from find_skills import find_skill
+
+
+def _discover_builtin_judge_names() -> set[str]:
+    """Scan agent_eval/judges/ for available builtin judge names (no module loading)."""
+    judges_dir = Path(__file__).resolve().parents[2] / ".." / "agent_eval" / "judges"
+    judges_dir = judges_dir.resolve()
+    names: set[str] = set()
+    if not judges_dir.is_dir():
+        return names
+    for category_dir in judges_dir.iterdir():
+        if not category_dir.is_dir() or category_dir.name.startswith("_"):
+            continue
+        for f in category_dir.iterdir():
+            if f.name.startswith("_"):
+                continue
+            if f.suffix in (".py", ".md"):
+                names.add(f.stem)
+    return names
 
 
 def validate_config(path="eval.yaml"):
@@ -76,6 +95,8 @@ def validate_config(path="eval.yaml"):
             elif ".." in op.parts:
                 errors.append(f"outputs[{i}].path must not traverse parent: {out_path}")
 
+    builtin_names = _discover_builtin_judge_names()
+
     for j in judges:
         name = j.get("name", "unnamed")
         prompt_file = j.get("prompt_file", "")
@@ -91,9 +112,32 @@ def validate_config(path="eval.yaml"):
         if module:
             try:
                 import importlib
-                importlib.import_module(module)
+                mod = importlib.import_module(module)
             except ImportError:
                 errors.append(f"judges.{name}.module '{module}' not importable")
+                mod = None
+            func_name = j.get("function", "")
+            if mod and func_name:
+                fn = getattr(mod, func_name, None)
+                if fn is None:
+                    errors.append(f"judges.{name}.function '{func_name}' not found in module '{module}'")
+                elif not callable(fn):
+                    errors.append(f"judges.{name}.function '{func_name}' in '{module}' is not callable")
+
+        builtin = j.get("builtin", "")
+        if builtin:
+            flat_name = builtin.rsplit("/", 1)[-1] if "/" in builtin else builtin
+            if flat_name not in builtin_names:
+                errors.append(
+                    f"judges.{name}.builtin '{builtin}' not found "
+                    f"(available: {', '.join(sorted(builtin_names)) or 'none'})")
+
+        check_expr = j.get("check", "")
+        if check_expr:
+            try:
+                ast.parse(check_expr, mode="exec")
+            except SyntaxError as e:
+                errors.append(f"judges.{name}.check has invalid Python syntax: {e.msg}")
 
     # --- Execution config ---
     execution = config.get("execution", {})
@@ -121,6 +165,14 @@ def validate_config(path="eval.yaml"):
         sp = Path(settings) if Path(settings).is_absolute() else config_dir / settings
         if not sp.exists():
             errors.append(f"runner.settings '{settings}' not found")
+
+    plugin_dirs = runner.get("plugin_dirs") or []
+    for i, pd in enumerate(plugin_dirs):
+        pp = Path(pd) if Path(pd).is_absolute() else config_dir / pd
+        if not pp.exists():
+            warnings.append(f"runner.plugin_dirs[{i}] '{pd}' not found")
+        elif not pp.is_dir():
+            warnings.append(f"runner.plugin_dirs[{i}] '{pd}' is not a directory")
 
     # --- Models ---
     models = config.get("models") or {}

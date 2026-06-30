@@ -91,6 +91,20 @@ Flag any issues found by the inventory script, plus:
 - Skills with very broad trigger descriptions that overlap with many peers
 - Custom commands that shadow built-in Claude Code commands
 
+### 4f. Reference Validation
+
+Run the reference checker to find broken cross-component references:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/reference_checker.py --root . --format yaml
+```
+
+This checks:
+- **Cross-skill references**: when a SKILL.md mentions `/eval-run` or `skills/eval-analyze`, verify the target skill exists
+- **Script references**: when a SKILL.md references `${CLAUDE_SKILL_DIR}/scripts/foo.py`, verify the script file exists in the skill's directory
+- **Eval config references**: when an eval.yaml names a `skill:`, verify that skill exists
+- **Orphan skills**: skills that are not referenced by any other skill, command, or eval.yaml (only flagged when >3 skills exist)
+
 ## Step 5: Generate Report
 
 Write the report to the path specified by `--output` (default: `harness-report.md`) only if it resolves within the project root. If it resolves outside root (e.g., `..` traversal or absolute external path), refuse and ask for a valid path. Use the Write tool.
@@ -130,6 +144,9 @@ Generated: <date>
 
 ### Structural Issues
 (list findings, or "No structural issues detected.")
+
+### Reference Validation
+(list broken references, missing scripts, and orphan skills, or "All references resolve.")
 
 ## Suggestions
 

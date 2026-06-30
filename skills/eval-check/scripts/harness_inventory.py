@@ -163,6 +163,34 @@ def find_hooks(root: Path) -> list[dict]:
     return hooks
 
 
+def find_eval_configs(root: Path) -> list[dict]:
+    """Find eval.yaml configuration files."""
+    configs = []
+    seen = set()
+    for yaml_file in root.rglob("eval.yaml"):
+        if ".git" in yaml_file.parts or "__pycache__" in yaml_file.parts:
+            continue
+        resolved = yaml_file.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        content = _read_text_safe(yaml_file)
+        if not content:
+            continue
+        try:
+            import yaml
+            parsed = yaml.safe_load(content)
+            if isinstance(parsed, dict) and parsed.get("skill"):
+                configs.append({
+                    "path": str(yaml_file.relative_to(root)),
+                    "name": parsed.get("name", yaml_file.parent.name),
+                    "skill": parsed.get("skill", ""),
+                })
+        except Exception:
+            continue
+    return configs
+
+
 def check_structural_issues(skills: list[dict], claude_md: dict | None) -> list[str]:
     """Flag obvious structural issues."""
     warnings = []
@@ -185,6 +213,7 @@ def main():
     commands = find_commands(root)
     claude_md = find_claude_md(root)
     hooks = find_hooks(root)
+    eval_configs = find_eval_configs(root)
     warnings = check_structural_issues(skills, claude_md)
 
     total_skill_words = sum(s["words"] for s in skills)
@@ -203,6 +232,7 @@ def main():
                 "skills": len(skills),
                 "commands": len(commands),
                 "hooks": len(hooks),
+                "eval_configs": len(eval_configs),
                 "claude_md": bool(claude_md),
                 "total_word_count": total_words,
             },
@@ -210,15 +240,17 @@ def main():
             "commands": commands,
             "claude_md": claude_md,
             "hooks": hooks,
+            "eval_configs": eval_configs,
             "warnings": warnings,
         }
         print(yaml.dump(output, default_flow_style=False, sort_keys=False))
     else:
         print("=== Harness Inventory ===\n")
-        print(f"Skills:     {len(skills)}")
-        print(f"Commands:   {len(commands)}")
-        print(f"Hooks:      {len(hooks)}")
-        print(f"CLAUDE.md:  {'Yes' if claude_md else 'No'}")
+        print(f"Skills:       {len(skills)}")
+        print(f"Commands:     {len(commands)}")
+        print(f"Hooks:        {len(hooks)}")
+        print(f"Eval configs: {len(eval_configs)}")
+        print(f"CLAUDE.md:    {'Yes' if claude_md else 'No'}")
         print(f"Total words (approx): {total_words}")
         if skills:
             print("\nSkills by word count:")
