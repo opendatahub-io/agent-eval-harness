@@ -17,6 +17,7 @@ You generate evaluation cases from historical GitHub PRs. Real merged PRs provid
 | `--strategy <type>` | no | `review` | Evaluation strategy: `review`, `fix`, or `scan` |
 | `--output-dir <path>` | **yes** | — | Case output directory (**outside** the project, e.g. `../eval-replay-output/cases`) |
 | `--config-output <path>` | **yes** | — | Generated eval.yaml (alongside cases, e.g. `../eval-replay-output/eval.yaml`) |
+| `--clone-dir <path>` | no | temp dir | Repo clone root, isolated from case data. Defaults to a temp dir so the agent can't traverse to ground truth. |
 | `--skip-clone` | no | false | Skip repo cloning (for testing) |
 
 ## Step 1: Validate Prerequisites
@@ -37,14 +38,16 @@ Run `from_pr.py` for each PR. This fetches metadata, diffs, and review comments,
 python3 ${CLAUDE_SKILL_DIR}/scripts/from_pr.py \
     --repo <repo> --pr <N> [--pr <M>] \
     --strategy <strategy> \
-    --output-dir <output-dir>
+    --output-dir <output-dir> \
+    [--clone-dir <clone-dir>]
 ```
 
 Each case directory (`<output-dir>/pr-<N>/`) contains:
-- `input.yaml` — PR context visible to the skill (title, body, changed files, repo path)
+- `input.yaml` — PR context visible to the skill (title, body, changed files, `repo_path` pointing to the isolated clone)
 - `annotations.yaml` — ground truth for judges only (verdict, review comments, expected files)
 - `reference.patch` — the accepted diff
-- `repo/` — shallow clone at merge-base (no post-merge objects, no remote)
+
+Repo clones live in a **separate directory tree** (temp dir by default, or `--clone-dir`) so the agent cannot traverse from the clone to ground truth.
 
 Verify at least one case was created:
 
@@ -107,7 +110,7 @@ LLM judge scores whether the skill identified the vulnerability the accepted PR 
 
 - **Never put ground truth in the agent workspace** — `annotations.yaml` stays in the dataset dir; only `input.yaml` reaches the skill
 - **The LLM judge has ground truth** — unlike typical LLM judges that assess "quality," `outcome_alignment` compares against the actual accepted diff and reviewer comments. It answers: "would acting on this skill's output have converged toward what was actually merged?"
-- **Contamination is prevented** — shallow clones have no remote, no refs, no post-merge objects
+- **Contamination is prevented** — shallow clones have no remote, no refs, no post-merge objects. Clones live in a separate directory tree (temp dir by default) so the agent cannot traverse from `repo_path` to ground truth files.
 - **Don't modify the skill** — this skill generates cases and config; `/eval-optimize` handles skill changes
 
 $ARGUMENTS

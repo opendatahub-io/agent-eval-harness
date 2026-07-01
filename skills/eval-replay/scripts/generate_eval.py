@@ -53,11 +53,11 @@ STRATEGY_DESCRIPTIONS: dict[str, str] = {
 SANITY_JUDGES: list[dict[str, str]] = [
     {
         "name": "has_output",
-        "description": "Skill produced non-trivial output.",
+        "description": "Skill produced non-empty output.",
         "check": textwrap.dedent("""\
             conversation = outputs.get("conversation", "")
-            if len(conversation.strip()) < 50:
-                return False, f"Output too short ({len(conversation.strip())} chars)"
+            if not conversation.strip():
+                return False, "Output is empty"
             return True, f"Output has {len(conversation.strip())} chars"
         """),
     },
@@ -79,10 +79,10 @@ SANITY_JUDGES: list[dict[str, str]] = [
     },
 ]
 
-# Thresholds are identical across strategies
 _DEFAULT_THRESHOLDS: dict[str, dict[str, float]] = {
     "outcome_alignment": {"min_mean": 3.0},
     "has_output": {"min_pass_rate": 1.0},
+    "references_diff_files": {"min_pass_rate": 0.5},
 }
 
 # ---------------------------------------------------------------------------

@@ -13,13 +13,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 import yaml
+
+GH_BIN = shutil.which("gh")
+GIT_BIN = shutil.which("git")
+if GH_BIN is None or GIT_BIN is None:
+    _missing = [n for n, b in [("gh", GH_BIN), ("git", GIT_BIN)] if b is None]
+    raise RuntimeError(f"Required executables not found: {', '.join(_missing)}")
 
 
 # ---------------------------------------------------------------------------
@@ -34,6 +42,7 @@ class ReviewComment:
     body: str
     author: str
     state: str  # review-level: APPROVED, CHANGES_REQUESTED, COMMENTED
+    submitted_at: str = ""  # ISO 8601 timestamp for ordering
 
 
 @dataclass
@@ -76,7 +85,7 @@ class GitHubAdapter:
 
     def _gh(self, *args: str) -> str:
         result = subprocess.run(
-            ["gh", *args],
+            [GH_BIN, *args],
             capture_output=True,
             text=True,
             timeout=60,
@@ -146,21 +155,24 @@ class GitHubAdapter:
         reviews = self._gh_api(f"repos/{repo}/pulls/{pr}/reviews")
         comments = self._gh_api(f"repos/{repo}/pulls/{pr}/comments")
 
-        state_by_review_id: dict[int, str] = {r["id"]: r["state"] for r in reviews}
+        review_lookup: dict[int, dict[str, str]] = {
+            r["id"]: {"state": r["state"], "submitted_at": r.get("submitted_at", "")}
+            for r in reviews
+        }
 
         result: list[ReviewComment] = []
 
         for c in comments:
             rid = c.get("pull_request_review_id")
+            rl = review_lookup.get(rid, {}) if rid else {}
             result.append(
                 ReviewComment(
                     path=c.get("path", ""),
                     line=c.get("original_line") or c.get("line"),
                     body=c.get("body", ""),
                     author=c["user"]["login"] if c.get("user") else "",
-                    state=state_by_review_id.get(rid, "COMMENTED")
-                    if rid
-                    else "COMMENTED",
+                    state=rl.get("state", "COMMENTED"),
+                    submitted_at=rl.get("submitted_at", ""),
                 )
             )
 
@@ -174,6 +186,7 @@ class GitHubAdapter:
                         body=body,
                         author=r["user"]["login"] if r.get("user") else "",
                         state=r["state"],
+                        submitted_at=r.get("submitted_at", ""),
                     )
                 )
 
@@ -198,7 +211,7 @@ class GitHubAdapter:
 
 def _run_git(*args: str, cwd: Path) -> str:
     result = subprocess.run(
-        ["git", *args],
+        [GIT_BIN, *args],
         capture_output=True,
         text=True,
         cwd=cwd,
@@ -222,7 +235,7 @@ def _check_contamination(clone_dir: Path, post_merge_sha: str) -> None:
     if not post_merge_sha:
         return
     check = subprocess.run(
-        ["git", "cat-file", "-t", post_merge_sha],
+        [GIT_BIN, "cat-file", "-t", post_merge_sha],
         capture_output=True,
         text=True,
         cwd=clone_dir,
@@ -239,12 +252,17 @@ def create_isolated_clone(
     repo: str,
     merge_base_sha: str,
     post_merge_sha: str,
-    output_dir: Path,
+    clone_dir: Path,
 ) -> Path:
-    """Create a contamination-safe shallow clone at the merge-base."""
-    clone_dir = output_dir / "repo"
-    if clone_dir.exists():
-        return clone_dir
+    """Create a contamination-safe shallow clone at the merge-base.
+
+    clone_dir must not exist — caller is responsible for choosing a path
+    that is not a descendant/ancestor of the ground truth case directory.
+    """
+    if clone_dir.exists() or clone_dir.is_symlink():
+        raise FileExistsError(
+            f"{clone_dir} already exists; remove it or use a fresh output directory"
+        )
 
     clone_dir.mkdir(parents=True)
     repo_url = f"https://github.com/{repo}.git"
@@ -271,6 +289,7 @@ PROMPT_TEMPLATES: dict[str, str] = {
         "Title: {title}\n"
         "Description: {body}\n\n"
         "Changed files:\n{files}\n\n"
+        "Diff:\n{diff}\n\n"
         "Provide your review with a verdict (approve or request_changes) "
         "and list any issues found with file paths and line numbers."
     ),
@@ -284,24 +303,38 @@ PROMPT_TEMPLATES: dict[str, str] = {
         "Scan the following files for security vulnerabilities.\n\n"
         "Context: {title}\n"
         "Description: {body}\n\n"
-        "Files to scan:\n{files}"
+        "Files to scan:\n{files}\n\n"
+        "Diff:\n{diff}"
     ),
 }
 
 
-def _build_prompt(meta: PrMeta, strategy: str) -> str:
+def _build_prompt(meta: PrMeta, strategy: str, diff: str = "") -> str:
     template = PROMPT_TEMPLATES.get(strategy)
     if template is None:
         raise ValueError(f"Unknown strategy: {strategy}")
     files_list = "\n".join(f"  - {f}" for f in meta.changed_files)
-    return template.format(title=meta.title, body=meta.body, files=files_list)
+    return template.format(
+        title=meta.title, body=meta.body, files=files_list, diff=diff
+    )
 
 
 def _derive_verdict(reviews: list[ReviewComment]) -> str:
-    states = {r.state for r in reviews}
-    if "CHANGES_REQUESTED" in states:
+    """Derive verdict from the latest non-comment review per reviewer.
+
+    A reviewer may submit CHANGES_REQUESTED then later APPROVED; only
+    their final actionable review state counts.
+    """
+    latest_by_reviewer: dict[str, str] = {}
+    ordered = sorted(reviews, key=lambda r: r.submitted_at)
+    for r in ordered:
+        if r.author and r.state not in ("COMMENTED", ""):
+            latest_by_reviewer[r.author] = r.state
+
+    final_states = set(latest_by_reviewer.values())
+    if "CHANGES_REQUESTED" in final_states:
         return "changes_requested"
-    if "APPROVED" in states:
+    if "APPROVED" in final_states:
         return "approved"
     return "commented"
 
@@ -317,11 +350,21 @@ def generate_case(
     pr: int,
     strategy: str,
     output_dir: Path,
+    clone_root: Path | None = None,
     *,
     skip_clone: bool = False,
 ) -> Path:
-    """Fetch PR data and write a single eval case directory."""
+    """Fetch PR data and write a single eval case directory.
+
+    clone_root: if provided, clones go to clone_root/pr-<N>/ — a path
+    with no filesystem relationship to output_dir, so the agent cannot
+    traverse from the clone to ground truth.  Defaults to a temp dir.
+    """
     meta = adapter.fetch_pr_meta(repo, pr)
+    if meta.state != "MERGED":
+        raise ValueError(
+            f"PR #{pr} is {meta.state}, not MERGED — replay requires merged PRs"
+        )
     diff = adapter.fetch_diff(repo, pr)
     reviews = adapter.fetch_reviews(repo, pr)
     merge_base = adapter.compute_merge_base(repo, pr)
@@ -331,22 +374,28 @@ def generate_case(
 
     repo_path = ""
     if not skip_clone:
+        if clone_root is None:
+            clone_root = Path(tempfile.mkdtemp(prefix="eval-replay-"))
+        clone_target = clone_root / f"pr-{pr}"
         clone_dir = create_isolated_clone(
-            repo, merge_base, meta.merge_commit_sha, case_dir
+            repo, merge_base, meta.merge_commit_sha, clone_target
         )
         repo_path = str(clone_dir.resolve())
 
-    _write_yaml(
-        case_dir / "input.yaml",
-        {
-            "prompt": _build_prompt(meta, strategy),
-            "pr_title": meta.title,
-            "pr_body": meta.body,
-            "changed_files": meta.changed_files,
-            "repo_path": repo_path,
-            "strategy": strategy,
-        },
-    )
+    input_data: dict[str, Any] = {
+        "prompt": _build_prompt(
+            meta, strategy, diff=diff if strategy in ("review", "scan") else ""
+        ),
+        "pr_title": meta.title,
+        "pr_body": meta.body,
+        "changed_files": meta.changed_files,
+        "repo_path": repo_path,
+        "strategy": strategy,
+    }
+    if strategy in ("review", "scan"):
+        input_data["diff"] = diff
+
+    _write_yaml(case_dir / "input.yaml", input_data)
 
     (case_dir / "reference.patch").write_text(diff)
 
@@ -409,6 +458,15 @@ def main() -> None:
         help="Output directory for cases (absolute path)",
     )
     parser.add_argument(
+        "--clone-dir",
+        default=None,
+        help=(
+            "Root directory for repo clones, isolated from case data. "
+            "Defaults to a temp directory so the agent cannot traverse "
+            "from the clone to ground truth."
+        ),
+    )
+    parser.add_argument(
         "--skip-clone",
         action="store_true",
         help="Skip shallow clone (use for testing without git)",
@@ -418,6 +476,17 @@ def main() -> None:
     adapter = GitHubAdapter()
     output = Path(args.output_dir).resolve()
 
+    if args.clone_dir:
+        clone_root: Path | None = Path(args.clone_dir).resolve()
+        clone_root.mkdir(parents=True, exist_ok=True)
+    elif not args.skip_clone:
+        clone_root = Path(tempfile.mkdtemp(prefix="eval-replay-"))
+    else:
+        clone_root = None
+
+    if clone_root:
+        print(f"Clones directory: {clone_root}", file=sys.stderr)
+
     for pr_num in args.pr:
         print(f"Generating case for PR #{pr_num}...", file=sys.stderr)
         case_dir = generate_case(
@@ -426,6 +495,7 @@ def main() -> None:
             pr_num,
             args.strategy,
             output,
+            clone_root=clone_root,
             skip_clone=args.skip_clone,
         )
         print(f"  -> {case_dir}", file=sys.stderr)
