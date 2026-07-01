@@ -304,6 +304,14 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
             except (json.JSONDecodeError, OSError):
                 pass
 
+    # A trial with an infra-failed step is incomplete — averaging only the steps
+    # that did run would let a half-finished pipeline read as a high (even
+    # perfect) reward. Exclude it from the reward mean entirely (reward=None);
+    # the per-step judges still reflect what actually ran, and the infra failure
+    # is surfaced via infra_error_steps / INFRA-ERRORS.
+    if infra_error_steps:
+        mean_reward = None
+
     return {
         "case_id": _case_id_from_dir(trial_dir),
         "trial_dir": trial_dir.name,
