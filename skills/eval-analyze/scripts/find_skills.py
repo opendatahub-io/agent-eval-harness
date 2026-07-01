@@ -23,7 +23,8 @@ DEFAULT_SKILL_DIRS = [".claude/skills", "skills"]
 
 # Skills from the eval harness — excluded from discovery
 HARNESS_SKILLS = {"eval-setup", "eval-analyze", "eval-dataset", "eval-run",
-                   "eval-review", "eval-mlflow", "eval-optimize"}
+                   "eval-review", "eval-mlflow", "eval-optimize", "eval-check",
+                   "eval-replay"}
 
 
 def _resolve_under_cwd(raw, base):

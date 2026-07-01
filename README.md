@@ -53,7 +53,7 @@ pip install -e ./agent-eval-harness
 claude --plugin-dir ./agent-eval-harness
 ```
 
-This makes all eval skills available: `/eval-setup`, `/eval-analyze`, `/eval-dataset`, `/eval-run`, `/eval-review`, `/eval-mlflow`, `/eval-optimize`, and `/eval-check`.
+This makes all eval skills available: `/eval-setup`, `/eval-analyze`, `/eval-dataset`, `/eval-run`, `/eval-review`, `/eval-mlflow`, `/eval-optimize`, `/eval-check`, and `/eval-replay`.
 
 ### 2. Set up environment
 
@@ -508,6 +508,21 @@ Scan the full configuration (skills, commands, CLAUDE.md, hooks) as a system. Fi
 /eval-check --output my-report.md  # Custom output path
 ```
 
+### /eval-replay
+
+Generate evaluation cases from real merged GitHub PRs for ground-truth skill testing. Fetches PR diffs, review comments, and verdicts, creates contamination-safe repo snapshots at the merge-base, and produces eval.yaml with an LLM alignment judge that scores skill output against actual PR outcomes.
+
+```bash
+/eval-replay --repo org/repo --pr 123 --pr 456 --skill code-review
+/eval-replay --repo org/repo --pr 789 --skill fix-bugs --strategy fix
+/eval-replay --repo org/repo --pr 101 --skill security-scan --strategy scan
+```
+
+Strategies:
+- **review** (default) — tests code-review skills against reviewer comments and verdicts
+- **fix** — tests bug-fix skills against accepted patches
+- **scan** — tests security scan skills against vulnerability fixes
+
 ## Architecture
 
 ```
@@ -532,7 +547,8 @@ skills/
   eval-review/           # Interactive human review
   eval-mlflow/           # MLflow integration
   eval-optimize/         # Automated refinement loop
-  eval-check/    # Full-harness configuration health check
+  eval-check/            # Full-harness configuration health check
+  eval-replay/           # Ground-truth eval from historical PRs
 ```
 
 ## Agent Support
