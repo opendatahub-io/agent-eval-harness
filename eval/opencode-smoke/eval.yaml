@@ -16,7 +16,6 @@ execution:
     OPENCODE_OTLP_PROTOCOL: http/json
     OPENCODE_OTLP_HEADERS: "$OPENCODE_OTLP_HEADERS"
     OTEL_BSP_SCHEDULE_DELAY: "100"
-    NODE_TLS_REJECT_UNAUTHORIZED: "0"
 
 runner:
   type: cli
@@ -43,10 +42,9 @@ mlflow:
 dataset:
   path: cases
   schema: |
-    Each case directory contains input.yaml with:
-    - prompt: the task for opencode to execute
-    - expected_file: filename that should be created
-    - expected_content: text that should appear in the file
+    Each case directory contains:
+    - input.yaml: prompt (the task for opencode to execute)
+    - annotations.yaml: expected_file, expected_content (used by judges)
 
 outputs:
   - path: output

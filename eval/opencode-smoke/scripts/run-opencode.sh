@@ -15,15 +15,18 @@ OPENCODE="${OPENCODE_BIN:-$(command -v opencode 2>/dev/null || echo "$HOME/.open
 mkdir -p "$WORKSPACE" "$OUTPUT_DIR"
 cd "$WORKSPACE"
 
-# Snapshot pre-existing files
-PRE_LIST=$(mktemp)
+# Snapshot pre-existing files with checksums to detect both new and modified files
+PRE_CHECKSUMS=$(mktemp)
+EVENT_LOG=$(mktemp)
+POST_CHECKSUMS=$(mktemp)
+trap 'rm -f "$PRE_CHECKSUMS" "$POST_CHECKSUMS" "$EVENT_LOG"' EXIT
+
 find . -maxdepth 3 -type f \
   -not -path './.git/*' -not -path './.opencode/*' \
   -not -path './output/*' -not -path './.claude/*' \
-  > "$PRE_LIST" 2>/dev/null || true
+  -exec md5sum {} + 2>/dev/null | sort > "$PRE_CHECKSUMS" || true
 
 # Run opencode — capture JSON events to a temp file, stream to stdout for harness
-EVENT_LOG=$(mktemp)
 set +e
 "$OPENCODE" run "$PROMPT" \
   --format json \
@@ -34,15 +37,14 @@ set +e
 EXIT_CODE=${PIPESTATUS[0]}
 set -e
 
-# Snapshot post-run files
-POST_LIST=$(mktemp)
+# Snapshot post-run files with checksums
 find . -maxdepth 3 -type f \
   -not -path './.git/*' -not -path './.opencode/*' \
   -not -path './output/*' -not -path './.claude/*' \
-  > "$POST_LIST" 2>/dev/null || true
+  -exec md5sum {} + 2>/dev/null | sort > "$POST_CHECKSUMS" || true
 
-# Copy new files to output_dir (set difference via comm)
-comm -13 <(sort "$PRE_LIST") <(sort "$POST_LIST") | while IFS= read -r f; do
+# Copy new and modified files to output_dir
+comm -13 "$PRE_CHECKSUMS" "$POST_CHECKSUMS" | awk '{print $2}' | while IFS= read -r f; do
   target_dir="$OUTPUT_DIR/$(dirname "$f")"
   mkdir -p "$target_dir"
   cp "$f" "$OUTPUT_DIR/$f" 2>/dev/null || true
@@ -85,13 +87,12 @@ metrics = {
         'cache_read': cache_read,
         'cache_write': cache_write,
     },
-    'cost_usd': round(total_cost, 6) if total_cost else None,
-    'num_turns': num_turns or None,
+    'cost_usd': round(total_cost, 6) if num_turns > 0 else None,
+    'num_turns': num_turns if num_turns > 0 else None,
     'model': os.environ['_MODEL'],
 }
 with open(os.path.join(os.environ['_OUTPUT_DIR'], 'metrics.json'), 'w') as f:
     json.dump(metrics, f, indent=2)
 " 2>/dev/null || true
 
-rm -f "$PRE_LIST" "$POST_LIST" "$EVENT_LOG"
 exit $EXIT_CODE
