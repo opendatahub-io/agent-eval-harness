@@ -1,0 +1,2 @@
+expected_file: hello.txt
+expected_content: "Hello from OpenCode smoke test"
