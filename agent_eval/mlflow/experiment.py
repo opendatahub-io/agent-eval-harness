@@ -119,8 +119,10 @@ def inject_tracing_env(workspace, project_root=None, tracking_uri=None,
             except (json.JSONDecodeError, OSError):
                 pass
 
-    # Set env vars only — no Stop hook
-    env = settings.setdefault("environment", {})
+    # Set env vars only — no Stop hook. Claude Code reads the "env" key of
+    # settings.json (matching workspace.py / tools.interception); "environment"
+    # is ignored, so these vars would never reach the agent under that key.
+    env = settings.setdefault("env", {})
     resolved_uri = (tracking_uri
                     or os.environ.get("MLFLOW_TRACKING_URI")
                     or "http://127.0.0.1:5000")
@@ -215,8 +217,9 @@ def inject_tracing_hook(workspace, project_root=None, tracking_uri=None,
     if not any("stop_hook_handler" in str(h) for h in stop_hooks):
         stop_hooks.append(stop_hook)
 
-    # Enable tracing via environment
-    env = settings.setdefault("environment", {})
+    # Enable tracing via env. Claude Code reads the "env" key of settings.json
+    # (matching workspace.py / tools.interception); "environment" is ignored.
+    env = settings.setdefault("env", {})
     env["MLFLOW_CLAUDE_TRACING_ENABLED"] = "true"
 
     # Set tracking URI so traces go to the server, not local mlruns/
