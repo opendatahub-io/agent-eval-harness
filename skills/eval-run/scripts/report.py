@@ -1989,13 +1989,16 @@ def _render_reward_overview(summary, config):
                 else:
                     other_judges.append(jn)
 
-    if "efficiency" not in gate_judges and "efficiency" not in llm_judges:
+    has_efficiency = any(
+        isinstance(cr, dict) and "efficiency" in cr for cr in per_case.values()
+    )
+    if has_efficiency and "efficiency" not in gate_judges and "efficiency" not in llm_judges:
         other_judges.append("efficiency")
     other_judges = [j for j in other_judges if j != "efficiency"] + (
         ["efficiency"] if "efficiency" in other_judges else [])
 
     def _label(name):
-        return name.replace("_", " ").title()
+        return _esc(name.replace("_", " ").title())
 
     def _cell(val_entry):
         if not isinstance(val_entry, dict):
@@ -2021,6 +2024,8 @@ def _render_reward_overview(summary, config):
         return f'<span class="skip">{_esc(str(v)[:20])}</span>'
 
     def _reward_cell(val):
+        if val is None:
+            return '<span class="skip">\u2014</span>'
         try:
             f = float(val)
             s = f"{f:.4f}"
@@ -2030,7 +2035,7 @@ def _render_reward_overview(summary, config):
                 return f'<span class="rv-reward warn">{s}</span>'
             return f'<span class="rv-reward fail">{s}</span>'
         except (ValueError, TypeError):
-            return str(val)
+            return f'<span class="skip">{_esc(str(val)[:20])}</span>'
 
     html = '<h2 class="section-heading">Per-Case Reward Overview</h2>\n'
     html += ('<p style="font-size:0.9em;color:var(--text-muted);margin:0 0 0.5em;">'
@@ -2069,6 +2074,8 @@ def _render_reward_overview(summary, config):
             if reward_cfg and reward_cfg.get("formula") == "weighted":
                 weights = reward_cfg.get("weights", {})
                 sr = reward_cfg.get("score_range", [1, 5])
+                if not isinstance(sr, list) or len(sr) < 2:
+                    sr = [1, 5]
                 raw_list = reward_cfg.get("raw", [])
                 total = 0.0
                 wsum = 0.0

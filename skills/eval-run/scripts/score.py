@@ -89,39 +89,40 @@ def _extract_verifiable_evidence(case_dir, record):
 
     if trace_path.exists():
         try:
-            for line in trace_path.open():
-                try:
-                    d = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                if d.get("type") == "assistant":
-                    for c in d.get("message", {}).get("content", []):
-                        if c.get("type") != "tool_use":
-                            continue
-                        name = c.get("name", "")
-                        inp = c.get("input", {})
-                        tools[name] += 1
-                        if name == "Skill":
-                            skills_invoked.append(inp.get("skill", "?"))
-                        elif name == "Bash":
-                            cmd = inp.get("command", "")
-                            for s in key_scripts:
-                                if s in cmd:
-                                    scripts_run.add(s)
-                        elif name == "Read":
-                            fp = inp.get("file_path", "")
-                            if ".context/architecture" in fp:
-                                arch_files_read.add(fp.split("/")[-1])
-                            if "input.yaml" in fp:
-                                input_read = True
-                        elif name == "Write":
-                            fp = inp.get("file_path", "")
-                            if "artifacts/" in fp:
-                                parts = fp.split("artifacts/")[-1]
-                                artifacts_written.add(parts)
-                elif d.get("type") == "result":
-                    total_turns = d.get("num_turns", 0)
-                    cost_usd = d.get("total_cost_usd", 0.0)
+            with trace_path.open() as fh:
+                for line in fh:
+                    try:
+                        d = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if d.get("type") == "assistant":
+                        for c in d.get("message", {}).get("content", []):
+                            if c.get("type") != "tool_use":
+                                continue
+                            name = c.get("name", "")
+                            inp = c.get("input", {})
+                            tools[name] += 1
+                            if name == "Skill":
+                                skills_invoked.append(inp.get("skill", "?"))
+                            elif name == "Bash":
+                                cmd = inp.get("command", "")
+                                for s in key_scripts:
+                                    if s in cmd:
+                                        scripts_run.add(s)
+                            elif name == "Read":
+                                fp = inp.get("file_path", "")
+                                if ".context/architecture" in fp:
+                                    arch_files_read.add(fp.split("/")[-1])
+                                if "input.yaml" in fp:
+                                    input_read = True
+                            elif name == "Write":
+                                fp = inp.get("file_path", "")
+                                if "artifacts/" in fp:
+                                    parts = fp.split("artifacts/")[-1]
+                                    artifacts_written.add(parts)
+                    elif d.get("type") == "result":
+                        total_turns = d.get("num_turns", 0)
+                        cost_usd = d.get("total_cost_usd", 0.0)
         except OSError:
             pass
 
@@ -274,9 +275,13 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
     if not events_path.exists():
         events_path = case_dir / "events.jsonl"
     if not events_path.exists() and run_id and runs_dir:
-        events_path = runs_dir / run_id / "events.json"
-    if not events_path.exists() and run_id and runs_dir:
-        events_path = runs_dir / run_id / "events.jsonl"
+        if ".." in str(run_id) or Path(run_id).is_absolute():
+            print(f"  Warning: rejecting unsafe run_id: {run_id}",
+                  file=sys.stderr)
+        else:
+            events_path = runs_dir / run_id / "events.json"
+            if not events_path.exists():
+                events_path = runs_dir / run_id / "events.jsonl"
     if events_path.exists():
         try:
             raw_text = events_path.read_text()
@@ -285,7 +290,7 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
                     json.loads(line) for line in raw_text.splitlines() if line.strip()
                 ]
             else:
-                record["events"] = json.load(open(events_path))
+                record["events"] = json.loads(raw_text)
             if not isinstance(record["events"], list):
                 print(f"  Warning: events file is not a list in {events_path}",
                       file=sys.stderr)
@@ -908,10 +913,10 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
         record = load_case_record(case_dir, config, run_id=run_id)
         case_results = {}
         for name, scorer, condition, judge_type, judge_samples in judges:
-            # Expose prior judge results so aggregation judges (e.g. grpo_reward)
-            # can read earlier scores via outputs["judge_<name>"].
-            for prev_name, prev_rec in case_results.items():
-                record[f"judge_{prev_name}"] = prev_rec
+            import copy
+            record["prior_judges"] = {
+                k: copy.deepcopy(v) for k, v in case_results.items()
+            }
             # Check condition — skip if it evaluates to False
             if condition:
                 try:
