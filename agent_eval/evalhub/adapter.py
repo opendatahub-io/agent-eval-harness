@@ -230,13 +230,21 @@ class AgentEvalAdapter(FrameworkAdapter):
                 with open(input_path, encoding="utf-8") as f:
                     input_data = yaml.safe_load(f) or {}
 
-            args = resolve_arguments(eval_config.execution.arguments, input_data) \
-                if eval_config.execution.arguments else ""
+            # Resolve the invocation: prompt mode sends the rendered prompt
+            # with no skill wrapper; skill mode resolves execution.skill (or
+            # the deprecated top-level skill) and renders its arguments.
+            if eval_config.is_prompt_mode():
+                target = None
+                args = resolve_arguments(eval_config.execution.prompt, input_data)
+            else:
+                target = eval_config.resolve_skill()
+                args = resolve_arguments(eval_config.execution.arguments, input_data) \
+                    if eval_config.execution.arguments else ""
             timeout = eval_config.execution.timeout or 600
             budget = eval_config.execution.max_budget_usd or 5.0
 
             result = runner.execute(
-                target=eval_config.skill or "",
+                target=target,
                 args=args,
                 workspace=case_dir,
                 model=model_name,

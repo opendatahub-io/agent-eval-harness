@@ -205,7 +205,8 @@ def main():
 
         # ── Params ───────────────────────────────────────────────
         params = {
-            "skill": config.skill,
+            "skill": config.resolve_skill(),
+            "eval_name": config.eval_name(),
             "runner": config.runner.type,
             "run_id": args.run_id,
             "model": run_result.get("model", ""),
@@ -361,7 +362,8 @@ def main():
                 if case_id in case_trace_map:
                     continue
                 case_result = run_result.get("per_case", {}).get(case_id, run_result)
-                trace_name = f"{config.skill} ({case_id})" if config.skill else case_id
+                _skill = config.resolve_skill()
+                trace_name = f"{_skill} ({case_id})" if _skill else case_id
                 trace_dict = build_trace(case_stdout, case_result, case_id,
                                          experiment_id, trace_name=trace_name)
                 if trace_dict:
@@ -405,7 +407,8 @@ def main():
     else:
         stdout_path = run_dir / "stdout.log"
         if stdout_path.exists() and run_result:
-            trace_name = f"{config.skill} ({args.run_id})" if config.skill else ""
+            _skill = config.resolve_skill()
+            trace_name = f"{_skill} ({args.run_id})" if _skill else config.eval_name()
             trace_dict = build_trace(stdout_path, run_result, args.run_id,
                                      experiment_id, trace_name=trace_name)
             if trace_dict:

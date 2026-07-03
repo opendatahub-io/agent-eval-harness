@@ -10,11 +10,35 @@ import yaml
 
 
 def resolve_arguments(template: str, input_data: dict) -> str:
-    """Resolve {field} / {field?} placeholders from input.yaml data.
+    """Resolve a skill/prompt argument template against input.yaml data.
 
-    {field}  — required; raises KeyError if missing.
-    {field?} — optional; omitted (empty) if missing.
+    Two mutually-exclusive placeholder styles are auto-detected:
+
+    - Jinja2 (``{{ input.field }}`` / ``{% ... %}``): rendered with ``input``
+      bound to the case data.  Uses ``StrictUndefined`` so a missing required
+      field raises ``ValueError`` rather than silently rendering empty.  For
+      genuinely optional fields use ``{{ input.get('field', '') }}`` or the
+      ``| default('')`` filter.
+    - Brace (``{field}`` / ``{field?}``): ``{field}`` is required (raises
+      ``KeyError`` if missing); ``{field?}`` is optional (omitted if missing).
     """
+    if not template:
+        return ""
+
+    if "{{" in template or "{%" in template:
+        from jinja2 import StrictUndefined, Template
+        from jinja2 import UndefinedError
+
+        try:
+            result = Template(template, undefined=StrictUndefined).render(
+                input=input_data
+            )
+        except UndefinedError as e:
+            raise ValueError(
+                f"Missing required field in template: {e}. Template: {template}"
+            ) from e
+        return re.sub(r"[ \t]+", " ", result).strip()
+
     def _replacer(match):
         f = match.group(1)
         optional = f.endswith("?")
@@ -527,6 +551,22 @@ class EvalConfig:
         base = self.config_dir if self.config_dir is not None else Path.cwd()
         return base / p
 
+    def resolve_skill(self) -> Optional[str]:
+        """Canonical skill name for skill mode, or None for prompt mode.
+
+        Prefers ``execution.skill`` (the current location) and falls back to
+        the deprecated top-level ``skill`` field.  Returns None when neither
+        is set — i.e. prompt mode or an unconfigured target.  All execution
+        substrates (local, Harbor, EvalHub) MUST resolve the target through
+        this method so a config authored with only ``execution.skill`` runs
+        the skill instead of silently degrading to prompt mode.
+        """
+        return self.execution.skill or self.skill or None
+
+    def is_prompt_mode(self) -> bool:
+        """True when the eval runs a direct prompt (no skill wrapper)."""
+        return bool(self.execution.prompt and self.execution.prompt.strip())
+
     def eval_name(self) -> str:
         """Derive eval identifier with backward-compatible fallback chain.
 
@@ -539,9 +579,12 @@ class EvalConfig:
         This ensures existing skill evals continue to work while enabling
         prompt mode to use either explicit names or path-based identifiers.
         """
-        # Priority 1: skill field (backward compat with existing evals)
-        if self.skill:
-            return self.skill
+        # Priority 1: skill field (backward compat with existing evals).
+        # Resolve through resolve_skill() so execution.skill-only configs
+        # still name the run after the skill under test.
+        skill = self.resolve_skill()
+        if skill:
+            return skill
 
         # Priority 2: name field (explicit identifier, sanitized)
         # Skip if name == path.stem (auto-set default from from_yaml)
