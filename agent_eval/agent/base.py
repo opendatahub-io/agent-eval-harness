@@ -97,6 +97,7 @@ class EvalRunner(ABC):
         system_prompt: Optional[str] = None,
         max_budget_usd: float = 5.0,
         timeout_s: int = 600,
+        extra_env: Optional[dict] = None,
     ) -> RunResult:
         """Deprecated: Use execute() instead.
 
@@ -117,4 +118,5 @@ class EvalRunner(ABC):
             system_prompt=system_prompt,
             max_budget_usd=max_budget_usd,
             timeout_s=timeout_s,
+            extra_env=extra_env,
         )
