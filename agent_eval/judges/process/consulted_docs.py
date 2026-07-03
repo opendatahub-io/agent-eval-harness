@@ -26,23 +26,45 @@ def _normalize(path, match):
     return path
 
 
+def _suffix_match(read_path, expected):
+    """True when one path is a suffix of the other at a path-component boundary.
+
+    Component-boundary matching prevents false positives like ``report.md``
+    matching ``final-report.md`` (plain ``endswith`` substring match), while
+    still letting a repo-relative ``docs/setup.md`` match an absolute read of
+    ``/home/user/project/docs/setup.md`` (and vice versa).
+    """
+    if not read_path or not expected:
+        return False
+    return (
+        read_path == expected
+        or read_path.endswith("/" + expected)
+        or expected.endswith("/" + read_path)
+    )
+
+
 def judge(outputs, **kwargs):
     min_coverage = kwargs.get("min_coverage", 0.8)
     match = kwargs.get("match", "suffix")
     include_subagents = kwargs.get("include_subagents", True)
 
-    expected = [_normalize(p, match)
-                for p in outputs.get("annotations", {}).get("expected_files", [])]
+    # Drop empty entries so a stray "" in expected_files (e.g. a trailing
+    # list item) cannot spuriously match every read.
+    expected = [e for e in (
+        _normalize(p, match)
+        for p in outputs.get("annotations", {}).get("expected_files", [])
+    ) if e]
     if not expected:
         return (True, "No expected_files specified — nothing to verify")
 
     read_calls = extract_read_calls(outputs.get("events", []),
                                     include_subagents=include_subagents)
-    read = [_normalize(c.get("file_path"), match) for c in read_calls]
+    read = [r for r in (_normalize(c.get("file_path"), match)
+                        for c in read_calls) if r]
 
     def _hit(exp):
         if match == "suffix":
-            return any(r.endswith(exp) or exp.endswith(r) for r in read if r)
+            return any(_suffix_match(r, exp) for r in read)
         return exp in read
 
     hits = [e for e in expected if _hit(e)]
