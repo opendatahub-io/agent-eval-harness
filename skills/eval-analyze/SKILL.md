@@ -16,6 +16,7 @@ The core principle: **observe, don't assume**. Every field name, file pattern, a
 | `--skill <name>` | no | auto-detect | Which skill to analyze |
 | `--config <path>` | no | auto-discover | Output path for the config |
 | `--update` | no | false | Fill in missing sections only, preserve user edits |
+| `--assess` | no | false | Assess all skills and recommend which ones need evals |
 
 ```bash
 mkdir -p tmp
@@ -43,19 +44,38 @@ Set the resolved config path as `<config>` for all subsequent steps. Set `<eval_
 
 ## Step 1: Find the Target Skill
 
-If `--skill` was provided, locate its SKILL.md:
+**If `--assess` was provided**, skip single-skill selection and run the batch assessment instead:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/assess_skills.py
+```
+
+This reads all SKILL.md files in the project, extracts eval-relevant metadata (allowed tools, line count, complexity signals), and scores each skill to recommend whether evals would add value. Display the report to the user and offer to run full `/eval-analyze` on any of the recommended skills. Stop here — do not proceed to Step 2.
+
+**If `--skill` was provided**, locate its SKILL.md:
 
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/find_skills.py --name <skill>
 ```
 
-If not provided, list all project skills:
+**If neither `--skill` nor `--assess` was provided**, list all project skills:
 
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/find_skills.py
 ```
 
-This reads `.claude-plugin/plugin.json` for custom skill paths, falls back to `.claude/skills/` and `skills/`, and excludes eval harness skills. If only one skill is found, use it automatically. If multiple, ask the user which to analyze. If none are found, tell the user — they may need to check their skill directory paths or create a skill first.
+This reads `.claude-plugin/plugin.json` for custom skill paths, falls back to `.claude/skills/` and `skills/`, and excludes eval harness skills. If only one skill is found, use it automatically. If none are found, tell the user — they may need to check their skill directory paths or create a skill first.
+
+If multiple skills are found, ask the user which strategy to use via AskUserQuestion:
+
+- **"Analyze a specific skill"** — list the skills and let the user pick one (current behavior)
+- **"Assess all skills — recommend which ones need evals"** — run the batch assessment:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/assess_skills.py
+```
+
+Display the assessment report and offer to run full `/eval-analyze` on any of the recommended skills. If the user picks a skill to analyze, continue to Step 2. Otherwise stop here.
 
 **If `--update` and eval.yaml already has a `skill` field**: use that skill. If `--skill` is also provided and differs, ask the user which they mean — don't silently overwrite.
 
