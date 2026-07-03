@@ -49,53 +49,22 @@ _HARNESS_SYSTEM_PROMPT = (
 )
 
 
-def _filter_permissions_for_mode(config, workspace=None, in_repo_mode=None):
-    """Filter permissions based on execution mode.
+def _resolve_permissions(config):
+    """Return the permission rules to pass to the runner.
 
-    Deny rules in permissions are only applied in prompt mode with in-repo execution.
-    In skill mode with isolated per-case workspaces, deny rules are removed to prevent
-    incorrectly blocking access to /tmp/ workspaces.
+    User-authored ``permissions`` (allow AND deny) are honored in every
+    execution mode. Deny rules meant to protect an in-repo checkout simply
+    do not match isolated /tmp workspaces, so there is no need to strip them
+    — silently dropping deny rules disabled protections the eval author had
+    explicitly configured (e.g. ``deny: ["WebFetch"]`` in batch/case mode).
 
     Args:
         config: EvalConfig with permissions
-        workspace: Path to workspace (optional, for early in-repo detection)
-        in_repo_mode: bool (optional, if already detected)
 
     Returns:
-        Filtered permissions dict safe to pass to runner
+        Permissions dict safe to pass to the runner (a shallow copy)
     """
-    import yaml as _yaml
-
-    # If in_repo_mode is not explicitly provided, try to detect it
-    if in_repo_mode is None and workspace:
-        in_repo_mode = False
-        workspace_path = Path(workspace)
-        case_order_path = workspace_path / "case_order.yaml"
-
-        if case_order_path.exists():
-            try:
-                with open(case_order_path) as f:
-                    case_order = _yaml.safe_load(f) or []
-                if case_order:
-                    first_case_id = case_order[0] if isinstance(case_order[0], str) else case_order[0]["case_id"]
-                    first_case_ws = workspace_path / "cases" / first_case_id
-                    metadata_path = first_case_ws / "_metadata.yaml"
-
-                    if metadata_path.exists():
-                        with open(metadata_path) as f:
-                            meta = _yaml.safe_load(f) or {}
-                            if meta.get("mode") == "in-repo":
-                                in_repo_mode = True
-            except Exception:
-                pass  # If detection fails, assume not in-repo mode
-
-    # Start with config permissions
-    filtered = config.permissions.copy() if config.permissions else {}
-
-    # If NOT in repo mode (skill mode), remove deny rules
-    # Deny rules are only appropriate for in-repo execution
-    if not in_repo_mode and "deny" in filtered:
-        filtered.pop("deny")
+    filtered = dict(config.permissions) if config.permissions else {}
 
     return filtered
 
@@ -190,9 +159,8 @@ def main():
     mlflow_experiment = args.mlflow_experiment or config.mlflow.experiment
     effort = args.effort or config.runner.effort
 
-    # Filter permissions based on execution mode
-    # Deny rules should only apply in prompt mode with in-repo execution
-    filtered_permissions = _filter_permissions_for_mode(config, workspace=args.workspace)
+    # Honor user-authored permissions (allow + deny) in every mode.
+    filtered_permissions = _resolve_permissions(config)
 
     runner = runner_cls.from_config(
         config,
@@ -332,10 +300,10 @@ def _resolve_arguments(template, case_data):
     import re
 
     # Auto-detect Jinja2 syntax
-    if '{{' in template:
+    if '{{' in template or '{%' in template:
         # Use Jinja2 rendering
         try:
-            from jinja2 import Template, UndefinedError
+            from jinja2 import StrictUndefined, Template, UndefinedError
         except ImportError:
             raise ImportError(
                 "Jinja2 is required for {{ }} template syntax. "
@@ -343,7 +311,11 @@ def _resolve_arguments(template, case_data):
             )
 
         try:
-            jinja_template = Template(template)
+            # StrictUndefined makes missing required fields raise rather than
+            # render to an empty string (honoring the docstring contract).
+            # Genuinely optional fields should use {{ input.get('x', '') }}
+            # or the `| default('')` filter.
+            jinja_template = Template(template, undefined=StrictUndefined)
             # Render with input.* namespace for Jinja2 templates
             result = jinja_template.render(input=case_data)
             return result.strip()
@@ -498,14 +470,11 @@ def _run_single_case_in_repo(runner, skill_name, case_ws, output_dir,
         print(f"    ERROR: {case_id} modified repo:", file=sys.stderr)
         for line in modified_files[:5]:
             print(f"      {line}", file=sys.stderr)
-        # Save evidence
+        # Save evidence. Record this case as a failed (repo-modified) result
+        # below and continue — a single case violating the read-only contract
+        # must not abort the whole run and discard the other cases' results.
         (case_ws / "repo_modifications.txt").write_text(
             f"BEFORE:\n{repo_before}\n\nAFTER:\n{repo_after}\n"
-        )
-        raise RuntimeError(
-            f"Test case '{case_id}' modified the repository. "
-            f"This violates the read-only repository constraint. "
-            f"See {case_ws / 'repo_modifications.txt'} for details."
         )
 
     # Write stdout/stderr to workspace output (for collect.py and judges)
@@ -855,13 +824,12 @@ def _execute_per_case(args, config, runner, runner_cls,
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
             futures = {}
+            # Permissions are identical for every case; resolve once.
+            case_permissions = _resolve_permissions(config)
             with ThreadPoolExecutor(max_workers=effective_parallelism) as pool:
                 for i, entry in enumerate(case_order, 1):
                     case_id = entry if isinstance(entry, str) else entry["case_id"]
                     case_ws = workspace / "cases" / case_id
-                    # Filter permissions: only apply deny rules in in-repo mode
-                    case_permissions = _filter_permissions_for_mode(
-                        config, in_repo_mode=in_repo_mode)
                     case_runner = runner_cls.from_config(
                         config,
                         log_prefix=f"eval:{case_id}",
@@ -906,11 +874,31 @@ def _execute_per_case(args, config, runner, runner_cls,
                 if in_repo_mode:
                     # In-repo mode: agent runs in repo, I/O in case_ws
                     # NO hooks (not yet implemented, see docs/in-repo-hooks-future-enhancement.md)
-                    case_id, result = _run_single_case_in_repo(
-                        runner, target, case_ws, output_dir,
-                        skill_args_template, model, mlflow_experiment,
-                        config.mlflow.tracking_uri, system_prompt,
-                        max_budget, timeout_s, len(case_order), i)
+                    # Isolate per-case failures (git errors, etc.) so one bad
+                    # case is recorded as failed instead of aborting the run.
+                    try:
+                        case_id, result = _run_single_case_in_repo(
+                            runner, target, case_ws, output_dir,
+                            skill_args_template, model, mlflow_experiment,
+                            config.mlflow.tracking_uri, system_prompt,
+                            max_budget, timeout_s, len(case_order), i)
+                    except Exception as exc:
+                        print(f"    → {case_id}: ERROR ({exc})", file=sys.stderr)
+                        result = {
+                            "exit_code": 1,
+                            "duration_s": 0,
+                            "token_usage": None,
+                            "cost_usd": None,
+                            "num_turns": None,
+                            "per_model_usage": None,
+                            "per_model_turns": None,
+                            "error": str(exc),
+                        }
+                        case_output = output_dir / "cases" / case_id
+                        case_output.mkdir(parents=True, exist_ok=True)
+                        with open(case_output / "run_result.json", "w") as f:
+                            json.dump(result, f, indent=2)
+                            f.write("\n")
                 else:
                     # Regular isolated workspace mode with hooks
                     case_id, result = _run_single_case(
