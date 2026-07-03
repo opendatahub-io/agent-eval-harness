@@ -698,6 +698,25 @@ a:hover { text-decoration: underline; }
 .diagram-source summary { font-size: 0.85em; color: var(--text-muted); cursor: pointer; padding: 4px 0; }
 .diagram-source summary:hover { color: var(--text); }
 .diagram-source pre { max-height: 400px; overflow-y: auto; }
+
+.reward-overview { overflow-x: auto; margin: 0.8em 0 1.5em; }
+.reward-overview table { font-size: 0.88em; }
+.reward-overview th { font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.05em; }
+.reward-overview th.rv-rotate {
+  writing-mode: vertical-rl; transform: rotate(180deg);
+  height: 120px; min-width: 28px; padding: 8px 4px;
+  font-size: 0.7em; letter-spacing: 0.04em;
+}
+.reward-overview td { text-align: center; padding: 7px 8px; }
+.reward-overview td:first-child { text-align: left; font-weight: 500; font-size: 0.9em; }
+.rv-reward { font-weight: 700; font-size: 1.05em; font-variant-numeric: tabular-nums; }
+.reward-overview .rv-avg-row td {
+  background: var(--surface-3) !important;
+  font-weight: 700; border-top: 2px solid var(--border-strong);
+}
+.rv-gate-hdr { background: var(--success-soft) !important; color: var(--success) !important; border-bottom: 2px solid var(--success-border) !important; }
+.rv-llm-hdr { background: var(--accent-soft) !important; color: var(--accent) !important; border-bottom: 2px solid var(--accent) !important; }
+.rv-other-hdr { background: var(--warning-soft) !important; color: var(--warning) !important; border-bottom: 2px solid var(--warning-border) !important; }
 """
 
 THEME_SCRIPT = """
@@ -1926,6 +1945,166 @@ def _colorise_hist(glyph):
             .replace("\x02", "</span>"))
 
 
+def _render_reward_overview(summary, config):
+    """Render a compact per-case reward overview table with all judge scores."""
+    per_case = summary.get("per_case", {})
+    if not per_case:
+        return ""
+
+    judges_cfg = config.get("judges", [])
+    gate_judges = []
+    llm_judges = []
+    other_judges = []
+    for j in judges_cfg:
+        name = j.get("name", "")
+        if name in ("grpo_reward",):
+            continue
+        jtype = j.get("type", "")
+        if jtype == "check" and j.get("check", ""):
+            gate_judges.append(name)
+        elif jtype == "llm" or j.get("prompt") or j.get("prompt_file"):
+            llm_judges.append(name)
+        else:
+            other_judges.append(name)
+
+    if not gate_judges and not llm_judges:
+        all_judge_names = set()
+        for case_results in per_case.values():
+            if isinstance(case_results, dict):
+                for jn, jv in case_results.items():
+                    if jn != "grpo_reward" and isinstance(jv, dict):
+                        all_judge_names.add(jn)
+        for jn in sorted(all_judge_names):
+            sample = None
+            for cr in per_case.values():
+                if isinstance(cr, dict) and jn in cr:
+                    sample = cr[jn]
+                    break
+            if isinstance(sample, dict):
+                v = sample.get("value")
+                if isinstance(v, bool):
+                    gate_judges.append(jn)
+                elif isinstance(v, (int, float)) and jn != "efficiency":
+                    llm_judges.append(jn)
+                else:
+                    other_judges.append(jn)
+
+    if "efficiency" not in gate_judges and "efficiency" not in llm_judges:
+        other_judges.append("efficiency")
+    other_judges = [j for j in other_judges if j != "efficiency"] + (
+        ["efficiency"] if "efficiency" in other_judges else [])
+
+    def _label(name):
+        return name.replace("_", " ").title()
+
+    def _cell(val_entry):
+        if not isinstance(val_entry, dict):
+            return '<span class="skip">\u2014</span>'
+        v = val_entry.get("value")
+        if v is True:
+            return '<span class="pass">PASS</span>'
+        if v is False:
+            return '<span class="fail">FAIL</span>'
+        if isinstance(v, float):
+            s = f"{v:.2f}"
+            if v >= 4:
+                return f'<span class="pass">{s}</span>'
+            elif v >= 2.5:
+                return f'<span class="warn">{s}</span>'
+            return f'<span class="fail">{s}</span>'
+        if isinstance(v, int):
+            if v >= 4:
+                return f'<span class="pass">{v}</span>'
+            elif v >= 3:
+                return f'<span class="warn">{v}</span>'
+            return f'<span class="fail">{v}</span>'
+        return f'<span class="skip">{_esc(str(v)[:20])}</span>'
+
+    def _reward_cell(val):
+        try:
+            f = float(val)
+            s = f"{f:.4f}"
+            if f >= 0.40:
+                return f'<span class="rv-reward pass">{s}</span>'
+            elif f >= 0.30:
+                return f'<span class="rv-reward warn">{s}</span>'
+            return f'<span class="rv-reward fail">{s}</span>'
+        except (ValueError, TypeError):
+            return str(val)
+
+    html = '<h2 class="section-heading">Per-Case Reward Overview</h2>\n'
+    html += ('<p style="font-size:0.9em;color:var(--text-muted);margin:0 0 0.5em;">'
+             'GRPO reward and all judge scores. '
+             '<span class="pass" style="font-size:0.8em">Gates</span> are binary. '
+             '<span class="warn" style="font-size:0.8em">LLM judges</span> score 1\u20135. '
+             '<span class="skip" style="font-size:0.8em">Other</span> scores vary.</p>\n')
+    html += '<div class="reward-overview"><table>\n'
+
+    # Group header row
+    html += '<tr><th rowspan="2" style="vertical-align:bottom">Case</th>'
+    html += '<th rowspan="2" style="vertical-align:bottom">Reward</th>'
+    if gate_judges:
+        html += (f'<th colspan="{len(gate_judges)}" class="rv-gate-hdr" '
+                 f'style="text-align:center">Gate Judges</th>')
+    if llm_judges:
+        html += (f'<th colspan="{len(llm_judges)}" class="rv-llm-hdr" '
+                 f'style="text-align:center">LLM Judges (1\u20135)</th>')
+    if other_judges:
+        html += (f'<th colspan="{len(other_judges)}" class="rv-other-hdr" '
+                 f'style="text-align:center">Other</th>')
+    html += '</tr>\n<tr>'
+    for jn in gate_judges + llm_judges + other_judges:
+        html += f'<th class="rv-rotate">{_label(jn)}</th>'
+    html += '</tr>\n'
+
+    rewards = []
+    for case_id in sorted(per_case.keys()):
+        case_results = per_case[case_id]
+        if not isinstance(case_results, dict):
+            continue
+        grpo = case_results.get("grpo_reward", {})
+        reward_val = grpo.get("value") if isinstance(grpo, dict) else grpo
+        if reward_val is None:
+            reward_cfg = config.get("reward", {})
+            if reward_cfg and reward_cfg.get("formula") == "weighted":
+                weights = reward_cfg.get("weights", {})
+                sr = reward_cfg.get("score_range", [1, 5])
+                raw_list = reward_cfg.get("raw", [])
+                total = 0.0
+                wsum = 0.0
+                for jn, w in weights.items():
+                    jentry = case_results.get(jn, {})
+                    v = jentry.get("value") if isinstance(jentry, dict) else None
+                    if v is not None and isinstance(v, (int, float)):
+                        if jn in raw_list:
+                            norm = max(0.0, min(1.0, float(v)))
+                        else:
+                            span = sr[1] - sr[0]
+                            norm = max(0.0, min(1.0, (float(v) - sr[0]) / span)) if span else 0.0
+                        total += float(w) * norm
+                        wsum += float(w)
+                reward_val = total / wsum if wsum > 0 else None
+        html += f'<tr><td>{_esc(case_id)}</td>'
+        html += f'<td>{_reward_cell(reward_val)}</td>'
+        for jn in gate_judges + llm_judges + other_judges:
+            html += f'<td>{_cell(case_results.get(jn, {}))}</td>'
+        html += '</tr>\n'
+        try:
+            rewards.append(float(reward_val))
+        except (ValueError, TypeError):
+            pass
+
+    if rewards:
+        avg = sum(rewards) / len(rewards)
+        n_cols = len(gate_judges) + len(llm_judges) + len(other_judges)
+        html += (f'<tr class="rv-avg-row"><td>Average ({len(rewards)} cases)</td>'
+                 f'<td>{_reward_cell(avg)}</td>'
+                 f'<td colspan="{n_cols}"></td></tr>\n')
+
+    html += '</table></div>\n'
+    return html
+
+
 def _render_per_case(summary, run_dir, config, baseline_dir, review):
     per_case = summary.get("per_case", {})
     if not per_case:
@@ -2434,6 +2613,7 @@ def generate_report(config, summary, run_result, run_dir,
     html += _wrap_section(_render_scoring_summary(summary, config, baseline_summary))
     html += _wrap_section(_render_regressions(summary, config))
     html += _wrap_section(_render_shared_outputs(run_dir, config))
+    html += _wrap_section(_render_reward_overview(summary, config))
     html += _render_per_case(summary, run_dir, config, baseline_dir, review)
     html += f"\n<script>{TOGGLE_SCRIPT}</script>\n"
     html += f"<script>{IMAGE_COMPARE_SCRIPT}</script>\n"

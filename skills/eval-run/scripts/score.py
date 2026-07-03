@@ -53,6 +53,97 @@ def _resolve_under(root: Path, candidate: Path) -> Path:
 # Case record loading — reads all files, no schema interpretation
 # ---------------------------------------------------------------------------
 
+def _extract_verifiable_evidence(case_dir, record):
+    """Parse agent trace for verifiable tool call evidence.
+
+    Returns a structured summary of what the agent actually did,
+    suitable for injection into LLM judge prompts via {{ evidence }}.
+    """
+    import collections
+
+    trace_path = Path(case_dir) / "stdout.log"
+    if not trace_path.exists():
+        agent_trace = Path(case_dir) / "agent" / "claude-code.txt"
+        if agent_trace.exists():
+            trace_path = agent_trace
+        else:
+            for p in Path(case_dir).glob("**/*claude*.txt"):
+                trace_path = p
+                break
+
+    tools = collections.Counter()
+    skills_invoked = []
+    scripts_run = set()
+    arch_files_read = set()
+    input_read = False
+    artifacts_written = set()
+    total_turns = 0
+    cost_usd = 0.0
+
+    key_scripts = [
+        "fetch-architecture-context.sh", "bootstrap-assess-rfe.sh",
+        "prep_assess.py", "frontmatter.py", "state.py", "next_rfe_id.py",
+        "generate_run_report.py", "submit.py", "verify_phase.py",
+        "check_content_preservation.py", "check_autofix_complete.py",
+    ]
+
+    if trace_path.exists():
+        try:
+            for line in trace_path.open():
+                try:
+                    d = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if d.get("type") == "assistant":
+                    for c in d.get("message", {}).get("content", []):
+                        if c.get("type") != "tool_use":
+                            continue
+                        name = c.get("name", "")
+                        inp = c.get("input", {})
+                        tools[name] += 1
+                        if name == "Skill":
+                            skills_invoked.append(inp.get("skill", "?"))
+                        elif name == "Bash":
+                            cmd = inp.get("command", "")
+                            for s in key_scripts:
+                                if s in cmd:
+                                    scripts_run.add(s)
+                        elif name == "Read":
+                            fp = inp.get("file_path", "")
+                            if ".context/architecture" in fp:
+                                arch_files_read.add(fp.split("/")[-1])
+                            if "input.yaml" in fp:
+                                input_read = True
+                        elif name == "Write":
+                            fp = inp.get("file_path", "")
+                            if "artifacts/" in fp:
+                                parts = fp.split("artifacts/")[-1]
+                                artifacts_written.add(parts)
+                elif d.get("type") == "result":
+                    total_turns = d.get("num_turns", 0)
+                    cost_usd = d.get("total_cost_usd", 0.0)
+        except OSError:
+            pass
+
+    lines = []
+    lines.append(f"Total turns: {total_turns}")
+    lines.append(f"Cost: ${cost_usd:.2f}")
+    lines.append(f"Tool calls: {dict(tools) if tools else 'none'}")
+    lines.append(f"Skills invoked: {', '.join(skills_invoked) if skills_invoked else 'none'}")
+    lines.append(f"Scripts executed: {', '.join(sorted(scripts_run)) if scripts_run else 'none'}")
+    lines.append(f"input.yaml read: {'YES' if input_read else 'NO'}")
+    lines.append(f"fetch-architecture-context.sh: {'YES' if 'fetch-architecture-context.sh' in scripts_run else 'NO'}")
+    lines.append(f"bootstrap-assess-rfe.sh: {'YES' if 'bootstrap-assess-rfe.sh' in scripts_run else 'NO'}")
+    lines.append(f"Architecture context files read: {', '.join(sorted(arch_files_read)) if arch_files_read else 'NONE'}")
+    lines.append(f"Artifacts written via Write tool: {', '.join(sorted(artifacts_written)) if artifacts_written else 'NONE'}")
+
+    files = record.get("files", {})
+    artifact_files = [k for k in files if k.startswith("artifacts/")]
+    lines.append(f"Artifact files on disk: {', '.join(sorted(artifact_files)) if artifact_files else 'NONE'}")
+
+    return "\n".join(lines)
+
+
 def load_case_record(case_dir, config, run_id=None, runs_dir=None):
     """Load all outputs, execution metadata, and traces for a case.
 
@@ -177,23 +268,53 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
                 pass
 
     # --- Events (structured event stream) ---
+    # Support both events.json (JSON array) and events.jsonl (one JSON per line,
+    # as produced by Claude Code session transcripts in Harbor pods).
     events_path = case_dir / "events.json"
+    if not events_path.exists():
+        events_path = case_dir / "events.jsonl"
     if not events_path.exists() and run_id and runs_dir:
         events_path = runs_dir / run_id / "events.json"
+    if not events_path.exists() and run_id and runs_dir:
+        events_path = runs_dir / run_id / "events.jsonl"
     if events_path.exists():
         try:
-            with open(events_path) as f:
-                record["events"] = json.load(f)
+            raw_text = events_path.read_text()
+            if events_path.suffix == ".jsonl":
+                record["events"] = [
+                    json.loads(line) for line in raw_text.splitlines() if line.strip()
+                ]
+            else:
+                record["events"] = json.load(open(events_path))
             if not isinstance(record["events"], list):
-                print(f"  Warning: events.json is not a list in {events_path}",
+                print(f"  Warning: events file is not a list in {events_path}",
                       file=sys.stderr)
                 record["events"] = []
         except (json.JSONDecodeError, OSError) as e:
-            print(f"  Warning: malformed events.json in {events_path}: {e}",
+            print(f"  Warning: malformed events file in {events_path}: {e}",
                   file=sys.stderr)
             record["events"] = []
     else:
         record["events"] = []
+
+    # --- Input data (from input.yaml in case directory or dataset) ---
+    record["input"] = ""
+    input_yaml = case_dir / "input.yaml"
+    if not input_yaml.exists() and config.dataset.path:
+        dataset_root = config.resolve_path(config.dataset.path).resolve()
+        input_yaml = dataset_root / case_id / "input.yaml"
+    if input_yaml.exists():
+        try:
+            raw = yaml.safe_load(input_yaml.read_text()) or {}
+            if isinstance(raw, dict):
+                parts = []
+                for key, val in raw.items():
+                    parts.append(f"**{key}**: {val}")
+                record["input"] = "\n\n".join(parts)
+            else:
+                record["input"] = str(raw)
+        except (yaml.YAMLError, OSError):
+            pass
 
     # --- Conversation text (convenience key for check judges) ---
     if record["events"]:
@@ -201,6 +322,19 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
         record["conversation"] = extract_conversation_text(record["events"])
     else:
         record["conversation"] = ""
+
+    # Fallback: build conversation from stdout.log if events are empty
+    # (Harbor pods write agent output to stdout.log, not events.json)
+    if not record["conversation"]:
+        stdout_path = case_dir / "stdout.log"
+        if stdout_path.exists():
+            try:
+                record["conversation"] = stdout_path.read_text()
+            except OSError:
+                pass
+
+    # --- Verifiable evidence from agent trace ---
+    record["evidence"] = _extract_verifiable_evidence(case_dir, record)
 
     # --- Logs (if traces config enables them) ---
     if run_id:
@@ -364,12 +498,19 @@ def _render_jinja2_template(template_text, arguments, outputs):
         from agent_eval.events import extract_conversation_text
         conversation = extract_conversation_text(out["events"])
 
+    # Pre-render input data for {{ input }}
+    input_text = out.get("input", "")
+
     template = env.from_string(template_text)
+    evidence_text = out.get("evidence", "")
+
     return template.render(
         arguments=arguments or {},
         outputs=out,
         annotations=ann_text,
         conversation=conversation,
+        input=input_text,
+        evidence=evidence_text,
     )
 
 
@@ -767,6 +908,10 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
         record = load_case_record(case_dir, config, run_id=run_id)
         case_results = {}
         for name, scorer, condition, judge_type, judge_samples in judges:
+            # Expose prior judge results so aggregation judges (e.g. grpo_reward)
+            # can read earlier scores via outputs["judge_<name>"].
+            for prev_name, prev_rec in case_results.items():
+                record[f"judge_{prev_name}"] = prev_rec
             # Check condition — skip if it evaluates to False
             if condition:
                 try:
