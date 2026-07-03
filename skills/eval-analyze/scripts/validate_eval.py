@@ -20,13 +20,27 @@ from find_skills import find_skill
 
 
 def _extract_template_variables(template_text):
-    """Extract variable names from Jinja2 template (e.g., {{ variable }})."""
-    import re
-    # Match {{ variable }}, {{ variable.field }}, {{ variable['key'] }}, etc.
-    # Capture the root variable name only
-    pattern = r'\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)'
-    matches = re.findall(pattern, template_text)
-    return set(matches)
+    """Extract undeclared root variable names from a Jinja2 template.
+
+    Uses jinja2.meta.find_undeclared_variables so loop variables
+    ({% for f in ... %} → f), filter names, and Jinja2 globals (range,
+    dict, cycler, ...) are correctly excluded — a plain regex mistakes all
+    of those for undefined variables. Falls back to the regex only when
+    Jinja2 is unavailable or the template can't be parsed.
+    """
+    try:
+        from jinja2 import Environment, meta
+        env = Environment()
+        ast = env.parse(template_text)
+        # find_undeclared_variables already excludes loop/assigned vars;
+        # also drop Jinja2's builtin globals (range, dict, cycler, ...).
+        return meta.find_undeclared_variables(ast) - set(env.globals)
+    except Exception:
+        import re
+        # Match {{ variable }}, {{ variable.field }}, {{ variable['key'] }}, etc.
+        # Capture the root variable name only
+        pattern = r'\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)'
+        return set(re.findall(pattern, template_text))
 
 
 def _validate_template_variables(judges, outputs, dataset_schema, errors, warnings):
@@ -34,12 +48,16 @@ def _validate_template_variables(judges, outputs, dataset_schema, errors, warnin
     # Build set of available output names
     output_names = {o.get("name", "") for o in outputs if o.get("name")}
 
-    # Standard variables that are always available (loaded by scoring infrastructure)
+    # Standard variables the scoring renderer (score._render_jinja2_template)
+    # always injects. Keep in sync with that render() call.
     standard_vars = {
-        "input",        # Loaded from dataset input.yaml
-        "annotations",  # Loaded from dataset annotations.yaml
-        "conversation", # Common alias for stdout
-        "events",       # Tool call log
+        "input",            # Loaded from dataset input.yaml
+        "annotations",      # dataset annotations (dict + formatted __str__)
+        "annotations_text", # formatted annotation text for display
+        "conversation",     # root-level assistant text from events
+        "events",           # tool call log
+        "outputs",          # collected output files/events proxy
+        "arguments",        # judge arguments from eval.yaml
     }
 
     had_undefined_vars = False
@@ -98,7 +116,8 @@ def _validate_template_variables(judges, outputs, dataset_schema, errors, warnin
         errors.append(
             "\n💡 Template variable errors detected. Common fixes:\n"
             "   • Ensure all {{ variable }} references match output names or standard variables\n"
-            "   • Standard variables (always available): input, annotations, conversation, events\n"
+            "   • Standard variables (always available): input, annotations, annotations_text, "
+            "conversation, events, outputs, arguments\n"
             "   • For custom variables, add them to outputs section in eval.yaml\n"
             "   • Check dataset.schema documents expected structure of input.yaml and annotations.yaml"
         )
@@ -107,18 +126,26 @@ def _validate_template_variables(judges, outputs, dataset_schema, errors, warnin
 def _test_render_judge_templates(judges, outputs, errors, warnings):
     """Test-render judge templates with mock data to catch Jinja2 errors."""
     try:
-        from jinja2 import Template, UndefinedError, TemplateSyntaxError
+        import json as _json
+        from jinja2 import Environment, UndefinedError, TemplateSyntaxError
     except ImportError:
         # Jinja2 not available, skip test rendering
         return
 
-    # Build mock outputs dict
+    # Mirror the variables and filters that score._render_jinja2_template
+    # provides at scoring time so validation reflects real runtime behavior.
+    env = Environment()
+    env.filters["tojson"] = lambda v: _json.dumps(v, indent=2, default=str)
+
     output_names = {o.get("name", "") for o in outputs if o.get("name")}
     mock_data = {
         "conversation": "Mock conversation",
         "events": [],
         "input": {"prompt": "Mock prompt", "expected_documentation": []},
         "annotations": {"category": "test", "expected_files": []},
+        "annotations_text": "- **category**: test",
+        "arguments": {},
+        "outputs": {"files": {}, "events": [], "conversation": ""},
     }
     # Add all declared outputs
     for name in output_names:
@@ -134,7 +161,7 @@ def _test_render_judge_templates(judges, outputs, errors, warnings):
             continue
 
         try:
-            template = Template(prompt_text)
+            template = env.from_string(prompt_text)
             # Try to render with mock data
             template.render(**mock_data)
         except UndefinedError as e:
@@ -162,7 +189,8 @@ def _test_render_judge_templates(judges, outputs, errors, warnings):
             "  1. Ensure all {{ variable }} references match output names\n"
             "  2. For dataset files (input.yaml, annotations.yaml), verify they're loaded by scoring\n"
             "  3. Check dataset.schema documents the expected structure\n"
-            "  4. Standard variables: input, annotations, conversation, events"
+            "  4. Standard variables: input, annotations, annotations_text, "
+            "conversation, events, outputs, arguments"
         )
 
 
@@ -303,7 +331,10 @@ def _validate_prompt_mode_config(config, dataset, test_categories, config_dir, e
             doc_structure = domain.get("documentation_structure", {})
             entry_point = doc_structure.get("entry_point", "")
             if entry_point:
-                ep = Path(entry_point)
+                # Resolve relative to the eval.yaml directory, consistent with
+                # every other path check (dataset.path, prompt_file, context).
+                ep = (Path(entry_point) if Path(entry_point).is_absolute()
+                      else config_dir / entry_point)
                 if not ep.exists():
                     errors.append(
                         f"dataset.domain.documentation_structure.entry_point '{entry_point}' does not exist"
@@ -427,10 +458,11 @@ def validate_config(path="eval.yaml"):
             elif ".." in op.parts:
                 errors.append(f"outputs[{i}].path must not traverse parent: {out_path}")
 
-    # Valid judge fields
+    # Valid judge fields — keep in sync with JudgeConfig / EvalConfig.from_yaml.
     valid_judge_fields = {
         "name", "description", "builtin", "check", "prompt", "prompt_file",
-        "module", "function", "arguments", "context", "model", "if", "llm_rubric"
+        "module", "function", "arguments", "context", "model", "if", "llm_rubric",
+        "feedback_type", "samples",
     }
 
     for j in judges:

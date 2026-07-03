@@ -27,6 +27,13 @@ def resolve_template(template_ref: str) -> Path:
     if not template_ref:
         raise ValueError("template_ref cannot be empty")
 
+    # Backward-compat: the `builtin:<name>` prefix was renamed to the
+    # `documentation/<name>` category form. Map it so configs (and the
+    # validator, which still accepts `builtin:`) keep resolving instead of
+    # crashing with FileNotFoundError.
+    if template_ref.startswith("builtin:"):
+        template_ref = "documentation/" + template_ref[len("builtin:"):]
+
     # Get skill directory (templates base)
     skill_dir_str = os.environ.get("CLAUDE_SKILL_DIR", "")
     if skill_dir_str:
