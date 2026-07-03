@@ -517,6 +517,23 @@ class _OutputsProxy(dict):
         return "".join(parts)
 
 
+class _AnnotationsProxy(dict):
+    """Dict subclass whose __str__ renders formatted annotation text.
+
+    Provides backward compatibility for prompt templates using {{ annotations }}
+    (bare variable), which historically rendered a formatted bullet list, while
+    also allowing structured access via {{ annotations.get('category') }} and
+    {{ annotations.category }}.
+    """
+
+    def __init__(self, data=None, text=""):
+        super().__init__(data or {})
+        self._text = text
+
+    def __str__(self):
+        return self._text
+
+
 def _render_jinja2_template(template_text, arguments, outputs):
     """Render a Jinja2 template with arguments and outputs as variables.
 
@@ -524,7 +541,8 @@ def _render_jinja2_template(template_text, arguments, outputs):
     - {{ outputs }} - formatted file listings (via __str__) or dict access
     - {{ outputs.files }}, {{ outputs.events }}, etc. - structured access
     - {{ arguments }} - judge arguments from eval.yaml
-    - {{ annotations }} - dict for .get() access (e.g., {{ annotations.get('category') }})
+    - {{ annotations }} - formatted text (via __str__), also supports
+      {{ annotations.get('category') }} / {{ annotations.category }} access
     - {{ annotations_text }} - formatted annotation text for display
     - {{ conversation }} - root-level assistant text from events
     """
@@ -535,14 +553,18 @@ def _render_jinja2_template(template_text, arguments, outputs):
     out = _OutputsProxy(outputs or {})
 
     # Pre-render annotations as formatted text for {{ annotations }}
-    ann = out.get("annotations", {})
+    ann_data = out.get("annotations", {})
     ann_text = ""
-    for key, val in sorted(ann.items()):
+    for key, val in sorted(ann_data.items()):
         ann_text += f"- **{key}**: {val}\n"
     for key in sorted(out):
         if key.startswith("annotation_") and key.endswith("_content"):
             field = key[len("annotation_"):-len("_content")]
             ann_text += f"\n### {field} (file content)\n\n{out[key]}\n"
+
+    # {{ annotations }} renders formatted text (backward compatible) while
+    # still supporting {{ annotations.get('category') }} structured access.
+    ann = _AnnotationsProxy(ann_data, ann_text)
 
     # Pre-render conversation text for {{ conversation }}
     conversation = out.get("conversation", "")
@@ -565,7 +587,7 @@ def _render_jinja2_template(template_text, arguments, outputs):
     return template.render(
         arguments=arguments or {},
         outputs=out,
-        annotations=ann,  # Dict for .get() access
+        annotations=ann,  # Formatted text via __str__, .get() for structured access
         annotations_text=ann_text,  # Formatted text for display
         conversation=conversation,
         inputs=inputs_text,
@@ -1117,7 +1139,9 @@ def _load_llm_judge(jc, config, project_root=None):
     root = Path(project_root).resolve() if project_root else Path.cwd().resolve()
     # Check llm_rubric first (preferred in taxonomy configs), then prompt
     prompt = jc.llm_rubric or jc.prompt
-    if jc.llm_rubric and "{{ conversation }}" not in prompt:
+    # Match any spacing so {{conversation}} / {{  conversation  }} aren't
+    # double-wrapped (Jinja2 treats them all identically).
+    if jc.llm_rubric and not re.search(r"\{\{\s*conversation\s*\}\}", prompt):
         # Auto-wrap llm_rubric with conversation template
         prompt += "\n\n# Agent Response to Evaluate\n\n{{ conversation }}"
     if not prompt and jc.prompt_file:
@@ -1570,19 +1594,39 @@ def detect_regressions(current_results, thresholds, baseline_results=None):
         current = current_results.get(judge_name)
         if current is None:
             continue
+        # When a threshold is configured but its metric is unavailable (None),
+        # surface it as a regression instead of silently skipping — a missing
+        # metric usually means the judge was skipped for all cases or the
+        # threshold targets the wrong judge type (e.g. min_pass_rate on a
+        # numeric judge, whose pass_rate is always None).
         if "min_pass_rate" in threshold:
-            rate = current.get("pass_rate", 1.0)
-            if rate is not None and rate < threshold["min_pass_rate"]:
+            rate = current.get("pass_rate")
+            if rate is None:
+                regressions.append(Regression(
+                    judge_name, "pass_rate", f">= {threshold['min_pass_rate']}",
+                    "n/a", "pass_rate unavailable — judge skipped for all cases "
+                    "or not a boolean judge"))
+            elif rate < threshold["min_pass_rate"]:
                 regressions.append(Regression(judge_name, "pass_rate",
                                               f">= {threshold['min_pass_rate']}", str(rate)))
         if "min_mean" in threshold:
             mean = current.get("mean")
-            if mean is not None and mean < threshold["min_mean"]:
+            if mean is None:
+                regressions.append(Regression(
+                    judge_name, "mean", f">= {threshold['min_mean']}",
+                    "n/a", "mean unavailable — judge skipped for all cases "
+                    "or not a numeric judge"))
+            elif mean < threshold["min_mean"]:
                 regressions.append(Regression(judge_name, "mean",
                                               f">= {threshold['min_mean']}", str(mean)))
         if "min_win_rate" in threshold:
-            win_rate = current.get("win_rate", 0)
-            if win_rate is not None and win_rate < threshold["min_win_rate"]:
+            win_rate = current.get("win_rate")
+            if win_rate is None:
+                regressions.append(Regression(
+                    judge_name, "win_rate", f">= {threshold['min_win_rate']}",
+                    "n/a", "win_rate unavailable — not a pairwise judge or no "
+                    "comparisons recorded"))
+            elif win_rate < threshold["min_win_rate"]:
                 regressions.append(Regression(judge_name, "win_rate",
                                               f">= {threshold['min_win_rate']}", str(win_rate)))
         if baseline_results:
