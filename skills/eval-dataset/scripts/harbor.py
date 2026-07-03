@@ -43,7 +43,7 @@ def main() -> None:
 
     config_path = Path(args.config).resolve()
     config = EvalConfig.from_yaml(config_path)
-    print(f"Generating Harbor tasks from {config_path} (skill={args.skill or config.skill})")
+    print(f"Generating Harbor tasks from {config_path} (skill={args.skill or config.resolve_skill()})")
 
     tasks = generate_tasks(
         config, config_path, Path(args.out).resolve(), args.image,

@@ -248,9 +248,9 @@ def test_batch_mode_warns_on_per_case_hooks(tmp_path):
         warnings.simplefilter("always")
         EvalConfig.from_yaml(_write(tmp_path, """
 name: t
-skill: s
 execution:
   mode: batch
+  skill: s
 hooks:
   before_each:
     - command: "echo setup"
@@ -269,11 +269,57 @@ def test_case_mode_no_warning_on_per_case_hooks(tmp_path):
         warnings.simplefilter("always")
         EvalConfig.from_yaml(_write(tmp_path, """
 name: t
-skill: s
 execution:
   mode: case
+  skill: s
 hooks:
   before_each:
     - command: "echo setup"
 """))
     assert len(w) == 0
+
+
+def test_execution_skill_canonical_no_deprecation(tmp_path):
+    """execution.skill is the canonical location — no deprecation warning."""
+    import warnings
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution:
+  mode: case
+  skill: rfe.create
+"""))
+    assert cfg.resolve_skill() == "rfe.create"
+    assert cfg.is_prompt_mode() is False
+    assert not [x for x in w if issubclass(x.category, DeprecationWarning)]
+
+
+def test_top_level_skill_deprecated_but_normalized(tmp_path):
+    """Top-level skill still works (auto-normalized) but warns."""
+    import warnings
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+skill: rfe.create
+"""))
+    # Normalized into execution.skill and resolvable
+    assert cfg.execution.skill == "rfe.create"
+    assert cfg.resolve_skill() == "rfe.create"
+    # Deprecation warning emitted
+    dep = [x for x in w if issubclass(x.category, DeprecationWarning)
+           and "Top-level 'skill:'" in str(x.message)]
+    assert len(dep) == 1
+
+
+def test_prompt_mode_resolution(tmp_path):
+    """execution.prompt → prompt mode, no skill target."""
+    cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution:
+  mode: case
+  prompt: "{{ input.prompt }}"
+"""))
+    assert cfg.is_prompt_mode() is True
+    assert cfg.resolve_skill() is None

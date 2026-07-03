@@ -403,6 +403,15 @@ def validate_config(path="eval.yaml"):
     if not has_exec_skill and not has_exec_prompt and not has_top_level_skill:
         errors.append("Either execution.skill or execution.prompt must be set (or top-level 'skill' for backward compat)")
 
+    # Nudge migration to the canonical location. Top-level 'skill' still works
+    # (auto-normalized to execution.skill) but is deprecated.
+    if has_top_level_skill and not has_exec_skill:
+        warnings.append(
+            "Top-level 'skill:' is deprecated — move it under execution.skill "
+            "(alongside execution.mode/arguments). It still works for now but "
+            "will be removed in a future release."
+        )
+
     dataset = config.get("dataset", {})
     outputs = config.get("outputs", [])
     judges = config.get("judges", [])

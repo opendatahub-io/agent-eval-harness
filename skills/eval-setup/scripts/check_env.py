@@ -123,7 +123,8 @@ def main():
                 from agent_eval.config import EvalConfig
                 config = EvalConfig.from_yaml(args.config)
                 mode = config.execution.mode
-                target = f"skill={config.skill}" if config.skill else f"mode={mode}"
+                skill = config.resolve_skill()
+                target = f"skill={skill}" if skill else f"mode={mode}"
                 config_detail = f"valid: {config.name} ({target})"
                 config_ok = True  # Valid if it loads without error
             except Exception as e:

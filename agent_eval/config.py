@@ -622,11 +622,25 @@ class EvalConfig:
         with open(path) as f:
             raw = yaml.safe_load(f) or {}
 
+        # Deprecation: top-level `skill:` is auto-normalized into
+        # execution.skill (below) but the canonical home is the execution
+        # block, symmetric with execution.prompt. Warn once per load; only
+        # for a non-empty value that isn't already mirrored in execution.
+        exec_raw = raw.get("execution", {})
+        if raw.get("skill") and not (exec_raw.get("skill") or "").strip():
+            import warnings
+            warnings.warn(
+                f"Top-level 'skill:' in {path} is deprecated; move it under "
+                "execution.skill (it is auto-normalized for now and will be "
+                "removed in a future release).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         # Dataset
         dataset = raw.get("dataset", {})
 
         # Execution config
-        exec_raw = raw.get("execution", {})
         execution = ExecutionConfig(
             mode=exec_raw.get("mode", "case"),
             skill=exec_raw.get("skill", "") or raw.get("skill", ""),
@@ -973,9 +987,10 @@ class EvalConfig:
                     stacklevel=2,
                 )
 
-        if config.skill:
+        resolved_skill = config.resolve_skill()
+        if resolved_skill:
             try:
-                _validate_path_segment(config.skill, f"skill name in {path}")
+                _validate_path_segment(resolved_skill, f"skill name in {path}")
             except ValueError as e:
                 raise ValueError(str(e)) from e
 
@@ -1030,9 +1045,10 @@ def discover_configs(project_root: Path) -> list[DiscoveryResult]:
         # Derive eval_name using fallback chain (same as EvalConfig.eval_name())
         eval_name = None
 
-        # Priority 1: skill field (backward compat)
-        if raw.get("skill"):
-            eval_name = raw["skill"]
+        # Priority 1: skill field (execution.skill canonical, top-level fallback)
+        skill_ref = (raw.get("execution") or {}).get("skill") or raw.get("skill")
+        if skill_ref:
+            eval_name = skill_ref
 
         # Priority 2: name field (explicit identifier, sanitized)
         if not eval_name and raw.get("name"):

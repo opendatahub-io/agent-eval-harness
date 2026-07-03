@@ -140,13 +140,12 @@ The harness uses natural language to describe evaluation datasets and skills inp
 ```yaml
 name: my-skill-eval
 description: Evaluate the main skill pipeline
-skill: my-skill-name      # Required for skill mode (case/batch), omitted for prompt mode
 
-# Execution — how to run the evaluation (runner-agnostic)
+# Execution — what to run and how (runner-agnostic)
 execution:
-  mode: case              # case (skill, per-case invocation)
-                          # batch (skill, single invocation with all cases)
-                          # prompt (direct agent invocation, no skill wrapper)
+  mode: case              # case (per-case invocation) or batch (single invocation)
+  skill: my-skill-name    # skill mode; use `prompt:` instead for prompt mode
+                          # (direct agent invocation, no skill wrapper)
   arguments: "{prompt}"   # resolved per case from input.yaml fields
   # timeout: 3600            # Wall-clock timeout in seconds per invocation
   # max_budget_usd: 5.0      # Cost cap in USD per invocation
@@ -330,9 +329,9 @@ thresholds:
 
 ```yaml
 name: rfe-creator
-skill: rfe.speedrun
 execution:
   mode: batch
+  skill: rfe.speedrun
   arguments: "--input batch.yaml --headless --dry-run"
 runner:
   type: claude-code
@@ -428,7 +427,8 @@ thresholds:
 
 ```yaml
 name: architecture-context
-skill: repo-to-architecture-summary
+execution:
+  skill: repo-to-architecture-summary
 runner: claude-code
 
 dataset:

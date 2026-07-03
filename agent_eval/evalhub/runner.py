@@ -138,7 +138,7 @@ def _run_with_client(client, config, config_path, ns, provider_id,
 
     request = JobSubmissionRequest(
         name=f"eval-{config.name or 'run'}-{int(time.time())}",
-        description=config.description or f"Eval for {config.skill or 'agent'}",
+        description=config.description or f"Eval for {config.resolve_skill() or 'agent'}",
         model=ModelConfig(name=model),
         benchmarks=[BenchmarkConfig(
             id=bench_id,
