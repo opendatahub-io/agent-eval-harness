@@ -6,12 +6,10 @@
 name: my-skill-eval
 description: Evaluate the main skill pipeline
 
-# Skill to test
-skill: my-skill-name
-
-# Execution — how the skill processes test cases (runner-agnostic)
+# Execution — what to run and how it processes test cases (runner-agnostic)
 execution:
   mode: case              # per-case (default) or batch
+  skill: my-skill-name    # skill to test (use `prompt:` instead for prompt mode)
   arguments: "{prompt}"   # resolved per case from input.yaml fields
   # For batch skills: mode: batch, arguments: "--input batch.yaml --headless"
   # timeout: 3600         # Per-invocation wall-clock timeout (seconds)

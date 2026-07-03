@@ -193,7 +193,7 @@ class AgentEvalAdapter(FrameworkAdapter):
         eval_config_path = self._resolve_eval_config(params, tmp_root, namespace)
         eval_config = EvalConfig.from_yaml(eval_config_path)
         log.info("Eval config loaded: skill=%s, dataset=%s, %d judges",
-                 eval_config.skill or "(prompt mode)", eval_config.dataset.path,
+                 eval_config.resolve_skill() or "(prompt mode)", eval_config.dataset.path,
                  len(eval_config.judges))
 
         # Mount project resources from ConfigMap if specified
