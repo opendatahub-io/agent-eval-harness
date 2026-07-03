@@ -69,12 +69,12 @@ def _is_thin_wrapper(fm, line_count):
 def _has_existing_eval(skill_path):
     """Check if an eval.yaml already exists for this skill."""
     skill_dir = Path(skill_path).parent
-    plugin_dir = skill_dir.parent.parent
     skill_name = skill_dir.name
+    project_root = Path.cwd()
 
     candidates = [
-        plugin_dir / "evals" / skill_name / "eval.yaml",
-        plugin_dir / "evals" / f"{skill_name}.yaml",
+        project_root / "eval" / skill_name / "eval.yaml",
+        project_root / "eval" / f"{skill_name}.yaml",
         skill_dir / "eval.yaml",
     ]
     return any(c.exists() for c in candidates)
