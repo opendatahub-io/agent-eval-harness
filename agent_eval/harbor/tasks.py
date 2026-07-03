@@ -99,7 +99,16 @@ def generate_tasks(
 ) -> list[Path]:
     """Generate one self-contained Harbor task package per dataset case."""
     args_template = arguments if arguments is not None else config.execution.arguments
-    skill_name = skill if skill is not None else config.skill
+    # Resolve through EvalConfig.resolve_skill() so configs authored with only
+    # execution.skill (no top-level skill) still generate /skill tasks rather
+    # than silently degrading to prompt mode. When no skill resolves and the
+    # config declares execution.prompt, generate a direct prompt task instead.
+    skill_name = skill if skill is not None else config.resolve_skill()
+    prompt_template = (
+        config.execution.prompt
+        if (skill is None and skill_name is None and config.is_prompt_mode())
+        else None
+    )
 
     cases_root = config.resolve_path(config.dataset.path)
     if not cases_root.is_dir():
@@ -123,8 +132,11 @@ def generate_tasks(
         if input_file:
             input_data = yaml.safe_load(input_file.read_text()) or {}
 
-        resolved_args = resolve_arguments(args_template, input_data) if args_template else ""
-        command = f"/{skill_name} {resolved_args}".strip() if skill_name else resolved_args
+        if prompt_template:
+            command = resolve_arguments(prompt_template, input_data)
+        else:
+            resolved_args = resolve_arguments(args_template, input_data) if args_template else ""
+            command = f"/{skill_name} {resolved_args}".strip() if skill_name else resolved_args
 
         task_dir = out_dir / case_id
         (task_dir / "tests").mkdir(parents=True, exist_ok=True)
