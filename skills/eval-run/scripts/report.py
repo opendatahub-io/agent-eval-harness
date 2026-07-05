@@ -1951,7 +1951,17 @@ def _render_reward_overview(summary, config):
     if not per_case:
         return ""
 
+    # Try importing the canonical reward engine so the report never diverges
+    # from the reward the harness actually trains on.
+    _compose_reward = None
+    try:
+        from agent_eval.harbor.reward import compose_reward as _cr
+        _compose_reward = _cr
+    except ImportError:
+        pass
+
     judges_cfg = config.get("judges", [])
+    classified = set()
     gate_judges = []
     llm_judges = []
     other_judges = []
@@ -1959,6 +1969,7 @@ def _render_reward_overview(summary, config):
         name = j.get("name", "")
         if name in ("grpo_reward",):
             continue
+        classified.add(name)
         jtype = j.get("type", "")
         if jtype == "check" and j.get("check", ""):
             gate_judges.append(name)
@@ -1975,19 +1986,24 @@ def _render_reward_overview(summary, config):
                     if jn != "grpo_reward" and isinstance(jv, dict):
                         all_judge_names.add(jn)
         for jn in sorted(all_judge_names):
-            sample = None
+            if jn in classified:
+                continue
+            # Scan all cases for a non-None value before classifying
+            sample_val = None
             for cr in per_case.values():
                 if isinstance(cr, dict) and jn in cr:
-                    sample = cr[jn]
-                    break
-            if isinstance(sample, dict):
-                v = sample.get("value")
-                if isinstance(v, bool):
-                    gate_judges.append(jn)
-                elif isinstance(v, (int, float)) and jn != "efficiency":
-                    llm_judges.append(jn)
-                else:
-                    other_judges.append(jn)
+                    v = cr[jn].get("value") if isinstance(cr[jn], dict) else None
+                    if v is not None:
+                        sample_val = v
+                        break
+            if sample_val is None:
+                other_judges.append(jn)
+            elif isinstance(sample_val, bool):
+                gate_judges.append(jn)
+            elif isinstance(sample_val, (int, float)):
+                llm_judges.append(jn)
+            else:
+                other_judges.append(jn)
 
     has_efficiency = any(
         isinstance(cr, dict) and "efficiency" in cr for cr in per_case.values()
@@ -1997,10 +2013,12 @@ def _render_reward_overview(summary, config):
     other_judges = [j for j in other_judges if j != "efficiency"] + (
         ["efficiency"] if "efficiency" in other_judges else [])
 
+    llm_judge_set = set(llm_judges)
+
     def _label(name):
         return _esc(name.replace("_", " ").title())
 
-    def _cell(val_entry):
+    def _cell(val_entry, judge_name=""):
         if not isinstance(val_entry, dict):
             return '<span class="skip">\u2014</span>'
         v = val_entry.get("value")
@@ -2008,19 +2026,22 @@ def _render_reward_overview(summary, config):
             return '<span class="pass">PASS</span>'
         if v is False:
             return '<span class="fail">FAIL</span>'
-        if isinstance(v, float):
-            s = f"{v:.2f}"
-            if v >= 4:
-                return f'<span class="pass">{s}</span>'
-            elif v >= 2.5:
-                return f'<span class="warn">{s}</span>'
-            return f'<span class="fail">{s}</span>'
-        if isinstance(v, int):
-            if v >= 4:
-                return f'<span class="pass">{v}</span>'
-            elif v >= 3:
-                return f'<span class="warn">{v}</span>'
-            return f'<span class="fail">{v}</span>'
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            s = f"{v:.2f}" if isinstance(v, float) else str(v)
+            if judge_name in llm_judge_set:
+                # 1-5 scale thresholds for LLM judges
+                if v >= 4:
+                    return f'<span class="pass">{s}</span>'
+                elif v >= 2.5:
+                    return f'<span class="warn">{s}</span>'
+                return f'<span class="fail">{s}</span>'
+            else:
+                # 0-1 scale for other numeric judges
+                if v >= 0.7:
+                    return f'<span class="pass">{s}</span>'
+                elif v >= 0.4:
+                    return f'<span class="warn">{s}</span>'
+                return f'<span class="fail">{s}</span>'
         return f'<span class="skip">{_esc(str(v)[:20])}</span>'
 
     def _reward_cell(val):
@@ -2039,7 +2060,7 @@ def _render_reward_overview(summary, config):
 
     html = '<h2 class="section-heading">Per-Case Reward Overview</h2>\n'
     html += ('<p style="font-size:0.9em;color:var(--text-muted);margin:0 0 0.5em;">'
-             'GRPO reward and all judge scores. '
+             'Reward and all judge scores per case. '
              '<span class="pass" style="font-size:0.8em">Gates</span> are binary. '
              '<span class="warn" style="font-size:0.8em">LLM judges</span> score 1\u20135. '
              '<span class="skip" style="font-size:0.8em">Other</span> scores vary.</p>\n')
@@ -2062,39 +2083,24 @@ def _render_reward_overview(summary, config):
         html += f'<th class="rv-rotate">{_label(jn)}</th>'
     html += '</tr>\n'
 
+    total_cases = 0
     rewards = []
     for case_id in sorted(per_case.keys()):
         case_results = per_case[case_id]
         if not isinstance(case_results, dict):
             continue
-        grpo = case_results.get("grpo_reward", {})
-        reward_val = grpo.get("value") if isinstance(grpo, dict) else grpo
-        if reward_val is None:
-            reward_cfg = config.get("reward", {})
-            if reward_cfg and reward_cfg.get("formula") == "weighted":
-                weights = reward_cfg.get("weights", {})
-                sr = reward_cfg.get("score_range", [1, 5])
-                if not isinstance(sr, list) or len(sr) < 2:
-                    sr = [1, 5]
-                raw_list = reward_cfg.get("raw", [])
-                total = 0.0
-                wsum = 0.0
-                for jn, w in weights.items():
-                    jentry = case_results.get(jn, {})
-                    v = jentry.get("value") if isinstance(jentry, dict) else None
-                    if v is not None and isinstance(v, (int, float)):
-                        if jn in raw_list:
-                            norm = max(0.0, min(1.0, float(v)))
-                        else:
-                            span = sr[1] - sr[0]
-                            norm = max(0.0, min(1.0, (float(v) - sr[0]) / span)) if span else 0.0
-                        total += float(w) * norm
-                        wsum += float(w)
-                reward_val = total / wsum if wsum > 0 else None
+        total_cases += 1
+        # Use canonical reward engine when available
+        reward_val = None
+        if _compose_reward is not None:
+            try:
+                reward_val, _ = _compose_reward(case_results)
+            except Exception:
+                pass
         html += f'<tr><td>{_esc(case_id)}</td>'
         html += f'<td>{_reward_cell(reward_val)}</td>'
         for jn in gate_judges + llm_judges + other_judges:
-            html += f'<td>{_cell(case_results.get(jn, {}))}</td>'
+            html += f'<td>{_cell(case_results.get(jn, {}), jn)}</td>'
         html += '</tr>\n'
         try:
             rewards.append(float(reward_val))
@@ -2104,7 +2110,8 @@ def _render_reward_overview(summary, config):
     if rewards:
         avg = sum(rewards) / len(rewards)
         n_cols = len(gate_judges) + len(llm_judges) + len(other_judges)
-        html += (f'<tr class="rv-avg-row"><td>Average ({len(rewards)} cases)</td>'
+        scored_label = f"{len(rewards)} of {total_cases} scored" if len(rewards) < total_cases else f"{len(rewards)} cases"
+        html += (f'<tr class="rv-avg-row"><td>Average ({scored_label})</td>'
                  f'<td>{_reward_cell(avg)}</td>'
                  f'<td colspan="{n_cols}"></td></tr>\n')
 
