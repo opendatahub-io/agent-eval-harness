@@ -67,27 +67,37 @@ def _extract_verifiable_evidence(case_dir, record):
         if agent_trace.exists():
             trace_path = agent_trace
         else:
-            for p in Path(case_dir).glob("**/*claude*.txt"):
-                trace_path = p
-                break
+            candidates = sorted(Path(case_dir).glob("**/*claude*.txt"))
+            if candidates:
+                trace_path = candidates[0]
 
     tools = collections.Counter()
     skills_invoked = []
     scripts_run = set()
-    arch_files_read = set()
-    input_read = False
-    artifacts_written = set()
+    files_read = set()
+    files_written = set()
     total_turns = 0
     cost_usd = 0.0
 
-    key_scripts = [
-        "fetch-architecture-context.sh", "bootstrap-assess-rfe.sh",
-        "prep_assess.py", "frontmatter.py", "state.py", "next_rfe_id.py",
-        "generate_run_report.py", "submit.py", "verify_phase.py",
-        "check_content_preservation.py", "check_autofix_complete.py",
-    ]
-
+    # Detect stream-json format: first non-empty line must parse as JSON
+    is_stream_json = False
     if trace_path.exists():
+        try:
+            with trace_path.open() as fh:
+                for probe in fh:
+                    probe = probe.strip()
+                    if not probe:
+                        continue
+                    try:
+                        json.loads(probe)
+                        is_stream_json = True
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                    break
+        except OSError:
+            pass
+
+    if is_stream_json and trace_path.exists():
         try:
             with trace_path.open() as fh:
                 for line in fh:
@@ -104,22 +114,19 @@ def _extract_verifiable_evidence(case_dir, record):
                             tools[name] += 1
                             if name == "Skill":
                                 skills_invoked.append(inp.get("skill", "?"))
-                            elif name == "Bash":
+                            elif name in ("Bash", "Shell"):
                                 cmd = inp.get("command", "")
-                                for s in key_scripts:
-                                    if s in cmd:
-                                        scripts_run.add(s)
+                                for token in cmd.split():
+                                    if token.endswith(".sh") or token.endswith(".py"):
+                                        scripts_run.add(token.split("/")[-1])
                             elif name == "Read":
                                 fp = inp.get("file_path", "")
-                                if ".context/architecture" in fp:
-                                    arch_files_read.add(fp.split("/")[-1])
-                                if "input.yaml" in fp:
-                                    input_read = True
+                                if fp:
+                                    files_read.add(fp.split("/")[-1])
                             elif name == "Write":
                                 fp = inp.get("file_path", "")
-                                if "artifacts/" in fp:
-                                    parts = fp.split("artifacts/")[-1]
-                                    artifacts_written.add(parts)
+                                if fp:
+                                    files_written.add(fp.split("/")[-1])
                     elif d.get("type") == "result":
                         total_turns = d.get("num_turns", 0)
                         cost_usd = d.get("total_cost_usd", 0.0)
@@ -132,15 +139,8 @@ def _extract_verifiable_evidence(case_dir, record):
     lines.append(f"Tool calls: {dict(tools) if tools else 'none'}")
     lines.append(f"Skills invoked: {', '.join(skills_invoked) if skills_invoked else 'none'}")
     lines.append(f"Scripts executed: {', '.join(sorted(scripts_run)) if scripts_run else 'none'}")
-    lines.append(f"input.yaml read: {'YES' if input_read else 'NO'}")
-    lines.append(f"fetch-architecture-context.sh: {'YES' if 'fetch-architecture-context.sh' in scripts_run else 'NO'}")
-    lines.append(f"bootstrap-assess-rfe.sh: {'YES' if 'bootstrap-assess-rfe.sh' in scripts_run else 'NO'}")
-    lines.append(f"Architecture context files read: {', '.join(sorted(arch_files_read)) if arch_files_read else 'NONE'}")
-    lines.append(f"Artifacts written via Write tool: {', '.join(sorted(artifacts_written)) if artifacts_written else 'NONE'}")
-
-    files = record.get("files", {})
-    artifact_files = [k for k in files if k.startswith("artifacts/")]
-    lines.append(f"Artifact files on disk: {', '.join(sorted(artifact_files)) if artifact_files else 'NONE'}")
+    lines.append(f"Files read: {', '.join(sorted(files_read)) if files_read else 'none'}")
+    lines.append(f"Files written: {', '.join(sorted(files_written)) if files_written else 'none'}")
 
     return "\n".join(lines)
 
@@ -274,21 +274,19 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
     events_path = case_dir / "events.json"
     if not events_path.exists():
         events_path = case_dir / "events.jsonl"
-    if not events_path.exists() and run_id and runs_dir:
-        if ".." in str(run_id) or Path(run_id).is_absolute():
-            print(f"  Warning: rejecting unsafe run_id: {run_id}",
-                  file=sys.stderr)
-        else:
-            events_path = runs_dir / run_id / "events.json"
-            if not events_path.exists():
-                events_path = runs_dir / run_id / "events.jsonl"
     if events_path.exists():
         try:
             raw_text = events_path.read_text()
             if events_path.suffix == ".jsonl":
-                record["events"] = [
-                    json.loads(line) for line in raw_text.splitlines() if line.strip()
-                ]
+                record["events"] = []
+                for line in raw_text.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record["events"].append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
             else:
                 record["events"] = json.loads(raw_text)
             if not isinstance(record["events"], list):
@@ -314,6 +312,8 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
             if isinstance(raw, dict):
                 parts = []
                 for key, val in raw.items():
+                    if isinstance(val, (dict, list)):
+                        val = yaml.safe_dump(val, default_flow_style=False).rstrip()
                     parts.append(f"**{key}**: {val}")
                 record["input"] = "\n\n".join(parts)
             else:
@@ -338,8 +338,9 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
             except OSError:
                 pass
 
-    # --- Verifiable evidence from agent trace ---
-    record["evidence"] = _extract_verifiable_evidence(case_dir, record)
+    # Evidence extraction is deferred — call _extract_verifiable_evidence
+    # only when a judge template actually uses {{ evidence }}.
+    record["_case_dir"] = str(case_dir)
 
     # --- Logs (if traces config enables them) ---
     if run_id:
@@ -507,7 +508,13 @@ def _render_jinja2_template(template_text, arguments, outputs):
     input_text = out.get("input", "")
 
     template = env.from_string(template_text)
+
+    # Lazy evidence: only extract if template uses {{ evidence }}
     evidence_text = out.get("evidence", "")
+    if not evidence_text and "evidence" in template_text:
+        case_dir = out.get("_case_dir")
+        if case_dir:
+            evidence_text = _extract_verifiable_evidence(Path(case_dir), out)
 
     return template.render(
         arguments=arguments or {},
@@ -913,10 +920,6 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
         record = load_case_record(case_dir, config, run_id=run_id)
         case_results = {}
         for name, scorer, condition, judge_type, judge_samples in judges:
-            import copy
-            record["prior_judges"] = {
-                k: copy.deepcopy(v) for k, v in case_results.items()
-            }
             # Check condition — skip if it evaluates to False
             if condition:
                 try:
