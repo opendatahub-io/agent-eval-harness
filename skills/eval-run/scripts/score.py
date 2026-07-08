@@ -53,24 +53,15 @@ def _resolve_under(root: Path, candidate: Path) -> Path:
 # Case record loading — reads all files, no schema interpretation
 # ---------------------------------------------------------------------------
 
-def _extract_verifiable_evidence(case_dir, record):
-    """Parse agent trace for verifiable tool call evidence.
+def _extract_verifiable_evidence(record):
+    """Summarize verifiable tool-call evidence from record["events"].
 
-    Returns a structured summary of what the agent actually did,
-    suitable for injection into LLM judge prompts via {{ evidence }}.
+    Consumes the already-parsed flat event schema built by
+    ``agent_eval.events.parse_stream_events`` (used for both events.json and
+    events.jsonl in ``load_case_record``), so this is runner-agnostic and
+    doesn't re-read any file from disk.
     """
     import collections
-
-    trace_path = Path(case_dir) / "stdout.log"
-    if not trace_path.exists():
-        agent_trace = Path(case_dir) / "agent" / "claude-code.txt"
-        if agent_trace.exists():
-            trace_path = agent_trace
-        else:
-            candidates = sorted(Path(case_dir).glob("**/*claude*.txt"))
-            if candidates:
-                trace_path = candidates[0]
-
     tools = collections.Counter()
     skills_invoked = []
     scripts_run = set()
@@ -79,70 +70,47 @@ def _extract_verifiable_evidence(case_dir, record):
     total_turns = 0
     cost_usd = 0.0
 
-    # Detect stream-json format: first non-empty line must parse as JSON
-    is_stream_json = False
-    if trace_path.exists():
-        try:
-            with trace_path.open() as fh:
-                for probe in fh:
-                    probe = probe.strip()
-                    if not probe:
-                        continue
-                    try:
-                        json.loads(probe)
-                        is_stream_json = True
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-                    break
-        except OSError:
-            pass
+    for event in record.get("events") or []:
+        if not isinstance(event, dict):
+            continue
+        etype = event.get("type")
+        if etype == "assistant":
+            for t in event.get("tools") or []:
+                if not isinstance(t, dict):
+                    continue
+                name = t.get("name") or ""
+                if not name:
+                    continue
+                tools[name] += 1
+                inp = t.get("input") or {}
+                if name == "Skill":
+                    skills_invoked.append(inp.get("skill", "?"))
+                elif name in ("Bash", "Shell"):
+                    cmd = inp.get("command", "")
+                    for token in cmd.split():
+                        if token.endswith(".sh") or token.endswith(".py"):
+                            scripts_run.add(token.split("/")[-1])
+                elif name == "Read":
+                    fp = inp.get("file_path", "")
+                    if fp:
+                        files_read.add(fp.split("/")[-1])
+                elif name == "Write":
+                    fp = inp.get("file_path", "")
+                    if fp:
+                        files_written.add(fp.split("/")[-1])
+        elif etype == "result":
+            total_turns = event.get("num_turns", 0) or 0
+            cost_usd = event.get("cost_usd", 0.0) or 0.0
 
-    if is_stream_json and trace_path.exists():
-        try:
-            with trace_path.open() as fh:
-                for line in fh:
-                    try:
-                        d = json.loads(line)
-                    except (json.JSONDecodeError, ValueError):
-                        continue
-                    if d.get("type") == "assistant":
-                        for c in d.get("message", {}).get("content", []):
-                            if c.get("type") != "tool_use":
-                                continue
-                            name = c.get("name", "")
-                            inp = c.get("input", {})
-                            tools[name] += 1
-                            if name == "Skill":
-                                skills_invoked.append(inp.get("skill", "?"))
-                            elif name in ("Bash", "Shell"):
-                                cmd = inp.get("command", "")
-                                for token in cmd.split():
-                                    if token.endswith(".sh") or token.endswith(".py"):
-                                        scripts_run.add(token.split("/")[-1])
-                            elif name == "Read":
-                                fp = inp.get("file_path", "")
-                                if fp:
-                                    files_read.add(fp.split("/")[-1])
-                            elif name == "Write":
-                                fp = inp.get("file_path", "")
-                                if fp:
-                                    files_written.add(fp.split("/")[-1])
-                    elif d.get("type") == "result":
-                        total_turns = d.get("num_turns", 0) or 0
-                        cost_usd = d.get("total_cost_usd", 0.0) or 0.0
-        except OSError:
-            pass
-
-    lines = []
-    lines.append(f"Total turns: {total_turns}")
-    lines.append(f"Cost: ${cost_usd:.2f}")
-    lines.append(f"Tool calls: {dict(tools) if tools else 'none'}")
-    lines.append(f"Skills invoked: {', '.join(skills_invoked) if skills_invoked else 'none'}")
-    lines.append(f"Scripts executed: {', '.join(sorted(scripts_run)) if scripts_run else 'none'}")
-    lines.append(f"Files read: {', '.join(sorted(files_read)) if files_read else 'none'}")
-    lines.append(f"Files written: {', '.join(sorted(files_written)) if files_written else 'none'}")
-
-    return "\n".join(lines)
+    return "\n".join([
+        f"Total turns: {total_turns}",
+        f"Cost: ${cost_usd:.2f}",
+        f"Tool calls: {dict(tools) if tools else 'none'}",
+        f"Skills invoked: {', '.join(skills_invoked) if skills_invoked else 'none'}",
+        f"Scripts executed: {', '.join(sorted(scripts_run)) if scripts_run else 'none'}",
+        f"Files read: {', '.join(sorted(files_read)) if files_read else 'none'}",
+        f"Files written: {', '.join(sorted(files_written)) if files_written else 'none'}",
+    ])
 
 
 def load_case_record(case_dir, config, run_id=None, runs_dir=None):
@@ -352,10 +320,6 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
             except OSError:
                 pass
 
-    # Evidence extraction is deferred — call _extract_verifiable_evidence
-    # only when a judge template actually uses {{ evidence }}.
-    record["_case_dir"] = str(case_dir)
-
     # --- Logs (if traces config enables them) ---
     if run_id:
         if config.traces.stdout:
@@ -523,14 +487,12 @@ def _render_jinja2_template(template_text, arguments, outputs):
 
     template = env.from_string(template_text)
 
-    # Lazy evidence: only extract if template references {{ evidence }}.
-    # Cache in out["evidence"] to avoid re-parsing per judge * sample.
+    # Lazy evidence: only derive it if the template references {{ evidence }}.
+    # Cache in out["evidence"] so multiple judges/samples reuse the same result.
     evidence_text = out.get("evidence", "")
     if not evidence_text and "{{ evidence" in template_text:
-        case_dir = out.get("_case_dir")
-        if case_dir:
-            evidence_text = _extract_verifiable_evidence(Path(case_dir), out)
-            out["evidence"] = evidence_text
+        evidence_text = _extract_verifiable_evidence(out)
+        out["evidence"] = evidence_text
 
     return template.render(
         arguments=arguments or {},
