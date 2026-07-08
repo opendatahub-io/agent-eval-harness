@@ -469,6 +469,34 @@ Example with both file artifacts and conversation output:
       ...
 ```
 
+Example grounded in verifiable evidence (use `{{ evidence }}` when the rubric depends on what the agent actually *did*, not what it *said*):
+```yaml
+  - name: followed_workflow
+    prompt: |
+      The task was to update `docs/api.md` after reading the current source
+      and running the linter.
+
+      ## Case inputs
+      {{ inputs }}
+
+      ## What the agent actually did
+      {{ evidence }}
+
+      ## What it said
+      {{ conversation }}
+
+      Score 1-5 based on both process and outcome:
+      - Was `docs/api.md` actually written? (Files written should include it)
+      - Was `api.py` read before `docs/api.md` was written? (Files read
+        should include the source)
+      - Was `./lint.sh` executed? (Scripts executed should include it)
+      - Did the agent stay under a reasonable turn budget for this task?
+
+      Do not take the agent's self-report at face value — grade the rubric
+      against Files read / Files written / Scripts executed / Total turns.
+```
+The `evidence` block is a compact structured summary rendered from the parsed event stream (turns, cost, per-tool counts, skills invoked, scripts executed, files read/written). It is extracted lazily — only when the prompt actually references `{{ evidence }}` — and cached, so multiple judges or samples on the same case pay for it once. Runner-agnostic: tool-name and input-key aliases are matched across Claude Code, opencode, codex, and responses-api, so the same prompt works regardless of which runner produced the trace.
+
 Be specific about scoring criteria. "Score 1-5" is too vague. Define what each level means:
 ```
 Score 1: Missing most requirements, major errors
