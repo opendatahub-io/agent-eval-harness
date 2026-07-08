@@ -385,6 +385,7 @@ class JudgeConfig:
 
     2. prompt — Full Jinja2 template with manual control over structure.
        Use when you need multiple placeholders or complex prompt logic.
+       Use {{ conversation }} for response quality, {{ tool_trace }} for behavior (navigation, tool usage).
        Example: prompt: "{{ description }}\n\nCase: {{ outputs.case_id }}\n\n{{ conversation }}"
 
     3. prompt_file — External file path (absolute or relative to project root).

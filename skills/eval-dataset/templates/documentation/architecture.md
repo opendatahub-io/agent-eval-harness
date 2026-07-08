@@ -18,12 +18,17 @@ Each architecture test should verify that an agent:
 ```yaml
 # input.yaml
 prompt: "Question about system architecture or component relationships"
+```
+
+```yaml
+# annotations.yaml
+category: architecture
 expected_components:
   - component1
   - component2
 expected_interactions:
   - "component1 → component2: description"
-expected_documentation:
+expected_files:
   - path/to/architecture.md
   - path/to/component-docs.md
 ```
@@ -57,6 +62,13 @@ Generate:
 prompt: |
   Can you explain how the machine config system applies configuration changes
   to nodes? What components are involved and how do they communicate?
+```
+
+```yaml
+# annotations.yaml
+category: architecture
+focus: component-interaction  # or: data-flow, deployment, scaling
+complexity: medium  # simple | medium | complex
 expected_components:
   - machine-config-controller
   - machine-config-daemon
@@ -65,18 +77,9 @@ expected_interactions:
   - "controller → daemon: pushes new configs via API"
   - "daemon → node: applies changes locally"
   - "daemon → server: reports status back"
-expected_documentation:
+expected_files:
   - ai-docs/architecture/components.md
   - ai-docs/architecture/data-flow.md
-```
-
-## Annotations (Optional)
-
-```yaml
-# annotations.yaml
-category: architecture
-focus: component-interaction  # or: data-flow, deployment, scaling
-complexity: medium  # simple | medium | complex
 ```
 
 ## Validation Criteria
@@ -84,5 +87,5 @@ complexity: medium  # simple | medium | complex
 - `prompt` must ask about architecture, design, or component relationships
 - `expected_components` must reference 2+ components from domain config
 - `expected_interactions` should describe key communication patterns
-- `expected_documentation` must reference architecture docs
+- `expected_files` must reference architecture docs
 - The question should require understanding the big picture, not just one component

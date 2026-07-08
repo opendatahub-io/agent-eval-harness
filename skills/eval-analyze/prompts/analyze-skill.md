@@ -129,9 +129,10 @@ suggested_judges:
     # For llm type, include evaluation instructions.
     # All LLM prompts are Jinja2 templates. Available variables:
     #   {{ outputs }} — file artifacts and modified files as markdown
-    #   {{ conversation }} — root-level assistant text (excludes subagent text)
+    #   {{ conversation }} — root-level assistant text (excludes subagent text and tool calls)
     #   {{ inputs }} — the case's input.yaml as **key**: value per field
     #   {{ evidence }} — summary of the agent's tool calls (lazy + cached)
+    #   {{ tool_trace }} — chronological trace of tool calls (Read, Bash, Agent, etc.)
     #   {{ annotations }} — dataset annotations
     #   {{ arguments }} — judge arguments from eval.yaml
     #
@@ -142,6 +143,7 @@ suggested_judges:
     #   process/verification — did the agent read X, run Y, write Z, stay
     #     under budget — grade by facts, not the agent's self-report
     #                                       → {{ evidence }}
+    #   agent behavior (navigation, tool usage)  → {{ tool_trace }}
     # See eval-yaml-template.md for worked examples of each.
     prompt: |
       <what to evaluate and how to score>

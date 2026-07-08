@@ -10,16 +10,24 @@ from pathlib import Path
 DEFAULT_RESULT_CAP = 50000
 
 
-def extract_read_calls(events, include_subagents=True):
-    """Extract Read tool calls from parsed events for documentation tracking.
+def extract_read_calls(events, include_subagents=True, include_grep=True):
+    """Extract file access tool calls from parsed events for documentation tracking.
+
+    Tracks Read tool calls and optionally Grep tool calls (which also read
+    file contents). Bash commands like ``cat``, ``head``, ``tail`` are NOT
+    tracked — their file targets are ambiguous and parsing shell commands
+    reliably is fragile.
 
     Args:
         events: List of event dicts from parse_stream_events().
         include_subagents: If True (default), include reads from subagent events.
             Set to False to only return top-level reads.
+        include_grep: If True (default), also count Grep tool calls as file
+            reads. Grep searches file contents, so the agent has effectively
+            consulted those files.
 
     Returns:
-        List of dicts with {file_path, timestamp, offset, limit, pages} for each Read call.
+        List of dicts with {file_path, timestamp, ...} for each file access.
     """
     if not events:
         return []
@@ -36,24 +44,29 @@ def extract_read_calls(events, include_subagents=True):
         timestamp = event.get("timestamp")
 
         for tool in event.get("tools", []):
-            if tool.get("name") != "Read":
-                continue
-
+            name = tool.get("name", "")
             tool_input = tool.get("input", {})
-            file_path = tool_input.get("file_path", "")
 
-            if not file_path:
-                continue
+            if name == "Read":
+                file_path = tool_input.get("file_path", "")
+                if not file_path:
+                    continue
+                read_calls.append({
+                    "file_path": file_path,
+                    "timestamp": timestamp,
+                    "offset": tool_input.get("offset"),
+                    "limit": tool_input.get("limit"),
+                    "pages": tool_input.get("pages"),
+                })
 
-            read_call = {
-                "file_path": file_path,
-                "timestamp": timestamp,
-                "offset": tool_input.get("offset"),
-                "limit": tool_input.get("limit"),
-                "pages": tool_input.get("pages"),
-            }
-
-            read_calls.append(read_call)
+            elif name == "Grep" and include_grep:
+                path = tool_input.get("path", "")
+                if not path or path == ".":
+                    continue
+                read_calls.append({
+                    "file_path": path,
+                    "timestamp": timestamp,
+                })
 
     return read_calls
 
@@ -377,6 +390,98 @@ def _parse_transcript_assistant(obj, agent_id, result_cap=DEFAULT_RESULT_CAP):
         event["parent_tool_use_id"] = parent_tool_use_id
 
     return event
+
+
+def extract_tool_trace(events, include_subagents=True):
+    """Render a human-readable chronological trace of tool calls from events.
+
+    Produces a formatted log showing each tool invocation with its key
+    inputs, suitable for LLM judges that need to evaluate agent behavior
+    (navigation, tool usage patterns) rather than just textual output.
+
+    Args:
+        events: List of event dicts from parse_stream_events().
+        include_subagents: If True (default), include tool calls from
+            subagent events.
+
+    Returns:
+        Formatted string with one line per tool call.
+    """
+    if not events:
+        return ""
+
+    lines = []
+    step = 0
+
+    for event in events:
+        if event.get("type") != "assistant":
+            continue
+        if not include_subagents and event.get("parent_tool_use_id"):
+            continue
+
+        is_subagent = bool(event.get("parent_tool_use_id"))
+        prefix = "  [subagent] " if is_subagent else ""
+
+        for tool in event.get("tools", []):
+            step += 1
+            name = tool.get("name", "unknown")
+            tool_input = tool.get("input", {})
+
+            detail = _format_tool_input(name, tool_input)
+            lines.append(f"{prefix}{step}. {name}: {detail}")
+
+    return "\n".join(lines)
+
+
+def _format_tool_input(name, tool_input):
+    """Format tool input for human-readable trace output."""
+    if name == "Read":
+        path = tool_input.get("file_path", "?")
+        parts = [path]
+        if tool_input.get("offset"):
+            parts.append(f"offset={tool_input['offset']}")
+        if tool_input.get("limit"):
+            parts.append(f"limit={tool_input['limit']}")
+        return ", ".join(parts)
+
+    if name == "Bash":
+        cmd = tool_input.get("command", "?")
+        if len(cmd) > 200:
+            cmd = cmd[:200] + "..."
+        return cmd
+
+    if name == "Agent":
+        desc = tool_input.get("description", "")
+        prompt_text = tool_input.get("prompt", "")
+        if desc:
+            return f'"{desc}"'
+        if prompt_text:
+            summary = prompt_text[:100] + "..." if len(prompt_text) > 100 else prompt_text
+            return summary
+        return "(no description)"
+
+    if name in ("Edit", "Write"):
+        return tool_input.get("file_path", "?")
+
+    if name in ("Glob", "Grep"):
+        return tool_input.get("pattern", tool_input.get("query", "?"))
+
+    if name == "WebFetch":
+        return tool_input.get("url", "?")
+
+    if name == "WebSearch":
+        return tool_input.get("query", "?")
+
+    if name == "Skill":
+        return tool_input.get("skill", "?")
+
+    # Fallback: show first key-value pair
+    for k, v in tool_input.items():
+        v_str = str(v)
+        if len(v_str) > 100:
+            v_str = v_str[:100] + "..."
+        return f"{k}={v_str}"
+    return "(no input)"
 
 
 def extract_conversation_text(events):

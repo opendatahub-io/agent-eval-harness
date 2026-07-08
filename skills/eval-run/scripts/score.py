@@ -293,11 +293,17 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
             try:
                 with open(run_result_path) as f:
                     meta = json.load(f)
-                record["exit_code"] = meta.get("exit_code")
-                record["duration_s"] = meta.get("duration_s")
-                record["token_usage"] = meta.get("token_usage")
-                record["cost_usd"] = meta.get("cost_usd")
-                record["num_turns"] = meta.get("num_turns")
+                per_case = meta.get("per_case", {}).get(case_id, {})
+                record["exit_code"] = per_case.get(
+                    "exit_code", meta.get("exit_code"))
+                record["duration_s"] = per_case.get(
+                    "duration_s", meta.get("duration_s"))
+                record["token_usage"] = per_case.get(
+                    "token_usage", meta.get("token_usage"))
+                record["cost_usd"] = per_case.get(
+                    "cost_usd", meta.get("cost_usd"))
+                record["num_turns"] = per_case.get(
+                    "num_turns", meta.get("num_turns"))
             except (json.JSONDecodeError, OSError):
                 pass
 
@@ -545,6 +551,7 @@ def _render_jinja2_template(template_text, arguments, outputs):
       {{ annotations.get('category') }} / {{ annotations.category }} access
     - {{ annotations_text }} - formatted annotation text for display
     - {{ conversation }} - root-level assistant text from events
+    - {{ tool_trace }} - chronological trace of tool calls (Read, Bash, etc.)
     """
     from jinja2 import Environment
     env = Environment()
@@ -575,6 +582,12 @@ def _render_jinja2_template(template_text, arguments, outputs):
     # Pre-render case inputs for {{ inputs }}
     inputs_text = out.get("inputs", "")
 
+    # Pre-render tool trace for {{ tool_trace }}
+    tool_trace = ""
+    if out.get("events"):
+        from agent_eval.events import extract_tool_trace
+        tool_trace = extract_tool_trace(out["events"])
+
     template = env.from_string(template_text)
 
     # Lazy evidence: only derive it if the template references {{ evidence }}.
@@ -592,6 +605,7 @@ def _render_jinja2_template(template_text, arguments, outputs):
         conversation=conversation,
         inputs=inputs_text,
         evidence=evidence_text,
+        tool_trace=tool_trace,
     )
 
 

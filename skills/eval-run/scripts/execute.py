@@ -101,11 +101,11 @@ def main():
     config = EvalConfig.from_yaml(args.config)
 
     # Determine if prompt mode (execution.prompt is set)
-    is_prompt_mode = bool(config.execution.prompt and config.execution.prompt.strip())
+    is_prompt_mode = config.is_prompt_mode()
 
     # Resolve target (skill name or None for prompt mode)
-    # Priority: CLI --skill > execution.skill > top-level skill (backward compat)
-    target = args.skill or config.execution.skill or config.skill
+    # Priority: CLI --skill > config (execution.skill → top-level skill)
+    target = args.skill or config.resolve_skill()
 
     # For prompt mode, force target=None (direct prompt execution, no skill wrapper)
     if is_prompt_mode:
@@ -369,7 +369,7 @@ def _build_eval_params(args, config, skill_args, max_budget, timeout_s, effort=N
         "timeout_s": timeout_s,
     }
     # skill is optional for prompt mode
-    target = args.skill or config.execution.skill or config.skill
+    target = args.skill or config.resolve_skill()
     if target:
         params["skill"] = target
     if skill_args:

@@ -18,9 +18,14 @@ Each anti-pattern test should verify that an agent:
 ```yaml
 # input.yaml
 prompt: "User request proposing a constraint-violating approach"
+```
+
+```yaml
+# annotations.yaml
+category: anti-pattern
 expected_rejection: true
 expected_constraint: "The constraint that should be cited"
-expected_documentation:
+expected_files:
   - path/to/constraint-doc.md
 correct_approach: "Brief description of the right way"
 ```
@@ -50,20 +55,18 @@ Generate:
 prompt: |
   I want to create a new API for my feature. Since this is production-ready,
   I'd like to start with v1 to show stability. Can you help me design it?
-expected_rejection: true
-expected_constraint: "All APIs must start with v1alpha1"
-expected_documentation:
-  - ai-docs/practices/api-evolution.md
-correct_approach: "Start with v1alpha1, graduate to v1 later"
 ```
-
-## Annotations (Optional)
 
 ```yaml
 # annotations.yaml
 category: anti-pattern
 constraint_type: api-versioning  # or: security, architecture, process
 severity: high  # high | medium | low
+expected_rejection: true
+expected_constraint: "All APIs must start with v1alpha1"
+expected_files:
+  - ai-docs/practices/api-evolution.md
+correct_approach: "Start with v1alpha1, graduate to v1 later"
 ```
 
 ## Validation Criteria
@@ -71,5 +74,5 @@ severity: high  # high | medium | low
 - `prompt` must explicitly request a constraint-violating approach
 - `expected_rejection` must be true
 - `expected_constraint` must match a constraint from domain config
-- `expected_documentation` must reference real files
+- `expected_files` must reference real files
 - `correct_approach` should be concise (1-2 sentences)

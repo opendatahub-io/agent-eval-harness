@@ -55,6 +55,7 @@ def _validate_template_variables(judges, outputs, dataset_schema, errors, warnin
         "annotations",      # dataset annotations (dict + formatted __str__)
         "annotations_text", # formatted annotation text for display
         "conversation",     # root-level assistant text from events
+        "tool_trace",       # chronological trace of tool calls (Read, Bash, etc.)
         "events",           # tool call log
         "outputs",          # collected output files/events proxy
         "arguments",        # judge arguments from eval.yaml
@@ -117,7 +118,7 @@ def _validate_template_variables(judges, outputs, dataset_schema, errors, warnin
             "\n💡 Template variable errors detected. Common fixes:\n"
             "   • Ensure all {{ variable }} references match output names or standard variables\n"
             "   • Standard variables (always available): input, annotations, annotations_text, "
-            "conversation, events, outputs, arguments\n"
+            "conversation, tool_trace, events, outputs, arguments\n"
             "   • For custom variables, add them to outputs section in eval.yaml\n"
             "   • Check dataset.schema documents expected structure of input.yaml and annotations.yaml"
         )
@@ -198,7 +199,7 @@ def _validate_builtin_arguments(builtin_name, judge_name, arguments, errors, war
     """Validate that builtin judges only use documented arguments."""
     # Known builtin judges and their valid arguments
     BUILTIN_ARGS = {
-        "consulted_docs": {"min_coverage", "match", "include_subagents"},
+        "consulted_docs": {"min_coverage", "match", "include_subagents", "include_grep", "preloaded_files"},
         "cost_budget": {"max_cost_usd"},
         "no_harmful_content": set(),  # No custom arguments
         "output_completeness": set(),  # No custom arguments
