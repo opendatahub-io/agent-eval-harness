@@ -1,0 +1,46 @@
+# feat(observability): add Perses resources to Tenant finalizer cleanup
+
+## Description
+
+Add `PersesDashboard` and `PersesDatasource` to the Tenant finalizer's cleanup path so that Perses observability resources are removed when the MaaS Tenant CR is deleted.
+
+Perses resources are rendered into the `opendatahub` namespace while the Tenant CR lives in `models-as-a-service`. Because Kubernetes forbids cross-namespace ownerReferences, `ApplyRendered` applies tracking labels (`maas.opendatahub.io/tenant-name`, `maas.opendatahub.io/tenant-namespace`) instead. The finalizer already uses these labels to clean up other cross-namespace extension resources (Kuadrant policies, Istio DestinationRules, etc.) — this PR extends that list to include the Perses GVKs.
+
+Context: @ahadas flagged this gap in https://github.com/opendatahub-io/models-as-a-service/pull/805#pullrequestreview-4181758593.
+
+https://redhat.atlassian.net/browse/RHOAIENG-60373
+
+## How Has This Been Tested?
+
+**Unit tests:**
+- New test `TestTenantReconcile_DeletionCleansUpPersesResourcesByTrackingLabel` creates `PersesDashboard` and `PersesDatasource` unstructured objects with tracking labels in the `AppNamespace` (cross-namespace from the Tenant CR), triggers Tenant deletion, and asserts both resources are removed by the finalizer.
+- All existing tests continue to pass (`go test ./... -count=1`).
+
+**Manual cluster test (ROSA):**
+1. Installed MaaS CRDs, stub Perses CRDs, and RBAC on a fresh cluster.
+2. Created a Tenant CR in `models-as-a-service` and Perses resources with tracking labels in `opendatahub`.
+3. Ran the controller locally, deleted the Tenant CR.
+4. Verified both `PersesDashboard` and `PersesDatasource` were cleaned up (`No resources found in opendatahub namespace.`).
+
+## Merge criteria:
+
+- [x] The commits are squashed in a cohesive manner and have meaningful messages.
+- [x] Testing instructions have been added in the PR body (for PRs involving changes that are not immediately obvious).
+- [x] The developer has manually tested the changes and verified that the changes work
+
+<!-- This is an auto-generated comment: release notes by coderabbit.ai -->
+
+## Summary by CodeRabbit
+
+* **New Features**
+  * Tenant deletion now includes proper cleanup of Perses Dashboard and Datasource resources, ensuring complete removal of tenant-owned instances across the system.
+
+* **Tests**
+  * Added test coverage to verify that Perses Dashboard and Datasource resources are properly cleaned up when tenants are deleted and finalization completes.
+
+<!-- end of auto-generated comment: release notes by coderabbit.ai -->
+
+## Files involved
+- `maas-controller/pkg/controller/maas/tenant_finalize.go`
+- `maas-controller/pkg/controller/maas/tenant_reconcile_test.go`
+- `maas-controller/pkg/platform/tenantreconcile/constants.go`

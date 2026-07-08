@@ -19,19 +19,19 @@ Generic evaluation framework for agents and skills. Analyze, run, score, and imp
 │ directories  │  │ suggest judges│  │ fill gaps    │  │ score        │  │ traces         │
 └──────────────┘  └───────────────┘  └──────────────┘  └──▲──┬─▲──┬───┘  └────────────────┘
                                                           │  │ │  │
-                                            ┌─────────────┘  │ │  └────────────┐
-                                            │         ┌──────▼─┴─────┐         │
-                                            │         │ eval-review  │         │
-                                            │         │              │         │
-                                            │         │ human review │         │
-                                            │         │ feedback     │         │
-                                            │         └──────────────┘         │
-                                            │                                  │
-                                            │        ┌───────────────┐         │
-                                            └────────│ eval-optimize │◀────────┘
+                                     ┌────────────────────┘  │ │  └────────────┐
+                                     │                ┌──────▼─┴─────┐         │
+                              ┌──────┴────────┐       │ eval-review  │         │
+                              │  eval-anova   │       │              │         │
+                              │               │       │ human review │         │
+                              │ matrix design │       │ feedback     │         │
+                              │ run all cells ├──┐    └──────────────┘         │
+                              │ ANOVA stats   │  │                             │
+                              │ HTML reports  │  │   ┌───────────────┐         │
+                              └───────────────┘  └───│ eval-optimize │◀────────┘
                                                      │               │
-                                                     │ fix skill     │
-                                                     │ re-run        │
+                                uses eval-run's      │ fix skill     │
+                                execution + scoring  │ re-run        │
                                                      └───────────────┘
 ```
 
@@ -53,7 +53,7 @@ pip install -e ./agent-eval-harness
 claude --plugin-dir ./agent-eval-harness
 ```
 
-This makes all eval skills available: `/eval-setup`, `/eval-analyze`, `/eval-dataset`, `/eval-run`, `/eval-review`, `/eval-mlflow`, `/eval-optimize`, and `/eval-check`.
+This makes all eval skills available: `/eval-setup`, `/eval-analyze`, `/eval-dataset`, `/eval-run`, `/eval-review`, `/eval-mlflow`, `/eval-optimize`, `/eval-check`, and `/eval-anova`.
 
 ### 2. Set up environment
 
@@ -89,6 +89,16 @@ Creates 5 starter test cases based on the skill analysis. Skip this if you alrea
 ```
 
 This prepares a workspace, runs the skill (headless or interactive), collects artifacts, scores with judges, and reports results.
+
+### 6. Compare configurations
+
+Add a `matrix:` section to eval.yaml and run:
+
+```
+/eval-anova
+```
+
+This runs every combination of models, effort levels, and other factors across your test cases, then analyzes results with repeated-measures ANOVA.
 
 ## eval.yaml
 
@@ -251,6 +261,19 @@ thresholds:
   #   min_pass_rate: 1.0     # Minimum fraction of cases passing (0.0–1.0)
   # pairwise:
   #   min_win_rate: 0.6      # Minimum pairwise win rate
+
+# Matrix — full-factorial experiment design (for /eval-anova)
+# Each combination of factor levels runs against every test case.
+# matrix:
+#   factors:
+#     model:
+#       - claude-opus-4-6
+#       - claude-sonnet-4-6
+#       - claude-haiku-4-5
+#     effort:                  # extended thinking effort level
+#       - low
+#       - high
+#   replications: 3            # 1 = screening; 3 = decent; 5+ = high confidence
 ```
 
 ### Key concepts
@@ -270,6 +293,7 @@ thresholds:
 - **`models`** — `skill`/`subagent`/`judge`/`hook` defaults, overridable per-judge or via CLI flags. `hook` is the model used for LLM-based AskUserQuestion answering.
 - **`mlflow`** — `experiment` (and optional `tracking_uri`/`tags`) for result logging.
 - **`thresholds`** — per-judge regression detection. Valid keys: `min_mean` (minimum average score), `min_pass_rate` (minimum fraction of cases passing, 0.0–1.0), `min_win_rate` (minimum pairwise win rate).
+- **`matrix`** — full-factorial experiment design for `/eval-anova`. `factors` are named lists of levels; `replications` controls repeats. Each combination runs against every test case. The `model` factor maps to the runner's model; `effort` maps to thinking effort level (`low`/`medium`/`high`/`xhigh`/`max`); other factors pass through as runner kwargs. ANOVA separates factor effects and detects interactions.
 
 ## Example: eval.yaml for RFE Creator
 
@@ -508,16 +532,45 @@ Scan the full configuration (skills, commands, CLAUDE.md, hooks) as a system. Fi
 /eval-check --output my-report.md  # Custom output path
 ```
 
+### /eval-anova
+
+Run full-factorial experiments comparing agent configurations (models, effort levels, prompts) across shared test cases with repeated-measures ANOVA. Reuses `/eval-run`'s execution and scoring machinery, wrapping it in a matrix loop with composite scoring and statistical analysis.
+
+```
+/eval-anova                    # interactive: design → run → analyze → report
+/eval-anova --dry-run          # validate config + estimate cost
+/eval-anova --analyze-only     # re-analyze existing results + re-render reports
+```
+
+See [`eval/harbor-maas-v1/`](eval/harbor-maas-v1/) for a worked example with real SWE-bench-style tasks.
+
+## Benchmarks
+
+### harbor-maas-v1
+
+SWE-bench-style ANOVA benchmark using 4 real PR tasks from [opendatahub-io/models-as-a-service](https://github.com/opendatahub-io/models-as-a-service). Agents implement bugfixes in a checked-out repo; an LLM judge scores diffs against oracle patches. See [`eval/harbor-maas-v1/`](eval/harbor-maas-v1/) for dataset, config, and reproducer.
+
+```
+/eval-anova    # interactive: design → run → analyze → report
+```
+
 ## Architecture
 
 ```
 agent_eval/              # Python package (config, runner, state)
   config.py              # EvalConfig from eval.yaml
   state.py               # Shared state persistence
+  matrix.py              # Factorial experiment design
+  composite.py           # Composite scoring (bool gates + numeric)
+  anova_runner.py        # Bridge: eval-anova → eval-run execution
+  archive.py             # Git-backed results archival
   agent/
     base.py              # EvalRunner ABC + RunResult
     claude_code.py       # Claude Code CLI runner
     stream_capture.py    # Stream-json processing + SubagentStop hook
+  stats/
+    anova.py             # Repeated-measures ANOVA
+    pareto.py            # Cost/quality Pareto frontier
   mlflow/
     experiment.py        # MLflow experiment setup
     trace_builder.py     # Hierarchical trace builder
@@ -532,7 +585,8 @@ skills/
   eval-review/           # Interactive human review
   eval-mlflow/           # MLflow integration
   eval-optimize/         # Automated refinement loop
-  eval-check/    # Full-harness configuration health check
+  eval-check/            # Full-harness configuration health check
+  eval-anova/            # DoE/ANOVA experiments
 ```
 
 ## Agent Support
@@ -566,6 +620,13 @@ echo "/rfe.speedrun --input batch.yaml --headless" | claude-trace --model opus
 
 ## Dependencies
 
-- `pyyaml >= 6.0`
-- Optional: `mlflow[genai] >= 3.5` (for `/eval-mlflow` and `claude-trace`)
-- Optional: `anthropic >= 0.40` (for LLM judges, pairwise comparison, and hook answering)
+Core: `pyyaml >= 6.0`, `jinja2 >= 3.1`
+
+Install extras for specific capabilities:
+
+```bash
+pip install -e ".[anthropic]"  # LLM judges, pairwise comparison, hook answering
+pip install -e ".[anova]"      # /eval-anova: scipy, statsmodels, pandas, pingouin
+pip install -e ".[mlflow]"     # /eval-mlflow + claude-trace: mlflow[genai]
+pip install -e ".[all]"        # everything
+```

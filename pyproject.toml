@@ -28,16 +28,29 @@ evalhub = [
 # Harbor containerized execution — install harbor in the same venv so the
 # Kubernetes environment plugin and k8s_resources.py share one kubernetes client.
 # Requires Python >=3.12 (harbor's minimum).
-harbor = ["harbor>=0.13.0", "kubernetes>=29.0,<37.0"]
+harbor = [
+    "harbor>=0.13.0; python_version >= '3.12'",
+    "kubernetes>=29.0,<37.0; python_version >= '3.12'",
+]
 openai = ["openai>=1.70"]
+anova = [
+    "scipy>=1.17",
+    "statsmodels>=0.14.6",
+    "pandas>=2.2,<3.0",
+    "pingouin>=0.6.1",
+]
 all = [
     "mlflow[genai]>=3.5",
     "anthropic[vertex]>=0.40",
     "eval-hub-sdk[adapter]>=0.1,<1.0",
     "boto3>=1.34,<2.0",
-    "harbor>=0.13.0",
-    "kubernetes>=29.0,<37.0",
+    "harbor>=0.13.0; python_version >= '3.12'",
+    "kubernetes>=29.0,<37.0; python_version >= '3.12'",
     "openai>=1.70",
+    "scipy>=1.17",
+    "statsmodels>=0.14.6",
+    "pandas>=2.2,<3.0",
+    "pingouin>=0.6.1",
 ]
 test = ["pytest>=8.0"]
 
@@ -51,4 +64,3 @@ markers = ["e2e: end-to-end tests requiring Claude API (deselected by default)"]
 
 [tool.setuptools.packages.find]
 include = ["agent_eval*"]
-
