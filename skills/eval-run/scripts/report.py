@@ -153,6 +153,23 @@ def _load_json(path: Path) -> dict:
         return json.load(f)
 
 
+def load_reward_cfg(config_path):
+    """Return the parsed RewardConfig from an eval.yaml, or None on any failure.
+
+    The report keeps a raw config dict, but the reward table needs the parsed
+    RewardConfig so `compose_reward` uses the same resolution
+    (`judge` / `weighted` / `formula` / gate) as `build_reward` — otherwise the
+    displayed reward diverges from what the harness actually trains on.
+    Degrade silently if EvalConfig parsing fails for unrelated field errors;
+    the reward column then falls back to compose_reward's default path.
+    """
+    try:
+        from agent_eval.config import EvalConfig
+        return EvalConfig.from_yaml(config_path).reward
+    except Exception:
+        return None
+
+
 def _read_text(path: Path, max_lines: int = 200) -> str:
     try:
         lines = path.read_text().splitlines()
@@ -1945,8 +1962,15 @@ def _colorise_hist(glyph):
             .replace("\x02", "</span>"))
 
 
-def _render_reward_overview(summary, config):
-    """Render a compact per-case reward overview table with all judge scores."""
+def _render_reward_overview(summary, config, reward_cfg=None):
+    """Render a compact per-case reward overview table with all judge scores.
+
+    `reward_cfg`, when provided, is threaded to `compose_reward` so the
+    displayed reward matches what `build_reward` trains on. Without it,
+    `compose_reward` falls back to its default resolution (bool gates +
+    averaged normalized numerics), which diverges from any configured
+    `reward:` section (single-judge / weighted / formula).
+    """
     per_case = summary.get("per_case", {})
     if not per_case:
         return ""
@@ -2092,7 +2116,8 @@ def _render_reward_overview(summary, config):
         reward_val = None
         if _compose_reward is not None:
             try:
-                reward_val, metrics = _compose_reward(case_results)
+                reward_val, metrics = _compose_reward(
+                    case_results, reward_cfg=reward_cfg)
                 # compose_reward returns 1.0 when all judges are None/skipped;
                 # treat as unscored instead of inflating the average.
                 if not metrics:
@@ -2601,7 +2626,8 @@ def _wrap_section(content: str) -> str:
 
 def generate_report(config, summary, run_result, run_dir,
                     review=None, baseline_dir=None,
-                    baseline_summary=None, baseline_result=None):
+                    baseline_summary=None, baseline_result=None,
+                    reward_cfg=None):
     global _img_compare_counter
     _img_compare_counter = 0
     name = config.get("name", "Eval")
@@ -2630,7 +2656,7 @@ def generate_report(config, summary, run_result, run_dir,
     html += _wrap_section(_render_scoring_summary(summary, config, baseline_summary))
     html += _wrap_section(_render_regressions(summary, config))
     html += _wrap_section(_render_shared_outputs(run_dir, config))
-    html += _wrap_section(_render_reward_overview(summary, config))
+    html += _wrap_section(_render_reward_overview(summary, config, reward_cfg))
     html += _render_per_case(summary, run_dir, config, baseline_dir, review)
     html += f"\n<script>{TOGGLE_SCRIPT}</script>\n"
     html += f"<script>{IMAGE_COMPARE_SCRIPT}</script>\n"
@@ -2708,6 +2734,7 @@ def main():
         review=review,
         baseline_dir=baseline_dir,
         baseline_summary=baseline_summary,
+        reward_cfg=load_reward_cfg(args.config),
         baseline_result=baseline_result,
     )
 
