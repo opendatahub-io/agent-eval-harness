@@ -53,13 +53,79 @@ def _resolve_under(root: Path, candidate: Path) -> Path:
 # Case record loading — reads all files, no schema interpretation
 # ---------------------------------------------------------------------------
 
+# Tool-name aliases across runners. Claude Code uses PascalCase (Read, Write,
+# Bash); other runners (opencode, codex, responses-api) often use snake_case
+# or different verbs. Matched case-insensitively so evidence extraction stays
+# useful when the runner isn't claude-code.
+_READ_TOOL_NAMES = {"read", "read_file", "readfile", "view", "cat", "open"}
+_WRITE_TOOL_NAMES = {"write", "write_file", "writefile", "create", "edit",
+                     "multiedit", "str_replace_editor", "update"}
+_EXEC_TOOL_NAMES = {"bash", "shell", "run", "execute", "exec", "command"}
+_SKILL_TOOL_NAMES = {"skill"}
+
+# Input-field aliases (again, runners disagree on the exact keys).
+_PATH_KEYS = ("file_path", "path", "file", "filename")
+_COMMAND_KEYS = ("command", "cmd", "script")
+_SKILL_KEYS = ("skill", "name", "id")
+
+
+def _first_key(mapping, keys):
+    """Return the first value present-and-truthy for the given key sequence."""
+    for k in keys:
+        v = mapping.get(k)
+        if v:
+            return v
+    return ""
+
+
+_REDIRECT_OPS_WITH_TARGET = {"<", ">", ">>", "2>", "2>>", "&>", ">&"}
+_SHELL_SEPARATORS = {"|", "||", "&&", ";", "&"}
+
+
+def _extract_scripts(command):
+    """Extract the script filenames executed by a shell command.
+
+    Filters out option flags (``-x``/``--flag``), ``key=value`` tokens
+    (values of ``--input=x.py``-style options), and shell redirect targets
+    (``> out.py``), so ``./run.sh --input=x.py > log.py`` records only
+    ``run.sh``. Uses ``shlex.split`` for correct quoting, falling back to
+    naive split on parse errors.
+    """
+    import shlex
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        tokens = command.split()
+    scripts = []
+    skip_next = False
+    for tok in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if not tok:
+            continue
+        if tok in _REDIRECT_OPS_WITH_TARGET:
+            skip_next = True
+            continue
+        if tok in _SHELL_SEPARATORS:
+            continue
+        if tok.startswith("-") or "=" in tok:
+            continue
+        if tok.endswith(".sh") or tok.endswith(".py"):
+            scripts.append(tok.rsplit("/", 1)[-1])
+    return scripts
+
+
 def _extract_verifiable_evidence(record):
     """Summarize verifiable tool-call evidence from record["events"].
 
     Consumes the already-parsed flat event schema built by
     ``agent_eval.events.parse_stream_events`` (used for both events.json and
     events.jsonl in ``load_case_record``), so this is runner-agnostic and
-    doesn't re-read any file from disk.
+    doesn't re-read any file from disk. Tool names and input keys are matched
+    against common aliases across runners (Claude Code, opencode, codex,
+    responses-api) — a genuinely different runner still gets accurate
+    per-tool counts and best-effort file/script extraction.
     """
     import collections
     tools = collections.Counter()
@@ -83,21 +149,20 @@ def _extract_verifiable_evidence(record):
                     continue
                 tools[name] += 1
                 inp = t.get("input") or {}
-                if name == "Skill":
-                    skills_invoked.append(inp.get("skill", "?"))
-                elif name in ("Bash", "Shell"):
-                    cmd = inp.get("command", "")
-                    for token in cmd.split():
-                        if token.endswith(".sh") or token.endswith(".py"):
-                            scripts_run.add(token.split("/")[-1])
-                elif name == "Read":
-                    fp = inp.get("file_path", "")
+                name_l = name.lower()
+                if name_l in _SKILL_TOOL_NAMES:
+                    skills_invoked.append(_first_key(inp, _SKILL_KEYS) or "?")
+                elif name_l in _EXEC_TOOL_NAMES:
+                    cmd = _first_key(inp, _COMMAND_KEYS)
+                    scripts_run.update(_extract_scripts(cmd))
+                elif name_l in _READ_TOOL_NAMES:
+                    fp = _first_key(inp, _PATH_KEYS)
                     if fp:
-                        files_read.add(fp.split("/")[-1])
-                elif name == "Write":
-                    fp = inp.get("file_path", "")
+                        files_read.add(fp.rsplit("/", 1)[-1])
+                elif name_l in _WRITE_TOOL_NAMES:
+                    fp = _first_key(inp, _PATH_KEYS)
                     if fp:
-                        files_written.add(fp.split("/")[-1])
+                        files_written.add(fp.rsplit("/", 1)[-1])
         elif etype == "result":
             total_turns = event.get("num_turns", 0) or 0
             cost_usd = event.get("cost_usd", 0.0) or 0.0
