@@ -1958,6 +1958,28 @@ def _render_reward_overview(summary, config):
     except ImportError:
         pass
 
+    # Builtin judges cover both LLM-prompt scorers (quality/, safety/) and
+    # deterministic Python callables (efficiency/, process/), all stamped
+    # judge_type="builtin" by score.py. Consult the registry to disambiguate
+    # so LLM builtins group with LLM judges (1-5 default) and Python builtins
+    # land in Other (0-1 default) — otherwise e.g. efficiency=0.85 mis-colors
+    # against the LLM 1-5 fallback.
+    builtin_kinds = {}
+    try:
+        from agent_eval.judges import BuiltinJudgeRegistry
+        _registry = BuiltinJudgeRegistry()
+        _registry.discover()
+        for j in config.get("judges", []):
+            builtin = j.get("builtin")
+            name = j.get("name", "")
+            if builtin and name:
+                try:
+                    builtin_kinds[name] = _registry.get(builtin).kind
+                except Exception:
+                    pass
+    except ImportError:
+        pass
+
     # Classify judges using judge_type stamped in per-case results by score.py,
     # not the config YAML (which has no "type" field).
     gate_judges = []
@@ -1974,8 +1996,14 @@ def _render_reward_overview(summary, config):
             jtype = jv.get("judge_type", "")
             if jtype == "check":
                 gate_judges.append(jn)
-            elif jtype in ("llm", "builtin"):
+            elif jtype == "llm":
                 llm_judges.append(jn)
+            elif jtype == "builtin":
+                # LLM-prompt builtins → LLM group; Python builtins → Other.
+                if builtin_kinds.get(jn) == "llm":
+                    llm_judges.append(jn)
+                else:
+                    other_judges.append(jn)
             else:
                 other_judges.append(jn)
     gate_judges.sort()
