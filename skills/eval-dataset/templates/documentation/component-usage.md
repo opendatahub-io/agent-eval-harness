@@ -18,12 +18,17 @@ Each component-usage test should verify that an agent:
 ```yaml
 # input.yaml
 prompt: "Question about how to use a specific API or component"
+```
+
+```yaml
+# annotations.yaml
+category: component-usage
 expected_api: "APIName or ComponentName"
 expected_example_type: yaml  # yaml | code | json | command
 expected_fields:
   - field1
   - field2
-expected_documentation:
+expected_files:
   - path/to/api-docs.md
 ```
 
@@ -51,6 +56,13 @@ Generate:
 ```yaml
 # input.yaml
 prompt: "How do I use MachineConfig to set kernel parameters on my nodes?"
+```
+
+```yaml
+# annotations.yaml
+category: component-usage
+api_type: kubernetes-crd  # or: library, cli-tool, rest-api
+use_case: configuration  # or: basic-usage, advanced-features, troubleshooting
 expected_api: MachineConfig
 expected_example_type: yaml
 expected_fields:
@@ -59,17 +71,8 @@ expected_fields:
   - metadata
   - spec
   - kernelArguments
-expected_documentation:
+expected_files:
   - ai-docs/domain/machineconfig.md
-```
-
-## Annotations (Optional)
-
-```yaml
-# annotations.yaml
-category: component-usage
-api_type: kubernetes-crd  # or: library, cli-tool, rest-api
-use_case: configuration  # or: basic-usage, advanced-features, troubleshooting
 ```
 
 ## Validation Criteria
@@ -78,4 +81,4 @@ use_case: configuration  # or: basic-usage, advanced-features, troubleshooting
 - `expected_api` must match an entry in domain.apis or domain.components
 - `expected_example_type` must match the API's typical format
 - `expected_fields` should include key required fields (not exhaustive)
-- `expected_documentation` must reference actual API docs
+- `expected_files` must reference actual API docs

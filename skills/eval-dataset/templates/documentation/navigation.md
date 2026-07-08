@@ -17,6 +17,11 @@ Each navigation test should verify that an agent can:
 ```yaml
 # input.yaml
 prompt: "User question requiring documentation lookup"
+```
+
+```yaml
+# annotations.yaml
+category: navigation
 expected_files:
   - path/to/doc1.md
   - path/to/doc2.md
@@ -49,6 +54,13 @@ Generate:
 ```yaml
 # input.yaml
 prompt: "How do I create a new enhancement proposal?"
+```
+
+```yaml
+# annotations.yaml
+category: navigation
+difficulty: easy  # easy | medium | hard
+topic: enhancement-process
 expected_files:
   - CLAUDE.md
   - ai-docs/workflows/enhancement-process.md
@@ -56,15 +68,6 @@ expected_mentions:
   - enhancement
   - proposal
   - template
-```
-
-## Annotations (Optional)
-
-```yaml
-# annotations.yaml
-category: navigation
-difficulty: easy  # easy | medium | hard
-topic: enhancement-process
 ```
 
 ## Validation Criteria

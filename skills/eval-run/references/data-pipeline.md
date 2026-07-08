@@ -186,9 +186,10 @@ Skills that modify input files using the Edit tool (rather than writing to an ou
 
 **Template variables in LLM judges**: All LLM judge prompts (both `prompt`/`prompt_file` and `builtin` LLM judges) are rendered with Jinja2. Available variables:
 - `{{ outputs }}` — renders ALL file entries including `_modified/` as markdown sections
-- `{{ conversation }}` — root-level assistant text from the JSONL event stream (excludes subagent text)
+- `{{ conversation }}` — root-level assistant text from the JSONL event stream (excludes subagent text and tool calls)
 - `{{ inputs }}` — the case's `input.yaml` formatted as `**key**: value` per field (nested dict/list values are `yaml.safe_dump`ed for readability)
 - `{{ evidence }}` — a structured summary of what the agent actually did (turn count, cost, tools invoked, scripts executed, files read/written), derived from the parsed event stream. Extracted lazily and cached, only when the prompt references `{{ evidence }}`. Runner-agnostic — matches tool-name / input-key aliases across Claude Code, opencode, codex, responses-api
+- `{{ tool_trace }}` — chronological trace of tool calls (Read, Bash, Agent, etc.) with key inputs. Use for behavior judges (navigation, tool usage)
 - `{{ annotations }}` — dataset annotations from `annotations.yaml`
 - `{{ arguments }}` — judge arguments from eval.yaml's `arguments:` field (dict)
 
@@ -216,7 +217,7 @@ Use `{{ arguments.key }}` to parameterize prompts without editing the prompt tex
 - Example with arguments: `limit = arguments.get("max_chars", 10000)`
 
 **LLM judge** (`prompt` or `prompt_file` field):
-- All prompts are Jinja2 rendered with variables: `{{ outputs }}`, `{{ conversation }}`, `{{ inputs }}`, `{{ evidence }}`, `{{ annotations }}`, `{{ arguments }}`
+- All prompts are Jinja2 rendered with variables: `{{ outputs }}`, `{{ conversation }}`, `{{ inputs }}`, `{{ evidence }}`, `{{ tool_trace }}`, `{{ annotations }}`, `{{ arguments }}`
 - `context` files are appended to the prompt
 - `arguments:` field makes prompts parameterizable without editing the prompt text
 - Returns `{"score": N, "rationale": "..."}` or `{"passed": bool, "rationale": "..."}`
@@ -270,4 +271,4 @@ root_events = [e for e in outputs.get("events", []) if not e.get("parent_tool_us
 sub_events = [e for e in outputs.get("events", []) if e.get("parent_tool_use_id")]
 ```
 
-**For LLM judges**: use `{{ conversation }}` to render root-level assistant text (excludes subagent text). Use `{{ outputs }}` for file artifacts and modified files. If the skill edits files in-place, the rewritten content appears in `{{ outputs }}` via the `_modified/` collection.
+**For LLM judges**: use `{{ conversation }}` to render root-level assistant text (excludes subagent text and tool calls). Use `{{ tool_trace }}` to show which tools the agent called (Read, Bash, Agent, etc.) — essential for judges evaluating agent behavior like documentation navigation. Use `{{ outputs }}` for file artifacts and modified files. If the skill edits files in-place, the rewritten content appears in `{{ outputs }}` via the `_modified/` collection.

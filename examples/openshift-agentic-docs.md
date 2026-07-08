@@ -309,9 +309,13 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/list_builtins.py
    - name: docs_consultation
      builtin: consulted_docs
      description: Verifies agent read the expected documentation files
-     # No arguments needed - reads from annotations.expected_files in each case
+     arguments:
+       include_grep: true          # count Grep tool calls as file reads
+       preloaded_files:            # files auto-loaded into agent context
+         - CLAUDE.md               # Claude Code auto-loads this on startup
+         - AGENTS.md               # if CLAUDE.md is a symlink to AGENTS.md
    ```
-   This judge extracts Read tool calls from events.json and checks coverage against `annotations.expected_files`.
+   This judge extracts Read and Grep tool calls from events.json and checks coverage against `annotations.expected_files`. The `preloaded_files` argument accounts for files that Claude Code auto-loads into context (like CLAUDE.md) — these count as "already consulted" without needing explicit Read calls.
 
 2. **Semantic check** - Use LLM judges to verify agent *navigated* (vs. answered from cache):
    ```yaml
@@ -319,6 +323,9 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/list_builtins.py
      prompt: |
        Expected files: {{ annotations.expected_files }}
        Did the agent find and read the correct docs, or answer from memory?
+       Tool usage trace:
+       {{ tool_trace }}
+       Agent's response:
        {{ conversation }}
      if: "annotations.get('category') == 'navigation'"
    ```

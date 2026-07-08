@@ -309,7 +309,10 @@ Return the JSON array now:"""
 
 _ANNOTATION_FIELDS = {
     "expected_files", "expected_mentions", "expected_rejection",
-    "expected_guidance", "category", "difficulty", "severity",
+    "expected_guidance", "expected_constraint", "expected_structure",
+    "expected_patterns", "expected_api", "expected_example_type",
+    "expected_fields", "expected_components", "expected_interactions",
+    "correct_approach", "category", "difficulty", "severity",
     "constraint_type", "topic",
 }
 

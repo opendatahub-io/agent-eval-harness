@@ -260,6 +260,16 @@ judges:
     arguments:
       max_cost_usd: 5.0
 
+  # - name: docs_consultation
+  #   builtin: consulted_docs
+  #   description: Verifies agent read expected documentation files
+  #   arguments:
+  #     min_coverage: 0.8             # fraction of expected_files that must be read
+  #     include_grep: true            # count Grep tool calls as file reads (default true)
+  #     preloaded_files:              # files auto-loaded into agent context (e.g. CLAUDE.md)
+  #       - CLAUDE.md                 # Claude Code auto-loads this on startup
+  #       - AGENTS.md                 # if CLAUDE.md is a symlink, list the target too
+
   # - name: safety_check
   #   builtin: no_harmful_content
 
@@ -285,8 +295,15 @@ judges:
   #   {{ inputs }}       — the case's input.yaml as **key**: value per field
   #   {{ evidence }}     — summary of tool calls the agent made (turns, cost,
   #                        tools, scripts, files read/written); lazy + cached
+  #   {{ tool_trace }}   — chronological trace of tool calls (Read, Bash, Agent, etc.)
   #   {{ annotations }}  — dataset annotations
   #   {{ arguments }}    — judge arguments from eval.yaml (dict)
+  #
+  # When to use {{ conversation }} vs {{ tool_trace }}:
+  #   {{ conversation }} — for judges evaluating the QUALITY of the agent's textual response
+  #   {{ tool_trace }}   — for judges evaluating agent BEHAVIOR (navigation, tool usage, exploration)
+  # IMPORTANT: {{ conversation }} excludes tool calls. A judge checking whether the
+  # agent navigated to specific files MUST use {{ tool_trace }}, not {{ conversation }}.
   - name: <descriptive_name>
     description: |
       <what this judge evaluates>
@@ -513,12 +530,17 @@ Example check judge for in-place edits (skills that edit input files via Edit to
 **IMPORTANT**: LLM judges only see what's in their prompt text. Use template variables to include skill output:
 
 - `{{ outputs }}` renders all collected file contents (from `outputs[*].path` directories and `_modified/` in-place edits), formatted as markdown sections with file paths as headers.
-- `{{ conversation }}` renders root-level assistant conversation text extracted from the event stream. It filters out subagent messages, tool calls, and non-text events. For stdout-only skills (no file artifacts), this is the primary way to give judges the skill's output.
+- `{{ conversation }}` renders root-level assistant conversation text extracted from the event stream. It filters out subagent messages, tool calls, and non-text events. For stdout-only skills (no file artifacts), this is the primary way to give judges the skill's output. **Does NOT include tool calls** — use `{{ tool_trace }}` for that.
 - `{{ inputs }}` renders the case's `input.yaml` as `**key**: value` per field (nested dict/list values go through `yaml.safe_dump`). Handy for judges that need the original request alongside the outputs.
 - `{{ evidence }}` renders a compact structured summary of what the agent actually did (turn count, cost, per-tool counts, skills invoked, scripts executed, files read/written). Derived from the parsed event stream and cached, only extracted when the prompt references `{{ evidence }}`. Runner-agnostic — matches tool-name and input-key aliases across Claude Code, opencode, codex, and responses-api.
+- `{{ tool_trace }}` renders a chronological trace of all tool calls (Read, Bash, Agent, Grep, etc.) with their key inputs. Use this for judges evaluating agent **behavior** — e.g., whether the agent navigated to specific files, what commands it ran, or how it explored the codebase. Includes subagent tool calls with `[subagent]` prefix.
 - `{{ annotations }}` renders dataset annotations from the case's `annotations.yaml`.
 
-Any of these can be used in the same prompt. Without any template variables, the LLM receives only the raw prompt text and cannot see any output.
+**CRITICAL**: Use `{{ conversation }}` NOT `{{ outputs.conversation }}` or `{{ outputs.response }}`. These DO NOT EXIST and will result in empty judge inputs. The correct variable is the bare `{{ conversation }}` shown above.
+
+**CRITICAL**: If your judge evaluates agent behavior (navigation, tool usage, exploration strategy), use `{{ tool_trace }}` — `{{ conversation }}` contains only the agent's text output and will make the agent appear to have done nothing.
+
+All template variables can be used in the same prompt. Without any template variables, the LLM receives only the raw prompt text and cannot see any output.
 
 Example with file artifacts:
 ```yaml

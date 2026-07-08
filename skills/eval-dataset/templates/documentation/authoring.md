@@ -18,6 +18,11 @@ Each authoring test should verify that an agent:
 ```yaml
 # input.yaml
 prompt: "Request to create new content (document, config, code, etc.)"
+```
+
+```yaml
+# annotations.yaml
+category: authoring
 expected_structure:
   - section1
   - section2
@@ -25,7 +30,7 @@ expected_structure:
 expected_patterns:
   - pattern1
   - pattern2
-expected_documentation:
+expected_files:
   - path/to/template.md
   - path/to/guidelines.md
 ```
@@ -58,6 +63,13 @@ Generate:
 prompt: |
   I want to propose a new feature for automatic rollback of failed deployments.
   Help me create an enhancement proposal following the project template.
+```
+
+```yaml
+# annotations.yaml
+category: authoring
+content_type: enhancement-proposal  # or: api-definition, config, etc.
+complexity: medium  # simple | medium | complex
 expected_structure:
   - Title
   - Summary
@@ -69,18 +81,9 @@ expected_patterns:
   - "Title format: Enhancement [Number]: [Brief Description]"
   - "## Summary section with 2-3 sentences"
   - "Graduation criteria section"
-expected_documentation:
+expected_files:
   - ai-docs/workflows/enhancement-process.md
   - ai-docs/templates/enhancement-template.md
-```
-
-## Annotations (Optional)
-
-```yaml
-# annotations.yaml
-category: authoring
-content_type: enhancement-proposal  # or: api-definition, config, etc.
-complexity: medium  # simple | medium | complex
 ```
 
 ## Validation Criteria
@@ -88,5 +91,5 @@ complexity: medium  # simple | medium | complex
 - `prompt` must request creation of specific content
 - `expected_structure` should list major sections/components
 - `expected_patterns` should be verifiable (not subjective)
-- `expected_documentation` must reference templates or guidelines
+- `expected_files` must reference templates or guidelines
 - The fictional scenario should be realistic but clearly fictional

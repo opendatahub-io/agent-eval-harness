@@ -98,7 +98,7 @@ def main():
     # For prompt mode (execution.prompt set) with workspace_mode: repo, use in-repo execution
     if config.execution.mode == "case":
         workspace_mode = getattr(config.runner, "workspace_mode", None)
-        is_prompt_mode = bool(config.execution.prompt and config.execution.prompt.strip())
+        is_prompt_mode = config.is_prompt_mode()
         if is_prompt_mode and workspace_mode == "repo":
             _create_in_repo_workspace(workspace, case_dirs, config, args)
         else:
