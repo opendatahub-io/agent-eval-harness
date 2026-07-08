@@ -92,20 +92,28 @@ class TestArchiveExperiment:
         assert result_path.parent.name == "exp-abc"
 
     def test_fallback_on_invalid_repo(self, tmp_path):
-        archiver = ResultsArchiver(repo_path=tmp_path / "nonexistent")
+        fallback_root = tmp_path / "fallback"
+        archiver = ResultsArchiver(
+            repo_path=tmp_path / "nonexistent",
+            fallback_dir=fallback_root,
+        )
         exp_data = {"experiment_id": "exp-fallback"}
         result_path = archiver.archive_experiment(
             "exp-fallback", exp_data, fallback=True
         )
 
         assert result_path.exists()
-        assert "exp-fallback" in str(result_path)
+        assert result_path == fallback_root.resolve() / "exp-fallback" / "results.json"
 
     def test_fallback_directory_location(self, tmp_path):
-        archiver = ResultsArchiver(repo_path=tmp_path / "nonexistent")
+        fallback_root = tmp_path / "fallback"
+        archiver = ResultsArchiver(
+            repo_path=tmp_path / "nonexistent",
+            fallback_dir=fallback_root,
+        )
         exp_data = {"experiment_id": "exp-loc"}
         result_path = archiver.archive_experiment("exp-loc", exp_data, fallback=True)
-        assert "/tmp/agent-eval-unarchived/" in str(result_path) or "agent-eval-unarchived" in str(result_path)
+        assert result_path.parent == fallback_root.resolve() / "exp-loc"
 
     def test_no_fallback_raises(self, tmp_path):
         archiver = ResultsArchiver(repo_path=tmp_path / "nonexistent")

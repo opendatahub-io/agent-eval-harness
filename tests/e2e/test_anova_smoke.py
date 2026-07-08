@@ -9,6 +9,8 @@ import pandas as pd
 import pytest
 import yaml
 
+pytestmark = pytest.mark.e2e
+
 # Add scripts to path
 _scripts_dir = str(Path(__file__).parent.parent.parent / "skills" / "eval-anova" / "scripts")
 if _scripts_dir not in sys.path:

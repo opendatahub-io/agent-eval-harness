@@ -116,21 +116,29 @@ def _build_design(df: pd.DataFrame, factors: list[str]) -> dict[str, Any]:
 
 
 def _build_per_case(df: pd.DataFrame, factors: list[str]) -> dict[str, Any]:
-    """Per-case mean composite, keyed by the primary factor level.
-
-    Uses "model" as the key dimension when present (report.py is
-    model-centric); otherwise falls back to the first factor, then
-    condition_id. Multiple replications of a case are averaged.
-    """
-    key = "model" if "model" in df.columns else (factors[0] if factors else None)
-    key_col = key if key in df.columns else "condition_id"
+    key_cols = [factor for factor in factors if factor in df.columns]
+    if not key_cols and "condition_id" in df.columns:
+        key_cols = ["condition_id"]
+    if not key_cols or "case_id" not in df.columns:
+        return {}
 
     per_case: dict[str, dict[str, float]] = {}
-    for (level, case_id), group in df.groupby([key_col, "case_id"]):
-        per_case.setdefault(str(level), {})[str(case_id)] = float(
+    for keys, group in df.groupby([*key_cols, "case_id"], dropna=False):
+        values = keys if isinstance(keys, tuple) else (keys,)
+        factor_values = values[:-1]
+        case_id = values[-1]
+        if len(key_cols) == 1:
+            condition_key = str(factor_values[0])
+        else:
+            condition_key = _condition_key(key_cols, factor_values)
+        per_case.setdefault(condition_key, {})[str(case_id)] = float(
             group["composite"].mean()
         )
     return per_case
+
+
+def _condition_key(factors: list[str], values: tuple[Any, ...]) -> str:
+    return ", ".join(f"{factor}={value}" for factor, value in zip(factors, values))
 
 
 def archive_results(

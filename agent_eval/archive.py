@@ -2,7 +2,7 @@
 
 Preflight validates RHAI_RESULTS_REPO early (Phase 0, not Phase 8).
 Headless mode fails fast if the env var is missing or invalid.
-On archival failure, falls back to /tmp/agent-eval-unarchived/{experiment_id}/.
+On archival failure, falls back to a per-user temp directory.
 """
 
 from __future__ import annotations
@@ -10,12 +10,18 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-FALLBACK_DIR = Path("/tmp/agent-eval-unarchived")
+def _default_fallback_dir() -> Path:
+    user_key = str(os.getuid()) if hasattr(os, "getuid") else os.environ.get("USER", "user")
+    return Path(tempfile.gettempdir()) / f"agent-eval-unarchived-{user_key}"
+
+
+FALLBACK_DIR = _default_fallback_dir()
 
 
 def _safe_child_name(value: str) -> str:
@@ -34,8 +40,16 @@ def _safe_child_name(value: str) -> str:
 class ResultsArchiver:
     """Archives experiment results to a git-backed results repo."""
 
-    def __init__(self, repo_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        repo_path: Path | None = None,
+        *,
+        fallback_dir: Path | None = None,
+    ) -> None:
         self.repo_path = Path(repo_path).resolve() if repo_path else None
+        self.fallback_dir = (
+            Path(fallback_dir).resolve() if fallback_dir else FALLBACK_DIR
+        )
 
     @staticmethod
     def validate_repo(repo_path: Path) -> bool:
@@ -91,7 +105,7 @@ class ResultsArchiver:
                 "and fallback is disabled"
             )
 
-        fallback_dir = FALLBACK_DIR / safe_experiment_id
+        fallback_dir = self.fallback_dir / safe_experiment_id
         fallback_dir.mkdir(parents=True, exist_ok=True)
         result_file = fallback_dir / "results.json"
         result_file.write_text(json.dumps(data, indent=2, default=str))

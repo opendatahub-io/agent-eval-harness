@@ -69,11 +69,58 @@ def eff_bucket(v): return "n/a" if v is None else ("small" if v<0.06 else "mediu
 def order_models(ms): return [m for m in MODEL_ORDER if m in ms] + [m for m in ms if m not in MODEL_ORDER]
 def fnum(x, n=3): return f"{x:.{n}f}" if isinstance(x,(int,float)) else "—"
 def cmodel(c):  # model name from a condition summary: flat, nested, or id
+    if not c:
+        return "?"
     return c.get("model") or c.get("levels",{}).get("model") or c.get("condition_id","?")
 def heat_bg(v):  # green-ish scale for 0..1
     if v is None: return "#1d2026"
     r=int(0x2c+(0x2e-0x2c)*v); g=int(0x31+(0xa0-0x31)*v); b=int(0x3b+(0x43-0x3b)*v)
     return f"#{r:02x}{g:02x}{b:02x}"
+def sig_any(an):
+    sig=an.get("significant")
+    if isinstance(sig,dict):
+        return any(bool(v) for v in sig.values())
+    return bool(sig)
+def pmap(an):
+    vals=an.get("p_values")
+    if isinstance(vals,dict) and vals:
+        return vals
+    factor=an.get("factor") or "effect"
+    return {factor: an.get("p_value")}
+def best_p(an):
+    vals=[v for v in pmap(an).values() if isinstance(v,(int,float))]
+    return min(vals) if vals else None
+def sig_for(an,factor):
+    sig=an.get("significant")
+    return bool(sig.get(factor)) if isinstance(sig,dict) else bool(sig)
+def factor_label(an):
+    factors=an.get("factors")
+    if isinstance(factors,list) and factors:
+        return ", ".join(str(f) for f in factors)
+    return str(an.get("factor","model"))
+def anova_md_lines(an):
+    lines=["","## ANOVA","",f"- Method: {an.get('method','?')}"]
+    if "p_values" in an:
+        lines.append(f"- Factors: {factor_label(an)}")
+        for factor,p in pmap(an).items():
+            result="SIGNIFICANT" if sig_for(an,factor) else "not significant"
+            lines.append(f"- {factor}: p: {fnum(p,4)} — {result}")
+        lines.append(f"- Result: {'SIGNIFICANT' if sig_any(an) else 'not significant'}")
+        return lines
+    p=an.get("p_value");ng2=an.get("details",[{}])[0].get("ng2") if an.get("details") else None
+    lines += [f"- F: {fnum(an.get('f_statistic'))}",f"- p: {fnum(p,4)}",
+              f"- η²: {fnum(ng2)} ({eff_bucket(ng2)})",
+              f"- Result: {'SIGNIFICANT' if sig_any(an) else 'not significant'}"]
+    return lines
+def factor_p_table(an):
+    if "p_values" not in an:
+        return ""
+    rows="".join(
+        f"<tr><td>{html.escape(str(factor))}</td><td class=num>{fnum(p,4)}</td>"
+        f"<td>{'SIGNIFICANT' if sig_for(an,factor) else 'not significant'}</td></tr>"
+        for factor,p in pmap(an).items()
+    )
+    return f"<table style='margin-top:14px'><thead><tr><th>Factor</th><th class=num>p</th><th>Result</th></tr></thead><tbody>{rows}</tbody></table>"
 
 # ---------- markdown per run ----------
 def render_md(rid,d):
@@ -83,10 +130,7 @@ def render_md(rid,d):
        "| Rank | Model | Mean | Std | n |","|---|---|---|---|---|"]
     for i,c in enumerate(sorted(conds,key=lambda x:-x.get("mean",0)),1):
         L.append(f"| {i} | {SHORT.get(cmodel(c),cmodel(c))} | {fnum(c.get('mean'))} | {fnum(c.get('std'))} | {c.get('n','?')} |")
-    p=an.get("p_value");ng2=an.get("details",[{}])[0].get("ng2") if an.get("details") else None
-    L+=["","## ANOVA","",f"- Method: {an.get('method','?')}",f"- F: {fnum(an.get('f_statistic'))}",
-        f"- p: {fnum(p,4)}",f"- η²: {fnum(ng2)} ({eff_bucket(ng2)})",
-        f"- Result: {'SIGNIFICANT' if an.get('significant') else 'not significant'}"]
+    L+=anova_md_lines(an)
     if per and cases:
         ms=order_models(list(per.keys()))
         L+=["","## Per-case scores","","| Case | "+" | ".join(SHORT.get(m,m) for m in ms)+" |","|---"*(len(ms)+1)+"|"]
@@ -97,13 +141,13 @@ def render_md(rid,d):
 def render_html(rid,d):
     des,conds,an,per=(d.get("design",{}),d.get("condition_summaries",[]),d.get("anova",{}),d.get("per_case",{}))
     cases=sorted({c for m in per.values() for c in m}) if per else []
-    p,sig,F=an.get("p_value"),an.get("significant"),an.get("f_statistic")
+    p,sig,F=best_p(an),sig_any(an),an.get("f_statistic")
     ng2=an.get("details",[{}])[0].get("ng2") if an.get("details") else None
     computed=isinstance(p,(int,float))
     badge=(f"<span class='badge sig'>SIGNIFICANT &nbsp;p={fnum(p,3)}</span>" if sig
            else f"<span class='badge nsig'>not significant"+(f" &nbsp;p={fnum(p,3)}" if computed else " · no variance")+"</span>")
     levels=", ".join(SHORT.get(x,x) for fv in des.get("factors",{}).values() for x in fv)
-    meta=("<dl class=meta>"+f"<dt>Factor</dt><dd>{an.get('factor','model')}</dd>"
+    meta=("<dl class=meta>"+f"<dt>Factor</dt><dd>{html.escape(factor_label(an))}</dd>"
           f"<dt>Levels</dt><dd>{html.escape(levels)}</dd>"
           f"<dt>Cases</dt><dd>{des.get('n_cases',len(cases))} — {', '.join(cases) or '—'}</dd>"
           f"<dt>Replications</dt><dd>{des.get('replications','?')}</dd>"
@@ -116,9 +160,11 @@ def render_html(rid,d):
                f"<td class=num>{fnum(m)}</td><td class=num>{fnum(c.get('std'))}</td><td class=num>{c.get('n','?')}</td>"
                f"<td style='width:160px'><div class=bar><i style='width:{m*100:.0f}%'></i></div></td></tr>")
     means=f"<table><thead><tr><th>#</th><th>Model</th><th class=num>Mean</th><th class=num>Std</th><th class=num>n</th><th></th></tr></thead><tbody>{rows}</tbody></table>"
+    effect_label="factors" if "p_values" in an else "η² (effect)"
+    effect_value=str(len(pmap(an))) if "p_values" in an else f"{fnum(ng2)}"+(f" · {eff_bucket(ng2)}" if ng2 is not None else "")
     tiles="".join(f"<div class=tile><div class=k>{k}</div><div class=v>{v}</div></div>" for k,v in
         [("F-statistic",fnum(F)),("p-value",fnum(p,4)),
-         ("η² (effect)",f"{fnum(ng2)}"+(f" · {eff_bucket(ng2)}" if ng2 is not None else "")),("alpha",str(an.get("alpha",0.05)))])
+         (effect_label,effect_value),("alpha",str(an.get("alpha",0.05)))])
     if sig:
         top=max(conds,key=lambda x:x.get("mean",0))
         call=f"<div class='callout sig'>Statistically detectable effect. Best: <b>{SHORT.get(cmodel(top),cmodel(top))}</b> (mean {fnum(top['mean'])}).</div>"
@@ -126,7 +172,7 @@ def render_html(rid,d):
         call="<div class=callout>Not significant at n=3, 1 replication — small n / high variance can mask real effects.</div>"
     else:
         call="<div class=callout>ANOVA not computable: zero variance (every condition scored identically).</div>"
-    anova=f"<div class=tiles>{tiles}</div>{call}<div class=sub style='margin-top:12px'>{html.escape(an.get('method','—'))}</div>"
+    anova=f"<div class=tiles>{tiles}</div>{factor_p_table(an)}{call}<div class=sub style='margin-top:12px'>{html.escape(an.get('method','—'))}</div>"
     matrix=""
     if per and cases:
         ms=order_models(list(per.keys()))
@@ -227,7 +273,7 @@ def main():
         best=max(conds,key=lambda x:x.get("mean",0)) if conds else None
         run_items.append({"run":rid,"cases":d.get("design",{}).get("n_cases","—"),
             "best":f"{SHORT.get(cmodel(best),cmodel(best))} ({fnum(best['mean'],2)})" if best else "—",
-            "F":fnum(an.get("f_statistic"),2),"p":fnum(an.get("p_value"),3),"sig":bool(an.get("significant"))})
+            "F":fnum(an.get("f_statistic"),2),"p":fnum(best_p(an),3),"sig":sig_any(an)})
         for model,cs in per.items():
             sm=SHORT.get(model,model); pooled.setdefault(sm,[]); by_task.setdefault(sm,{})
             for case,score in cs.items():

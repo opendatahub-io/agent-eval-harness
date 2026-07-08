@@ -61,6 +61,37 @@ class TestAnalyzeReportSchema:
         assert per["claude-opus-4-6"]["fizzbuzz"] == 1.0
         assert per["claude-haiku-4-5"]["binary-search"] == 0.5
 
+    def test_multi_factor_per_case_keeps_full_condition(self, monkeypatch):
+        from agent_eval.stats import anova as anova_mod
+
+        def mixed_effects_stub(df, factors, alpha=0.05):
+            return {
+                "p_values": {"model": 0.01, "effort": 0.2},
+                "significant": {"model": True, "effort": False},
+                "method": "stub",
+                "alpha": alpha,
+                "factors": factors,
+            }
+
+        monkeypatch.setattr(anova_mod, "mixed_effects_anova", mixed_effects_stub)
+
+        results = []
+        for model in ["claude-opus-4-6", "claude-haiku-4-5"]:
+            for effort, score in [("low", 0.25), ("high", 0.75)]:
+                cond = Condition(
+                    condition_id=f"{model}-{effort}",
+                    levels={"model": model, "effort": effort},
+                )
+                results.append(RunResult(condition=cond, case_id="case-a", replication=0,
+                                         judge_results={"score": score},
+                                         composite=score, metadata={}))
+
+        a = analyze_experiment(results, factors=["model", "effort"])
+        per = a["per_case"]
+
+        assert per["model=claude-opus-4-6, effort=low"]["case-a"] == 0.25
+        assert per["model=claude-opus-4-6, effort=high"]["case-a"] == 0.75
+
 
 class TestApplyCondition:
     """apply_condition maps factor levels to runner/skill kwargs."""
