@@ -204,6 +204,7 @@ def _run_with_client(client, config, config_path, ns, provider_id,
             config=raw_cfg, summary=summary, run_result=run_meta,
             run_dir=output_dir, review=None, baseline_dir=None,
             baseline_summary=None, baseline_result=None,
+            reward_cfg=report.load_reward_cfg(config_path),
         )
         (output_dir / "report.html").write_text(html)
         print(f"report: {output_dir}/report.html")

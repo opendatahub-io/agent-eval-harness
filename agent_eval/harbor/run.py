@@ -191,6 +191,7 @@ def _write_report(config_path: Path, output_dir: Path, summary: dict,
             config=raw_cfg, summary=summary, run_result=run_meta,
             run_dir=output_dir, review=None, baseline_dir=None,
             baseline_summary=None, baseline_result=None,
+            reward_cfg=report.load_reward_cfg(config_path),
         )
         (output_dir / "report.html").write_text(html)
         print(f"report: {output_dir}/report.html")
