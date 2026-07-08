@@ -13,6 +13,9 @@ venv/
 eval/runs/
 tmp/
 
+# Eval-replay working state
+.eval-replay/
+
 # MLflow
 mlflow.db
 mlruns/
