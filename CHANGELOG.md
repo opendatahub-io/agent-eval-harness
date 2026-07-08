@@ -1,3 +1,22 @@
+# [1.21.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.20.0...v1.21.0) (2026-07-08)
+
+
+### Bug Fixes
+
+* address [@astefanutti](https://github.com/astefanutti) review findings on PR [#146](https://github.com/opendatahub-io/agent-eval-harness/issues/146) ([2ba452e](https://github.com/opendatahub-io/agent-eval-harness/commit/2ba452e9b85db4cf8af55c9d48856eca316dc45d))
+* address CodeRabbit review findings on PR [#146](https://github.com/opendatahub-io/agent-eval-harness/issues/146) ([36c038c](https://github.com/opendatahub-io/agent-eval-harness/commit/36c038c84652af76306517c989f1630bef9cd39d))
+* address second review cycle ([a5dc960](https://github.com/opendatahub-io/agent-eval-harness/commit/a5dc9606fa1e0b0370e05a67851a5565d0ea1283))
+* **report:** classify builtin judges by kind, not by category ([8206c22](https://github.com/opendatahub-io/agent-eval-harness/commit/8206c2273f1d167c6a63667affc2059498b8bc2b))
+* **report:** thread reward_cfg so the report matches the trained reward ([0ae3691](https://github.com/opendatahub-io/agent-eval-harness/commit/0ae36915a70d1e2dd77cede4d3b775a8d595b2c9))
+* **score:** normalize raw .jsonl events into the flat schema consumers expect ([4a33038](https://github.com/opendatahub-io/agent-eval-harness/commit/4a33038ef72fb90138319fc4c5f144cfb14cf549))
+* **score:** sharpen evidence extraction across runners and shell args ([c1f948c](https://github.com/opendatahub-io/agent-eval-harness/commit/c1f948cf3131d92f09d1a7ffbfb312a7317f35e6))
+
+
+### Features
+
+* **config:** add per-judge score_range, close report/schema drift ([0a2c3a1](https://github.com/opendatahub-io/agent-eval-harness/commit/0a2c3a1c6daab822226eb28aa250f7e8bb58aa4a))
+* **report:** add per-case reward overview table and Harbor scoring improvements ([725842c](https://github.com/opendatahub-io/agent-eval-harness/commit/725842cae6568cf6bc9ee66fdbc269bc629e398c))
+
 # [1.20.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.19.0...v1.20.0) (2026-06-30)
 
 
