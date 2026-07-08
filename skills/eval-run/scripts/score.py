@@ -339,8 +339,10 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
     else:
         record["events"] = []
 
-    # --- Input data (from input.yaml in case directory or dataset) ---
-    record["input"] = ""
+    # --- Case inputs (from input.yaml in case directory or dataset) ---
+    # Exposed as {{ inputs }} in LLM judge prompts (plural for symmetry with
+    # {{ outputs }} and the eval.yaml `inputs.tools` section).
+    record["inputs"] = ""
     input_yaml = case_dir / "input.yaml"
     if not input_yaml.exists() and config.dataset.path:
         dataset_root = config.resolve_path(config.dataset.path).resolve()
@@ -354,9 +356,9 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
                     if isinstance(val, (dict, list)):
                         val = yaml.safe_dump(val, default_flow_style=False).rstrip()
                     parts.append(f"**{key}**: {val}")
-                record["input"] = "\n\n".join(parts)
+                record["inputs"] = "\n\n".join(parts)
             else:
-                record["input"] = str(raw)
+                record["inputs"] = str(raw)
         except (yaml.YAMLError, OSError):
             pass
 
@@ -547,8 +549,8 @@ def _render_jinja2_template(template_text, arguments, outputs):
         from agent_eval.events import extract_conversation_text
         conversation = extract_conversation_text(out["events"])
 
-    # Pre-render input data for {{ input }}
-    input_text = out.get("input", "")
+    # Pre-render case inputs for {{ inputs }}
+    inputs_text = out.get("inputs", "")
 
     template = env.from_string(template_text)
 
@@ -564,7 +566,7 @@ def _render_jinja2_template(template_text, arguments, outputs):
         outputs=out,
         annotations=ann_text,
         conversation=conversation,
-        input=input_text,
+        inputs=inputs_text,
         evidence=evidence_text,
     )
 

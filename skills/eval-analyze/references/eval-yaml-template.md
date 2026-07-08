@@ -196,7 +196,7 @@ judges:
   # All LLM prompts are rendered with Jinja2. Available template variables:
   #   {{ outputs }}      — file artifacts and modified files as markdown
   #   {{ conversation }} — root-level assistant text (excludes subagent text)
-  #   {{ input }}        — the case's input.yaml as **key**: value per field
+  #   {{ inputs }}       — the case's input.yaml as **key**: value per field
   #   {{ evidence }}     — summary of tool calls the agent made (turns, cost,
   #                        tools, scripts, files read/written); lazy + cached
   #   {{ annotations }}  — dataset annotations
@@ -340,7 +340,6 @@ Keep check scripts short (under 15 lines). They receive an `outputs` dict — **
 
 Key fields in `outputs`:
 - `outputs["conversation"]` — pre-extracted root-level assistant text (string). Use this for check judges that need to search the skill's conversation output. Equivalent to `{{ conversation }}` for LLM judges.
-- `outputs["input"]` — the case's `input.yaml` formatted as `**key**: value` per field (string). Equivalent to `{{ input }}` for LLM judges. Empty string if no `input.yaml` was found.
 - `outputs["files"]` — dict of `{relative_path: file_content}`, e.g. `{"artifacts/rfe-tasks/RFE-001.md": "# Summary\n..."}`
 - `outputs["modified_files"]` — dict of `{filename: content}` for files modified in-place during execution (e.g., `{"source.md": "edited content..."}`)
 - `outputs["events"]` — structured event list (for advanced judges that need tool calls, timestamps, or subagent separation)
@@ -424,7 +423,7 @@ Example check judge for in-place edits (skills that edit input files via Edit to
 
 - `{{ outputs }}` renders all collected file contents (from `outputs[*].path` directories and `_modified/` in-place edits), formatted as markdown sections with file paths as headers.
 - `{{ conversation }}` renders root-level assistant conversation text extracted from the event stream. It filters out subagent messages, tool calls, and non-text events. For stdout-only skills (no file artifacts), this is the primary way to give judges the skill's output.
-- `{{ input }}` renders the case's `input.yaml` as `**key**: value` per field (nested dict/list values go through `yaml.safe_dump`). Handy for judges that need the original request alongside the outputs.
+- `{{ inputs }}` renders the case's `input.yaml` as `**key**: value` per field (nested dict/list values go through `yaml.safe_dump`). Handy for judges that need the original request alongside the outputs.
 - `{{ evidence }}` renders a compact structured summary of what the agent actually did (turn count, cost, per-tool counts, skills invoked, scripts executed, files read/written). Derived from the parsed event stream and cached, only extracted when the prompt references `{{ evidence }}`. Runner-agnostic — matches tool-name and input-key aliases across Claude Code, opencode, codex, and responses-api.
 - `{{ annotations }}` renders dataset annotations from the case's `annotations.yaml`.
 
