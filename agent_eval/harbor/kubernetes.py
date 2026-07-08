@@ -388,6 +388,12 @@ class KubernetesEnvironment(BaseEnvironment):
     # unsafe; long connections are protected by the keepalive instead.
     _EXEC_ESTABLISH_RETRIES = 2      # total attempts = retries + 1
     _EXEC_RETRY_BACKOFF_SEC = 0.5    # 0.5s, 1.0s, ...
+    # Max time to *establish* the connection before treating it as a hung
+    # connection (retryable). Establishment is normally <1s; a longer wait means
+    # HAProxy isn't responding. Kept well under typical caller (verifier)
+    # timeouts so the retry actually runs before the caller gives up — otherwise
+    # a hang blocks until the long hard limit and the caller cancels first.
+    _EXEC_ESTABLISH_TIMEOUT_SEC = 30
 
     def _ws_exec_once(
         self, command: str, timeout_sec: int | None
@@ -473,16 +479,35 @@ class KubernetesEnvironment(BaseEnvironment):
         # inside _run fires before the hard limit. When timeout_sec is None
         # there is no soft deadline and the hard limit alone applies (1 h cap).
         hard_limit = (timeout_sec or 3600) + 30
+        establish_timeout = min(self._EXEC_ESTABLISH_TIMEOUT_SEC, hard_limit)
         t = threading.Thread(target=_run, daemon=True)
         t.start()
-        t.join(timeout=hard_limit)
+
+        # Phase 1 — establishment. join() returns as soon as the command
+        # finishes (so short commands add no latency); if it's still running and
+        # the connection never came up, the connection is hung. Report it as a
+        # fast, retryable establishment failure rather than blocking until the
+        # long hard limit — by which point the caller's (verifier) timeout would
+        # have cancelled us and the retry would never run.
+        t.join(timeout=establish_timeout)
+        if t.is_alive() and not established:
+            stop_ping.set()
+            return ExecResult(
+                stdout="",
+                stderr=f"[establishment timeout after {establish_timeout}s — "
+                       f"connection never established]",
+                return_code=124), False, None
+
+        # Phase 2 — established (or finished); wait for completion up to the
+        # remaining hard limit.
+        if t.is_alive():
+            t.join(timeout=max(hard_limit - establish_timeout, 0))
         if t.is_alive():
             stop_ping.set()
-            # The worker is still alive (likely wedged in k8s_stream). It may yet
-            # establish the connection and run the command after we return, so we
-            # must NOT report "never established" — that would let the caller
-            # retry and double-execute a non-idempotent command. Force
-            # established=True so this attempt is treated as non-retryable.
+            # The worker is still alive (likely wedged after establishing). It
+            # may yet finish the command, so we must NOT report "never
+            # established" — that would let the caller retry and double-execute a
+            # non-idempotent command. Force established=True (non-retryable).
             return ExecResult(
                 stdout="",
                 stderr=f"[ws_exec hard timeout after {hard_limit}s — HAProxy connection dead]",
@@ -496,6 +521,43 @@ class KubernetesEnvironment(BaseEnvironment):
             stdout="", stderr="[no result from exec thread]", return_code=1)
         return result, is_established, None
 
+    def _log_exec(self, command: str, result: ExecResult, established: bool,
+                  exc: BaseException | None, duration: float, attempts: int) -> None:
+        """Record the outcome of an exec so failures are diagnosable.
+
+        Harbor calls ``exec`` for everything (agent, verifier, file transfer) and
+        only surfaces a generic "step failed" on error, so without this the
+        return code / stderr / establishment state of a failed exec is lost.
+        Successful execs log at debug; failures log at warning with the fields
+        that explain *why* (rc, established vs post-establishment drop, duration,
+        retry count). ``cmd`` is the first line truncated so a large upload chunk
+        doesn't flood the log; ``detail`` is escaped (untrusted container output,
+        CWE-117) and bounded (CWE-532).
+        """
+        rc = getattr(result, "return_code", None)
+        cmd = (command.strip().splitlines() or [""])[0][:160]
+        if exc is None and rc in (None, 0):
+            # Successful execs are quiet by default. AGENT_EVAL_EXEC_TRACE=1 logs
+            # every exec (at warning, so it is captured regardless of log level)
+            # to reconstruct the full per-step exec sequence when diagnosing why
+            # a verifier produced no reward.
+            if os.environ.get("AGENT_EVAL_EXEC_TRACE") == "1":
+                out = len(getattr(result, "stdout", "") or "")
+                err = len(getattr(result, "stderr", "") or "")
+                self.logger.warning(
+                    "exec trace: rc=0 dur=%.2fs attempts=%d out=%dB err=%dB cmd=%r",
+                    duration, attempts, out, err, cmd)
+            else:
+                self.logger.debug("exec ok: rc=0 dur=%.2fs attempts=%d cmd=%r",
+                                  duration, attempts, cmd)
+            return
+        detail = (f"{type(exc).__name__}: {exc}" if exc is not None
+                  else (result.stderr or ""))
+        detail = detail.encode("unicode_escape").decode("ascii")[:300]
+        self.logger.warning(
+            "exec FAILED: rc=%s established=%s dur=%.2fs attempts=%d cmd=%r detail=%r",
+            rc, established, duration, attempts, cmd, detail)
+
     def _ws_exec(self, command: str, timeout_sec: int | None) -> ExecResult:
         """WebSocket exec, retrying only pre-execution (establishment) failures.
 
@@ -506,9 +568,12 @@ class KubernetesEnvironment(BaseEnvironment):
         returned/raised as-is so a possibly-executed command is never re-run.
         """
         attempts = self._EXEC_ESTABLISH_RETRIES + 1
+        start = time.monotonic()
         for attempt in range(1, attempts + 1):
             result, established, exc = self._ws_exec_once(command, timeout_sec)
             if established:
+                self._log_exec(command, result, established, exc,
+                               time.monotonic() - start, attempt)
                 if exc is not None:
                     raise exc  # post-establishment failure — preserve old contract
                 return result
@@ -521,6 +586,8 @@ class KubernetesEnvironment(BaseEnvironment):
                 time.sleep(backoff)
                 continue
             # Exhausted retries with no establishment.
+            self._log_exec(command, result, established, exc,
+                           time.monotonic() - start, attempt)
             if exc is not None:
                 raise exc
             return result
@@ -609,27 +676,56 @@ class KubernetesEnvironment(BaseEnvironment):
         qtmp = shlex.quote(tmp)
         await self._checked_exec(f"mkdir -p {tgt}", f"upload_dir mkdir -> {target_dir}")
         await self._write_b64_chunked(b64, tmp, f"upload_dir -> {target_dir}")
-        await self._checked_exec(
-            f"base64 -d {qtmp} | tar xzmf - --no-same-owner --no-same-permissions "
-            f"-C {tgt} 2>/dev/null; rm -f {qtmp}; true",
-            f"upload_dir extract -> {target_dir}")
+        # `set -o pipefail` + no trailing `; true` so a failed decode/extract
+        # surfaces (it used to be masked, silently producing a partial upload —
+        # e.g. an incomplete tests dir whose verifier then writes no reward).
+        # Best-effort: log and continue rather than abort the whole step.
+        extract = (f"set -o pipefail; base64 -d {qtmp} | "
+                   f"tar xzmf - --no-same-owner --no-same-permissions -C {tgt}")
+        try:
+            await self._checked_exec(extract, f"upload_dir extract -> {target_dir}")
+        except RuntimeError as e:
+            self.logger.warning("upload_dir extract failed (continuing): %s", self._esc(str(e), 300))
+        finally:
+            await self.exec(f"rm -f {qtmp}")
+
+    @staticmethod
+    def _esc(text: str | None, limit: int = 200) -> str:
+        return (text or "").encode("unicode_escape").decode("ascii")[:limit]
 
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
         res = await self.exec(f"base64 -w0 {shlex.quote(source_path)}")
         if res.return_code != 0:
+            self.logger.warning("download_file %s: rc=%s stderr=%r",
+                                source_path, res.return_code, self._esc(res.stderr))
             raise RuntimeError(f"download_file {source_path}: {res.stderr}")
         Path(target_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(target_path).write_bytes(base64.b64decode(res.stdout))
+        try:
+            Path(target_path).write_bytes(base64.b64decode(res.stdout))
+        except Exception as e:
+            self.logger.warning("download_file %s: decode failed (stdout=%dB): %s",
+                                source_path, len(res.stdout or ""), e)
+            raise
 
     async def download_dir(self, source_dir: str, target_dir: Path | str) -> None:
+        # `set -o pipefail` so a failing `tar` surfaces as a non-zero rc — without
+        # it the pipe's rc is base64's (0), masking a truncated/empty download and
+        # silently producing an empty target dir.
         res = await self.exec(
-            f"tar cf - -C {shlex.quote(source_dir)} . | base64 -w0")
+            f"set -o pipefail; tar cf - -C {shlex.quote(source_dir)} . | base64 -w0")
         if res.return_code != 0:
+            self.logger.warning("download_dir %s: rc=%s stderr=%r",
+                                source_dir, res.return_code, self._esc(res.stderr))
             raise RuntimeError(f"download_dir {source_dir}: {res.stderr}")
         Path(target_dir).mkdir(parents=True, exist_ok=True)
-        raw = base64.b64decode(res.stdout)
-        with tarfile.open(fileobj=io.BytesIO(raw), mode="r") as tf:
-            tf.extractall(target_dir, filter="data")
+        try:
+            raw = base64.b64decode(res.stdout)
+            with tarfile.open(fileobj=io.BytesIO(raw), mode="r") as tf:
+                tf.extractall(target_dir, filter="data")
+        except Exception as e:
+            self.logger.warning("download_dir %s: decode/extract failed (stdout=%dB): %s",
+                                source_dir, len(res.stdout or ""), e)
+            raise
 
     async def _checked_exec(self, command: str, what: str) -> None:
         res = await self.exec(command, timeout_sec=300)

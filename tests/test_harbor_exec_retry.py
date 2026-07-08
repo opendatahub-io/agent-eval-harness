@@ -11,7 +11,9 @@ own interpreter rather than the eval venv — skip cleanly where it is absent.
 
 import logging
 import sys
+import time
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -32,6 +34,33 @@ def _env():
     env = object.__new__(KubernetesEnvironment)
     env.logger = logging.getLogger("test-exec-retry")
     return env
+
+
+def test_establishment_hang_fails_fast_and_retryable(monkeypatch):
+    # A connection that hangs at establishment must fail fast as a *retryable*
+    # not-established result — not block until the long hard limit (by which
+    # point the caller's verifier timeout would have cancelled it). This is the
+    # real verifier-flake fix.
+    import agent_eval.harbor.kubernetes as K
+
+    env = _env()
+    env._pod = "p"
+    env._namespace = "ns"
+    env._core = MagicMock()
+    env._EXEC_ESTABLISH_TIMEOUT_SEC = 0.2  # tiny cap for the test
+
+    # Simulate a hung establishment: k8s_stream never returns.
+    monkeypatch.setattr(K, "k8s_stream", lambda *a, **k: time.sleep(60))
+
+    start = time.perf_counter()
+    result, established, exc = env._ws_exec_once("./tests/test.sh", None)
+    elapsed = time.perf_counter() - start
+
+    assert established is False          # retryable
+    assert exc is None
+    assert result.return_code == 124
+    assert "establishment timeout" in result.stderr
+    assert elapsed < 5                  # ~0.2s, NOT the 3600s hard limit
 
 
 def test_retries_establishment_failure_then_succeeds(monkeypatch):
@@ -127,3 +156,66 @@ def test_establishment_failure_without_exception_returns_result(monkeypatch):
     res = env._ws_exec("test.sh", None)
     assert res.return_code == 124
     assert len(calls) == env._EXEC_ESTABLISH_RETRIES + 1
+
+
+def test_failed_exec_is_logged_with_diagnostics(monkeypatch, caplog):
+    # A post-establishment failure must be logged (rc, established, cmd, detail)
+    # so the reason is diagnosable rather than vanishing into "step failed".
+    env = _env()
+
+    def fake_once(cmd, timeout):
+        return ExecResult(stdout="", stderr="oom-killed", return_code=137), True, None
+
+    monkeypatch.setattr(env, "_ws_exec_once", fake_once)
+    with caplog.at_level(logging.WARNING, logger="test-exec-retry"):
+        res = env._ws_exec("cd /workspace && ./steps/auto-fix/tests/test.sh", None)
+    assert res.return_code == 137
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("exec FAILED" in m and "rc=137" in m and "established=True" in m
+               and "test.sh" in m for m in msgs), msgs
+
+
+def test_successful_exec_does_not_warn(monkeypatch, caplog):
+    env = _env()
+    monkeypatch.setattr(env, "_ws_exec_once",
+                        lambda c, t: (ExecResult(stdout="ok", stderr="", return_code=0), True, None))
+    with caplog.at_level(logging.WARNING, logger="test-exec-retry"):
+        env._ws_exec("ls", None)
+    assert not any("exec FAILED" in r.getMessage() for r in caplog.records)
+
+
+def test_exec_trace_logs_successful_execs(monkeypatch, caplog):
+    # AGENT_EVAL_EXEC_TRACE=1 logs every (successful) exec so the full per-step
+    # exec sequence can be reconstructed when diagnosing a missing reward.
+    env = _env()
+    monkeypatch.setenv("AGENT_EVAL_EXEC_TRACE", "1")
+    monkeypatch.setattr(env, "_ws_exec_once",
+                        lambda c, t: (ExecResult(stdout="ok", stderr="", return_code=0), True, None))
+    with caplog.at_level(logging.WARNING, logger="test-exec-retry"):
+        env._ws_exec("cd /workspace && ./tests/test.sh", None)
+    assert any("exec trace" in r.getMessage() and "test.sh" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_no_trace_for_success_by_default(monkeypatch, caplog):
+    env = _env()
+    monkeypatch.delenv("AGENT_EVAL_EXEC_TRACE", raising=False)
+    monkeypatch.setattr(env, "_ws_exec_once",
+                        lambda c, t: (ExecResult(stdout="ok", stderr="", return_code=0), True, None))
+    with caplog.at_level(logging.WARNING, logger="test-exec-retry"):
+        env._ws_exec("ls", None)
+    assert not any("exec trace" in r.getMessage() for r in caplog.records)
+
+
+def test_sensitive_exec_stderr_is_sanitized(monkeypatch, caplog):
+    # stderr is untrusted container output: control chars / ANSI must be escaped
+    # and the detail bounded before it reaches the log.
+    env = _env()
+    payload = "secret\x1b[31m\nLEAKED: token=abc\t" + "x" * 500
+    monkeypatch.setattr(env, "_ws_exec_once",
+                        lambda c, t: (ExecResult(stdout="", stderr=payload, return_code=1), True, None))
+    with caplog.at_level(logging.WARNING, logger="test-exec-retry"):
+        env._ws_exec("./test.sh", None)
+    detail = next(r.getMessage() for r in caplog.records if "exec FAILED" in r.getMessage())
+    assert "\x1b" not in detail and "\n" not in detail.split("detail=")[-1]
+    assert "\\x1b" in detail  # escaped form retained

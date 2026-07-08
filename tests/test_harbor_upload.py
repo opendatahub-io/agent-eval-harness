@@ -28,7 +28,7 @@ pytest.importorskip("kubernetes")
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agent_eval.harbor.kubernetes import KubernetesEnvironment
+from agent_eval.harbor.kubernetes import KubernetesEnvironment, ExecResult
 
 _MAX_ARG_STRLEN = 131072  # Linux per-argument cap
 
@@ -84,17 +84,25 @@ def test_upload_dir_gzips_and_chunks(tmp_path):
     async def fake_checked(cmd, what):
         cmds.append(cmd)
 
+    async def fake_exec(cmd, *a, **k):
+        cmds.append(cmd)
+        return ExecResult(stdout="", stderr="", return_code=0)
+
     env._write_b64_chunked = fake_chunked
     env._checked_exec = fake_checked
+    env.exec = fake_exec  # temp-file cleanup goes through exec()
     asyncio.run(env.upload_dir(src, "/workspace/logs"))
 
     # The blob handed to the chunked writer must be a gzip tar of the dir.
     raw = base64.b64decode(captured["b64"])
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tf:
         assert sorted(tf.getnames()) == ["b.txt", "claude-code.txt"]
-    # Extraction decodes from the temp file and untars with gzip.
+    # Extraction decodes from the temp file and untars with gzip; the masking
+    # trailing `; true` is gone (failures must surface) and pipefail is set.
     extract = [c for c in cmds if "tar xz" in c]
     assert extract and "base64 -d" in extract[0]
+    assert "; true" not in extract[0] and "set -o pipefail" in extract[0]
+    assert any(c.startswith("rm -f") for c in cmds)  # tmp cleaned up
 
 
 def test_upload_file_chunks_and_decodes(tmp_path):
