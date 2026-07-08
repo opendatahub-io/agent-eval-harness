@@ -285,17 +285,14 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
         try:
             raw_text = events_path.read_text(encoding="utf-8", errors="replace")
             if events_path.suffix == ".jsonl":
-                record["events"] = []
-                for line in raw_text.splitlines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                        if isinstance(obj, dict):
-                            record["events"].append(obj)
-                    except json.JSONDecodeError:
-                        continue
+                # events.jsonl is RAW stream-json (Claude Code session
+                # transcripts in Harbor pods) — normalize it into the FLAT
+                # schema (event["text"], event["tools"], parent_tool_use_id)
+                # that extract_conversation_text and
+                # _extract_tool_calls_from_events consume. Reuse the same
+                # canonical parser collect.py uses to build events.json.
+                from agent_eval.events import parse_stream_events
+                record["events"] = parse_stream_events(raw_text)
             else:
                 record["events"] = json.loads(raw_text)
             if not isinstance(record["events"], list):
