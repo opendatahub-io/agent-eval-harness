@@ -209,6 +209,11 @@ judges:
       {{ outputs }}
       {{ conversation }}
       <scoring criteria — define what each score level means>
+    # score_range: [1, 5]             # optional; default LLM assumption is [1, 5].
+    #                                 # Set explicitly for rubrics on a different
+    #                                 # scale (e.g. [1, 10], [0, 100]). The report
+    #                                 # uses it for per-cell color bands; reward
+    #                                 # composition still uses reward.score_range.
     # arguments:                      # optional, available as {{ arguments }} in prompt
     #   focus: completeness
     # context:                        # optional supplementary files
@@ -506,7 +511,7 @@ Score 4: Good coverage, well-structured, minor issues only
 Score 5: Comprehensive, accurate, well-written
 ```
 
-**Prefer the 1-5 scale for LLM judges.** The report and reward normalization assume LLM judges score on `[1, 5]` by default; a rubric on `[1, 10]` or `[0, 100]` still runs, but the per-cell color bands and the default reward normalization will be off. If you have a strong reason to use a different scale, set `reward.score_range` accordingly (it applies to every numeric judge in the weighted/formula composition). For [0, 1] judges that shouldn't be re-normalized (e.g. a builtin like `efficiency/cost_budget`), list them in `reward.raw`.
+**Declare the scale when it isn't `[1, 5]`.** LLM judges default to `[1, 5]`, other numeric judges to `[0, 1]`. For a rubric on any other range (e.g. `[1, 10]`, `[0, 100]`), set `score_range: [lo, hi]` on the judge itself — the report uses it to color the per-cell bands proportionally instead of against the default. If you're also composing a reward from these judges, set `reward.score_range` to match (that field governs weighted/formula normalization independently). For `[0, 1]` judges that should NOT be re-normalized by the reward composition (e.g. a builtin like `efficiency/cost_budget`), list them in `reward.raw`.
 
 **How many judges**: aim for 2-4 inline checks + 1-2 LLM judges. Start lean — you can always add more in later iterations. Every judge needs a `description` field explaining what it checks.
 
