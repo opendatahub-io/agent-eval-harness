@@ -506,6 +506,8 @@ Score 4: Good coverage, well-structured, minor issues only
 Score 5: Comprehensive, accurate, well-written
 ```
 
+**Prefer the 1-5 scale for LLM judges.** The report and reward normalization assume LLM judges score on `[1, 5]` by default; a rubric on `[1, 10]` or `[0, 100]` still runs, but the per-cell color bands and the default reward normalization will be off. If you have a strong reason to use a different scale, set `reward.score_range` accordingly (it applies to every numeric judge in the weighted/formula composition). For [0, 1] judges that shouldn't be re-normalized (e.g. a builtin like `efficiency/cost_budget`), list them in `reward.raw`.
+
 **How many judges**: aim for 2-4 inline checks + 1-2 LLM judges. Start lean — you can always add more in later iterations. Every judge needs a `description` field explaining what it checks.
 
 **Naming**: use `snake_case` names (e.g., `files_exist`, `output_quality`). These names appear in `thresholds` and in scoring reports — keep them short and descriptive. Make sure threshold keys match judge names exactly.

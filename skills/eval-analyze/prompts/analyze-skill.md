@@ -130,8 +130,55 @@ suggested_judges:
     #   {{ evidence }} — summary of the agent's tool calls (lazy + cached)
     #   {{ annotations }} — dataset annotations
     #   {{ arguments }} — judge arguments from eval.yaml
+    #
+    # Choose variables based on what the rubric actually grades:
+    #   quality of produced files          → {{ outputs }}
+    #   quality of the assistant response  → {{ conversation }}
+    #   output-vs-input alignment          → {{ inputs }} alongside {{ outputs }}
+    #   process/verification — did the agent read X, run Y, write Z, stay
+    #     under budget — grade by facts, not the agent's self-report
+    #                                       → {{ evidence }}
+    # See eval-yaml-template.md for worked examples of each.
     prompt: |
       <what to evaluate and how to score>
+```
+
+## Optional: suggested_reward
+
+If — and only if — the eval has multiple judges AND the user cares about a
+single scalar (Harbor/GRPO training or a comparable Reward column in the
+report), also propose a `suggested_reward:` block. Skip entirely for gate-only
+or single-judge evals — the default resolution works fine.
+
+Pick the mode that matches how a human would grade:
+
+- **One judge dominates** → `mode: judge`, name the judge, set `normalize: true`
+  when it scores on 1-5 (mapped from `score_range` to [0, 1]) or `normalize:
+  false` when it already emits [0, 1] (e.g. a learned reward model or a builtin
+  like `efficiency/cost_budget`).
+- **Fixed weights across a few numeric judges** → `mode: weighted`, provide
+  `weights: {name: weight}` summing to a sensible total (they'll be normalized).
+- **Non-linear composition** (e.g. gate one judge with another, or blend a
+  boolean into a numeric) → `mode: formula`, provide a small Python expression
+  over judge names, e.g. `"passed * quality"` or `"0.6 * quality + 0.4 * cost"`.
+  Allowed calls: `min`, `max`, `abs`, `round`, `sum`, `len`, `mean`.
+
+**Watch the gate.** By default `gate: true` — any boolean judge returning
+`false` zeros the reward, regardless of the formula. If some booleans are
+informational (not gates), set `gate: false` and reference them explicitly in
+the formula (e.g. `"passed_lint * quality"`) to opt them into gating precisely.
+
+```yaml
+suggested_reward:
+  mode: <judge|weighted|formula|none>   # "none" = skip the reward: section
+  reasoning: |
+    <why this composition matches the rubric — one or two sentences>
+  # Fill only the fields for the chosen mode:
+  judge: <name>                # mode=judge
+  normalize: <true|false>      # mode=judge
+  weights: {a: 0.6, b: 0.4}    # mode=weighted
+  formula: <expression>        # mode=formula
+  gate: <true|false>           # optional; explain if overriding the default
 ```
 
 ## Narrative
