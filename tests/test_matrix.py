@@ -61,6 +61,27 @@ class TestFromYaml:
         with pytest.raises(ValueError, match="at least one factor"):
             MatrixBuilder.from_yaml(p, strict=True)
 
+    @pytest.mark.parametrize(
+        "matrix",
+        [
+            [],
+            "not-a-map",
+        ],
+    )
+    def test_matrix_must_be_mapping(self, tmp_path, matrix):
+        p = tmp_path / "eval.yaml"
+        p.write_text(yaml.dump({"matrix": matrix}))
+        with pytest.raises(ValueError, match="matrix must be a mapping"):
+            MatrixBuilder.from_yaml(p)
+
+    @pytest.mark.parametrize("replications", [0, -1, 1.5, "two", True])
+    def test_replications_must_be_positive_integer(self, tmp_path, replications):
+        config = {"matrix": {"factors": {"model": ["a"]}, "replications": replications}}
+        p = tmp_path / "eval.yaml"
+        p.write_text(yaml.dump(config))
+        with pytest.raises(ValueError, match="integer >= 1"):
+            MatrixBuilder.from_yaml(p)
+
 
 class TestExpandFullFactorial:
     """Full factorial expansion of factor levels."""
@@ -109,6 +130,11 @@ class TestGenerateExperimentId:
         exp_id = MatrixBuilder.generate_experiment_id(factors)
         assert "model" in exp_id
         assert "effort" in exp_id
+
+    def test_sanitizes_factor_names_for_experiment_id(self):
+        exp_id = MatrixBuilder.generate_experiment_id({"model/name": ["a"]})
+        assert "model_name" in exp_id
+        assert "/" not in exp_id
 
     def test_deterministic(self):
         factors = {"model": ["a", "b"]}

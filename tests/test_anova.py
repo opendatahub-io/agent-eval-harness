@@ -139,6 +139,39 @@ class TestMixedEffectsAnova:
         result = mixed_effects_anova(df, factors=["model", "effort"])
         assert "mixed" in result["method"].lower()
 
+    def test_factor_p_values_ignore_interactions_and_substrings(self, monkeypatch):
+        class FakeFit:
+            fe_params = pd.Series(
+                [0.0, 0.1, 0.2, 0.3],
+                index=[
+                    "Intercept",
+                    "C(model)[T.b]",
+                    "C(model_size)[T.large]",
+                    "C(model)[T.b]:C(effort)[T.high]",
+                ],
+            )
+            pvalues = pd.Series(
+                [0.9, 0.03, 0.001, 0.002],
+                index=fe_params.index,
+            )
+            aic = 1.0
+            bic = 2.0
+
+        class FakeModel:
+            def fit(self, reml=True):
+                return FakeFit()
+
+        monkeypatch.setattr(
+            "agent_eval.stats.anova.smf.mixedlm",
+            lambda formula, data, groups: FakeModel(),
+        )
+        df = pd.DataFrame({"case_id": ["c1"], "model": ["a"], "composite": [1.0]})
+
+        result = mixed_effects_anova(df, factors=["model", "model_size"])
+
+        assert result["p_values"]["model"] == 0.03
+        assert result["p_values"]["model_size"] == 0.001
+
 
 class TestOneWayAnova:
     """Plain one-way ANOVA — documented as valid only for independent samples."""

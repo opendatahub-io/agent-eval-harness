@@ -8,7 +8,10 @@ must explicitly exclude bool.
 from __future__ import annotations
 
 import statistics
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def composite_score(
@@ -27,19 +30,33 @@ def composite_score(
     numerics: dict[str, float] = {}
 
     for key, value in judge_results.items():
-        if value is None:
-            continue
         config = judge_configs.get(key, {})
         declared_type = config.get("type")
 
-        if declared_type == "boolean" or (declared_type is None and isinstance(value, bool)):
+        if value is None:
+            logger.warning(
+                "Dropped judge result %s=%r declared_type=%r",
+                key,
+                value,
+                declared_type,
+            )
+            continue
+
+        if declared_type == "boolean" and isinstance(value, bool):
             booleans[key] = bool(value)
-        elif declared_type == "numeric" or (
-            declared_type is None
-            and isinstance(value, (int, float))
-            and not isinstance(value, bool)
-        ):
+        elif declared_type == "numeric" and isinstance(value, (int, float)) and not isinstance(value, bool):
             numerics[key] = float(value)
+        elif declared_type is None and isinstance(value, bool):
+            booleans[key] = bool(value)
+        elif declared_type is None and isinstance(value, (int, float)) and not isinstance(value, bool):
+            numerics[key] = float(value)
+        else:
+            logger.warning(
+                "Dropped judge result %s=%r declared_type=%r",
+                key,
+                value,
+                declared_type,
+            )
 
     gates = {
         k: v

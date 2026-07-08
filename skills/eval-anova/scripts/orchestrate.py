@@ -70,7 +70,10 @@ def prepare_knowledge_context(
 
     parts = []
     for f in sorted(context_dir.glob("*.md")):
-        parts.append(f.read_text())
+        try:
+            parts.append(f.read_text())
+        except (UnicodeDecodeError, OSError) as exc:
+            logger.warning("Skipping knowledge context file %s: %s", f, exc)
 
     return "\n\n---\n\n".join(parts) if parts else None
 

@@ -106,7 +106,11 @@ def mixed_effects_anova(
 
     factor_p_values = {}
     for factor in factors:
-        matching = {k: v for k, v in p_values.items() if factor.lower() in k.lower()}
+        factor_token = f"C({factor})"
+        matching = {
+            k: v for k, v in p_values.items()
+            if factor_token in k and ":" not in k
+        }
         if matching:
             factor_p_values[factor] = min(matching.values())
 

@@ -35,9 +35,9 @@ harbor = [
 openai = ["openai>=1.70"]
 anova = [
     "scipy>=1.17",
-    "statsmodels>=0.14",
+    "statsmodels>=0.14.6",
     "pandas>=2.2,<3.0",
-    "pingouin>=0.6",
+    "pingouin>=0.6.1",
 ]
 all = [
     "mlflow[genai]>=3.5",
@@ -48,9 +48,9 @@ all = [
     "kubernetes>=29.0,<37.0; python_version >= '3.12'",
     "openai>=1.70",
     "scipy>=1.17",
-    "statsmodels>=0.14",
+    "statsmodels>=0.14.6",
     "pandas>=2.2,<3.0",
-    "pingouin>=0.6",
+    "pingouin>=0.6.1",
 ]
 test = ["pytest>=8.0"]
 

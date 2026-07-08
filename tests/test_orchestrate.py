@@ -142,6 +142,27 @@ class TestPrepareKnowledgeContext:
         assert "# Intro" in result
         assert "# Rules" in result
 
+    def test_skips_unreadable_markdown_files(self, tmp_path, monkeypatch):
+        ctx_dir = tmp_path / ".knowledge" / "basic"
+        ctx_dir.mkdir(parents=True)
+        good = ctx_dir / "01-intro.md"
+        bad = ctx_dir / "02-bad.md"
+        good.write_text("# Intro")
+        bad.write_text("# Bad")
+
+        original_read_text = Path.read_text
+
+        def read_text(path, *args, **kwargs):
+            if path == bad:
+                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid")
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", read_text)
+
+        result = prepare_knowledge_context(tmp_path, level="basic")
+
+        assert result == "# Intro"
+
 
 class TestRunCell:
     """run_cell executes one condition × case × replication."""

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -44,7 +45,12 @@ class MatrixBuilder:
             return None
 
         matrix = raw["matrix"]
+        if not isinstance(matrix, Mapping):
+            raise ValueError("matrix must be a mapping")
+
         factors = matrix.get("factors", {})
+        if not isinstance(factors, Mapping):
+            raise ValueError("matrix.factors must be a mapping")
 
         if strict and not factors:
             raise ValueError("Matrix must contain at least one factor")
@@ -52,8 +58,8 @@ class MatrixBuilder:
         if not factors:
             return None
 
-        replications = matrix.get("replications", 1)
-        return MatrixConfig(factors=factors, replications=replications)
+        replications = _parse_replications(matrix.get("replications", 1))
+        return MatrixConfig(factors=dict(factors), replications=replications)
 
     @staticmethod
     def expand_full_factorial(factors: dict[str, list[Any]]) -> list[Condition]:
@@ -62,7 +68,7 @@ class MatrixBuilder:
 
         conditions = []
         for combo in itertools.product(*level_lists):
-            levels = dict(zip(factor_names, combo))
+            levels = dict(zip(factor_names, combo, strict=True))
             condition_id = _condition_id(levels)
             conditions.append(Condition(condition_id=condition_id, levels=levels))
 
@@ -72,7 +78,7 @@ class MatrixBuilder:
     def generate_experiment_id(factors: dict[str, list[Any]]) -> str:
         canonical = json.dumps(factors, sort_keys=True, default=str)
         digest = hashlib.sha256(canonical.encode()).hexdigest()[:12]
-        factor_slug = "-".join(sorted(factors.keys()))
+        factor_slug = "-".join(_safe_id_segment(name) for name in sorted(factors.keys()))
         return f"exp-{factor_slug}-{digest}"
 
     @staticmethod
@@ -95,3 +101,15 @@ class MatrixBuilder:
 def _condition_id(levels: dict[str, Any]) -> str:
     canonical = json.dumps(levels, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()[:12]
+
+
+def _parse_replications(value: Any) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError("matrix.replications must be an integer >= 1")
+    return value
+
+
+def _safe_id_segment(value: Any) -> str:
+    segment = "".join(c if c.isalnum() or c in "._-" else "_" for c in str(value))
+    segment = segment.strip("._-")
+    return segment or "factor"

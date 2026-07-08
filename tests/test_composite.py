@@ -145,6 +145,14 @@ class TestWeightedNumericScoring:
         score = composite_score(results, configs)
         assert score >= 0.0
 
+    def test_logs_dropped_untyped_result(self, caplog):
+        results = {"score": "not numeric"}
+        configs = {"score": {"type": "numeric", "weight": 1.0}}
+
+        composite_score(results, configs)
+
+        assert "Dropped judge result" in caplog.text
+
 
 class TestMixedBoolNumeric:
     """Combined boolean and numeric judges."""
