@@ -128,8 +128,8 @@ def _extract_verifiable_evidence(case_dir, record):
                                 if fp:
                                     files_written.add(fp.split("/")[-1])
                     elif d.get("type") == "result":
-                        total_turns = d.get("num_turns", 0)
-                        cost_usd = d.get("total_cost_usd", 0.0)
+                        total_turns = d.get("num_turns", 0) or 0
+                        cost_usd = d.get("total_cost_usd", 0.0) or 0.0
         except OSError:
             pass
 
@@ -274,9 +274,16 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
     events_path = case_dir / "events.json"
     if not events_path.exists():
         events_path = case_dir / "events.jsonl"
+    # Batch layout: events live at the run root, not per-case
+    if not events_path.exists() and run_id and runs_dir:
+        candidate = runs_dir / run_id / "events.json"
+        if not candidate.exists():
+            candidate = runs_dir / run_id / "events.jsonl"
+        if candidate.exists():
+            events_path = candidate
     if events_path.exists():
         try:
-            raw_text = events_path.read_text()
+            raw_text = events_path.read_text(encoding="utf-8", errors="replace")
             if events_path.suffix == ".jsonl":
                 record["events"] = []
                 for line in raw_text.splitlines():
@@ -284,7 +291,9 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
                     if not line:
                         continue
                     try:
-                        record["events"].append(json.loads(line))
+                        obj = json.loads(line)
+                        if isinstance(obj, dict):
+                            record["events"].append(obj)
                     except json.JSONDecodeError:
                         continue
             else:
@@ -308,7 +317,7 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
         input_yaml = dataset_root / case_id / "input.yaml"
     if input_yaml.exists():
         try:
-            raw = yaml.safe_load(input_yaml.read_text()) or {}
+            raw = yaml.safe_load(input_yaml.read_text(encoding="utf-8", errors="replace")) or {}
             if isinstance(raw, dict):
                 parts = []
                 for key, val in raw.items():
@@ -328,13 +337,21 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
     else:
         record["conversation"] = ""
 
-    # Fallback: build conversation from stdout.log if events are empty
-    # (Harbor pods write agent output to stdout.log, not events.json)
-    if not record["conversation"]:
+    # Fallback: build conversation from stdout.log only when no events exist
+    # (Harbor pods write agent output to stdout.log, not events.json).
+    # Gate on events being empty, not the conversation string, to avoid
+    # dumping raw stream-json into the prompt when events parsed but
+    # extract_conversation_text returned "".
+    if not record["events"]:
         stdout_path = case_dir / "stdout.log"
+        if not stdout_path.exists() and run_id and runs_dir:
+            candidate = runs_dir / run_id / "stdout.log"
+            if candidate.exists():
+                stdout_path = candidate
         if stdout_path.exists():
             try:
-                record["conversation"] = stdout_path.read_text()
+                record["conversation"] = stdout_path.read_text(
+                    encoding="utf-8", errors="replace")
             except OSError:
                 pass
 
@@ -509,12 +526,14 @@ def _render_jinja2_template(template_text, arguments, outputs):
 
     template = env.from_string(template_text)
 
-    # Lazy evidence: only extract if template uses {{ evidence }}
+    # Lazy evidence: only extract if template references {{ evidence }}.
+    # Cache in out["evidence"] to avoid re-parsing per judge * sample.
     evidence_text = out.get("evidence", "")
-    if not evidence_text and "evidence" in template_text:
+    if not evidence_text and "{{ evidence" in template_text:
         case_dir = out.get("_case_dir")
         if case_dir:
             evidence_text = _extract_verifiable_evidence(Path(case_dir), out)
+            out["evidence"] = evidence_text
 
     return template.render(
         arguments=arguments or {},
