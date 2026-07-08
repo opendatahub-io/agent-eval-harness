@@ -1,11 +1,3 @@
-## [1.0.2](https://github.com/jeremyeder/agent-eval-harness/compare/v1.0.1...v1.0.2) (2026-07-08)
-
-
-### Bug Fixes
-
-* **eval-anova:** resolve remaining major review findings ([8625f1f](https://github.com/jeremyeder/agent-eval-harness/commit/8625f1f47f4e9c0a878aa0fb02715786c3f76203))
-* **release:** restore 1.20.0 metadata ([5df61b3](https://github.com/jeremyeder/agent-eval-harness/commit/5df61b3b849f1440b656c16ff2c18beb9358c84a))
-
 # [1.20.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.19.0...v1.20.0) (2026-06-30)
 
 
