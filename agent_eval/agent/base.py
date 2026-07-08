@@ -62,6 +62,7 @@ class EvalRunner(ABC):
         system_prompt: Optional[str] = None,
         max_budget_usd: float = 5.0,
         timeout_s: int = 600,
+        extra_env: Optional[dict] = None,
     ) -> RunResult:
         """Invoke a skill in an isolated workspace.
 
@@ -76,6 +77,8 @@ class EvalRunner(ABC):
                 (e.g. --append-system-prompt for Claude Code).
             max_budget_usd: Maximum API spend for this invocation.
             timeout_s: Timeout in seconds.
+            extra_env: Additional env vars to inject (e.g. from hook outputs).
+                Merged after execution.env, so hook env overrides static config.
 
         Returns:
             RunResult with exit code, output, timing, and optional usage stats.

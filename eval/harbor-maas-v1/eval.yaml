@@ -26,7 +26,7 @@ runner:
     --ae CLOUD_ML_REGION=global
     --ae ANTHROPIC_VERTEX_PROJECT_ID=gcp-jboyer-san-gemini
     --ae GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp-sa-key.json
-    --mounts '[{"type":"bind","source":"{gcp_sa_key_path}","target":"/etc/gcp-sa-key.json","read_only":true}]'
+    --mounts '[{"type":"bind","source":"{gcp_adc_path}","target":"/etc/gcp-sa-key.json","read_only":true}]'
     --yes
     --delete
 
@@ -58,19 +58,23 @@ judges:
     check: |
       import json
       files = outputs.get("files", {})
+      errors = []
       for path, content in files.items():
           if path.endswith("result.json") and "harbor_output" in path and isinstance(content, str):
               try:
                   result = json.loads(content)
-                  vr = result.get("verifier_result") or {}
-                  reward = vr.get("reward", 0)
-                  if reward > 0:
-                      return True, f"verifier reward={reward}"
-                  exc = result.get("exception_info") or {}
-                  msg = exc.get("exception_type", "unknown error")
-                  return False, f"reward={reward}, {msg}"
-              except Exception as e:
+              except json.JSONDecodeError as exc:
+                  errors.append(f"{path}: {exc}")
                   continue
+              vr = result.get("verifier_result") or {}
+              reward = vr.get("reward", 0)
+              if reward > 0:
+                  return True, f"verifier reward={reward}"
+              exc = result.get("exception_info") or {}
+              msg = exc.get("exception_type", "unknown error")
+              return False, f"reward={reward}, {msg}"
+      if errors:
+          return False, "Malformed harbor result.json: " + "; ".join(errors)
       return False, "No harbor result.json in outputs"
 
   - name: solution_quality

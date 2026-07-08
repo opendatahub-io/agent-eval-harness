@@ -47,7 +47,8 @@ runner:
   type: claude-code         # Discriminator: claude-code, opencode, etc.
   # settings: {}            # Runner-specific settings overrides
   # plugin_dirs: []         # Plugin dirs the evaluated skill needs
-  # env_strip: [JIRA_TOKEN] # Env vars to remove before launching the runner
+  # env:                     # Extra env vars for the runner ($VAR resolves from caller)
+  #   CUSTOM_AUTH_TOKEN: "$CUSTOM_AUTH_TOKEN"
   # system_prompt: ""       # Appended to harness system prompt
   # effort: high            # Claude Code reasoning effort: low | medium | high | xhigh | max
 
@@ -238,7 +239,49 @@ thresholds:
   <judge_name>:
     min_pass_rate: 1.0     # for boolean judges (check, builtin)
     # min_mean: 3.5        # for numeric judges (llm)
+
+# Reward composition (OPTIONAL) — collapse per-judge results into a single
+# scalar in [0, 1] for RL training (GRPO). Only needed when training; the
+# normal /eval-run report path does not require it.
+#
+# Two mutually exclusive ways to produce the reward:
+#
+# (a) A single judge whose value IS the reward (e.g. a learned reward model
+#     that already emits [0, 1]):
+#   reward:
+#     judge: my_reward_model   # name of a judge defined above
+#     normalize: false         # default: use the value as-is, clamped to [0,1]
+#                              # true: map it from score_range to [0,1] instead
+#     gate: false              # default false in judge mode
+#
+# (b) Compose from multiple judges via formula (shown below):
+reward:
+  # formula selects the mode:
+  #   "weighted"      weighted sum of the judges named in `weights`
+  #   "<expression>"  a Python expression over judge names as variables,
+  #                   e.g. "0.6 * quality + 0.4 * efficiency".
+  #                   Allowed calls: min, max, abs, round, sum, len, mean.
+  #                   Multi-line is allowed; the last line is the result.
+  formula: weighted
+  weights:                 # used only by the "weighted" formula
+    quality: 0.7
+    efficiency: 0.3
+  score_range: [1, 5]      # numeric judge range, normalized to [0, 1]
+  raw: [efficiency]        # judges already in [0, 1] — skip normalization
+  gate: true               # any boolean judge returning false zeros the reward.
+                           # Gates on EVERY boolean judge regardless of the
+                           # formula — for an expression that uses booleans as
+                           # its own gate (e.g. "passed * quality"), set
+                           # gate: false to avoid double-gating.
 ```
+
+Resolution order at scoring time: (1) a `reward:` section if present —
+`judge` mode if `judge` is set, otherwise the `formula`/`weights` composition —
+else (2) the default: boolean judges gate, numeric judges are normalized and
+averaged. `reward.judge` is validated against the defined judges at config load;
+syntax- or AST-invalid formulas are also rejected at config load, while
+evaluation-time errors (e.g. an undefined name in an expression) warn and
+return 0.0.
 
 ## Writing Good Schema Descriptions
 

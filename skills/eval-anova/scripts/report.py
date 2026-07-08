@@ -6,8 +6,9 @@ Usage:
     python3 report.py [RUNS_DIR]   # default: $AGENT_EVAL_RUNS_DIR or eval/runs
 
 Renders per-run report.{md,html} for every anova-* run, plus a pooled
-anova-summary.html (model comparison) in RUNS_DIR. Reads only analysis.json."""
+    anova-summary.html (model comparison) in RUNS_DIR. Reads only analysis.json."""
 import json, glob, os, sys, html, datetime
+from pathlib import Path
 
 BASE = (sys.argv[1] if len(sys.argv) > 1
         else os.environ.get("AGENT_EVAL_RUNS_DIR", "eval/runs"))

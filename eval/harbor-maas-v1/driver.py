@@ -30,7 +30,7 @@ from analyze import analyze_experiment  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 EVAL_YAML = HERE / "eval.yaml"
-BASE_COMMIT = "a24c8c8"
+BASE_COMMIT = os.environ.get("HARBOR_MAAS_BASE_COMMIT", "a24c8c8")
 RUNS_DIR = REPO / "eval" / "runs"
 
 TASKS = ["task-0031", "task-0034", "task-0008", "task-0010"]
@@ -43,7 +43,7 @@ JUDGE_CONFIGS = {
 
 def _normalize(name, value, jtype):
     if value is None:
-        return 0.0 if jtype != "check" else False
+        return None
     if name == "solution_quality" and isinstance(value, (int, float)):
         return (value - 1) / 4.0  # 1..5 -> 0..1
     return value
@@ -116,7 +116,8 @@ def _prepare_workspace(ws: Path, case_id: str, dataset_root: Path):
         "RUN git clone https://github.com/opendatahub-io/models-as-a-service /repo && \\\n"
         f"    cd /repo && git checkout {BASE_COMMIT}\n"
         "COPY oracle.diff /tmp/oracle.diff\n"
-        "RUN cd /repo && git apply --reverse /tmp/oracle.diff && rm /tmp/oracle.diff\n"
+        "RUN cd /repo && git apply --check --reverse /tmp/oracle.diff && \\\n"
+        "    git apply --reverse /tmp/oracle.diff && rm /tmp/oracle.diff\n"
         "WORKDIR /repo\n"
     )
 
@@ -193,10 +194,14 @@ def run_matrix():
     analysis = analyze_experiment(results, factors=["model", "context"])
 
     def ser(o):
-        if isinstance(o, dict): return {k: ser(v) for k, v in o.items()}
-        if isinstance(o, list): return [ser(i) for i in o]
-        if isinstance(o, float) and o != o: return None
-        if hasattr(o, "to_dict"): return o.to_dict()
+        if isinstance(o, dict):
+            return {k: ser(v) for k, v in o.items()}
+        if isinstance(o, list):
+            return [ser(i) for i in o]
+        if isinstance(o, float) and o != o:
+            return None
+        if hasattr(o, "to_dict"):
+            return o.to_dict()
         return o
 
     doc = ser(analysis)

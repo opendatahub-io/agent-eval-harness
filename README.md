@@ -126,7 +126,8 @@ runner:
   # effort: high              # Reasoning effort: low | medium | high | xhigh | max
   # settings: {}              # Arbitrary Claude Code settings merged into workspace
   # plugin_dirs: []           # Directories to load plugins from
-  # env_strip: [JIRA_TOKEN]   # Env vars to strip from subprocess
+  # env:                       # Extra env vars for subprocess ($VAR resolves from caller)
+  #   CUSTOM_AUTH_TOKEN: "$CUSTOM_AUTH_TOKEN"
   # system_prompt: |          # Appended to Claude CLI system prompt
   #   Custom instructions for the skill run.
 
@@ -288,7 +289,7 @@ thresholds:
 - **`context`** — list of file paths loaded and appended to the LLM judge prompt as supplementary material (rubrics, guidelines, examples).
 - **`module`** / **`function`** — external Python code judge for complex validation.
 - **`permissions`** — tool access patterns (`allow`/`deny`) for headless execution. Generic across runners — each runner translates to its platform's mechanism.
-- **`runner`** — `type` discriminator selects the runner implementation; remaining fields (`effort`, `settings`, `plugin_dirs`, `env_strip`, `system_prompt`) are runner-specific and ignored by other runners.
+- **`runner`** — `type` discriminator selects the runner implementation; remaining fields (`effort`, `settings`, `plugin_dirs`, `env`, `system_prompt`) are runner-specific and ignored by other runners.
 - **`models`** — `skill`/`subagent`/`judge`/`hook` defaults, overridable per-judge or via CLI flags. `hook` is the model used for LLM-based AskUserQuestion answering.
 - **`mlflow`** — `experiment` (and optional `tracking_uri`/`tags`) for result logging.
 - **`thresholds`** — per-judge regression detection. Valid keys: `min_mean` (minimum average score), `min_pass_rate` (minimum fraction of cases passing, 0.0–1.0), `min_win_rate` (minimum pairwise win rate).

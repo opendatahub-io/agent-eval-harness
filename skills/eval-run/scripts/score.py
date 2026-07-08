@@ -28,7 +28,7 @@ from typing import Optional
 
 import yaml
 
-from agent_eval.config import EvalConfig, _is_valid_eval_name
+from agent_eval.config import EvalConfig, _is_valid_eval_name, _validate_path_segment
 
 
 def _get_runs_dir(eval_name: str = ""):
@@ -70,8 +70,8 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
     # --- Annotations (from dataset case directory) ---
     record["annotations"] = {}
     case_id = case_dir.name
-    if config.dataset_path:
-        dataset_root = config.resolve_path(config.dataset_path).resolve()
+    if config.dataset.path:
+        dataset_root = config.resolve_path(config.dataset.path).resolve()
         annotations_path = (dataset_root / case_id / "annotations.yaml").resolve()
         if (annotations_path.is_relative_to(dataset_root)
                 and annotations_path.is_file()
@@ -245,6 +245,15 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
                 record["tool_calls"] = _extract_tool_calls(
                     stdout_text, tool_outputs)
 
+    # --- Hook outputs (from before_each hooks via .hook-outputs.yaml) ---
+    hook_outputs_path = case_dir / "hook_outputs.yaml"
+    if hook_outputs_path.exists():
+        try:
+            with open(hook_outputs_path) as f:
+                record["hook_outputs"] = yaml.safe_load(f) or {}
+        except (yaml.YAMLError, OSError):
+            record["hook_outputs"] = {}
+
     return record
 
 
@@ -373,7 +382,7 @@ def load_judges(config, project_root=None):
     - prompt/prompt_file: LLM judge
     - module/function: external code judge
 
-    Returns list of (name, scorer, condition, judge_type) 4-tuples.
+    Returns list of (name, scorer, condition, judge_type, samples) 5-tuples.
     """
     # Duplicate name validation
     seen_names = set()
@@ -421,7 +430,13 @@ def load_judges(config, project_root=None):
                   file=sys.stderr)
             continue
         if scorer:
-            judges.append((jc.name, scorer, jc.condition, judge_type))
+            n = max(1, jc.samples)
+            if n > 1 and judge_type != "llm":
+                print(f"  Warning: judge '{jc.name}' has samples={n} but is "
+                      f"a {judge_type} judge (deterministic); samples ignored",
+                      file=sys.stderr)
+                n = 1
+            judges.append((jc.name, scorer, jc.condition, judge_type, n))
     return judges
 
 
@@ -445,9 +460,8 @@ def _make_builtin_scorer(entry, jc, config):
             out = outputs or {}
             rendered = _render_jinja2_template(prompt_text, arguments, out)
             images = _extract_images(out)
-            raw = _call_judge_llm(rendered, judge_model,
-                                  _BOOL_SYSTEM_PROMPT, images=images)
-            return _parse_bool_response(raw)
+            return _call_structured_judge(rendered, judge_model, "bool",
+                                          images=images)
 
         return scorer
 
@@ -477,62 +491,167 @@ def _extract_images(outputs):
 
 
 _BOOL_SYSTEM_PROMPT = (
-    "You are a judge evaluating agent outputs. "
-    "Return a JSON object with 'passed' (boolean) and 'rationale' (string).")
+    "You are a judge evaluating agent outputs. Call the submit_evaluation "
+    "tool once with your pass/fail judgment and a thorough rationale.")
 
 _SCORE_SYSTEM_PROMPT = (
-    "You are a judge evaluating skill outputs. "
-    "Return a JSON object with 'score' (integer 1-5) and 'rationale' (string).")
+    "You are a judge evaluating skill outputs. Call the submit_score tool "
+    "once with an integer score 1-5 and a thorough rationale.")
+
+_SCORE_JUDGE_TOOL = {
+    "name": "submit_score",
+    "description": "Submit the evaluation score and rationale.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "score": {"type": "integer", "minimum": 1, "maximum": 5,
+                      "description": "Overall score, 1 (worst) to 5 (best)."},
+            "rationale": {"type": "string",
+                          "description": "Thorough justification citing specific "
+                                         "content from the outputs."},
+        },
+        "required": ["score", "rationale"],
+    },
+}
+
+_BOOL_JUDGE_TOOL = {
+    "name": "submit_evaluation",
+    "description": "Submit the pass/fail judgment and rationale.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "passed": {"type": "boolean",
+                       "description": "Whether the output passes the criterion."},
+            "rationale": {"type": "string",
+                          "description": "Thorough justification citing specific "
+                                         "content from the outputs."},
+        },
+        "required": ["passed", "rationale"],
+    },
+}
 
 
-def _call_judge_llm(prompt, model, system_prompt, images=None, max_tokens=1024):
-    """Call the Anthropic API with a judge prompt. Returns raw response text."""
+def _judge_user_message(prompt, images=None):
+    """Build the user-message content for a judge call, inlining any images."""
+    if not images:
+        return prompt
+    parts = [{"type": "text", "text": prompt}]
+    for img in images:
+        parts.append({"type": "text", "text": f"\n**Image: {img['label']}**"})
+        parts.append({"type": "image", "source": {
+            "type": "base64",
+            "media_type": img["media_type"],
+            "data": img["data"],
+        }})
+    return parts
+
+
+def _call_judge_llm(prompt, model, system_prompt, images=None, max_tokens=4096):
+    """Call the Anthropic API with a judge prompt. Returns raw response text.
+
+    Retained as the text-parse fallback path; the primary path is
+    _call_structured_judge (forced tool output).
+    """
     client = _get_anthropic_client()
-    if images:
-        content_parts = [{"type": "text", "text": prompt}]
-        for img in images:
-            content_parts.append({"type": "text",
-                                  "text": f"\n**Image: {img['label']}**"})
-            content_parts.append({"type": "image", "source": {
-                "type": "base64",
-                "media_type": img["media_type"],
-                "data": img["data"],
-            }})
-        user_message = content_parts
-    else:
-        user_message = prompt
     response = client.messages.create(
         model=model,
         max_tokens=max_tokens,
         system=system_prompt,
-        messages=[{"role": "user", "content": user_message}],
+        messages=[{"role": "user", "content": _judge_user_message(prompt, images)}],
     )
     return response.content[0].text.strip()
 
 
+def _call_structured_judge(prompt, model, feedback_type, images=None,
+                           max_tokens=4096):
+    """Call an LLM judge with forced tool output. Returns (value, rationale).
+
+    feedback_type "bool" → (passed: bool, rationale); anything else →
+    (score: int, rationale). Forcing a tool guarantees the value and rationale
+    come back in known fields instead of free-form text the model may format
+    however it likes (opus-4-8 routinely ignores "return JSON" instructions).
+    Falls back to parsing any text in the response if no tool_use is returned.
+    """
+    is_bool = (feedback_type == "bool")
+    tool = _BOOL_JUDGE_TOOL if is_bool else _SCORE_JUDGE_TOOL
+    system_prompt = _BOOL_SYSTEM_PROMPT if is_bool else _SCORE_SYSTEM_PROMPT
+    parser = _parse_bool_response if is_bool else _parse_score_response
+    client = _get_anthropic_client()
+    response = client.messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        system=system_prompt,
+        tools=[tool],
+        tool_choice={"type": "tool", "name": tool["name"]},
+        messages=[{"role": "user", "content": _judge_user_message(prompt, images)}],
+    )
+    for block in response.content:
+        if getattr(block, "type", None) == "tool_use" and block.name == tool["name"]:
+            data = dict(block.input)
+            rationale = str(data.get("rationale") or "").strip()
+            if is_bool:
+                if isinstance(data.get("passed"), bool):
+                    return (data["passed"], rationale or "(no rationale provided)")
+            else:
+                try:
+                    return (int(data["score"]), rationale or "(no rationale provided)")
+                except (KeyError, TypeError, ValueError):
+                    pass
+    # Fallback: model emitted text instead of a tool call (rare with tool_choice).
+    text = "".join(getattr(b, "text", "") for b in response.content
+                   if getattr(b, "type", None) == "text").strip()
+    return parser(text)
+
+
+def _rationale_field(text):
+    """Extract a JSON `rationale` string value, unescaped, or None.
+
+    Escaped-quote-aware so the value isn't cut at the first embedded quote.
+    """
+    m = re.search(r'"rationale"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
+    if not m:
+        return None
+    try:
+        return json.loads(f'"{m.group(1)}"')
+    except json.JSONDecodeError:
+        return m.group(1)
+
+
 def _parse_bool_response(text):
-    """Parse {"passed": bool, "rationale": str} from LLM response."""
+    """Parse {"passed": bool, "rationale": str} from LLM response.
+
+    When no structured `rationale` field is present, fall back to the full
+    response text (it renders as markdown in the report) rather than a
+    200-char slice that truncates mid-word.
+    """
     match = re.search(r'"passed"\s*:\s*(true|false)', text, re.IGNORECASE)
     if match:
         passed = match.group(1).lower() == "true"
-        rat_match = re.search(r'"rationale"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
-        rationale = rat_match.group(1) if rat_match else text[:200]
+        rationale = _rationale_field(text) or text.strip()
         return (passed, rationale)
-    return (False, f"Could not parse judge response: {text[:200]}")
+    return (False, f"Could not parse judge response: {text.strip() or '(empty)'}")
 
 
 def _parse_score_response(text):
-    """Parse {"score": int, "rationale": str} from LLM response with fallbacks."""
-    try:
-        match = re.search(r'"score"\s*:\s*(\d+)', text)
-        if match:
-            score_val = int(match.group(1))
-            rationale_match = re.search(r'"rationale"\s*:\s*"([^"]*)"', text)
-            rationale = (rationale_match.group(1) if rationale_match
-                         else text[:200])
-            return (score_val, rationale)
-    except (ValueError, AttributeError):
-        pass
+    """Parse {"score": int, "rationale": str} from an LLM response, with fallbacks.
+
+    Never truncates the rationale: when the judge returns prose instead of the
+    requested JSON (observed with opus-4-8), the full response text is used as
+    the rationale rather than a 200-char slice that cuts off mid-word.
+    """
+    # 1. Clean JSON object (handles escapes, newlines, embedded quotes).
+    obj = _loads_json_object(text)
+    if isinstance(obj, dict) and obj.get("score") is not None:
+        try:
+            rationale = str(obj.get("rationale") or "").strip() or text.strip()
+            return (int(obj["score"]), rationale)
+        except (ValueError, TypeError):
+            pass
+    # 2. Regex score + escaped-quote-aware rationale; full text if absent.
+    match = re.search(r'"score"\s*:\s*(\d+)', text)
+    if match:
+        return (int(match.group(1)), _rationale_field(text) or text.strip())
+    # 3. Prose fallbacks — keep the full text as the rationale.
     explicit = re.search(
         r'(?:overall|score|rating)\s*[=:]\s*(\d)\b'
         r'|(\d)\s*/\s*5'
@@ -540,15 +659,101 @@ def _parse_score_response(text):
         text, re.IGNORECASE)
     if explicit:
         score_val = int(next(g for g in explicit.groups() if g))
-        return (score_val, text[:200])
+        return (score_val, text.strip())
     nums = re.findall(r'\b([1-5])\b', text)
     if nums:
-        return (int(nums[-1]), text[:200])
-    return (3, f"Could not parse score from: {text[:200]}")
+        return (int(nums[-1]), text.strip())
+    return (3, f"Could not parse score from: {text.strip() or '(empty)'}")
 
 
-def score_cases(judges, case_dirs, config, run_id=None):
-    """Score all cases with all judges in parallel."""
+def _loads_json_object(text):
+    """Best-effort parse of a single JSON object from a response (code fences
+    or surrounding prose tolerated). Returns a dict or None."""
+    t = text.strip()
+    fence = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', t, re.DOTALL)
+    if fence:
+        t = fence.group(1)
+    for candidate in (t, t[t.find("{"):t.rfind("}") + 1] if "{" in t and "}" in t else ""):
+        if not candidate:
+            continue
+        try:
+            obj = json.loads(candidate, strict=False)
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _normalize_result(result):
+    """Extract (value, rationale) from a scorer return (tuple/Feedback/primitive)."""
+    if isinstance(result, tuple) and len(result) == 2:
+        return result[0], result[1]
+    if hasattr(result, "value"):
+        return result.value, getattr(result, "rationale", "")
+    return result, ""
+
+
+def _aggregate_samples(runs, judge_type):
+    """Reduce N stochastic-judge samples to one value + rationale, recording spread.
+
+    `runs` is a list of {value, rationale?, error?}. Numeric (score) judges
+    reduce by median (noise reduction, returns an actually-observed score via
+    median_low); bool judges by majority vote. The kept rationale is one from a
+    sample matching the reduced value, so it stays consistent with the score.
+    `stability.stable` is True when every sample agreed and none errored.
+    """
+    import statistics
+    vals = [r["value"] for r in runs if r.get("value") is not None]
+    error_count = sum(1 for r in runs if r.get("error"))
+    all_ok = error_count == 0
+    if not vals:
+        err = next((r.get("error") for r in runs if r.get("error")), "all samples failed")
+        return {"value": None, "error": err, "judge_type": judge_type,
+                "stability": {"samples": len(runs), "error_count": error_count,
+                               "values": []}}
+    # bool must be checked before int (bool is a subclass of int)
+    if all(isinstance(v, bool) for v in vals):
+        passes = sum(1 for v in vals if v)
+        value = (passes * 2 > len(vals))  # strict majority; ties resolve to fail
+        rationale = next((r.get("rationale", "") for r in runs
+                          if r.get("value") is value), "")
+        stability = {"samples": len(runs), "pass_count": passes,
+                     "error_count": error_count,
+                     "values": vals, "stable": all_ok and passes in (0, len(vals))}
+    elif all(isinstance(v, (int, float)) for v in vals):
+        value = statistics.median_low(vals)
+        lo, hi = min(vals), max(vals)
+        rationale = next((r.get("rationale", "") for r in runs
+                          if r.get("value") == value), runs[0].get("rationale", ""))
+        stability = {"samples": len(runs), "min": lo, "max": hi,
+                     "error_count": error_count,
+                     "mean": round(statistics.fmean(vals), 2),
+                     "values": vals, "stable": all_ok and lo == hi}
+    else:
+        value = vals[0]
+        rationale = next((r.get("rationale", "") for r in runs
+                          if r.get("value") == value), "")
+        stability = {"samples": len(runs), "error_count": error_count,
+                     "values": vals,
+                     "stable": all_ok and len({str(v) for v in vals}) <= 1}
+    result = {"value": value, "rationale": rationale, "judge_type": judge_type,
+              "stability": stability}
+    if not stability.get("stable"):
+        result["sample_rationales"] = [
+            {"value": r.get("value"), "rationale": r.get("rationale", ""),
+             "error": r.get("error")}
+            for r in runs]
+    return result
+
+
+def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
+    """Score all cases with all judges in parallel.
+
+    Each judge's sample count comes from its config (`JudgeConfig.samples`);
+    `samples_override` (from CLI `--samples`) wins when set. Only stochastic
+    (LLM) judges are sampled; deterministic judges always run once.
+    """
     if not case_dirs:
         return {"per_case": {}, "aggregated": {n: {"values": [], "mean": None, "pass_rate": None} for n, *_ in judges}}
     per_case = {}
@@ -561,7 +766,7 @@ def score_cases(judges, case_dirs, config, run_id=None):
         case_id = case_dir.name
         record = load_case_record(case_dir, config, run_id=run_id)
         case_results = {}
-        for name, scorer, condition, judge_type in judges:
+        for name, scorer, condition, judge_type, judge_samples in judges:
             # Check condition — skip if it evaluates to False
             if condition:
                 try:
@@ -581,26 +786,27 @@ def score_cases(judges, case_dirs, config, run_id=None):
                         "judge_type": judge_type,
                     }
                     continue
+            # CLI --samples overrides per-judge config for LLM judges only;
+            # deterministic judges always run once.
+            if judge_type == "llm":
+                n = (max(1, samples_override)
+                     if samples_override is not None
+                     else judge_samples)
+            else:
+                n = 1
             try:
-                result = scorer(outputs=record)
-                # Normalize — accepts (bool, str) tuples, Feedback, primitives
-                if isinstance(result, tuple) and len(result) == 2:
-                    case_results[name] = {
-                        "value": result[0],
-                        "rationale": result[1],
-                        "judge_type": judge_type,
-                    }
-                elif hasattr(result, "value"):
-                    case_results[name] = {
-                        "value": result.value,
-                        "rationale": getattr(result, "rationale", ""),
-                        "judge_type": judge_type,
-                    }
-                elif isinstance(result, (bool, int, float, str)):
-                    case_results[name] = {"value": result, "rationale": "",
-                                          "judge_type": judge_type}
+                if n > 1:
+                    runs = []
+                    for _ in range(n):
+                        try:
+                            v, rat = _normalize_result(scorer(outputs=record))
+                            runs.append({"value": v, "rationale": rat})
+                        except Exception as e:
+                            runs.append({"value": None, "error": str(e)})
+                    case_results[name] = _aggregate_samples(runs, judge_type)
                 else:
-                    case_results[name] = {"value": result, "rationale": "",
+                    v, rat = _normalize_result(scorer(outputs=record))
+                    case_results[name] = {"value": v, "rationale": rat,
                                           "judge_type": judge_type}
             except Exception as e:
                 case_results[name] = {"value": None, "error": str(e),
@@ -618,7 +824,7 @@ def score_cases(judges, case_dirs, config, run_id=None):
                 case_id = case_dir.name
                 case_results = {name: {"value": None, "error": str(e),
                                        "judge_type": jt}
-                                for name, _, _, jt in judges}
+                                for name, _, _, jt, _ in judges}
                 print(f"  [{completed}/{len(case_dirs)}] {case_id} ERROR: {e}",
                       file=sys.stderr, flush=True)
             per_case[case_id] = case_results
@@ -644,6 +850,23 @@ def score_cases(judges, case_dirs, config, run_id=None):
         else:
             aggregated[name]["mean"] = None
             aggregated[name]["pass_rate"] = None
+
+    # Per-judge stability across cases (only meaningful when sampled > 1):
+    # how many cases gave a consistent score across all samples.
+    for name in aggregated:
+        scored = [per_case[c][name] for c in per_case
+                  if isinstance(per_case.get(c, {}).get(name), dict)
+                  and "stability" in per_case[c][name]
+                  and per_case[c][name].get("value") is not None]
+        if scored:
+            n_samples = scored[0]["stability"].get("samples", 1)
+            if n_samples > 1:
+                stable = sum(1 for r in scored if r["stability"].get("stable"))
+                aggregated[name]["stability"] = {
+                    "samples": n_samples,
+                    "stable_cases": stable,
+                    "total_cases": len(scored),
+                }
 
     return {"per_case": per_case, "aggregated": aggregated}
 
@@ -714,23 +937,18 @@ def _load_llm_judge(jc, config, project_root=None):
 
     # Anthropic path (direct client, supports Vertex AI)
     if (os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID")
-            or os.environ.get("ANTHROPIC_API_KEY")):
+            or os.environ.get("ANTHROPIC_API_KEY")
+            or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
         judge_model = _resolve_judge_model(jc, config)
-        if jc.feedback_type == "bool":
-            system_prompt = _BOOL_SYSTEM_PROMPT
-            parser = _parse_bool_response
-        else:
-            system_prompt = _SCORE_SYSTEM_PROMPT
-            parser = _parse_score_response
+        feedback_type = "bool" if jc.feedback_type == "bool" else "score"
         arguments = jc.arguments
 
         def scorer(outputs=None, **kwargs):
             out = outputs or {}
             rendered = _render_jinja2_template(prompt, arguments, out)
             images = _extract_images(out)
-            raw = _call_judge_llm(rendered, judge_model, system_prompt,
-                                  images=images)
-            return parser(raw)
+            return _call_structured_judge(rendered, judge_model, feedback_type,
+                                          images=images)
 
         return scorer
 
@@ -774,6 +992,8 @@ class PairwiseResult:
     pref_ab: Optional[str] = None
     pref_ba: Optional[str] = None
     error: Optional[str] = None
+    reasoning_ab: Optional[dict] = None
+    reasoning_ba: Optional[dict] = None
 
     @property
     def winner(self) -> str:
@@ -784,6 +1004,17 @@ class PairwiseResult:
         elif self.pref_ab == "B" and self.pref_ba == "A":
             return "B"
         return "tie"
+
+    @property
+    def reasoning(self) -> Optional[str]:
+        """Overall reasoning from the canonical (A=run_a) judge call.
+
+        Judges don't always use the schema's `reasoning` key — observed
+        variants include `analysis`, `rationale`, `explanation`, `scratchpad`,
+        and `summary`. Search common key names and return the first non-empty
+        string value so reasoning isn't silently dropped.
+        """
+        return _extract_reasoning_text(self.reasoning_ab)
 
 
 def compare_runs(run_a_dir, run_b_dir, config, case_ids,
@@ -807,8 +1038,12 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
         record_a = load_case_record(run_a_dir / "cases" / case_id, config)
         record_b = load_case_record(run_b_dir / "cases" / case_id, config)
 
-        output_a = _first_content(record_a)
-        output_b = _first_content(record_b)
+        # Render the FULL artifact set per side (task + review + feasibility +
+        # auto-fix reports, etc.) — not just the first file. Using _first_content
+        # here meant the judge never saw the review/feasibility files, so the
+        # calibration and feasibility-depth dimensions could never be evaluated.
+        output_a = _format_outputs_for_pairwise(record_a)
+        output_b = _format_outputs_for_pairwise(record_b)
 
         if not output_a or not output_b:
             return PairwiseResult(case_id=case_id,
@@ -819,6 +1054,7 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
         pref_ab, err = _call_judge(client, comparison_prompt, msg_ab, model)
         if pref_ab:
             result.pref_ab = pref_ab.get("preferred")
+            result.reasoning_ab = pref_ab
         else:
             result.error = f"AB failed: {err}"
             return result
@@ -827,6 +1063,7 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
         pref_ba, err = _call_judge(client, comparison_prompt, msg_ba, model)
         if pref_ba:
             result.pref_ba = pref_ba.get("preferred")
+            result.reasoning_ba = pref_ba
         else:
             result.error = f"BA failed: {err}"
         return result
@@ -857,9 +1094,94 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
         "cases_compared": len(results),
         "wins_a": wins_a, "wins_b": wins_b,
         "ties": ties, "errors": errors,
-        "per_case": [{"case_id": r.case_id, "winner": r.winner, "error": r.error}
+        "per_case": [{"case_id": r.case_id, "winner": r.winner, "error": r.error,
+                      "reasoning": r.reasoning}
                      for r in results],
     }
+
+
+def _compute_pairwise_stability(runs):
+    """Summarize judge stochasticity across repeated pairwise runs.
+
+    `runs` is a list of compare_runs() result dicts. Returns per-run win/tie
+    counts plus per-case verdict agreement: which cases gave the same verdict
+    every run (stable) vs flipped, so readers can tell signal from noise.
+    """
+    from collections import Counter
+    n = len(runs)
+    # Per-case verdicts across runs, preserving case order from the first run.
+    case_order = [pc["case_id"] for pc in runs[0].get("per_case", [])]
+    verdicts = {cid: [] for cid in case_order}
+    for r in runs:
+        for pc in r.get("per_case", []):
+            verdicts.setdefault(pc["case_id"], []).append(pc.get("winner", "error"))
+
+    flipped = []
+    stable = 0
+    for cid in case_order:
+        vs = verdicts.get(cid, [])
+        if len(set(vs)) <= 1:
+            stable += 1
+        else:
+            majority = Counter(vs).most_common(1)[0][0]
+            flipped.append({"case_id": cid, "verdicts": vs, "majority": majority})
+    total = len(case_order)
+    return {
+        "runs": n,
+        "wins_a_counts": [r["wins_a"] for r in runs],
+        "wins_b_counts": [r["wins_b"] for r in runs],
+        "tie_counts": [r["ties"] for r in runs],
+        "total_cases": total,
+        "stable_cases": stable,
+        "agreement_rate": (stable / total) if total else 0.0,
+        "flipped_cases": flipped,
+    }
+
+
+def _format_outputs_for_pairwise(record):
+    """Render the full set of skill-output files for a case as markdown.
+
+    Mirrors how the regular LLM judges see {{ outputs }} (via _OutputsProxy):
+    every artifact file (RFE task, review with rubric scores, feasibility
+    review, auto-fix reports, originals) is included so the pairwise judge can
+    actually evaluate the calibration and feasibility dimensions — not just the
+    task file. Returns "" when the case produced no files.
+    """
+    files = record.get("files") or {}
+    parts = []
+    for path, content in sorted(files.items()):
+        if isinstance(content, dict) and content.get("_binary"):
+            parts.append(f"\n### {path}\n\n<binary: {content.get('name', '?')}>\n")
+        else:
+            parts.append(f"\n### {path}\n\n{content}\n")
+    return "".join(parts)
+
+
+_REASONING_KEYS = ("reasoning", "analysis", "rationale", "explanation",
+                   "scratchpad", "summary", "justification", "notes")
+
+
+def _extract_reasoning_text(parsed):
+    """Pull the overall reasoning prose from a judge's JSON, tolerant of the
+    field name. Judges paraphrase the schema (observed: `analysis`,
+    `scratchpad`, `rationale`, …), so try known aliases, then fall back to the
+    longest string value that isn't the verdict itself."""
+    if not isinstance(parsed, dict):
+        return None
+    for key in _REASONING_KEYS:
+        val = parsed.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    # Fallback: the longest free-text string field (excludes short verdicts
+    # like "B"/"tie" and the 'preferred' key).
+    best = None
+    for k, v in parsed.items():
+        if k == "preferred":
+            continue
+        if isinstance(v, str) and len(v.strip()) > 40:
+            if best is None or len(v) > len(best):
+                best = v
+    return best
 
 
 def _first_content(record):
@@ -876,35 +1198,74 @@ def _get_anthropic_client():
     if project_id:
         from anthropic import AnthropicVertex
         return AnthropicVertex(project_id=project_id, region=region)
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
     if api_key:
         from anthropic import Anthropic
-        return Anthropic(api_key=api_key)
-    raise RuntimeError("Set ANTHROPIC_VERTEX_PROJECT_ID or ANTHROPIC_API_KEY")
+        base_url = os.environ.get("ANTHROPIC_BASE_URL")
+        return Anthropic(api_key=api_key, **({"base_url": base_url} if base_url else {}))
+    raise RuntimeError("Set ANTHROPIC_VERTEX_PROJECT_ID, ANTHROPIC_API_KEY, or ANTHROPIC_AUTH_TOKEN")
 
 
-def _call_judge(client, system_prompt, user_message, model, max_tokens=8192):
+# Forced-output tool for the pairwise judge. Using tool_choice guarantees the
+# verdict and reasoning come back in known fields instead of free-form text
+# whose keys the model improvises (observed: opus-4-8 emits
+# `analysis`/`score_A`/`confidence` instead of the requested `reasoning`).
+# The schema is intentionally minimal — `preferred` is all the harness needs to
+# tally wins/losses/ties, and `reasoning` is what the report renders. Anything
+# the comparison prompt wants the judge to weigh (criteria, dimensions, ...) is
+# the prompt's concern and the judge folds it into `reasoning`; the harness
+# stays generic and prompt-agnostic.
+_PAIRWISE_TOOL = {
+    "name": "submit_comparison",
+    "description": ("Submit the blind pairwise comparison of outputs A and B: "
+                    "the overall verdict and the reasoning behind it."),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "preferred": {"type": "string", "enum": ["A", "B", "tie"],
+                          "description": "Which output is stronger overall."},
+            "reasoning": {"type": "string",
+                          "description": ("Thorough, self-contained reasoning citing "
+                                          "specific content from both outputs and "
+                                          "addressing every criterion the comparison "
+                                          "instructions specify.")},
+        },
+        "required": ["preferred", "reasoning"],
+    },
+}
+
+
+def _call_judge(client, system_prompt, user_message, model, max_tokens=16384):
     try:
         response = client.messages.create(
             model=model, max_tokens=max_tokens,
-            system=("You are a judge comparing two outputs. "
-                    "You MUST end your response with a JSON object that follows "
-                    "the schema specified in the user prompt and includes a "
-                    "'preferred' field set to 'A', 'B', or 'tie'."),
+            system=("You are a blind judge comparing two outputs, A and B. "
+                    "Call the submit_comparison tool exactly once with your verdict "
+                    "and reasoning. Put ALL of your reasoning inside the tool input — "
+                    "do not write any text outside the tool call."),
+            tools=[_PAIRWISE_TOOL],
+            tool_choice={"type": "tool", "name": "submit_comparison"},
             messages=[
                 {"role": "user", "content": f"{system_prompt}\n\n{user_message}"},
             ],
         )
-        text = response.content[0].text
-        parsed = _extract_judge_json(text)
+        # Preferred path: read the forced tool_use block directly — no text
+        # parsing, no improvised keys.
+        for block in response.content:
+            if getattr(block, "type", None) == "tool_use" and block.name == "submit_comparison":
+                return dict(block.input), None
+        # Fallback: model emitted text despite tool_choice (rare) — parse it.
+        text = "".join(getattr(b, "text", "") for b in response.content
+                       if getattr(b, "type", None) == "text")
+        parsed = _extract_judge_json(text) if text else None
         if parsed is not None:
             return parsed, None
         # Retry once with a larger budget if the response was truncated.
-        if response.stop_reason == "max_tokens" and max_tokens < 16384:
+        if response.stop_reason == "max_tokens" and max_tokens < 32768:
             return _call_judge(client, system_prompt, user_message, model,
                                max_tokens=max_tokens * 2)
-        return None, (f"Could not parse JSON from response "
-                      f"(stop_reason={response.stop_reason}): {text[:200]}")
+        return None, (f"No submit_comparison tool_use in response "
+                      f"(stop_reason={response.stop_reason})")
     except Exception as e:
         return None, str(e)
 
@@ -927,30 +1288,62 @@ def _extract_judge_json(text):
         return _loads(json_text.strip())
     except json.JSONDecodeError:
         pass
-    # Fallback: extract the outermost balanced JSON object containing "preferred".
+    # The model is instructed to return only JSON, so the object usually spans
+    # the first '{' to the last '}'. Try that whole span — robust to a stray
+    # leading/trailing sentence the model occasionally adds.
+    first = text.find("{")
+    last = text.rfind("}")
+    if first != -1 and last > first:
+        try:
+            return _loads(text[first:last + 1])
+        except json.JSONDecodeError:
+            pass
+    # Fallback: scan for a balanced JSON object containing "preferred", tracking
+    # string state so braces *inside* string values (e.g. "{cluster}-autoscaler"
+    # echoed from feasibility content) don't throw off the depth counter.
     for start in range(len(text)):
         if text[start] != "{":
             continue
         depth = 0
+        in_str = False
+        escaped = False
         for end in range(start, len(text)):
-            if text[end] == "{":
+            ch = text[end]
+            if in_str:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
                 depth += 1
-            elif text[end] == "}":
+            elif ch == "}":
                 depth -= 1
-            if depth == 0:
-                candidate = text[start:end + 1]
-                if '"preferred"' in candidate:
-                    try:
-                        return _loads(candidate)
-                    except json.JSONDecodeError:
-                        pass
-                break
+                if depth == 0:
+                    candidate = text[start:end + 1]
+                    if '"preferred"' in candidate:
+                        try:
+                            return _loads(candidate)
+                        except json.JSONDecodeError:
+                            pass
+                    break
     # Last-resort recovery: judge wrote a partial/unclosed JSON object but the
-    # top-level "preferred" verdict is still extractable. Lose the rationale,
-    # keep the verdict — better than counting the case as an error.
+    # top-level "preferred" verdict is still extractable. Try to also recover the
+    # overall reasoning string so the verdict isn't left rationale-less.
     m = re.search(r'"preferred"\s*:\s*"(A|B|tie)"', text)
     if m:
-        return {"preferred": m.group(1)}
+        recovered = {"preferred": m.group(1)}
+        rm = re.search(r'"reasoning"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
+        if rm:
+            try:
+                recovered["reasoning"] = json.loads(f'"{rm.group(1)}"')
+            except json.JSONDecodeError:
+                recovered["reasoning"] = rm.group(1)
+        return recovered
     return None
 
 
@@ -1072,19 +1465,47 @@ def cmd_judges(args):
     case_dirs = _get_case_dirs(args.run_id, runs_dir)
     project_root = Path.cwd()
 
+    samples_override = getattr(args, "samples", None)
+
+    # Run before_scoring hooks
+    if config.hooks.before_scoring:
+        from agent_eval.hooks import build_hook_env, run_hooks
+        hook_env = build_hook_env(
+            workspace=args.workspace or "",
+            run_id=args.run_id,
+            config_path=str(Path(args.config).resolve()),
+            project_root=str(project_root),
+            model=args.model or "",
+        )
+        log_dir = runs_dir / args.run_id / "hooks"
+        print("Running before_scoring hooks...", file=sys.stderr)
+        run_hooks(config.hooks.before_scoring, env=hook_env,
+                  cwd=project_root, log_dir=log_dir,
+                  phase_name="before_scoring")
     judges = load_judges(config, project_root)
-    print(f"Scoring {len(case_dirs)} cases with {len(judges)} judges: "
+    n_llm = sum(1 for _, _, _, jt, _ in judges if jt == "llm")
+    sampled = [n for n, _, _, jt, s in judges
+               if jt == "llm" and ((samples_override if samples_override is not None else s) > 1)]
+    suffix = (f" (sampling: {', '.join(f'{n}={(samples_override if samples_override is not None else s)}×' for n, _, _, _, s in judges if n in sampled)})"
+              if sampled else "")
+    print(f"Scoring {len(case_dirs)} cases with {len(judges)} judges{suffix}: "
           f"{[n for n, *_ in judges]}")
 
-    judge_results = score_cases(judges, case_dirs, config, run_id=args.run_id)
+    judge_results = score_cases(judges, case_dirs, config, run_id=args.run_id,
+                                samples_override=samples_override)
 
     for name, agg in judge_results.get("aggregated", {}).items():
         mean = agg.get("mean")
         rate = agg.get("pass_rate")
+        st = agg.get("stability")
+        st_note = ""
+        if isinstance(st, dict) and st.get("samples", 1) > 1:
+            stable, tot = st.get("stable_cases", 0), st.get("total_cases", 0)
+            st_note = f"  [{stable}/{tot} stable over {st['samples']} samples]"
         if rate is not None:
-            print(f"  {name}: pass_rate={rate:.1%}")
+            print(f"  {name}: pass_rate={rate:.1%}{st_note}")
         elif mean is not None:
-            print(f"  {name}: mean={mean:.2f}")
+            print(f"  {name}: mean={mean:.2f}{st_note}")
 
     _merge_summary(args.run_id, "judges", {
         name: {k: v for k, v in agg.items() if k != "values"}
@@ -1159,24 +1580,44 @@ def cmd_pairwise(args):
         sys.exit(1)
     prompt_file = args.prompt_file or (pairwise_jc.prompt_file if pairwise_jc else "")
 
+    cfg_samples = pairwise_jc.samples if pairwise_jc else 1
+    cli_samples = getattr(args, "samples", None)
+    samples = max(1, cli_samples) if cli_samples is not None else cfg_samples
+    suffix = f", samples={samples}" if samples > 1 else ""
     print(f"Pairwise comparison: {args.run_id} vs {args.baseline} "
-          f"({len(case_ids)} cases, model={model})")
+          f"({len(case_ids)} cases, model={model}{suffix})")
 
-    result = compare_runs(
-        run_dir, baseline_dir, config, case_ids,
-        prompt=pairwise_jc.prompt if pairwise_jc else None,
-        prompt_file=prompt_file,
-        model=model,
-    )
+    runs = []
+    for i in range(samples):
+        if samples > 1:
+            print(f"  --- sample {i + 1}/{samples} ---")
+        r = compare_runs(
+            run_dir, baseline_dir, config, case_ids,
+            prompt=pairwise_jc.prompt if pairwise_jc else None,
+            prompt_file=prompt_file,
+            model=model,
+        )
+        if "error" in r:
+            print(f"ERROR: {r['error']}", file=sys.stderr)
+            sys.exit(1)
+        print(f"  A wins: {r['wins_a']} | B wins: {r['wins_b']} | "
+              f"Ties: {r['ties']} | Errors: {r['errors']}")
+        runs.append(r)
 
-    if "error" in result:
-        print(f"ERROR: {result['error']}", file=sys.stderr)
-        sys.exit(1)
-
-    print(f"  A wins: {result['wins_a']}")
-    print(f"  B wins: {result['wins_b']}")
-    print(f"  Ties:   {result['ties']}")
-    print(f"  Errors: {result['errors']}")
+    # The first run is the primary (its per-case reasoning is rendered).
+    result = runs[0]
+    if samples > 1:
+        result["stability"] = _compute_pairwise_stability(runs)
+        st = result["stability"]
+        print(f"  Stability over {samples} samples: "
+              f"B wins {st['wins_b_counts']}, ties {st['tie_counts']}; "
+              f"{st['stable_cases']}/{st['total_cases']} cases gave the same "
+              f"verdict every run ({st['agreement_rate']:.0%} agreement)")
+        if st["flipped_cases"]:
+            print("  Flipped cases:")
+            for fc in st["flipped_cases"]:
+                print(f"    {fc['case_id']}: {'/'.join(fc['verdicts'])} "
+                      f"(majority {fc['majority']})")
 
     _merge_summary(args.run_id, "pairwise", result, runs_dir)
 
@@ -1222,6 +1663,15 @@ def main():
     jdg_p = subparsers.add_parser("judges", help="Run all judges")
     jdg_p.add_argument("--run-id", required=True)
     jdg_p.add_argument("--config", required=True)
+    jdg_p.add_argument("--samples", type=int, default=None,
+                       help="Override per-judge samples config: sample each LLM "
+                            "judge N times per case; median (score) / majority "
+                            "(bool) becomes the value, spread recorded for "
+                            "stability reporting")
+    jdg_p.add_argument("--workspace", default=None,
+                       help="Workspace path (for before_scoring hook env vars)")
+    jdg_p.add_argument("--model", default=None,
+                       help="Skill model (for before_scoring hook env vars)")
 
     # pairwise
     pw_p = subparsers.add_parser("pairwise", help="Pairwise comparison")
@@ -1234,6 +1684,9 @@ def main():
                       help="Override comparison prompt file")
     pw_p.add_argument("--model", default=None,
                       help="Override judge model")
+    pw_p.add_argument("--samples", type=int, default=None,
+                      help="Override per-judge samples config: run the comparison "
+                           "N times and record verdict stability")
 
     # regression
     reg_p = subparsers.add_parser("regression", help="Threshold checks")
@@ -1242,6 +1695,12 @@ def main():
     reg_p.add_argument("--baseline", default=None)
 
     args = parser.parse_args()
+
+    # Validate run_id / baseline to prevent path traversal (CWE-22)
+    _validate_path_segment(args.run_id, "--run-id")
+    if getattr(args, "baseline", None) is not None:
+        _validate_path_segment(args.baseline, "--baseline")
+
     {"judges": cmd_judges, "pairwise": cmd_pairwise,
      "regression": cmd_regression}[args.command](args)
 

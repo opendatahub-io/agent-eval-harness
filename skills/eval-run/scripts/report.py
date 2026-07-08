@@ -402,6 +402,12 @@ def _read_case_input(dataset_path: str, case_id: str) -> str:
     """Read the input file from a dataset case directory."""
     case_dir = Path(dataset_path) / case_id
     if not case_dir.exists():
+        ds = Path(dataset_path)
+        if ds.is_dir():
+            matches = [d for d in ds.iterdir() if d.is_dir() and d.name.startswith(case_id)]
+            if len(matches) == 1:
+                case_dir = matches[0]
+    if not case_dir.exists():
         return ""
     for suffix in (".yaml", ".yml", ".json"):
         candidate = case_dir / f"input{suffix}"
@@ -586,6 +592,18 @@ details.case > summary:hover { color: var(--accent); }
 .pw-loss { background: var(--danger-soft); color: var(--danger); border-color: var(--danger-border); }
 .pw-tie { background: var(--warning-soft); color: var(--warning); border-color: var(--warning-border); }
 .pw-error { background: var(--neutral-soft); color: var(--text-muted); border-color: var(--neutral-border); }
+.stab-wrap { display: inline-flex; align-items: center; gap: 5px; }
+.stab-bar { vertical-align: middle; }
+.stab-label { font-size: 0.8em; color: var(--text-muted); }
+.ascii-range { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.85em; letter-spacing: 1px; color: var(--text-muted); margin-left: 6px; white-space: pre; }
+.ascii-range .med { color: var(--accent); font-weight: 700; }
+.sample-tabs { display: flex; gap: 0; border-bottom: 2px solid var(--border); margin-bottom: 0.5em; }
+.sample-tab { padding: 3px 10px; font-size: 0.82em; cursor: pointer; border: 1px solid transparent; border-bottom: none; border-radius: 4px 4px 0 0; color: var(--text-muted); background: none; }
+.sample-tab:hover { background: var(--surface-2); }
+.sample-tab[aria-selected="true"] { color: var(--text); background: var(--surface); border-color: var(--border); border-bottom: 2px solid var(--surface); margin-bottom: -2px; font-weight: 600; }
+.sample-tab .tab-score { font-weight: 700; margin-right: 4px; }
+.sample-panel { display: none; }
+.sample-panel.active { display: block; }
 .diff-table { width: 100%; border-collapse: collapse; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.82em; table-layout: fixed; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .diff-table td { padding: 1px 6px; vertical-align: top; white-space: pre-wrap; word-wrap: break-word; border: 1px solid var(--border); }
 .diff-table .ln { width: 35px; min-width: 35px; color: var(--text-muted); text-align: right; background: var(--surface-2); user-select: none; white-space: nowrap; }
@@ -763,6 +781,27 @@ IMAGE_COMPARE_SCRIPT = """
         }
       })(onion);
     }
+  });
+})();
+"""
+
+SAMPLE_TABS_SCRIPT = """
+(function () {
+  document.querySelectorAll('.sample-tabs').forEach(function (bar) {
+    bar.querySelectorAll('.sample-tab').forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        var group = tab.closest('td');
+        group.querySelectorAll('.sample-tab').forEach(function (t) {
+          t.setAttribute('aria-selected', 'false');
+        });
+        group.querySelectorAll('.sample-panel').forEach(function (p) {
+          p.classList.remove('active');
+        });
+        tab.setAttribute('aria-selected', 'true');
+        var target = group.querySelector('#' + tab.dataset.panel);
+        if (target) target.classList.add('active');
+      });
+    });
   });
 })();
 """
@@ -1003,7 +1042,7 @@ def _render_model_usage(run_result, baseline_result=None):
         turns = usage.get("num_turns")
         total_in = inp + cr + cw
         total_tokens = total_in + out
-        if key == "input":         return inp or None
+        if key == "input":         return total_in or None
         if key == "output":        return out or None
         if key == "cache_read":    return cr or None
         if key == "cache_create":  return cw or None
@@ -1107,7 +1146,7 @@ def _render_model_usage(run_result, baseline_result=None):
         return ""
 
     metrics = [
-        ("Input tokens", "input"),
+        ("Input tokens (total)", "input"),
         ("Output tokens", "output"),
         ("Cache read", "cache_read"),
         ("Cache write", "cache_create"),
@@ -1145,6 +1184,24 @@ def _render_model_usage(run_result, baseline_result=None):
         html += '</tr>\n'
     html += '</table>\n'
     return html
+
+
+def _stability_proportion_bar(stable, total, samples):
+    """Small proportion bar (stable vs varied) summarizing a judge's cross-case
+    sampling consistency. Used in the Scoring Summary for LLM-judge rows and the
+    pairwise row so the whole table shares one visual language."""
+    if not total:
+        return ""
+    W, H = 46, 7
+    frac = stable / total
+    title = f"{stable}/{total} cases stable across {samples} samples"
+    return (
+        f'<span class="stab-wrap">'
+        f'<svg class="stab-bar" width="{W}" height="{H}" viewBox="0 0 {W} {H}" '
+        f'role="img" aria-label="{_esc(title)}"><title>{_esc(title)}</title>'
+        f'<rect x="0" y="0" width="{W}" height="{H}" rx="3.5" fill="var(--warning-soft)"/>'
+        f'<rect x="0" y="0" width="{W * frac:.1f}" height="{H}" rx="3.5" fill="var(--success)"/>'
+        f'</svg><span class="stab-label">{stable}/{total} · {samples}×</span></span>')
 
 
 def _render_scoring_summary(summary, config, baseline_summary=None):
@@ -1192,6 +1249,14 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
             metric_name = "—"
             metric_val = "—"
 
+        # Sampling stability (from `score.py judges --samples N`) — a proportion
+        # bar (stable vs varied across cases) appended to the metric.
+        jst = agg.get("stability")
+        if isinstance(jst, dict) and jst.get("samples", 1) > 1 and metric_val != "—":
+            metric_val += " " + _stability_proportion_bar(
+                jst.get("stable_cases", 0), jst.get("total_cases", 0),
+                jst.get("samples"))
+
         # Baseline
         bl_val = ""
         if has_bl and judge_name in bl_judges:
@@ -1238,8 +1303,11 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
                 status_cls = "pass" if ok else "fail"
                 status_label = "PASS" if ok else "FAIL"
 
-        jtype, jmodel = judge_info.get(judge_name, ("—", "—"))
-        if jtype in ("check", "code", "builtin") and jmodel == "—":
+        jtype, jmodel = judge_info.get(judge_name, (None, "—"))
+        if jtype is None:
+            first_case = next(iter(summary.get("per_case", {}).values()), {})
+            jtype = (first_case.get(judge_name) or {}).get("judge_type", "—")
+        if jtype in ("check", "code", "builtin", "step") and jmodel == "—":
             type_label = jtype
         else:
             type_label = f'{jtype} ({jmodel.split("@")[0]})'
@@ -1262,6 +1330,13 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
         pw_val = f"{wins_a}W / {wins_b}L / {ties}T"
         if errors:
             pw_val += f" / {errors}E"
+        # Verdict-stability (from `score.py pairwise --samples N`) — same
+        # proportion bar the judge rows use.
+        st = pw.get("stability") or {}
+        n = st.get("runs", 1)
+        if n and n > 1:
+            pw_val += " " + _stability_proportion_bar(
+                st.get("stable_cases", 0), st.get("total_cases", 0), n)
         if wins_a > wins_b:
             pw_status_cls, pw_status = "pass", "WIN"
         elif wins_b > wins_a:
@@ -1607,9 +1682,19 @@ def _md_to_html(md_text):
             i += 1
             continue
 
-        # Blank line
+        # Blank line — only close lists if the next content line isn't a
+        # continuation of the same list type (LLM rationales commonly use
+        # paragraph-spaced list items like "1. ...\n\n2. ...").
         if not stripped:
-            _close_lists()
+            if list_stack:
+                j = i + 1
+                while j < len(lines) and not lines[j].strip():
+                    j += 1
+                next_stripped = lines[j].strip() if j < len(lines) else ""
+                continues_ol = list_stack[-1] == "ol" and re.match(r'^\d+\.\s', next_stripped)
+                continues_ul = list_stack[-1] == "ul" and next_stripped.startswith("- ")
+                if not (continues_ol or continues_ul):
+                    _close_lists()
             i += 1
             continue
 
@@ -1799,6 +1884,48 @@ def _render_shared_outputs(run_dir, config):
     return html
 
 
+def _ascii_hist(items, lo_label, hi_label, mark_key):
+    """Monospace ASCII histogram of sampled judge values on a labelled axis.
+
+    `items` is an ordered list of (key, count); each renders as a block bar
+    (height = count, tallest = █), empty categories stay ░, and the bar for
+    `mark_key` is wrapped in markers (\\x01..\\x02) for colourising in HTML.
+    A stable judge — all samples in one bucket — is a single bar (e.g.
+    ``1 ░░░░█ 5``), so the column reads "agree" vs "wobble" at a glance.
+    Used for numeric judges (1 … 5), bool judges (F … P) and pairwise (A … B).
+    """
+    blocks = "▁▂▃▄▅▆▇█"
+    maxc = max((c for _, c in items), default=1) or 1
+    cells = []
+    for key, c in items:
+        ch = "░" if c == 0 else blocks[round(c / maxc * 7)]
+        if key == mark_key:
+            ch = "\x01" + ch + "\x02"   # marker (colourised in HTML)
+        cells.append(ch)
+    return f"{lo_label} " + "".join(cells) + f" {hi_label}"
+
+
+def _ascii_score_hist(med, values, smin=None, smax=None):
+    """`_ascii_hist` over the numeric score scale, marking the median level."""
+    from collections import Counter
+    numeric = [int(v) for v in values if isinstance(v, (int, float))]
+    if not numeric:
+        return ""
+    lo = smin if smin is not None else min(numeric)
+    hi = smax if smax is not None else max(numeric)
+    counts = Counter(numeric)
+    med = max(lo, min(hi, int(med)))
+    items = [(s, counts.get(s, 0)) for s in range(lo, hi + 1)]
+    return _ascii_hist(items, str(lo), str(hi), med)
+
+
+def _colorise_hist(glyph):
+    """HTML-escape an ASCII histogram and colourise its marked bar."""
+    return (_esc(glyph)
+            .replace("\x01", '<span class="med">')
+            .replace("\x02", "</span>"))
+
+
 def _render_per_case(summary, run_dir, config, baseline_dir, review):
     per_case = summary.get("per_case", {})
     if not per_case:
@@ -1812,11 +1939,15 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
     cases_dir = run_dir / "cases"
     bl_cases_dir = baseline_dir / "cases" if baseline_dir else None
 
-    # Build pairwise lookup per case
+    # Build pairwise lookup per case (full entry: winner + reasoning)
     pw_by_case = {}
     pw = summary.get("pairwise", {})
     for pc in pw.get("per_case", []):
-        pw_by_case[pc.get("case_id", "")] = pc.get("winner", "error")
+        pw_by_case[pc.get("case_id", "")] = pc
+    # Per-case verdict spread across repeated runs (stability), if available.
+    pw_flipped = {fc.get("case_id"): fc.get("verdicts", [])
+                  for fc in (pw.get("stability") or {}).get("flipped_cases", [])}
+    pw_runs = (pw.get("stability") or {}).get("runs", 1)
 
     html = '<h2 class="section-heading">Per-Case Details</h2>\n'
     if baseline_dir:
@@ -1863,13 +1994,15 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
 
         # Pairwise badge or pass/fail accent — applied as a left-border class
         pw_badge = ""
-        if case_id in pw_by_case:
-            pw_winner = pw_by_case[case_id]
+        pw_entry = pw_by_case.get(case_id)
+        if pw_entry:
+            pw_winner = pw_entry.get("winner", "error")
             pw_badge = f" {_pairwise_badge(pw_winner)}"
             pw_class_map = {"A": "case-pw-a", "B": "case-pw-b",
                             "tie": "case-pw-tie", "error": "case-pw-error"}
             accent_class = pw_class_map.get(pw_winner, "case-pw-error")
         else:
+            pw_winner = None
             accent_class = f"case-{status}"
 
         scored = total - skipped
@@ -1906,10 +2039,80 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
 
             if err:
                 rat = f"ERROR: {err}"
+            # Per-case sampling distribution (from --samples): an ASCII glyph
+            # (monospace, aligns cleanly) showing the spread on the 1–5 scale.
+            # Shown for every sampled judge — a stable judge is a single bar,
+            # which reads at a glance as "all samples agree". Raw samples on hover.
+            jst = jresult.get("stability")
+            if (isinstance(jst, dict) and jst.get("samples", 1) > 1
+                    and "min" in jst):
+                vals = jst.get("values", [])
+                samples = ", ".join(str(v) for v in vals)
+                glyph = _colorise_hist(_ascii_score_hist(val, vals, 1, 5))
+                val_html += (f' <span class="ascii-range" '
+                             f'title="samples: {_esc(samples)}">{glyph}</span>')
+            elif (isinstance(jst, dict) and jst.get("samples", 1) > 1
+                  and "pass_count" in jst):
+                npass = jst["pass_count"]
+                nsamp = jst["samples"]
+                winner = "pass" if npass * 2 >= nsamp else "fail"
+                glyph = _colorise_hist(_ascii_hist(
+                    [("fail", nsamp - npass), ("pass", npass)], "F", "P", winner))
+                val_html += (f' <span class="ascii-range" '
+                             f'title="{npass}/{nsamp} pass">{glyph}</span>')
 
-            rat_html = _md_to_html(_normalize_escapes(rat)) if rat else ""
+            sample_rats = jresult.get("sample_rationales")
+            if sample_rats and len(sample_rats) > 1:
+                tab_id = f"sr-{_esc(case_id)}-{_esc(jname)}"
+                rat_html = '<div class="sample-tabs" role="tablist">'
+                for si, sr in enumerate(sample_rats):
+                    sv = sr.get("value")
+                    sel = "true" if si == 0 else "false"
+                    label = f'<span class="tab-score">{sv}</span>#{si+1}'
+                    if sr.get("error"):
+                        label = f'<span class="tab-score">ERR</span>#{si+1}'
+                    rat_html += (f'<button class="sample-tab" role="tab" '
+                                 f'aria-selected="{sel}" '
+                                 f'data-panel="{tab_id}-{si}">{label}</button>')
+                rat_html += '</div>'
+                for si, sr in enumerate(sample_rats):
+                    active = " active" if si == 0 else ""
+                    sr_rat = sr.get("rationale") or sr.get("error") or ""
+                    sr_html = _md_to_html(_normalize_escapes(str(sr_rat))) if sr_rat else ""
+                    rat_html += (f'<div class="sample-panel{active}" '
+                                 f'id="{tab_id}-{si}" role="tabpanel">{sr_html}</div>')
+            else:
+                rat_html = _md_to_html(_normalize_escapes(rat)) if rat else ""
             html += (f'<tr><td>{_esc(jname)}</td><td>{val_html}</td>'
                      f'<td class="rationale">{rat_html}</td></tr>\n')
+
+        # Pairwise comparison as a judge-table row (verdict + reasoning)
+        if pw_entry:
+            pw_reasoning = pw_entry.get("reasoning") or ""
+            if isinstance(pw_reasoning, dict):
+                pw_reasoning = pw_reasoning.get("reasoning", "")
+            pw_reasoning = str(pw_reasoning)
+            pw_rat_html = _md_to_html(_normalize_escapes(pw_reasoning)) if pw_reasoning else ""
+            # If this case flipped across repeated runs, show the verdict spread.
+            verdict_html = _pairwise_badge(pw_winner)
+            if pw_runs and pw_runs > 1:
+                # stable cases didn't flip → all runs == winner (single bar)
+                verds = pw_flipped.get(case_id) or [pw_winner] * pw_runs
+                from collections import Counter as _Counter
+                vc = _Counter(verds)
+                cats = [("A", vc.get("A", 0)), ("tie", vc.get("tie", 0)),
+                        ("B", vc.get("B", 0))]
+                errs = vc.get("error", 0)
+                if errs:
+                    cats.append(("error", errs))
+                glyph = _colorise_hist(_ascii_hist(
+                    cats, "A", "E" if errs else "B", pw_winner))
+                verdict_html += (f'<br><span class="ascii-range" '
+                                 f'title="verdicts: {_esc("/".join(verds))}">{glyph}</span>')
+            html += (f'<tr><td>pairwise</td>'
+                     f'<td>{verdict_html}</td>'
+                     f'<td class="rationale">{pw_rat_html}</td></tr>\n')
+
         html += "</table>\n"
 
         # Human feedback
@@ -2234,6 +2437,7 @@ def generate_report(config, summary, run_result, run_dir,
     html += _render_per_case(summary, run_dir, config, baseline_dir, review)
     html += f"\n<script>{TOGGLE_SCRIPT}</script>\n"
     html += f"<script>{IMAGE_COMPARE_SCRIPT}</script>\n"
+    html += f"<script>{SAMPLE_TABS_SCRIPT}</script>\n"
     html += "</body>\n</html>\n"
     return html
 
@@ -2271,6 +2475,19 @@ def main():
                       or any(ord(c) < 32 for c in eval_name)):
         print(f"ERROR: invalid skill name: {eval_name!r}", file=sys.stderr)
         sys.exit(1)
+    # Validate run_id / baseline to prevent path traversal (CWE-22)
+    for _arg_name, _arg_val in [("--run-id", args.run_id),
+                                ("--baseline", args.baseline)]:
+        if _arg_val is None:
+            continue
+        if (not isinstance(_arg_val, str) or not _arg_val
+                or "/" in _arg_val or "\\" in _arg_val
+                or _arg_val in (".", "..")
+                or any(ord(c) < 32 for c in _arg_val)):
+            print(f"ERROR: {_arg_name} must be a single path segment: {_arg_val!r}",
+                  file=sys.stderr)
+            sys.exit(1)
+
     runs_base = Path(os.environ.get("AGENT_EVAL_RUNS_DIR", "eval/runs"))
     runs_dir = runs_base / eval_name if eval_name else runs_base
     run_dir = runs_dir / args.run_id

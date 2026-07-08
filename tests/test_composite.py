@@ -197,6 +197,14 @@ class TestDefaultConfigs:
         score = composite_score(results, configs)
         assert 0.0 <= score <= 1.0
 
+    def test_none_result_is_ignored(self):
+        results = {"gate": True, "quality": None}
+        configs = {
+            "gate": {"type": "boolean", "gate": True},
+            "quality": {"type": "numeric"},
+        }
+        assert composite_score(results, configs) == 1.0
+
 
 class TestAggregateReplications:
     """Aggregating scores across replications."""

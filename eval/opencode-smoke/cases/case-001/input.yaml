@@ -1,0 +1,2 @@
+prompt: |
+  Create a file called hello.txt with exactly the content "Hello from OpenCode smoke test" (no quotes, no trailing newline). Do not create any other files.

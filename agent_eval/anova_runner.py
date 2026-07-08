@@ -35,7 +35,7 @@ from typing import Any, Callable
 import yaml
 
 from agent_eval.agent import RUNNERS
-from agent_eval.evalhub.adapter import _resolve_arguments
+from agent_eval.config import resolve_arguments
 
 # Resolve symlinks: agent_eval may be imported through a symlinked skills dir
 # (conftest puts those on sys.path), so __file__ can point inside skills/.
@@ -43,6 +43,8 @@ from agent_eval.evalhub.adapter import _resolve_arguments
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 _MODULE_CACHE: dict[str, Any] = {}
+_MAX_CASE_ARTIFACT_FILES = 500
+_MAX_CASE_ARTIFACT_BYTES = 100 * 1024 * 1024
 
 
 def _load_skill_module(name: str):
@@ -70,15 +72,38 @@ def _sanitize(s: str) -> str:
     return "".join(c if c.isalnum() or c in "-._" else "_" for c in str(s))
 
 
+def _validate_case_id(case_id: str) -> None:
+    case_path = Path(case_id)
+    if (
+        not case_id
+        or case_path.is_absolute()
+        or case_path.name != case_id
+        or case_id in {".", ".."}
+        or ".." in case_path.parts
+    ):
+        raise ValueError(f"Invalid case_id: {case_id!r}")
+
+
 def _copy_modified(changed: list[tuple[str, Path]], dest: Path) -> int:
     """Copy collected (rel, abs) modified files into dest/<rel>. Returns count."""
     n = 0
+    total_bytes = 0
     for rel, abs_path in changed:
+        if n >= _MAX_CASE_ARTIFACT_FILES:
+            raise RuntimeError(
+                f"modified file collection exceeded {_MAX_CASE_ARTIFACT_FILES} files"
+            )
+        file_size = abs_path.stat().st_size
+        if total_bytes + file_size > _MAX_CASE_ARTIFACT_BYTES:
+            raise RuntimeError(
+                f"modified file collection exceeded {_MAX_CASE_ARTIFACT_BYTES} bytes"
+            )
         target = dest / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             shutil.copy2(abs_path, target)
             n += 1
+            total_bytes += file_size
         except OSError:
             pass
     return n
@@ -113,7 +138,7 @@ def make_run_fn(
     collect = _load_skill_module("collect")
     judges = score.load_judges(eval_config, project_root=project_root)
     runner_cls = RUNNERS[eval_config.runner.type]
-    dataset_root = eval_config.resolve_path(eval_config.dataset_path).resolve()
+    dataset_root = eval_config.resolve_path(eval_config.dataset.path).resolve()
     norm = normalize or (lambda name, value, jtype: value)
 
     def _make_workspace(cond_slug: str, case_id: str) -> Path:
@@ -152,17 +177,15 @@ def make_run_fn(
 
     def run_fn(case_id: str, *, model: str | None = None,
                effort: str | None = None, **extra: Any) -> dict[str, Any]:
+        _validate_case_id(case_id)
         input_data = yaml.safe_load(
             (dataset_root / case_id / "input.yaml").read_text())
-        args = _resolve_arguments(eval_config.execution.arguments, input_data)
+        args = resolve_arguments(eval_config.execution.arguments, input_data)
 
         # Inject config_dir and factor levels into input_data so CliRunner
         # can resolve them as {placeholder} values in the command template.
         eval_dir = eval_config.resolve_path(".").resolve()
         input_data["config_dir"] = str(eval_dir)
-        gcp_key = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
-        if gcp_key:
-            input_data["gcp_adc_path"] = gcp_key
         for k, v in extra.items():
             input_data.setdefault(k, v)  # don't overwrite case data
 
@@ -186,6 +209,13 @@ def make_run_fn(
             if prepare_workspace:
                 prepare_workspace(ws, case_id, dataset_root)
             _commit_baseline(ws)
+            gcp_key = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
+            if gcp_key:
+                creds_dir = ws / ".credentials"
+                creds_dir.mkdir(parents=True, exist_ok=True)
+                creds_link = creds_dir / "gcp-adc.json"
+                creds_link.symlink_to(Path(gcp_key).resolve())
+                input_data["gcp_adc_path"] = str(creds_link)
             (ws / "input.yaml").write_text(yaml.dump(input_data, default_flow_style=False))
             runner = runner_cls.from_config(
                 eval_config, log_prefix=log_prefix, effort=effort)
@@ -212,7 +242,9 @@ def make_run_fn(
         per = scored["per_case"].get(case_id, {})
 
         flat: dict[str, Any] = {}
-        for name, scorer, _cond, jtype in judges:
+        for judge in judges:
+            name = judge[0]
+            jtype = judge[3]
             entry = per.get(name, {})
             flat[name] = norm(name, entry.get("value"), jtype)
 

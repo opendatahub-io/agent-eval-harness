@@ -38,7 +38,7 @@ class TestResolveRepoPath:
         (repo / ".git").mkdir()
         with patch.dict(os.environ, {"RHAI_RESULTS_REPO": str(repo)}):
             path = ResultsArchiver.resolve_repo_path(interactive=False)
-        assert path == repo
+        assert path == repo.resolve()
 
     def test_env_var_invalid_repo_raises(self, tmp_path):
         with patch.dict(os.environ, {"RHAI_RESULTS_REPO": str(tmp_path / "nope")}):
@@ -61,7 +61,7 @@ class TestResolveRepoPath:
         monkeypatch.setattr("builtins.input", lambda _: str(repo))
         with patch.dict(os.environ, env, clear=True):
             path = ResultsArchiver.resolve_repo_path(interactive=True)
-        assert path == repo
+        assert path == repo.resolve()
 
 
 class TestArchiveExperiment:
@@ -112,3 +112,12 @@ class TestArchiveExperiment:
         exp_data = {"experiment_id": "exp-fail"}
         with pytest.raises(ValueError, match="archive|repo"):
             archiver.archive_experiment("exp-fail", exp_data, fallback=False)
+
+    def test_rejects_path_traversal_experiment_id(self, tmp_path):
+        repo = tmp_path / "results"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+
+        archiver = ResultsArchiver(repo_path=repo)
+        with pytest.raises(ValueError, match="Invalid experiment_id"):
+            archiver.archive_experiment("../escape", {"experiment_id": "../escape"})

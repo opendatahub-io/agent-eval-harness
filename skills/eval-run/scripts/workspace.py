@@ -27,22 +27,27 @@ from pathlib import Path
 import yaml
 
 from agent_eval.config import EvalConfig
+from workspace_files import _copy_input_files
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--config", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--cases", nargs="*", default=None)
-    parser.add_argument("--symlinks", default=None,
-                        help="Comma-separated dirs/files to symlink into workspace "
-                             "(default: scripts,.claude,CLAUDE.md,.context,skills)")
+    parser.add_argument(
+        "--symlinks",
+        default=None,
+        help="Comma-separated dirs/files to symlink into workspace "
+        "(default: scripts,.claude,CLAUDE.md,.context,skills)",
+    )
     args = parser.parse_args()
 
     config = EvalConfig.from_yaml(args.config)
 
-    cases_dir = config.resolve_path(config.dataset_path)
+    cases_dir = config.resolve_path(config.dataset.path)
     if not cases_dir.exists():
         print(f"ERROR: dataset path not found: {cases_dir}", file=sys.stderr)
         sys.exit(1)
@@ -84,6 +89,14 @@ def main():
 
     # ── Batch mode (below) ───────────────────────────────────────
 
+    if config.dataset.workspace.files:
+        print(
+            "WARNING: dataset.workspace.files is ignored in batch mode — "
+            "files are per-case but batch mode uses a shared workspace. "
+            "Use execution.mode: case instead.",
+            file=sys.stderr,
+        )
+
     # Create output directories from config
     for output in config.outputs:
         if output.path and output.path != ".":
@@ -101,22 +114,25 @@ def main():
 
     for case_dir in case_dirs:
         # Find the input file (first .yaml or .json in the case dir)
-        input_content = _read_input(case_dir)
+        input_content = _read_input(case_dir, config)
         if input_content is None:
             continue
 
         # Flatten list inputs so batch.yaml is a single flat list
         if isinstance(input_content, list):
             batch_entries.extend(input_content)
-            case_order.append({"case_id": case_dir.name, "entry_count": len(input_content)})
+            case_order.append(
+                {"case_id": case_dir.name, "entry_count": len(input_content)}
+            )
         else:
             batch_entries.append(input_content)
             case_order.append({"case_id": case_dir.name, "entry_count": 1})
 
     # Write batch.yaml
     with open(workspace / "batch.yaml", "w") as f:
-        yaml.dump(batch_entries, f, default_flow_style=False,
-                  allow_unicode=True, width=120)
+        yaml.dump(
+            batch_entries, f, default_flow_style=False, allow_unicode=True, width=120
+        )
 
     # Write case order
     with open(workspace / "case_order.yaml", "w") as f:
@@ -133,15 +149,15 @@ def main():
     skip_symlinks = {".claude"}
     symlink_names = (
         [s.strip() for s in args.symlinks.split(",") if s.strip()]
-        if args.symlinks else default_symlinks
+        if args.symlinks
+        else default_symlinks
     )
     for name in symlink_names:
         if name in skip_symlinks:
             continue
         p = Path(name)
         if p.is_absolute() or ".." in p.parts:
-            print(f"WARNING: skipping invalid symlink entry: {name}",
-                  file=sys.stderr)
+            print(f"WARNING: skipping invalid symlink entry: {name}", file=sys.stderr)
             continue
         target = project_root / name
         link = workspace / name
@@ -185,7 +201,8 @@ def _create_per_case_workspace(workspace, case_dirs, config, args):
     default_symlinks = ["scripts", ".claude", "CLAUDE.md", ".context", "skills"]
     symlink_names = (
         [s.strip() for s in args.symlinks.split(",") if s.strip()]
-        if args.symlinks else default_symlinks
+        if args.symlinks
+        else default_symlinks
     )
 
     case_order = []
@@ -208,6 +225,11 @@ def _create_per_case_workspace(workspace, case_dirs, config, args):
         if answers_src.is_file():
             shutil.copy2(answers_src, case_ws / "answers.yaml")
 
+        # Copy input files directory if present (e.g., source code for the
+        # agent to work on). Contents are placed at the workspace root,
+        # preserving relative paths within the directory.
+        _copy_input_files(case_dir, case_ws, config)
+
         # Create output directories
         for output in config.outputs:
             if output.path and output.path != ".":
@@ -218,16 +240,31 @@ def _create_per_case_workspace(workspace, case_dirs, config, args):
                     out.mkdir(parents=True, exist_ok=True)
 
         # Snapshot initial state so collect.py can diff for in-place edits
-        _git_env = {**os.environ,
-                    "GIT_AUTHOR_NAME": "eval-harness",
-                    "GIT_AUTHOR_EMAIL": "eval@harness",
-                    "GIT_COMMITTER_NAME": "eval-harness",
-                    "GIT_COMMITTER_EMAIL": "eval@harness"}
-        subprocess.run(["git", "-C", str(case_ws), "add", "-A"],
-                       check=True, capture_output=True)
-        subprocess.run(["git", "-C", str(case_ws), "commit", "-q",
-                        "-m", "initial", "--allow-empty"],
-                       check=True, capture_output=True, env=_git_env)
+        _git_env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "eval-harness",
+            "GIT_AUTHOR_EMAIL": "eval@harness",
+            "GIT_COMMITTER_NAME": "eval-harness",
+            "GIT_COMMITTER_EMAIL": "eval@harness",
+        }
+        subprocess.run(
+            ["git", "-C", str(case_ws), "add", "-A"], check=True, capture_output=True
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(case_ws),
+                "commit",
+                "-q",
+                "-m",
+                "initial",
+                "--allow-empty",
+            ],
+            check=True,
+            capture_output=True,
+            env=_git_env,
+        )
 
         # Symlink project resources (skip .claude — we create our own)
         for name in symlink_names:
@@ -279,14 +316,20 @@ def _find_input_file(case_dir):
     return None
 
 
-def _read_input(case_dir):
+def _read_input(case_dir, config=None):
     """Read the input file from a case directory.
 
     Returns the parsed content (dict) or None if no input file found.
     Prefers files named 'input.*', then falls back to first parseable file.
     Skips known non-input files like answers.yaml and reference.*.
+    When *config* is provided, workspace file roots are also skipped.
     """
     _SKIP_NAMES = {"answers", "reference", "expected", "gold"}
+    if config is not None:
+        ws = getattr(getattr(config, "dataset", None), "workspace", None)
+        _SKIP_NAMES = _SKIP_NAMES | {
+            Path(f).parts[0] for f in (getattr(ws, "files", None) or [])
+        }
 
     # First pass: look for a file named 'input.*'
     for suffix in (".yaml", ".yml", ".json"):
@@ -315,6 +358,7 @@ def _parse_file(path):
                 return yaml.safe_load(f)
         elif path.suffix == ".json":
             import json
+
             with open(path) as f:
                 return json.load(f)
     except Exception as e:
@@ -333,13 +377,13 @@ def _expand_symlink_permissions(allow_list):
     """
     extras = []
     for pattern in allow_list:
-        m = re.match(r'(Write|Edit|Bash)\((.+)\)', pattern)
+        m = re.match(r"(Write|Edit|Bash)\((.+)\)", pattern)
         if not m:
             continue
         tool, glob_path = m.groups()
         # Extract the directory prefix (everything before the first glob char)
-        prefix = re.split(r'[*?]', glob_path, maxsplit=1)[0].rstrip('/')
-        if not prefix or not prefix.startswith('/'):
+        prefix = re.split(r"[*?]", glob_path, maxsplit=1)[0].rstrip("/")
+        if not prefix or not prefix.startswith("/"):
             continue
         resolved = str(Path(prefix).resolve())
         if resolved != prefix:
@@ -393,13 +437,18 @@ def _carry_over_permissions(settings):
             if resolved != d and resolved not in dirs:
                 dirs.append(resolved)
         settings.setdefault("permissions", {}).setdefault(
-            "additionalDirectories", []).extend(dirs)
+            "additionalDirectories", []
+        ).extend(dirs)
 
 
 def _merge_harness_permissions(settings, config):
     """Merge eval.yaml permissions.allow into settings so named subagents
     (which may not inherit --allowed-tools) receive the harness patterns."""
-    allow = (config.permissions or {}).get("allow") if hasattr(config, "permissions") else None
+    allow = (
+        (config.permissions or {}).get("allow")
+        if hasattr(config, "permissions")
+        else None
+    )
     if not allow:
         return
     harness_allow = _expand_symlink_permissions(list(allow))
@@ -455,10 +504,12 @@ def _setup_subagent_only_hook(workspace, config):
     # Grant project root access
     project_root = str(Path.cwd().resolve())
     settings.setdefault("permissions", {}).setdefault(
-        "additionalDirectories", []).append(project_root)
+        "additionalDirectories", []
+    ).append(project_root)
 
     # Add SubagentStop hook
     from agent_eval.agent.stream_capture import setup_subagent_hook
+
     subagent_dir = str((workspace / "subagents").resolve())
     setup_subagent_hook(settings, subagent_dir)
 
@@ -474,96 +525,44 @@ def _setup_subagent_only_hook(workspace, config):
     print("HOOKS: SubagentStop configured (subagent capture)")
 
 
-def _extract_tool_patterns(match_text):
-    """Extract tool name patterns from a natural language match description.
-
-    Looks for known tool names and patterns like mcp__*. This is a
-    heuristic — eval-run's agent can refine these to concrete patterns
-    at runtime by reading eval.md.
-    """
-    import re
-    patterns = []
-    # Known tool names
-    known_tools = ["AskUserQuestion", "Bash", "Read", "Write", "Edit",
-                   "Glob", "Grep", "Agent", "Skill"]
-    for tool in known_tools:
-        if tool.lower() in match_text.lower():
-            patterns.append(tool)
-    # MCP tool patterns (mcp__something__*)
-    for m in re.finditer(r'(mcp__\w+(?:__\w+)*(?:\*)?)', match_text):
-        patterns.append(m.group(1))
-    # If nothing found, add "Bash" as fallback for script-based interception
-    if not patterns and ("script" in match_text.lower() or "api" in match_text.lower()):
-        patterns.append("Bash")
-    return patterns or ["*"]
-
-
 def _setup_tool_hooks(workspace, config):
-    """Generate settings.json and tool_handlers.yaml for tool interception."""
+    """Generate settings.json and tool_handlers.yaml for tool interception.
+
+    Delegates the core interception artifacts (handlers, hooks, interceptor
+    script) to :func:`agent_eval.tools.interception.generate_interception`,
+    then layers workspace-specific settings on top (project permissions,
+    subagent capture, execution env, runner settings).
+    """
     import json as _json
+    from agent_eval.tools.interception import generate_interception
 
-    # Build handler config with resolved patterns
-    # The `match` field is natural language — for now, extract tool name
-    # patterns from it. eval-run's agent resolves complex matches to
-    # concrete patterns in tool_handlers.yaml before execution.
-    handlers = []
-    hook_matchers = set()
-    for tool_cfg in config.inputs.tools:
-        handler = {"match": tool_cfg.match}
-        # Extract simple tool name patterns from match text
-        patterns = _extract_tool_patterns(tool_cfg.match)
-        handler["patterns"] = patterns
-        if tool_cfg.prompt:
-            handler["prompt"] = tool_cfg.prompt
-        if tool_cfg.prompt_file:
-            handler["prompt_file"] = tool_cfg.prompt_file
-        handlers.append(handler)
-        hook_matchers.update(patterns)
+    hooks_command = f"python3 '{workspace}/hooks/tools.py'"
+    resolved = config.config_dir / "tool_handlers.yaml" if config.config_dir else None
+    hook_matchers = generate_interception(
+        workspace, config, hooks_command,
+        resolved_handlers_path=resolved if resolved and resolved.is_file() else None)
 
-    # Write tool_handlers.yaml
-    handler_data = {"handlers": handlers}
-    if config.models.hook:
-        handler_data["hook_model"] = config.models.hook
-    with open(workspace / "tool_handlers.yaml", "w") as f:
-        yaml.dump(handler_data, f, default_flow_style=False)
+    # The shared module wrote .claude/settings.json with hooks + eval.yaml
+    # permissions + execution.env. Now layer workspace-specific settings.
+    settings_path = workspace / ".claude" / "settings.json"
+    settings = {}
+    if settings_path.exists():
+        try:
+            settings = _json.loads(settings_path.read_text())
+        except (_json.JSONDecodeError, OSError):
+            pass
 
-    # Copy interceptor script
-    hooks_dir = workspace / "hooks"
-    hooks_dir.mkdir(exist_ok=True)
-    interceptor_src = Path(__file__).parent / "tools.py"
-    if interceptor_src.exists():
-        shutil.copy2(interceptor_src, hooks_dir / "tools.py")
-
-    # Generate .claude/settings.json with PreToolUse hooks
-    # Don't overwrite if symlinked from project — create alongside
-    settings_dir = workspace / ".claude"
-    settings_dir.mkdir(parents=True, exist_ok=True)
-
-    settings = {"hooks": {"PreToolUse": []}}
-    for matcher in sorted(hook_matchers):
-        settings["hooks"]["PreToolUse"].append({
-            "matcher": matcher,
-            "hooks": [{
-                "type": "command",
-                "command": f"python3 {workspace}/hooks/tools.py",
-            }],
-        })
-
-    # Carry over permissions (allow, deny, additionalDirectories)
+    # Carry over project permissions (allow, deny, additionalDirectories)
     _carry_over_permissions(settings)
-
     _merge_harness_permissions(settings, config)
 
-    # Grant access to the project root so symlinked resources (skills,
-    # scripts, context) can be read by the sandbox.
+    # Grant access to the project root so symlinked resources can be read.
     project_root = str(Path.cwd().resolve())
     settings.setdefault("permissions", {}).setdefault(
-        "additionalDirectories", []).append(project_root)
+        "additionalDirectories", []
+    ).append(project_root)
 
     # Add SubagentStop hook to capture background agent transcripts.
-    # The hook copies each subagent's .jsonl file to workspace/subagents/.
-    # Requires session persistence ON (the runner must NOT pass
-    # --no-session-persistence) so transcript files survive until the hook fires.
     from agent_eval.agent.stream_capture import setup_subagent_hook
     subagent_dir = str((workspace / "subagents").resolve())
     setup_subagent_hook(settings, subagent_dir)
@@ -574,7 +573,7 @@ def _setup_tool_hooks(workspace, config):
     # Apply user-provided runner.settings last so they can override defaults
     _apply_runner_settings(settings, config)
 
-    with open(settings_dir / "settings.json", "w") as f:
+    with open(settings_path, "w") as f:
         _json.dump(settings, f, indent=2)
 
     print(f"HOOKS: {len(hook_matchers)} tool interceptors configured")

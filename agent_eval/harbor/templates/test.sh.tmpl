@@ -1,0 +1,24 @@
+#!/bin/bash
+# Harbor verifier: run the agent-eval-harness judge engine against the agent's
+# workspace and write /logs/verifier/reward.json (the judge -> reward bridge).
+# Bundled config travels with the task at /tests/eval.yaml.
+set -o pipefail
+
+mkdir -p /logs/verifier
+
+# Make the agent transcript available to stdout-based judges (e.g. pipeline_flow):
+# Harbor writes the agent's output under /logs/agent, not the workspace.
+cat /logs/agent/*.txt > "@@WORKDIR@@/stdout.log" 2>/dev/null || true
+
+python3 -m agent_eval.harbor.reward \
+  --config /tests/eval.yaml \
+  --case-dir "@@WORKDIR@@" \
+  --out-dir /logs/verifier
+rc=$?
+
+# Surface the produced artifacts to the host: Harbor downloads /logs/verifier,
+# so the run-mapper can render per-case Output files in the report.
+# Only copy the output paths declared in eval.yaml (not scratch files).
+@@COPY_OUTPUTS@@
+
+exit $rc

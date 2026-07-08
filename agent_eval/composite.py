@@ -27,6 +27,8 @@ def composite_score(
     numerics: dict[str, float] = {}
 
     for key, value in judge_results.items():
+        if value is None:
+            continue
         config = judge_configs.get(key, {})
         declared_type = config.get("type")
 

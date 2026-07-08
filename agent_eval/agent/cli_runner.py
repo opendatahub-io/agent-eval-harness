@@ -43,7 +43,6 @@ class CliRunner(EvalRunner):
         return cls(
             command=config.runner.command,
             env=config.execution.env,
-            env_strip=config.runner.env_strip,
             log_prefix=log_prefix,
             subagent_model=overrides.get("subagent_model"),
             effort=overrides.get("effort", config.runner.effort),
@@ -54,7 +53,6 @@ class CliRunner(EvalRunner):
         self,
         command: Union[str, list],
         env: Optional[dict] = None,
-        env_strip: Optional[list] = None,
         log_prefix: Optional[str] = None,
         subagent_model: Optional[str] = None,
         effort: Optional[str] = None,
@@ -70,7 +68,6 @@ class CliRunner(EvalRunner):
                 f"runner.command must be a string or list, got {type(command).__name__}")
         self._command = command
         self._extra_env = env or {}
-        self._env_strip = env_strip or []
         self._log_prefix = log_prefix
         self._subagent_model = subagent_model or ""
         self._effort = effort or ""
@@ -90,6 +87,7 @@ class CliRunner(EvalRunner):
         system_prompt: Optional[str] = None,
         max_budget_usd: float = 5.0,
         timeout_s: int = 600,
+        extra_env: Optional[dict] = None,
     ) -> RunResult:
         workspace = workspace.resolve()
         output_dir = workspace / "output"
@@ -134,7 +132,7 @@ class CliRunner(EvalRunner):
             with _print_lock:
                 print(f"  {self._log_prefix} | Running: {cmd_str[:120]}", flush=True)
 
-        env = self._build_env()
+        env = self._build_env(extra_env=extra_env)
         start = time.monotonic()
 
         try:
@@ -221,17 +219,18 @@ class CliRunner(EvalRunner):
             return [_sub(part) for part in self._command]
         return _sub(self._command)
 
-    def _build_env(self) -> dict:
-        """Build subprocess environment: inherit env, apply strip list, add extras."""
+    def _build_env(self, extra_env=None) -> dict:
+        """Build subprocess environment: inherit env, add extras."""
         env = os.environ.copy()
-        for key in self._env_strip:
-            env.pop(key, None)
         for k, v in self._extra_env.items():
             if isinstance(v, str) and v.startswith("$"):
                 resolved = os.environ.get(v[1:])
                 if resolved is not None:
                     env[k] = resolved
             else:
+                env[k] = str(v)
+        if extra_env:
+            for k, v in extra_env.items():
                 env[k] = str(v)
         return env
 

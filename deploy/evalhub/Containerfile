@@ -1,9 +1,27 @@
-FROM registry.access.redhat.com/ubi9/python-311:latest
+# EvalHub provider image.
+#
+# The adapter runs the eval IN-PROCESS inside the Job pod created by EvalHub's
+# server — no sub-pods, no Harbor, no container runtime needed. It uses
+# ClaudeCodeRunner directly (matching EvalHub's architecture where adapter pods
+# are execution-only).
+#
+# Build (requires the base image to exist):
+#   podman build -f deploy/evalhub/Containerfile -t quay.io/rhoai/agent-eval-hub:latest .
+FROM quay.io/rhoai/agent-eval-harness:latest
+
+USER 0
+
+# EvalHub adapter deps (not needed in Harbor trial pods):
+# - eval-hub-sdk: FrameworkAdapter contract (JobSpec → JobResults)
+# - boto3: S3 dataset download (EvalHub datasets)
+# - mlflow-skinny: result logging
+RUN pip install --no-cache-dir \
+    "eval-hub-sdk[adapter]>=0.1,<1.0" \
+    "boto3>=1.34,<2.0" \
+    "mlflow-skinny>=3.5"
+
+COPY deploy/evalhub/entrypoint.py /app/entrypoint.py
+
 WORKDIR /app
-COPY pyproject.toml .
-RUN pip install --no-cache-dir ".[evalhub]" anthropic[vertex]
-COPY agent_eval/ agent_eval/
-COPY skills/eval-run/scripts/ skills/eval-run/scripts/
-COPY deploy/evalhub/entrypoint.py .
-COPY deploy/evalhub/rfe-assess/ /app/eval-config/
+USER 1001
 ENTRYPOINT ["python3", "entrypoint.py"]

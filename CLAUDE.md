@@ -17,6 +17,16 @@ agent_eval/              # Python package (config, runner, state)
     claude_code.py       # Claude Code CLI runner (claude --print)
     cli_runner.py        # Opaque CLI runner (arbitrary command templates)
     stream_capture.py    # Stream-json processing (events, timestamps, usage, hooks)
+  harbor/                # Harbor integration (containerized execution)
+    tasks.py             # Generate self-contained Harbor task packages from eval.yaml
+    reward.py            # Judge → Harbor reward.json bridge (in-container verifier)
+    run.py               # /eval-run --runner harbor orchestration
+    results.py           # Parse Harbor job dirs into per-case results
+    podman.py            # Podman BaseEnvironment (local containers)
+    kubernetes.py        # Kubernetes BaseEnvironment (OpenShift, Python client)
+    templates/           # task.toml, instruction.md, test.sh templates
+  tools/
+    interception.py      # Shared tool interception generation (workspace + Harbor)
   mlflow/
     experiment.py        # MLflow experiment setup, server check, feedback logging
     datasets.py          # Dataset create/sync utilities
@@ -50,6 +60,8 @@ skills/eval-analyze/     # Skill: bootstrap eval config
 
 skills/eval-dataset/     # Skill: generate test cases
   SKILL.md               # Bootstrap, expand, or extract cases from traces
+  scripts/
+    harbor.py            # CLI: generate Harbor task packages (thin wrapper → harbor.tasks)
 
 skills/eval-run/         # Skill: execute eval suite
   SKILL.md               # Prepare, execute, collect, score, report
@@ -115,7 +127,7 @@ eval/                    # Committed benchmarks and reproducers
 Skills projects create an `eval.yaml` config file with:
 - `skill` — skill to evaluate
 - `execution` — `mode` (`case` or `batch`), `arguments` template with `{field}` placeholders, optional `timeout`/`max_budget_usd`/`parallelism` (concurrent case execution), and `env` for injecting environment variables into workspaces (`$VAR` syntax resolves from caller's env)
-- `runner` — `type` discriminator (`claude-code`, etc.) plus runner-specific `effort`/`settings`/`plugin_dirs`/`env_strip`/`system_prompt`
+- `runner` — `type` discriminator (`claude-code`, etc.) plus runner-specific `effort`/`settings`/`plugin_dirs`/`env`/`system_prompt`
 - `models` — defaults for `skill`/`subagent`/`judge`/`hook` roles (CLI flags override). `hook` is the model for LLM-based AskUserQuestion answering.
 - `mlflow` — `experiment`, optional `tracking_uri`/`tags`
 - `permissions` — `allow`/`deny` tool patterns for headless execution
@@ -126,6 +138,7 @@ Skills projects create an `eval.yaml` config file with:
 - `judges` — `builtin` reusable judges (from `agent_eval/judges/`), inline `check` scripts, LLM `prompt`/`prompt_file` (Jinja2 rendered), external `module`/`function`. Optional `arguments` dict for parameterization. Optional `if` condition to skip judges per case based on annotations. Judges receive `outputs["annotations"]` from dataset `annotations.yaml`.
 - `thresholds` — per-judge regression detection. Valid keys: `min_mean`, `min_pass_rate`, `min_win_rate`
 - `matrix` — full-factorial experiment design for `/eval-anova`. `factors` (named lists of levels), `replications`. Factor `model` maps to the runner's model; `effort` maps to thinking effort level; other factors pass through as runner kwargs.
+- `reward` — optional. Collapses per-judge results into a single scalar in `[0, 1]` for RL training (GRPO). Two mutually exclusive modes: `judge` names a single judge whose value is the reward (clamped to `[0, 1]` as-is, or set `normalize: true` to map it from `score_range`; `gate` defaults to false here), validated against the defined judges at config load. Otherwise `formula` composes from multiple judges: `weighted` (weighted sum of `weights`) or a Python `<expression>` over judge names (allowed calls: `min`/`max`/`abs`/`round`/`sum`/`len`/`mean`, AST-validated at config load). `gate: true` zeros the reward on any false boolean judge — it gates on *every* boolean judge, so expressions using booleans as their own gate want `gate: false`. Resolution order: `reward:` section → default (boolean gates + averaged normalized numerics).
 
 Runs are stored in `$AGENT_EVAL_RUNS_DIR` (default `eval/runs`), configured during `/eval-setup`.
 
@@ -181,22 +194,43 @@ The `brainstorm/` directory contains exploratory ideas and design thinking. Thes
 - CI integration patterns and examples
 - `traces.events` implementation — parse stream-json into structured `outputs["events"]` for judges
 
-## EvalHub Integration
+## Execution Paths
 
-The `agent_eval.evalhub` package provides a custom EvalHub provider that runs
-agent skill evaluations on Red Hat OpenShift AI. The adapter:
+The same `eval.yaml` works unchanged across three parallel execution paths.
+The execution substrate is a CLI flag, never in the eval config.
+
+### Local (`/eval-run` or `agent-eval run`)
+Process-level execution — the harness invokes the agent CLI directly, collects
+artifacts, scores with judges, generates the report. No containers.
+
+### Harbor (`harbor run` or `/eval-run --runner harbor`)
+Containerized execution via [Harbor](https://github.com/laude-institute/harbor).
+Self-contained task packages (from `/eval-dataset`) carry instruction, inputs,
+tool interception, and the verifier (judge engine as `reward.json`). Any Harbor
+agent (claude-code, opencode, codex, etc.) runs them directly — no custom agent
+wrapper. Environments: Podman (local) and Kubernetes (OpenShift). See
+`deploy/harbor/README.md`.
+
+### EvalHub (platform-triggered)
+The `agent_eval.evalhub` adapter runs the eval **in-process** inside the Job pod
+created by EvalHub's server — matching EvalHub's architecture where adapter pods
+are execution-only (no sub-pod creation). Uses `ClaudeCodeRunner` directly, not
+Harbor. In-process parallelism handles concurrent cases within the pod.
 
 - Implements `FrameworkAdapter` from `eval-hub-sdk`
 - Downloads test cases from S3 via `s3_dataset.py`
-- Translates `eval.yaml` to EvalHub provider definitions via `config_translator.py`
 - Maps `RunResult` + judge scores to `JobResults` via `results_mapper.py`
 - Ships as a UBI9 container image (`deploy/evalhub/Containerfile`)
 
-### Local skills (unchanged)
-eval-analyze, eval-dataset, eval-optimize, eval-review — authoring workflows
+## Container Images
 
-### EvalHub-managed (via provider)
-Execution, result storage, regression detection, OCI export (MLflow tracking is optional)
+| Image | Containerfile | Used by |
+|---|---|---|
+| `agent-eval-harness` | `deploy/Containerfile` | Trial pods (Harbor), EvalHub Job pods (base) |
+| `agent-eval-hub` | `deploy/evalhub/Containerfile` | EvalHub provider (FROM base + eval-hub-sdk) |
+
+No project-specific images needed. Project resources via ConfigMap (K8s),
+bind-mount (Podman), or `FROM agent-eval-harness` in the project's own repo.
 
 <!-- SPECKIT START -->
 For additional context about the current feature work, read `specs/005-eval-directory-layout/plan.md`

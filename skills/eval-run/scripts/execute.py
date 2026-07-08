@@ -22,12 +22,17 @@ import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import time
 from pathlib import Path
 
 from agent_eval.agent import RUNNERS
+from agent_eval.hooks import (
+    HookError, build_hook_env, collect_hook_outputs,
+    run_hooks, run_hooks_safe, save_hook_data,
+)
 
 _HARNESS_SYSTEM_PROMPT = (
     "You are running inside an evaluation harness. Tool interception hooks "
@@ -64,6 +69,8 @@ def main():
                         help="Claude Code reasoning effort (default: from eval.yaml runner.effort)")
     parser.add_argument("--parallelism", type=int, default=None,
                         help="Max parallel case executions (default: from eval.yaml or sequential)")
+    parser.add_argument("--run-id", default=None,
+                        help="Run identifier (for hook env vars and log paths)")
     args = parser.parse_args()
 
     from agent_eval.config import EvalConfig
@@ -157,34 +164,63 @@ def main():
     print(f"Agent: {runner.name} | Model: {model}", file=sys.stderr)
     print(f"Workspace: {args.workspace}", file=sys.stderr)
 
-    # Set MLflow environment in the workspace settings
-    if mlflow_experiment:
-        from agent_eval.mlflow.experiment import inject_tracing_env
-        inject_tracing_env(args.workspace, project_root=Path.cwd(),
-                           tracking_uri=config.mlflow.tracking_uri,
-                           experiment_name=mlflow_experiment)
-
-    workspace_settings = Path(args.workspace) / ".claude" / "settings.json"
-    settings_path = workspace_settings if workspace_settings.exists() else None
-
-
-    result = runner.run_skill(
-        skill_name=args.skill,
-        args=skill_args,
-        workspace=Path(args.workspace),
+    # Build hook environment for batch mode
+    run_id = args.run_id or ""
+    hook_env = build_hook_env(
+        workspace=args.workspace,
+        run_id=run_id,
+        config_path=str(Path(args.config).resolve()),
+        project_root=str(Path.cwd()),
         model=model,
-        settings_path=settings_path,
-        system_prompt=system_prompt,
-        max_budget_usd=max_budget,
-        timeout_s=timeout_s,
     )
+    log_dir = output_dir / "hooks"
 
-    _save_result(result, args, output_dir, runner, model, eval_params=eval_params)
+    try:
+        # Run before_all hooks and collect outputs
+        global_hook_outputs = {}
+        if config.hooks.before_all:
+            print("Running before_all hooks...", file=sys.stderr)
+            run_hooks(config.hooks.before_all, env=hook_env,
+                      cwd=Path.cwd(), log_dir=log_dir,
+                      phase_name="before_all")
+            global_hook_outputs = collect_hook_outputs(Path(args.workspace))
 
-    # Copy batch input files to output dir for MLflow artifact logging.
-    _copy_input_files_batch(Path(args.workspace), output_dir)
+        save_hook_data(output_dir, global_hook_outputs.get("data"))
 
-    sys.exit(result.exit_code)
+        # Set MLflow environment in the workspace settings
+        if mlflow_experiment:
+            from agent_eval.mlflow.experiment import inject_tracing_env
+            inject_tracing_env(args.workspace, project_root=Path.cwd(),
+                               tracking_uri=config.mlflow.tracking_uri,
+                               experiment_name=mlflow_experiment)
+
+        workspace_settings = Path(args.workspace) / ".claude" / "settings.json"
+        settings_path = workspace_settings if workspace_settings.exists() else None
+
+        result = runner.run_skill(
+            skill_name=args.skill,
+            args=skill_args,
+            workspace=Path(args.workspace),
+            model=model,
+            settings_path=settings_path,
+            system_prompt=system_prompt,
+            max_budget_usd=max_budget,
+            timeout_s=timeout_s,
+            extra_env=global_hook_outputs.get("env") or None,
+        )
+
+        _save_result(result, args, output_dir, runner, model, eval_params=eval_params)
+
+        # Copy batch input files to output dir for MLflow artifact logging.
+        _copy_input_files_batch(Path(args.workspace), output_dir)
+
+        sys.exit(result.exit_code)
+    finally:
+        if config.hooks.after_all:
+            print("Running after_all hooks...", file=sys.stderr)
+            run_hooks_safe(config.hooks.after_all, env=hook_env,
+                           cwd=Path.cwd(), log_dir=log_dir,
+                           phase_name="after_all")
 
 
 def _resolve_arguments(template, case_data):
@@ -245,7 +281,8 @@ def _build_eval_params(args, config, skill_args, max_budget, timeout_s, effort=N
 def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
                      skill_args_template, model, mlflow_experiment,
                      mlflow_tracking_uri, system_prompt, max_budget, timeout_s,
-                     total_cases, index):
+                     total_cases, index, config=None, hook_env=None,
+                     global_hook_outputs=None):
     """Execute and collect results for a single test case.
 
     Thread-safe: all I/O is to case-specific directories.
@@ -277,16 +314,84 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
     print(f"  [{index}/{total_cases}] {case_id}: /{skill_name} {case_args}",
           file=sys.stderr)
 
-    result = runner.run_skill(
-        skill_name=skill_name,
-        args=case_args,
-        workspace=case_ws,
-        model=model,
-        settings_path=settings_path,
-        system_prompt=system_prompt,
-        max_budget_usd=max_budget,
-        timeout_s=timeout_s,
-    )
+    # Per-case hooks: build case-specific env, run before_each/after_each.
+    # The entire block is wrapped in try/finally so that after_each cleanup
+    # hooks fire even if before_each or run_skill raises.
+    case_hook_env = None
+    merged_hook_data = {}
+    merged_env = {}
+    result = None
+    error_msg = ""
+    try:
+        if config and config.hooks and hook_env:
+            dataset_path = config.dataset.path
+            case_source_dir = str(config.resolve_path(dataset_path) / case_id) if dataset_path else ""
+            case_hook_env = {
+                **hook_env,
+                "CASE_ID": case_id,
+                "CASE_WORKSPACE": str(case_ws.resolve()),
+                "CASE_SOURCE_DIR": case_source_dir,
+                "CASE_INPUT": str((case_ws / "input.yaml").resolve()),
+            }
+            log_dir = output_dir / "hooks"
+            if config.hooks.before_each:
+                run_hooks(config.hooks.before_each, env=case_hook_env,
+                          cwd=case_ws, log_dir=log_dir,
+                          phase_name="before_each", case_id=case_id)
+
+            # Collect hook outputs and merge with global
+            case_outputs = collect_hook_outputs(case_ws)
+            global_env = (global_hook_outputs or {}).get("env", {})
+            case_env = case_outputs.get("env", {})
+            merged_env = {**global_env, **case_env}
+
+            if merged_env:
+                case_hook_env.update({k: str(v) for k, v in merged_env.items()})
+
+            global_data = (global_hook_outputs or {}).get("data", {})
+            case_data_out = case_outputs.get("data", {})
+            merged_hook_data = {**global_data, **case_data_out}
+
+        result = runner.run_skill(
+            skill_name=skill_name,
+            args=case_args,
+            workspace=case_ws,
+            model=model,
+            settings_path=settings_path,
+            system_prompt=system_prompt,
+            max_budget_usd=max_budget,
+            timeout_s=timeout_s,
+            extra_env=merged_env or None,
+        )
+    except Exception as exc:
+        print(f"    → {case_id}: ERROR ({exc})", file=sys.stderr)
+        result = None
+        error_msg = str(exc)
+    finally:
+        # Run after_each hooks (guaranteed, like after_all)
+        if config and config.hooks and config.hooks.after_each and case_hook_env:
+            log_dir = output_dir / "hooks"
+            run_hooks_safe(config.hooks.after_each, env=case_hook_env,
+                           cwd=case_ws, log_dir=log_dir,
+                           phase_name="after_each", case_id=case_id)
+
+    if result is None:
+        case_output = output_dir / "cases" / case_id
+        case_output.mkdir(parents=True, exist_ok=True)
+        failed_result = {
+            "exit_code": 1,
+            "duration_s": 0,
+            "token_usage": None,
+            "cost_usd": None,
+            "num_turns": None,
+            "per_model_usage": None,
+            "per_model_turns": None,
+            "error": error_msg,
+        }
+        with open(case_output / "run_result.json", "w") as f:
+            json.dump(failed_result, f, indent=2)
+            f.write("\n")
+        return case_id, failed_result
 
     case_output = output_dir / "cases" / case_id
     case_output.mkdir(parents=True, exist_ok=True)
@@ -294,6 +399,9 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
         (case_output / "stdout.log").write_text(result.stdout)
     if result.stderr:
         (case_output / "stderr.log").write_text(result.stderr)
+
+    # Save hook output data for judges
+    save_hook_data(case_output, merged_hook_data)
 
     if input_path.exists() and not input_path.is_symlink():
         shutil.copy2(input_path, case_output / "input.yaml")
@@ -353,48 +461,79 @@ def _execute_per_case(args, config, runner, runner_cls,
           file=sys.stderr)
     print(f"Agent: {runner.name} | Model: {model}", file=sys.stderr)
 
+    # Build hook environment
+    run_id = args.run_id or ""
+    hook_env = build_hook_env(
+        workspace=str(workspace),
+        run_id=run_id,
+        config_path=str(Path(args.config).resolve()),
+        project_root=str(Path.cwd()),
+        model=model,
+    )
+    log_dir = output_dir / "hooks"
+
     case_results = {}
     wall_clock_start = time.monotonic()
 
-    if effective_parallelism > 1:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+    try:
+        # Run before_all hooks and collect outputs
+        global_hook_outputs = {}
+        if config.hooks.before_all:
+            print("Running before_all hooks...", file=sys.stderr)
+            run_hooks(config.hooks.before_all, env=hook_env,
+                      cwd=Path.cwd(), log_dir=log_dir,
+                      phase_name="before_all")
+            global_hook_outputs = collect_hook_outputs(workspace)
 
-        futures = {}
-        with ThreadPoolExecutor(max_workers=effective_parallelism) as pool:
+        if effective_parallelism > 1:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            futures = {}
+            with ThreadPoolExecutor(max_workers=effective_parallelism) as pool:
+                for i, entry in enumerate(case_order, 1):
+                    case_id = entry["case_id"] if isinstance(entry, dict) else entry
+                    case_ws = workspace / "cases" / case_id
+                    case_runner = runner_cls.from_config(
+                        config,
+                        log_prefix=f"eval:{case_id}",
+                        subagent_model=subagent_model,
+                        mlflow_experiment=mlflow_experiment,
+                        mlflow_tracking_uri=config.mlflow.tracking_uri,
+                        effort=effort,
+                    )
+                    fut = pool.submit(
+                        _run_single_case, case_runner, args.skill, case_id,
+                        case_ws, output_dir, skill_args_template, model,
+                        mlflow_experiment, config.mlflow.tracking_uri,
+                        system_prompt, max_budget, timeout_s,
+                        len(case_order), i,
+                        config=config, hook_env=hook_env,
+                        global_hook_outputs=global_hook_outputs)
+                    futures[fut] = case_id
+
+                for fut in as_completed(futures):
+                    case_id, result = fut.result()
+                    if result is not None:
+                        case_results[case_id] = result
+        else:
             for i, entry in enumerate(case_order, 1):
                 case_id = entry["case_id"] if isinstance(entry, dict) else entry
                 case_ws = workspace / "cases" / case_id
-                case_runner = runner_cls.from_config(
-                    config,
-                    log_prefix=f"eval:{case_id}",
-                    subagent_model=subagent_model,
-                    mlflow_experiment=mlflow_experiment,
-                    mlflow_tracking_uri=config.mlflow.tracking_uri,
-                    effort=effort,
-                )
-                fut = pool.submit(
-                    _run_single_case, case_runner, args.skill, case_id,
-                    case_ws, output_dir, skill_args_template, model,
-                    mlflow_experiment, config.mlflow.tracking_uri,
-                    system_prompt, max_budget, timeout_s,
-                    len(case_order), i)
-                futures[fut] = case_id
-
-            for fut in as_completed(futures):
-                case_id, result = fut.result()
+                case_id, result = _run_single_case(
+                    runner, args.skill, case_id, case_ws, output_dir,
+                    skill_args_template, model, mlflow_experiment,
+                    config.mlflow.tracking_uri, system_prompt,
+                    max_budget, timeout_s, len(case_order), i,
+                    config=config, hook_env=hook_env,
+                    global_hook_outputs=global_hook_outputs)
                 if result is not None:
                     case_results[case_id] = result
-    else:
-        for i, entry in enumerate(case_order, 1):
-            case_id = entry["case_id"] if isinstance(entry, dict) else entry
-            case_ws = workspace / "cases" / case_id
-            case_id, result = _run_single_case(
-                runner, args.skill, case_id, case_ws, output_dir,
-                skill_args_template, model, mlflow_experiment,
-                config.mlflow.tracking_uri, system_prompt,
-                max_budget, timeout_s, len(case_order), i)
-            if result is not None:
-                case_results[case_id] = result
+    finally:
+        if config.hooks.after_all:
+            print("Running after_all hooks...", file=sys.stderr)
+            run_hooks_safe(config.hooks.after_all, env=hook_env,
+                           cwd=Path.cwd(), log_dir=log_dir,
+                           phase_name="after_all")
 
     wall_clock_s = round(time.monotonic() - wall_clock_start, 1)
 

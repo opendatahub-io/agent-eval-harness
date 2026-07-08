@@ -785,14 +785,26 @@ def build_trace(stdout_path, run_result, run_id, experiment_id,
                     trace_cost[m_name] = m_stats["cost_usd"]
         trace_metadata["mlflow.trace.cost"] = json.dumps(trace_cost)
     if token_usage:
-        input_tokens = (token_usage.get("input", 0)
-                        + token_usage.get("cache_create", 0))
+        # Follow MLflow's anthropic / claude_code token-usage convention so the
+        # Usage dashboard renders Input / Output / Cache Read / Cache Write as
+        # distinct lines: input_tokens is the NON-cached (fresh) input, cache
+        # tokens are separate optional keys, and total_tokens = input + output
+        # (cache excluded). The cache lines carry the bulk of the volume; cost
+        # stays separate via mlflow.llm.cost / mlflow.trace.cost.
+        input_tokens = token_usage.get("input", 0)
         output_tokens = token_usage.get("output", 0)
-        trace_metadata["mlflow.trace.tokenUsage"] = json.dumps({
+        usage = {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": input_tokens + output_tokens,
-        })
+        }
+        cache_read = token_usage.get("cache_read", 0)
+        cache_create = token_usage.get("cache_create", 0)
+        if cache_read:
+            usage["cache_read_input_tokens"] = cache_read
+        if cache_create:
+            usage["cache_creation_input_tokens"] = cache_create
+        trace_metadata["mlflow.trace.tokenUsage"] = json.dumps(usage)
     if session_id:
         trace_metadata["mlflow.trace.session"] = session_id
 
@@ -857,8 +869,18 @@ def log_trace(trace_dict):
         client = MlflowClient()
         # No public API for logging pre-built traces as of MLflow 3.5.
         # _log_trace is the only way to submit a Trace object.
-        client._log_trace(trace)
-        return trace_dict["info"]["trace_id"]
+        # IMPORTANT: _log_trace returns a backend-generated trace ID that
+        # differs from the client-provided trace_dict["info"]["trace_id"].
+        # Always return the backend ID so downstream FK operations succeed.
+        server_trace_id = client._log_trace(trace)
+        if not server_trace_id:
+            print(
+                "WARNING: _log_trace returned no backend ID; falling back to "
+                "client trace_id — downstream log_feedback may hit FK errors.",
+                file=sys.stderr,
+            )
+            return trace_dict["info"]["trace_id"]
+        return server_trace_id
     except Exception as e:
         print(f"WARNING: failed to log trace: {e}", file=sys.stderr)
         return None

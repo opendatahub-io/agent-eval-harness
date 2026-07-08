@@ -12,7 +12,7 @@ import pytest
 import yaml
 
 from agent_eval.agent.base import RunResult
-from agent_eval.anova_runner import _score_module, make_run_fn
+from agent_eval.anova_runner import _score_module, _validate_case_id, make_run_fn
 from agent_eval.config import EvalConfig
 from agent_eval.matrix import Condition
 
@@ -80,11 +80,13 @@ def _mock_llm(monkeypatch, captured: dict, score_val=4):
     """Patch the score module's LLM call to capture the rendered prompt."""
     score = _score_module()
 
-    def fake_call(prompt, model, system_prompt, images=None, max_tokens=1024):
-        captured["prompt"] = prompt
-        return f'{{"score": {score_val}, "rationale": "ok"}}'
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
 
-    monkeypatch.setattr(score, "_call_judge_llm", fake_call)
+    def fake_call(prompt, model, feedback_type, images=None, max_tokens=4096):
+        captured["prompt"] = prompt
+        return score_val, "ok"
+
+    monkeypatch.setattr(score, "_call_structured_judge", fake_call)
 
 
 def test_run_fn_returns_flat_judge_dict(tmp_path, monkeypatch):
@@ -140,3 +142,13 @@ def test_run_cell_composite_with_bridge(tmp_path, monkeypatch):
     res = run_cell(Condition(condition_id="c", levels={"model": "m"}),
                    "task-x", 0, {}, jc, run_fn=run_fn)
     assert res.composite == pytest.approx(1.0)  # gate True, score 5 -> 1.0
+
+
+@pytest.mark.parametrize("case_id", ["../escape", "nested/case", "/abs", "", ".."])
+def test_case_id_rejects_paths(case_id):
+    with pytest.raises(ValueError, match="Invalid case_id"):
+        _validate_case_id(case_id)
+
+
+def test_case_id_accepts_plain_case_name():
+    _validate_case_id("task-0031")

@@ -45,7 +45,7 @@ class ClaudeCodeRunner(EvalRunner):
         return cls(
             permissions=config.permissions,
             plugin_dirs=resolved_plugin_dirs,
-            env_strip=config.runner.env_strip,
+            env=config.runner.env,
             system_prompt=config.runner.system_prompt,
             subagent_model=overrides.get("subagent_model"),
             mlflow_experiment=overrides.get("mlflow_experiment"),
@@ -59,7 +59,7 @@ class ClaudeCodeRunner(EvalRunner):
         permissions: Optional[dict] = None,
         subagent_model: Optional[str] = None,
         plugin_dirs: Optional[list] = None,
-        env_strip: Optional[list] = None,
+        env: Optional[dict] = None,
         system_prompt: Optional[str] = None,
         mlflow_experiment: Optional[str] = None,
         mlflow_tracking_uri: Optional[str] = None,
@@ -69,7 +69,7 @@ class ClaudeCodeRunner(EvalRunner):
         self._permissions = permissions or {}
         self._subagent_model = subagent_model
         self._plugin_dirs = plugin_dirs or []
-        self._env_strip = env_strip or []
+        self._env = env or {}
         self._system_prompt = system_prompt
         self._mlflow_experiment = mlflow_experiment
         self._mlflow_tracking_uri = mlflow_tracking_uri
@@ -104,6 +104,7 @@ class ClaudeCodeRunner(EvalRunner):
         system_prompt: Optional[str] = None,
         max_budget_usd: float = 5.0,
         timeout_s: int = 600,
+        extra_env: Optional[dict] = None,
     ) -> RunResult:
         cmd = [
             "claude",
@@ -160,7 +161,7 @@ class ClaudeCodeRunner(EvalRunner):
                 stderr=subprocess.PIPE,
                 cwd=str(workspace),
                 text=True,
-                env=self._build_env(),
+                env=self._build_env(extra_env=extra_env),
             )
 
             proc.stdin.write(prompt)
@@ -331,20 +332,33 @@ class ClaudeCodeRunner(EvalRunner):
     # Environment keys safe to forward to evaluated skills
     _SAFE_ENV_KEYS = {
         "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TERM",
-        "ANTHROPIC_API_KEY", "ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION",
-        "CLAUDE_CODE_USE_VERTEX",
+        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL", "ANTHROPIC_VERTEX_PROJECT_ID",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "CLOUD_ML_REGION", "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_CODE_SUBAGENT_MODEL",
         "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT",
         "CLOUDSDK_CONFIG", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
         "MLFLOW_TRACKING_URI", "MLFLOW_EXPERIMENT_NAME",
-        "CLAUDE_CODE_SUBAGENT_MODEL",
         "AGENT_EVAL_RUNS_DIR",
     }
 
-    def _build_env(self):
+    def _build_env(self, extra_env=None):
         """Build subprocess environment with allowlisted keys only."""
         env = {k: v for k, v in os.environ.items() if k in self._SAFE_ENV_KEYS}
-        for key in self._env_strip:
-            env.pop(key, None)
+        for k, v in self._env.items():
+            if v is None:
+                continue
+            if isinstance(v, str) and v.startswith("$"):
+                resolved = os.environ.get(v[1:])
+                if resolved is not None:
+                    env[k] = resolved
+            else:
+                env[k] = str(v)
+        if extra_env:
+            for k, v in extra_env.items():
+                env[k] = str(v)
         if self._subagent_model:
             env["CLAUDE_CODE_SUBAGENT_MODEL"] = self._subagent_model
         if self._mlflow_experiment:

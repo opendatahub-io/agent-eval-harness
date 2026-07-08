@@ -105,3 +105,24 @@ Lead with `## Recommendation` so readers see the call-to-action before the suppo
 ```
 
 Use tables for per-case data. Be decisive — don't hedge with "might" or "could be". State your assessment and the evidence supporting it. The Recommendation section is the only thing many readers will see, so make it self-contained — it should land even without the supporting sections below.
+
+## Saving the analysis
+
+Write analysis to `$AGENT_EVAL_RUNS_DIR/<eval-name>/<id>/analysis.md` with YAML
+frontmatter so the HTML report can attribute it:
+
+```markdown
+---
+agent: Claude Code
+model: <your-model-id>
+date: <UTC ISO 8601>
+---
+
+## Recommendation
+...
+## Summary
+...
+```
+
+The frontmatter is consumed by the report renderer (not displayed verbatim).
+The file is rendered as a prominent callout near the top of the HTML report.

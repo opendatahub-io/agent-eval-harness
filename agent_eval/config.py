@@ -1,5 +1,6 @@
 """Evaluation suite configuration loaded from eval.yaml files."""
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Union
@@ -8,9 +9,34 @@ import sys
 import yaml
 
 
-def _validate_relative_path(value: str, field_name: str,
-                            reject_root: bool = False,
-                            allow_absolute: bool = False) -> str:
+def resolve_arguments(template: str, input_data: dict) -> str:
+    """Resolve {field} / {field?} placeholders from input.yaml data.
+
+    {field}  — required; raises KeyError if missing.
+    {field?} — optional; omitted (empty) if missing.
+    """
+    def _replacer(match):
+        f = match.group(1)
+        optional = f.endswith("?")
+        if optional:
+            f = f[:-1]
+        value = input_data.get(f)
+        if value is None:
+            if optional:
+                return ""
+            raise KeyError(f"Required field '{f}' not found in input.yaml")
+        return str(value)
+
+    result = re.sub(r"\{([^}]+)\}", _replacer, template)
+    return re.sub(r"[ \t]+", " ", result).strip()
+
+
+def _validate_relative_path(
+    value: str,
+    field_name: str,
+    reject_root: bool = False,
+    allow_absolute: bool = False,
+) -> str:
     """Reject parent-traversing paths (and optionally absolute paths).
 
     Args:
@@ -33,7 +59,44 @@ def _validate_relative_path(value: str, field_name: str,
         raise ValueError(
             f"{field_name} cannot be '.' (project root) — use a subdirectory. "
             f"Outputs must be in a named subdirectory so the harness can "
-            f"identify, collect, and clean them without affecting the project.")
+            f"identify, collect, and clean them without affecting the project."
+        )
+    return value
+
+
+def _validate_path_segment(value: str, name: str) -> str:
+    """Validate that a value is a single path segment (no directory traversal).
+
+    Ensures the value contains no path separators (/ or \\), is not a
+    relative directory reference (. or ..), and contains no control characters.
+    Used to prevent path traversal attacks (CWE-22) when constructing
+    filesystem paths from user-controlled input.
+
+    Args:
+        value: The path segment to validate (e.g., run_id, skill name)
+        name: Parameter name for error messages
+
+    Returns:
+        The validated value
+
+    Raises:
+        ValueError: If value is not a valid single path segment
+    """
+    if not _is_valid_eval_name(value):
+        # Provide detailed error message based on what failed
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{name} must be a non-empty string, got: {value!r}")
+        if "/" in value or "\\" in value:
+            raise ValueError(
+                f"{name} must be a single path segment, "
+                f"cannot contain path separators: {value!r}"
+            )
+        if value in (".", ".."):
+            raise ValueError(
+                f"{name} cannot be a relative directory reference: {value!r}"
+            )
+        # Control characters or other invalid chars
+        raise ValueError(f"{name} contains invalid characters: {value!r}")
     return value
 
 
@@ -43,6 +106,27 @@ class DiscoveryResult:
     path: Path
     eval_name: str
     is_root: bool
+
+
+@dataclass
+class WorkspaceConfig:
+    """Workspace file provisioning for evaluation cases.
+
+    ``files`` is a whitelist of relative paths inside each case directory
+    to copy into the agent workspace.  Directory entries copy recursively;
+    file entries copy the single file.  Paths not listed are left behind.
+    """
+
+    files: list = field(default_factory=list)
+
+
+@dataclass
+class DatasetConfig:
+    """Dataset location, schema, and workspace provisioning."""
+
+    path: str = ""
+    schema: str = ""
+    workspace: WorkspaceConfig = field(default_factory=WorkspaceConfig)
 
 
 @dataclass
@@ -60,20 +144,22 @@ class OutputConfig:
       name starts with the expanded prefix are assigned to that case.
       Use "*" for shared directories (copied to every case).
     """
-    path: str = ""       # File artifacts directory
-    tool: str = ""       # Tool call name/pattern to capture
+
+    path: str = ""  # File artifacts directory
+    tool: str = ""  # Tool call name/pattern to capture
     schema: str = ""
     batch_pattern: str = ""  # Batch collection pattern (empty = auto-detect)
-    types: dict = None   # Semantic types for artifacts (filename or glob → type)
+    types: dict = None  # Semantic types for artifacts (filename or glob → type)
 
 
 @dataclass
 class TracesConfig:
     """What execution traces to capture and make available to judges."""
-    stdout: bool = True    # Capture stdout.log
-    stderr: bool = True    # Capture stderr.log
-    events: bool = True    # Parse JSONL into events.json
-    metrics: bool = True   # Capture run_result.json metrics
+
+    stdout: bool = True  # Capture stdout.log
+    stderr: bool = True  # Capture stderr.log
+    events: bool = True  # Parse JSONL into events.json
+    metrics: bool = True  # Capture run_result.json metrics
 
 
 @dataclass
@@ -84,15 +170,37 @@ class ToolInputConfig:
     eval-analyze populates this based on skill analysis. eval-run resolves
     it to concrete patterns at workspace setup time.
     """
-    match: str = ""           # Natural language: what to intercept (tools, scripts, APIs)
-    prompt: str = ""          # Natural language instruction for how to handle
-    prompt_file: str = ""     # External file with detailed instructions
+
+    match: str = ""  # Natural language: what to intercept (tools, scripts, APIs)
+    prompt: str = ""  # Natural language instruction for how to handle
+    prompt_file: str = ""  # External file with detailed instructions
 
 
 @dataclass
 class InputsConfig:
     """Tool interception configuration for headless execution."""
+
     tools: list = field(default_factory=list)  # List of ToolInputConfig
+
+
+@dataclass
+class HookEntry:
+    """A single lifecycle hook command."""
+    command: str = ""
+    timeout: int = 120
+    description: str = ""
+    on_failure: str = "fail"  # "fail" | "continue"
+    condition: str = ""
+
+
+@dataclass
+class HooksConfig:
+    """Lifecycle hooks that run at defined points in the eval pipeline."""
+    before_all: list = field(default_factory=list)
+    before_each: list = field(default_factory=list)
+    after_each: list = field(default_factory=list)
+    before_scoring: list = field(default_factory=list)
+    after_all: list = field(default_factory=list)
 
 
 @dataclass
@@ -119,6 +227,7 @@ class ExecutionConfig:
       (e.g., ``$JIRA_TOKEN`` → ``os.environ["JIRA_TOKEN"]``).  Missing
       vars are silently omitted.  Literal values are passed through as-is.
     """
+
     mode: str = "case"
     arguments: str = ""
     timeout: Optional[int] = None
@@ -134,12 +243,18 @@ class RunnerConfig:
     type: discriminator selecting the runner implementation (e.g. claude-code).
     Other fields are runner-specific; unused fields are harmless for runners
     that don't read them.
+
+    env: extra environment variables injected into the runner subprocess.
+    Keys are variable names, values are literal strings or ``$VAR``
+    references resolved from the caller's environment.  Additive to the
+    runner's built-in safe defaults (Claude Code allowlist).
     """
+
     type: str = "claude-code"
     command: Optional[Union[str, list]] = None  # CLI runner: command template
     settings: dict = field(default_factory=dict)
     plugin_dirs: list = field(default_factory=list)
-    env_strip: list = field(default_factory=list)
+    env: dict = field(default_factory=dict)
     system_prompt: Optional[str] = None
     effort: Optional[str] = None  # Claude Code: low | medium | high | xhigh | max
 
@@ -156,6 +271,7 @@ class MlflowConfig:
         MLFLOW_TRACKING_URI env var.
     tags: tags applied to every run logged for this eval.
     """
+
     experiment: str = ""
     tracking_uri: Optional[str] = None
     tags: dict = field(default_factory=dict)
@@ -171,6 +287,7 @@ class ModelsConfig:
     - judge: per-judge JudgeConfig.model > models.judge > EVAL_JUDGE_MODEL
       env var (must resolve to non-empty for LLM judges)
     """
+
     skill: Optional[str] = None
     subagent: Optional[str] = None
     judge: Optional[str] = None
@@ -186,6 +303,7 @@ class JudgeConfig:
     - LLM judge: `prompt` or `prompt_file` contains evaluation instructions
     - External code: `module` and `function` reference a Python callable
     """
+
     name: str = ""
     description: str = ""  # What this judge checks (context for LLM judges)
     # Condition — Python expression evaluated against the outputs dict.
@@ -197,7 +315,9 @@ class JudgeConfig:
     # LLM judge / pairwise
     prompt: str = ""
     prompt_file: str = ""
-    context: list = field(default_factory=list)  # File paths loaded as supplementary context
+    context: list = field(
+        default_factory=list
+    )  # File paths loaded as supplementary context
     feedback_type: str = ""  # Optional: int, float, bool, str. Inferred if omitted.
     model: str = ""  # Override model for this judge (pairwise, LLM)
     # External code judge
@@ -207,6 +327,45 @@ class JudgeConfig:
     builtin: str = ""
     # Arguments passed as **kwargs to Python judges, Jinja var to LLM judges
     arguments: dict = field(default_factory=dict)
+    # Sampling — run this judge N times per case and reduce (median/majority).
+    # Only meaningful for stochastic (LLM) judges; ignored for deterministic ones.
+    samples: int = 1
+
+
+@dataclass
+class RewardConfig:
+    """Reward composition from judge results for RL training.
+
+    Two ways to produce the reward, mutually exclusive:
+
+    1. ``judge``: a single judge whose value IS the reward. By default the
+       value is used as-is, clamped to [0, 1] (for a judge that already emits
+       a [0, 1] reward, e.g. a learned reward model). Set ``normalize: true``
+       to instead map it from ``score_range`` to [0, 1].
+    2. ``formula`` (+ ``weights``): compose from multiple judges —
+       - "weighted": weighted sum of ``weights``, each normalized via
+         ``score_range`` (or clamped if listed in ``raw``).
+       - "<expression>": Python expression with judge names as variables.
+
+    When gate is True, any boolean judge that returned False zeros the reward.
+    Note this gates on *every* boolean judge, independent of whether the
+    formula references it — so an ``<expression>`` that uses booleans as its
+    own gate (e.g. ``passed * score``) usually wants ``gate: false`` to avoid
+    double-gating. ``gate`` defaults to False in ``judge`` mode.
+    score_range normalizes numeric judge scores to [0, 1].
+    raw: list of judge names whose values are already in [0, 1] and should
+         NOT be normalized via score_range (e.g. efficiency).
+    """
+
+    formula: str = "weighted"
+    weights: dict = field(default_factory=dict)
+    gate: bool = True
+    score_range: list = field(default_factory=lambda: [1, 5])
+    raw: list = field(default_factory=list)
+    # Single-judge mode: name of the judge whose value is the reward.
+    judge: Optional[str] = None
+    # In judge mode, map the value from score_range instead of clamping as-is.
+    normalize: bool = False
 
 
 @dataclass
@@ -217,10 +376,14 @@ class EvalConfig:
     in natural language. The harness interprets these descriptions via LLM
     (once, cached) to drive prepare, collect, and score steps.
     """
+
     name: str = ""
     description: str = ""
     skill: str = ""
     permissions: dict = field(default_factory=dict)
+
+    # Lifecycle hooks — shell commands at defined pipeline points
+    hooks: HooksConfig = field(default_factory=HooksConfig)
 
     # Execution — how the skill is invoked (mode, arguments, timeout, budget)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
@@ -234,9 +397,8 @@ class EvalConfig:
     # MLflow logging target
     mlflow: MlflowConfig = field(default_factory=MlflowConfig)
 
-    # Dataset — natural language schema + path
-    dataset_path: str = ""
-    dataset_schema: str = ""
+    # Dataset — location, schema, and workspace file provisioning
+    dataset: DatasetConfig = field(default_factory=DatasetConfig)
 
     # Outputs — file artifacts and/or tool calls
     outputs: list = field(default_factory=list)
@@ -249,6 +411,9 @@ class EvalConfig:
 
     # Judges (inline checks, LLM, pairwise, external code)
     judges: list = field(default_factory=list)
+
+    # Reward composition for RL training (optional)
+    reward: Optional[RewardConfig] = None
 
     # Regression thresholds
     thresholds: dict = field(default_factory=dict)
@@ -305,16 +470,16 @@ class EvalConfig:
         command = runner_raw.get("command")
         if command is not None:
             valid_list = isinstance(command, list) and all(
-                isinstance(x, str) for x in command)
+                isinstance(x, str) for x in command
+            )
             if not (isinstance(command, str) or valid_list):
-                raise ValueError(
-                    "runner.command must be a string or list of strings")
+                raise ValueError("runner.command must be a string or list of strings")
         runner = RunnerConfig(
             type=runner_raw.get("type", "claude-code"),
             command=command,
             settings=runner_raw.get("settings", {}) or {},
             plugin_dirs=runner_raw.get("plugin_dirs", []) or [],
-            env_strip=runner_raw.get("env_strip", []) or [],
+            env=runner_raw.get("env", {}) or {},
             system_prompt=runner_raw.get("system_prompt"),
             effort=runner_raw.get("effort"),
         )
@@ -344,6 +509,26 @@ class EvalConfig:
             tags=mlflow_raw.get("tags", {}) or {},
         )
 
+        # Dataset — path, schema, and workspace file provisioning
+        ws_raw = dataset.get("workspace", {}) or {}
+        ws_files_raw = ws_raw.get("files", []) or []
+        ws_files = []
+        for i, f in enumerate(ws_files_raw):
+            if not isinstance(f, str):
+                raise ValueError(
+                    f"dataset.workspace.files[{i}] must be a string, got {type(f).__name__}"
+                )
+            ws_files.append(
+                _validate_relative_path(f.rstrip("/"), "dataset.workspace.files")
+            )
+        dataset_config = DatasetConfig(
+            path=_validate_relative_path(
+                dataset.get("path", ""), "dataset.path", allow_absolute=True
+            ),
+            schema=dataset.get("schema", ""),
+            workspace=WorkspaceConfig(files=ws_files),
+        )
+
         config = cls(
             name=raw.get("name", path.stem),
             description=raw.get("description", ""),
@@ -354,32 +539,33 @@ class EvalConfig:
             models=models,
             mlflow=mlflow,
             config_dir=path.resolve().parent,
-            dataset_path=_validate_relative_path(
-                dataset.get("path", ""), "dataset.path",
-                allow_absolute=True),
-            dataset_schema=dataset.get("schema", ""),
+            dataset=dataset_config,
         )
 
         # Outputs (path or tool)
         for i, o in enumerate(raw.get("outputs", [])):
-            config.outputs.append(OutputConfig(
-                path=_validate_relative_path(
-                    o.get("path", ""), f"outputs[{i}].path",
-                    reject_root=True),
-                tool=o.get("tool", ""),
-                schema=o.get("schema", ""),
-                batch_pattern=o.get("batch_pattern", ""),
-                types=o.get("types") or None,
-            ))
+            config.outputs.append(
+                OutputConfig(
+                    path=_validate_relative_path(
+                        o.get("path", ""), f"outputs[{i}].path", reject_root=True
+                    ),
+                    tool=o.get("tool", ""),
+                    schema=o.get("schema", ""),
+                    batch_pattern=o.get("batch_pattern", ""),
+                    types=o.get("types") or None,
+                )
+            )
 
         # Inputs (tool interception)
         inputs_raw = raw.get("inputs", {})
-        for t in (inputs_raw.get("tools") or []):
-            config.inputs.tools.append(ToolInputConfig(
-                match=t.get("match", ""),
-                prompt=t.get("prompt", ""),
-                prompt_file=t.get("prompt_file", ""),
-            ))
+        for t in inputs_raw.get("tools") or []:
+            config.inputs.tools.append(
+                ToolInputConfig(
+                    match=t.get("match", ""),
+                    prompt=t.get("prompt", ""),
+                    prompt_file=t.get("prompt_file", ""),
+                )
+            )
 
         # Traces
         traces = raw.get("traces", {})
@@ -398,35 +584,161 @@ class EvalConfig:
                 builtin_val = ""
             if not isinstance(builtin_val, str):
                 raise ValueError(
-                    f"Judge '{j.get('name', '')}': 'builtin' must be a string")
+                    f"Judge '{j.get('name', '')}': 'builtin' must be a string"
+                )
             args_val = j.get("arguments")
             if args_val is None:
                 args_val = {}
             elif not isinstance(args_val, dict):
                 raise ValueError(
-                    f"Judge '{j.get('name', '')}': 'arguments' must be a mapping")
-            config.judges.append(JudgeConfig(
-                name=j.get("name", ""),
-                description=j.get("description", ""),
-                condition=j.get("if", ""),
-                check=j.get("check", ""),
-                prompt=j.get("prompt", ""),
-                prompt_file=j.get("prompt_file", ""),
-                context=j.get("context", []),
-                feedback_type=j.get("feedback_type", ""),
-                model=j.get("model", ""),
-                module=j.get("module", ""),
-                function=j.get("function", ""),
-                builtin=builtin_val,
-                arguments=args_val,
-            ))
+                    f"Judge '{j.get('name', '')}': 'arguments' must be a mapping"
+                )
+            config.judges.append(
+                JudgeConfig(
+                    name=j.get("name", ""),
+                    description=j.get("description", ""),
+                    condition=j.get("if", ""),
+                    check=j.get("check", ""),
+                    prompt=j.get("prompt", ""),
+                    prompt_file=j.get("prompt_file", ""),
+                    context=j.get("context", []),
+                    feedback_type=j.get("feedback_type", ""),
+                    model=j.get("model", ""),
+                    module=j.get("module", ""),
+                    function=j.get("function", ""),
+                    builtin=builtin_val,
+                    arguments=args_val,
+                    samples=int(j.get("samples", 1)),
+                )
+            )
+
+        # Reward composition
+        if "reward" in raw:
+            reward_raw = raw.get("reward")
+            if not isinstance(reward_raw, dict):
+                raise ValueError("reward must be a mapping when provided")
+            sr = reward_raw.get("score_range", [1, 5])
+            if not isinstance(sr, list) or len(sr) != 2:
+                raise ValueError("reward.score_range must be a [min, max] list")
+            try:
+                score_min = float(sr[0])
+                score_max = float(sr[1])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "reward.score_range values must be numeric") from exc
+            if not score_min < score_max:
+                raise ValueError(
+                    "reward.score_range must be increasing [min, max]")
+            weights = reward_raw.get("weights", {}) or {}
+            if not isinstance(weights, dict):
+                raise ValueError("reward.weights must be a mapping")
+            try:
+                weights = {str(k): float(v) for k, v in weights.items()}
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "reward.weights values must be numeric") from exc
+            if any(v < 0 for v in weights.values()):
+                raise ValueError("reward.weights values must be non-negative")
+            raw_list = reward_raw.get("raw", []) or []
+            if not isinstance(raw_list, list):
+                raw_list = [raw_list]
+            # Single-judge mode: one judge's value is the reward. Mutually
+            # exclusive with the composition inputs.
+            judge = reward_raw.get("judge")
+            if judge is not None:
+                if not isinstance(judge, str) or not judge.strip():
+                    raise ValueError(
+                        "reward.judge must be a non-empty judge name")
+                conflicting = [k for k in ("formula", "weights", "raw")
+                               if k in reward_raw]
+                if conflicting:
+                    raise ValueError(
+                        "reward.judge cannot be combined with "
+                        f"{'/'.join(conflicting)}")
+                judge_names = {j.name for j in config.judges if j.name}
+                if judge not in judge_names:
+                    raise ValueError(
+                        f"reward.judge '{judge}' does not match any defined "
+                        "judge")
+            normalize = reward_raw.get("normalize", False)
+            if not isinstance(normalize, bool):
+                raise ValueError("reward.normalize must be a boolean")
+            # gate defaults to False in judge mode, True for composition.
+            gate = reward_raw.get("gate", judge is None)
+            if not isinstance(gate, bool):
+                raise ValueError("reward.gate must be a boolean")
+            formula = str(reward_raw.get("formula", "weighted"))
+            # Validate expression formulas now so a typo or unsafe construct
+            # fails loudly here, not silently as reward 0.0 on every case at
+            # run time. Bare references ("weighted") are resolved at compute
+            # time, so skip the expression check for them. Skipped in judge
+            # mode, where formula is unused.
+            if judge is None and not re.fullmatch(
+                    r"[A-Za-z_][\w.\-]*", formula.strip()):
+                from agent_eval.harbor.reward import validate_formula
+                try:
+                    validate_formula(formula)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"reward.formula is invalid: {exc}") from exc
+            config.reward = RewardConfig(
+                formula=formula,
+                weights=weights,
+                gate=gate,
+                score_range=[score_min, score_max],
+                raw=[str(r) for r in raw_list],
+                judge=judge,
+                normalize=normalize,
+            )
 
         # Thresholds
         config.thresholds = raw.get("thresholds", {})
 
-        if config.skill and not _is_valid_eval_name(config.skill):
-            raise ValueError(
-                f"Invalid skill name in {path}: {config.skill!r}")
+        # Hooks
+        hooks_raw = raw.get("hooks", {}) or {}
+        phases = ["before_all", "before_each", "after_each",
+                  "before_scoring", "after_all"]
+        for phase in phases:
+            entries = []
+            for h in (hooks_raw.get(phase) or []):
+                on_failure_val = h.get("on_failure", "fail")
+                if on_failure_val not in ("fail", "continue"):
+                    raise ValueError(
+                        f"hooks.{phase}: on_failure must be 'fail' or "
+                        f"'continue', got '{on_failure_val}'")
+                timeout_val = h.get("timeout", 120)
+                if not isinstance(timeout_val, int) or timeout_val <= 0:
+                    raise ValueError(
+                        f"hooks.{phase}: timeout must be a positive "
+                        f"integer, got {timeout_val}")
+                entries.append(HookEntry(
+                    command=h.get("command", ""),
+                    timeout=timeout_val,
+                    description=h.get("description", ""),
+                    on_failure=on_failure_val,
+                    condition=h.get("condition", ""),
+                ))
+            setattr(config.hooks, phase, entries)
+
+        if config.execution.mode == "batch":
+            per_case = []
+            if config.hooks.before_each:
+                per_case.append("before_each")
+            if config.hooks.after_each:
+                per_case.append("after_each")
+            if per_case:
+                import warnings
+                warnings.warn(
+                    f"hooks.{', '.join(per_case)} ignored in batch mode "
+                    f"(per-case hooks only run in case/prompt mode)",
+                    stacklevel=2,
+                )
+
+        if config.skill:
+            try:
+                _validate_path_segment(config.skill, f"skill name in {path}")
+            except ValueError as e:
+                raise ValueError(str(e)) from e
 
         return config
 
