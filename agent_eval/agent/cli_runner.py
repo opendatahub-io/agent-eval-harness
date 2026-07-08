@@ -88,6 +88,8 @@ class CliRunner(EvalRunner):
         max_budget_usd: float = 5.0,
         timeout_s: int = 600,
         extra_env: Optional[dict] = None,
+        continue_session: bool = False,
+        skip_cleanup: bool = False,
     ) -> RunResult:
         workspace = workspace.resolve()
         output_dir = workspace / "output"

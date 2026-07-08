@@ -340,6 +340,45 @@ class JudgeConfig:
 
 
 @dataclass
+class StepValidateConfig:
+    """Validation-retry semantics for a validate step."""
+    retry_step: str = ""
+    max_retries: int = 3
+    retry_prompt: str = ""
+
+
+@dataclass
+class WorkflowStepConfig:
+    """A single step in a multi-step workflow."""
+    id: str = ""
+    type: str = ""  # "skill" | "script" | "validate"
+    description: str = ""
+
+    # Skill step fields
+    skill: str = ""
+    arguments: str = ""
+    max_budget_usd: Optional[float] = None
+    continue_session: bool = False
+
+    # Script / validate step fields
+    command: str = ""
+
+    # Validate step fields
+    validate: Optional[StepValidateConfig] = None
+
+    # Common fields
+    timeout: Optional[int] = None
+    condition: str = ""
+    on_failure: str = "abort"  # "abort" | "continue"
+
+
+@dataclass
+class WorkflowConfig:
+    """Multi-step workflow definition."""
+    steps: list = field(default_factory=list)
+
+
+@dataclass
 class RewardConfig:
     """Reward composition from judge results for RL training.
 
@@ -418,6 +457,9 @@ class EvalConfig:
 
     # Judges (inline checks, LLM, pairwise, external code)
     judges: list = field(default_factory=list)
+
+    # Multi-step workflow (mutually exclusive with skill)
+    workflow: Optional[WorkflowConfig] = None
 
     # Reward composition for RL training (optional)
     reward: Optional[RewardConfig] = None
@@ -758,6 +800,97 @@ class EvalConfig:
                     stacklevel=2,
                 )
 
+        # Workflow
+        workflow_raw = raw.get("workflow")
+        if workflow_raw is not None:
+            if config.skill:
+                raise ValueError(
+                    "workflow: and skill: are mutually exclusive")
+            if not isinstance(workflow_raw, dict):
+                raise ValueError("workflow must be a mapping")
+            steps_raw = workflow_raw.get("steps") or []
+            if not isinstance(steps_raw, list) or not steps_raw:
+                raise ValueError("workflow.steps must be a non-empty list")
+            step_ids: set[str] = set()
+            steps: list[WorkflowStepConfig] = []
+            for i, s in enumerate(steps_raw):
+                if not isinstance(s, dict):
+                    raise ValueError(
+                        f"workflow.steps[{i}] must be a mapping")
+                step_id = s.get("id", "")
+                if not step_id:
+                    raise ValueError(
+                        f"workflow.steps[{i}]: 'id' is required")
+                if step_id in step_ids:
+                    raise ValueError(
+                        f"workflow.steps[{i}]: duplicate step id "
+                        f"'{step_id}'")
+                step_ids.add(step_id)
+                step_type = s.get("type", "")
+                if step_type not in ("skill", "script", "validate"):
+                    raise ValueError(
+                        f"workflow.steps[{i}] ('{step_id}'): type must "
+                        f"be 'skill', 'script', or 'validate'")
+                on_failure_val = s.get("on_failure", "abort")
+                if on_failure_val not in ("abort", "continue"):
+                    raise ValueError(
+                        f"workflow.steps[{i}] ('{step_id}'): on_failure "
+                        f"must be 'abort' or 'continue'")
+                validate_cfg = None
+                if step_type == "validate":
+                    if not s.get("command"):
+                        raise ValueError(
+                            f"workflow.steps[{i}] ('{step_id}'): "
+                            f"validate steps require 'command'")
+                    retry_step = s.get("retry_step", "")
+                    if not retry_step:
+                        raise ValueError(
+                            f"workflow.steps[{i}] ('{step_id}'): "
+                            f"validate steps require 'retry_step'")
+                    if retry_step not in step_ids:
+                        raise ValueError(
+                            f"workflow.steps[{i}] ('{step_id}'): "
+                            f"retry_step '{retry_step}' not found in "
+                            f"earlier steps")
+                    prior_types = {
+                        st.id: st.type for st in steps
+                    }
+                    if prior_types.get(retry_step) != "skill":
+                        raise ValueError(
+                            f"workflow.steps[{i}] ('{step_id}'): "
+                            f"retry_step '{retry_step}' must reference "
+                            f"a skill step")
+                    validate_cfg = StepValidateConfig(
+                        retry_step=retry_step,
+                        max_retries=int(s.get("max_retries", 3)),
+                        retry_prompt=s.get("retry_prompt", ""),
+                    )
+                elif step_type == "skill":
+                    if not s.get("skill"):
+                        raise ValueError(
+                            f"workflow.steps[{i}] ('{step_id}'): "
+                            f"skill steps require 'skill'")
+                elif step_type == "script":
+                    if not s.get("command"):
+                        raise ValueError(
+                            f"workflow.steps[{i}] ('{step_id}'): "
+                            f"script steps require 'command'")
+                steps.append(WorkflowStepConfig(
+                    id=step_id,
+                    type=step_type,
+                    description=s.get("description", ""),
+                    skill=s.get("skill", ""),
+                    arguments=s.get("arguments", ""),
+                    max_budget_usd=s.get("max_budget_usd"),
+                    continue_session=bool(s.get("continue_session", False)),
+                    command=s.get("command", ""),
+                    validate=validate_cfg,
+                    timeout=s.get("timeout"),
+                    condition=s.get("condition", ""),
+                    on_failure=on_failure_val,
+                ))
+            config.workflow = WorkflowConfig(steps=steps)
+
         if config.skill:
             try:
                 _validate_path_segment(config.skill, f"skill name in {path}")
@@ -765,6 +898,11 @@ class EvalConfig:
                 raise ValueError(str(e)) from e
 
         return config
+
+    @property
+    def is_workflow(self) -> bool:
+        """True when this config defines a multi-step workflow."""
+        return self.workflow is not None and len(self.workflow.steps) > 0
 
     @property
     def project_root(self) -> Path:
@@ -802,9 +940,14 @@ def discover_configs(project_root: Path) -> list[DiscoveryResult]:
         except Exception as exc:
             print(f"Warning: skipping {yaml_path}: {exc}", file=sys.stderr)
             return
-        if not isinstance(raw, dict) or not raw.get("skill"):
+        if not isinstance(raw, dict):
             return
-        eval_name = raw["skill"]
+        has_skill = bool(raw.get("skill"))
+        has_workflow = (isinstance(raw.get("workflow"), dict)
+                        and raw["workflow"].get("steps"))
+        if not has_skill and not has_workflow:
+            return
+        eval_name = raw.get("name") or raw.get("skill", "")
         if not _is_valid_eval_name(eval_name):
             print(f"Warning: skipping {yaml_path}: invalid eval name {eval_name!r}",
                   file=sys.stderr)

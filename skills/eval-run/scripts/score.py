@@ -439,6 +439,15 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
         except (yaml.YAMLError, OSError):
             record["hook_outputs"] = {}
 
+    # --- Workflow metadata (from workflow_result.json) ---
+    wf_path = case_dir / "workflow_result.json"
+    if wf_path.exists():
+        try:
+            with open(wf_path) as f:
+                record["workflow"] = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+
     return record
 
 
@@ -561,6 +570,8 @@ def _render_jinja2_template(template_text, arguments, outputs):
         evidence_text = _extract_verifiable_evidence(out)
         out["evidence"] = evidence_text
 
+    workflow = out.get("workflow", {})
+
     return template.render(
         arguments=arguments or {},
         outputs=out,
@@ -568,6 +579,7 @@ def _render_jinja2_template(template_text, arguments, outputs):
         conversation=conversation,
         inputs=inputs_text,
         evidence=evidence_text,
+        workflow=workflow,
     )
 
 

@@ -26,7 +26,9 @@ import os
 import shutil
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 from agent_eval.agent import RUNNERS
 from agent_eval.hooks import (
@@ -50,7 +52,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--workspace", required=True)
-    parser.add_argument("--skill", required=True)
+    parser.add_argument("--skill", default="")
     parser.add_argument("--skill-args", default=None,
                         help="Skill arguments (default: from eval.yaml execution.arguments)")
     parser.add_argument("--model", default=None,
@@ -146,7 +148,7 @@ def main():
     eval_params = _build_eval_params(args, config, skill_args, max_budget, timeout_s, effort)
 
     # ── Per-case execution ───────────────────────────────────────
-    if config.execution.mode == "case":
+    if config.is_workflow or config.execution.mode == "case":
         parallelism = (args.parallelism if args.parallelism is not None
                        else config.execution.parallelism)
         _execute_per_case(args, config, runner, runner_cls,
@@ -435,6 +437,472 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
     return case_id, case_result
 
 
+# ── Workflow execution ────────────────────────────────────────
+
+@dataclass
+class StepResult:
+    """Result of a single workflow step."""
+    step_id: str
+    step_type: str
+    exit_code: int
+    duration_s: float
+    cost_usd: Optional[float] = None
+    token_usage: Optional[dict] = None
+    num_turns: Optional[int] = None
+    timed_out: bool = False
+    stdout: str = ""
+    stderr: str = ""
+    retries: int = 0
+    skipped: bool = False
+
+
+def _step_env(step_results):
+    """Build env vars from accumulated step results."""
+    env = {}
+    for step_id, sr in step_results.items():
+        prefix = f"STEP_{step_id.upper().replace('-', '_')}"
+        env[f"{prefix}_EXIT_CODE"] = str(sr.exit_code)
+        env[f"{prefix}_DURATION_S"] = str(round(sr.duration_s, 1))
+        env[f"{prefix}_TIMED_OUT"] = "1" if sr.timed_out else "0"
+        if sr.cost_usd is not None:
+            env[f"{prefix}_COST_USD"] = str(round(sr.cost_usd, 4))
+        if sr.stderr:
+            env[f"{prefix}_STDERR"] = sr.stderr[:4096]
+    return env
+
+
+def _eval_step_condition(condition, step_results):
+    """Evaluate a step condition against accumulated results."""
+    class _StepProxy:
+        def __init__(self, data):
+            self._data = data
+        def __getattr__(self, key):
+            return self._data.get(key, _StepProxy({}))
+        def __bool__(self):
+            return bool(self._data)
+
+    steps_ns = {}
+    for step_id, sr in step_results.items():
+        steps_ns[step_id] = _StepProxy({
+            "exit_code": sr.exit_code,
+            "duration_s": sr.duration_s,
+            "cost_usd": sr.cost_usd,
+            "timed_out": sr.timed_out,
+            "skipped": sr.skipped,
+            "retries": sr.retries,
+        })
+
+    try:
+        return bool(eval(condition, {"__builtins__": {}},
+                         {"steps": _StepProxy(steps_ns)}))
+    except Exception:
+        return False
+
+
+def _run_script_step(step, case_ws, step_results, case_data=None):
+    """Run a script or validate step in the case workspace."""
+    import subprocess as _sp
+
+    env = {**os.environ, **_step_env(step_results)}
+
+    command = step.command
+    if case_data and isinstance(case_data, dict):
+        try:
+            command = _resolve_arguments(command, case_data)
+        except (ValueError, KeyError):
+            pass
+
+    start = time.monotonic()
+    try:
+        proc = _sp.run(
+            ["bash", "-c", command],
+            cwd=str(case_ws),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=step.timeout or 120,
+        )
+        return StepResult(
+            step_id=step.id,
+            step_type=step.type,
+            exit_code=proc.returncode,
+            duration_s=time.monotonic() - start,
+            stdout=proc.stdout,
+            stderr=proc.stderr,
+        )
+    except _sp.TimeoutExpired:
+        return StepResult(
+            step_id=step.id,
+            step_type=step.type,
+            exit_code=-1,
+            duration_s=time.monotonic() - start,
+            timed_out=True,
+            stderr=f"Script timed out after {step.timeout or 120}s",
+        )
+    except Exception as exc:
+        return StepResult(
+            step_id=step.id,
+            step_type=step.type,
+            exit_code=-1,
+            duration_s=time.monotonic() - start,
+            stderr=str(exc),
+        )
+
+
+def _resolve_step_args(template, step_results, case_data=None):
+    """Resolve argument templates that may reference step results."""
+    import re as _re
+
+    def _replace_step_ref(m):
+        ref = m.group(1)
+        if "." in ref:
+            parts = ref.split(".", 1)
+            step_id, field = parts[0], parts[1]
+            sr = step_results.get(step_id)
+            if sr:
+                return str(getattr(sr, field, ""))
+        return m.group(0)
+
+    result = _re.sub(r'\{([\w-]+\.[\w]+)\}', _replace_step_ref, template)
+
+    if case_data and isinstance(case_data, dict):
+        try:
+            result = _resolve_arguments(result, case_data)
+        except (ValueError, KeyError):
+            pass
+
+    return result
+
+
+def _run_workflow_case(runner, config, case_id, case_ws, output_dir,
+                       model, system_prompt, max_budget, timeout_s,
+                       mlflow_experiment=None, mlflow_tracking_uri=None,
+                       total_cases=1, index=1, hook_env=None,
+                       global_hook_outputs=None):
+    """Execute a multi-step workflow for a single case."""
+    import yaml as _yaml
+
+    if not case_ws.exists():
+        print(f"  [{index}/{total_cases}] {case_id}: SKIP (workspace missing)",
+              file=sys.stderr)
+        return case_id, None
+
+    input_path = case_ws / "input.yaml"
+    case_data = {}
+    if input_path.exists():
+        case_data = _yaml.safe_load(input_path.read_text()) or {}
+        if not isinstance(case_data, dict):
+            case_data = {}
+
+    if mlflow_experiment:
+        from agent_eval.mlflow.experiment import inject_tracing_env
+        inject_tracing_env(str(case_ws), project_root=Path.cwd(),
+                           tracking_uri=mlflow_tracking_uri,
+                           experiment_name=mlflow_experiment)
+
+    case_settings = case_ws / ".claude" / "settings.json"
+    settings_path = case_settings if case_settings.exists() else None
+
+    steps = config.workflow.steps
+    step_results = {}
+    total_retries = 0
+    has_skill_steps = any(s.type == "skill" for s in steps)
+
+    print(f"  [{index}/{total_cases}] {case_id}: workflow ({len(steps)} steps)",
+          file=sys.stderr)
+
+    # Per-case hooks
+    case_hook_env = None
+    merged_env = {}
+    if config and config.hooks and hook_env:
+        dataset_path = config.dataset.path
+        case_source_dir = (str(config.resolve_path(dataset_path) / case_id)
+                           if dataset_path else "")
+        case_hook_env = {
+            **hook_env,
+            "CASE_ID": case_id,
+            "CASE_WORKSPACE": str(case_ws.resolve()),
+            "CASE_SOURCE_DIR": case_source_dir,
+            "CASE_INPUT": str((case_ws / "input.yaml").resolve()),
+        }
+        log_dir = output_dir / "hooks"
+        if config.hooks.before_each:
+            run_hooks(config.hooks.before_each, env=case_hook_env,
+                      cwd=case_ws, log_dir=log_dir,
+                      phase_name="before_each", case_id=case_id)
+        case_outputs = collect_hook_outputs(case_ws)
+        global_env = (global_hook_outputs or {}).get("env", {})
+        case_env = case_outputs.get("env", {})
+        merged_env = {**global_env, **case_env}
+
+    try:
+        for step in steps:
+            # Evaluate condition
+            if step.condition:
+                if not _eval_step_condition(step.condition, step_results):
+                    step_results[step.id] = StepResult(
+                        step_id=step.id, step_type=step.type,
+                        exit_code=0, duration_s=0, skipped=True)
+                    print(f"    step '{step.id}': SKIPPED (condition false)",
+                          file=sys.stderr)
+                    continue
+
+            if step.type == "skill":
+                step_timeout = (step.timeout if step.timeout is not None
+                                else timeout_s)
+                step_budget = (step.max_budget_usd if step.max_budget_usd is not None
+                               else max_budget)
+                step_args = _resolve_step_args(
+                    step.arguments, step_results, case_data)
+
+                # All skill steps in a workflow skip cleanup so session can
+                # be continued; cleanup happens at the end.
+                is_last_skill = step is [
+                    s for s in steps if s.type == "skill"
+                ][-1] if has_skill_steps else True
+
+                print(f"    step '{step.id}': /{step.skill} {step_args}",
+                      file=sys.stderr)
+
+                try:
+                    result = runner.run_skill(
+                        skill_name=step.skill,
+                        args=step_args,
+                        workspace=case_ws,
+                        model=model,
+                        settings_path=settings_path,
+                        system_prompt=system_prompt,
+                        max_budget_usd=step_budget,
+                        timeout_s=step_timeout,
+                        extra_env=merged_env or None,
+                        continue_session=step.continue_session,
+                        skip_cleanup=not is_last_skill,
+                    )
+                    sr = StepResult(
+                        step_id=step.id,
+                        step_type="skill",
+                        exit_code=result.exit_code,
+                        duration_s=result.duration_s,
+                        cost_usd=result.cost_usd,
+                        token_usage=result.token_usage,
+                        num_turns=result.num_turns,
+                        timed_out=(result.exit_code == -1
+                                   and "Timed out" in (result.stderr or "")),
+                        stdout=result.stdout,
+                        stderr=result.stderr,
+                    )
+                except Exception as exc:
+                    sr = StepResult(
+                        step_id=step.id, step_type="skill",
+                        exit_code=-1, duration_s=0,
+                        stderr=str(exc))
+
+                step_results[step.id] = sr
+                status = ("TIMEOUT" if sr.timed_out
+                          else "OK" if sr.exit_code == 0
+                          else f"FAIL({sr.exit_code})")
+                print(f"      → {status} | {sr.duration_s:.0f}s | "
+                      f"${sr.cost_usd or 0:.2f}", file=sys.stderr)
+
+                if (sr.exit_code != 0 and not sr.timed_out
+                        and step.on_failure == "abort"):
+                    print(f"    workflow aborted at step '{step.id}'",
+                          file=sys.stderr)
+                    break
+
+            elif step.type == "script":
+                print(f"    step '{step.id}': script", file=sys.stderr)
+                sr = _run_script_step(step, case_ws, step_results, case_data)
+                step_results[step.id] = sr
+                status = "OK" if sr.exit_code == 0 else f"FAIL({sr.exit_code})"
+                print(f"      → {status} | {sr.duration_s:.1f}s",
+                      file=sys.stderr)
+
+                if sr.exit_code != 0 and step.on_failure == "abort":
+                    print(f"    workflow aborted at step '{step.id}'",
+                          file=sys.stderr)
+                    break
+
+            elif step.type == "validate":
+                print(f"    step '{step.id}': validate", file=sys.stderr)
+                sr = _run_script_step(step, case_ws, step_results, case_data)
+                step_results[step.id] = sr
+
+                if sr.exit_code != 0 and step.validate:
+                    retry_step_cfg = next(
+                        (s for s in steps if s.id == step.validate.retry_step),
+                        None)
+                    if retry_step_cfg:
+                        for attempt in range(1, step.validate.max_retries + 1):
+                            total_retries += 1
+                            retry_args = _resolve_step_args(
+                                step.validate.retry_prompt or retry_step_cfg.arguments,
+                                step_results, case_data)
+
+                            print(f"      retry {attempt}/{step.validate.max_retries}: "
+                                  f"re-invoking '{retry_step_cfg.id}'",
+                                  file=sys.stderr)
+
+                            retry_timeout = (retry_step_cfg.timeout
+                                             if retry_step_cfg.timeout is not None
+                                             else timeout_s)
+                            retry_budget = (retry_step_cfg.max_budget_usd
+                                            if retry_step_cfg.max_budget_usd is not None
+                                            else max_budget)
+                            try:
+                                retry_result = runner.run_skill(
+                                    skill_name=retry_step_cfg.skill,
+                                    args=retry_args,
+                                    workspace=case_ws,
+                                    model=model,
+                                    settings_path=settings_path,
+                                    system_prompt=system_prompt,
+                                    max_budget_usd=retry_budget,
+                                    timeout_s=retry_timeout,
+                                    extra_env=merged_env or None,
+                                    continue_session=True,
+                                    skip_cleanup=True,
+                                )
+                                step_results[retry_step_cfg.id] = StepResult(
+                                    step_id=retry_step_cfg.id,
+                                    step_type="skill",
+                                    exit_code=retry_result.exit_code,
+                                    duration_s=retry_result.duration_s,
+                                    cost_usd=retry_result.cost_usd,
+                                    token_usage=retry_result.token_usage,
+                                    num_turns=retry_result.num_turns,
+                                    stdout=retry_result.stdout,
+                                    stderr=retry_result.stderr,
+                                )
+                            except Exception as exc:
+                                print(f"      retry error: {exc}",
+                                      file=sys.stderr)
+
+                            # Re-run validation
+                            sr = _run_script_step(
+                                step, case_ws, step_results, case_data)
+                            step_results[step.id] = sr
+                            sr.retries = attempt
+
+                            if sr.exit_code == 0:
+                                print(f"      → validated after {attempt} "
+                                      f"retries", file=sys.stderr)
+                                break
+                        else:
+                            print(f"      → validation failed after "
+                                  f"{step.validate.max_retries} retries",
+                                  file=sys.stderr)
+                else:
+                    status = "OK" if sr.exit_code == 0 else f"FAIL({sr.exit_code})"
+                    print(f"      → {status}", file=sys.stderr)
+
+    finally:
+        # After_each hooks
+        if config and config.hooks and config.hooks.after_each and case_hook_env:
+            log_dir = output_dir / "hooks"
+            run_hooks_safe(config.hooks.after_each, env=case_hook_env,
+                           cwd=case_ws, log_dir=log_dir,
+                           phase_name="after_each", case_id=case_id)
+        # Final session cleanup
+        if has_skill_steps:
+            runner.cleanup_session(case_ws)
+
+    # Write workflow_result.json
+    case_output = output_dir / "cases" / case_id
+    case_output.mkdir(parents=True, exist_ok=True)
+
+    wf_steps = {}
+    for sid, sr in step_results.items():
+        entry = {
+            "exit_code": sr.exit_code,
+            "duration_s": round(sr.duration_s, 1),
+            "type": sr.step_type,
+            "skipped": sr.skipped,
+        }
+        if sr.timed_out:
+            entry["timed_out"] = True
+        if sr.cost_usd is not None:
+            entry["cost_usd"] = round(sr.cost_usd, 4)
+        if sr.num_turns is not None:
+            entry["num_turns"] = sr.num_turns
+        if sr.retries > 0:
+            entry["retries"] = sr.retries
+        wf_steps[sid] = entry
+
+    total_duration = sum(sr.duration_s for sr in step_results.values())
+    total_cost = sum(sr.cost_usd or 0 for sr in step_results.values())
+
+    workflow_result = {
+        "steps": wf_steps,
+        "total_retries": total_retries,
+        "total_duration_s": round(total_duration, 1),
+        "total_cost_usd": round(total_cost, 4),
+    }
+    with open(case_output / "workflow_result.json", "w") as f:
+        json.dump(workflow_result, f, indent=2)
+        f.write("\n")
+
+    # Also write run_result.json for compatibility with collect/score
+    agg_tokens = {}
+    for sr in step_results.values():
+        if sr.token_usage:
+            for k, v in sr.token_usage.items():
+                if isinstance(v, (int, float)):
+                    agg_tokens[k] = agg_tokens.get(k, 0) + v
+
+    worst_exit = max((sr.exit_code for sr in step_results.values()
+                      if not sr.skipped), default=0)
+
+    case_result = {
+        "exit_code": worst_exit,
+        "duration_s": round(total_duration, 1),
+        "token_usage": agg_tokens or None,
+        "cost_usd": round(total_cost, 4),
+        "num_turns": sum(sr.num_turns or 0 for sr in step_results.values()) or None,
+    }
+    with open(case_output / "run_result.json", "w") as f:
+        json.dump(case_result, f, indent=2)
+        f.write("\n")
+
+    # Save stdout/stderr from all skill steps
+    all_stdout = []
+    all_stderr = []
+    for sr in step_results.values():
+        if sr.stdout:
+            all_stdout.append(f"--- step: {sr.step_id} ---\n{sr.stdout}")
+        if sr.stderr:
+            all_stderr.append(f"--- step: {sr.step_id} ---\n{sr.stderr}")
+    if all_stdout:
+        (case_output / "stdout.log").write_text("\n".join(all_stdout))
+    if all_stderr:
+        (case_output / "stderr.log").write_text("\n".join(all_stderr))
+
+    # Copy input.yaml
+    if input_path.exists() and not input_path.is_symlink():
+        shutil.copy2(input_path, case_output / "input.yaml")
+
+    # Copy subagent transcripts
+    ws_subagents = case_ws / "subagents"
+    if ws_subagents.exists() and ws_subagents.is_dir():
+        out_subagents = case_output / "subagents"
+        out_subagents.mkdir(exist_ok=True)
+        for f in ws_subagents.iterdir():
+            if f.is_file() and not f.is_symlink() and f.suffix == ".jsonl":
+                shutil.copy2(f, out_subagents / f.name)
+
+    # Save hook outputs
+    merged_hook_data = {}
+    if global_hook_outputs:
+        merged_hook_data = global_hook_outputs.get("data", {})
+    save_hook_data(case_output, merged_hook_data)
+
+    status = "OK" if worst_exit == 0 else f"FAIL (exit {worst_exit})"
+    print(f"    → {case_id}: {status} | {total_duration:.0f}s | "
+          f"${total_cost:.2f} | retries={total_retries}", file=sys.stderr)
+
+    return case_id, case_result
+
+
 def _execute_per_case(args, config, runner, runner_cls,
                       output_dir, max_budget, timeout_s,
                       model, mlflow_experiment, system_prompt="",
@@ -457,8 +925,13 @@ def _execute_per_case(args, config, runner, runner_cls,
 
     effective_parallelism = min(parallelism, len(case_order)) if parallelism and parallelism > 1 else 1
     parallel_label = f", parallelism={effective_parallelism}" if effective_parallelism > 1 else ""
-    print(f"Executing: /{args.skill} (per-case, {len(case_order)} cases{parallel_label})",
-          file=sys.stderr)
+    if config.is_workflow:
+        step_count = len(config.workflow.steps)
+        print(f"Executing: workflow ({step_count} steps, {len(case_order)} cases{parallel_label})",
+              file=sys.stderr)
+    else:
+        print(f"Executing: /{args.skill} (per-case, {len(case_order)} cases{parallel_label})",
+              file=sys.stderr)
     print(f"Agent: {runner.name} | Model: {model}", file=sys.stderr)
 
     # Build hook environment
@@ -519,13 +992,23 @@ def _execute_per_case(args, config, runner, runner_cls,
             for i, entry in enumerate(case_order, 1):
                 case_id = entry["case_id"] if isinstance(entry, dict) else entry
                 case_ws = workspace / "cases" / case_id
-                case_id, result = _run_single_case(
-                    runner, args.skill, case_id, case_ws, output_dir,
-                    skill_args_template, model, mlflow_experiment,
-                    config.mlflow.tracking_uri, system_prompt,
-                    max_budget, timeout_s, len(case_order), i,
-                    config=config, hook_env=hook_env,
-                    global_hook_outputs=global_hook_outputs)
+                if config.is_workflow:
+                    case_id, result = _run_workflow_case(
+                        runner, config, case_id, case_ws, output_dir,
+                        model, system_prompt, max_budget, timeout_s,
+                        mlflow_experiment=mlflow_experiment,
+                        mlflow_tracking_uri=config.mlflow.tracking_uri,
+                        total_cases=len(case_order), index=i,
+                        hook_env=hook_env,
+                        global_hook_outputs=global_hook_outputs)
+                else:
+                    case_id, result = _run_single_case(
+                        runner, args.skill, case_id, case_ws, output_dir,
+                        skill_args_template, model, mlflow_experiment,
+                        config.mlflow.tracking_uri, system_prompt,
+                        max_budget, timeout_s, len(case_order), i,
+                        config=config, hook_env=hook_env,
+                        global_hook_outputs=global_hook_outputs)
                 if result is not None:
                     case_results[case_id] = result
     finally:

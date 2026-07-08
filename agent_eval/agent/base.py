@@ -63,6 +63,8 @@ class EvalRunner(ABC):
         max_budget_usd: float = 5.0,
         timeout_s: int = 600,
         extra_env: Optional[dict] = None,
+        continue_session: bool = False,
+        skip_cleanup: bool = False,
     ) -> RunResult:
         """Invoke a skill in an isolated workspace.
 
@@ -79,7 +81,14 @@ class EvalRunner(ABC):
             timeout_s: Timeout in seconds.
             extra_env: Additional env vars to inject (e.g. from hook outputs).
                 Merged after execution.env, so hook env overrides static config.
+            continue_session: If True, continue the most recent session in the
+                workspace instead of starting a fresh one (Claude Code --continue).
+            skip_cleanup: If True, do not clean up the session directory after
+                the run. Used for workflow steps that need session continuation.
 
         Returns:
             RunResult with exit code, output, timing, and optional usage stats.
         """
+
+    def cleanup_session(self, workspace: Path) -> None:
+        """Clean up session data for a workspace. Called at workflow end."""

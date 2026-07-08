@@ -34,7 +34,8 @@ from agent_eval.events import (
 _HARNESS_PATHS = {
     ".claude", ".git", ".work", "subagents", "hooks",
     "stdout.log", "stderr.log",
-    "run_result.json", "batch.yaml", "case_order.yaml",
+    "run_result.json", "workflow_result.json",
+    "batch.yaml", "case_order.yaml",
 }
 
 

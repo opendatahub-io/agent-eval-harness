@@ -2342,6 +2342,44 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
             html += (f'<div class="feedback-box"><strong>Human feedback:</strong> '
                      f'{_esc(str(case_feedback))}</div>\n')
 
+        # Workflow steps
+        wf_path = case_dir / "workflow_result.json"
+        if wf_path.exists():
+            try:
+                with open(wf_path) as _wf:
+                    wf = json.load(_wf)
+                wf_steps = wf.get("steps", {})
+                if wf_steps:
+                    html += '<details open><summary>Workflow Steps</summary>\n'
+                    html += ('<table><tr><th>Step</th><th>Type</th>'
+                             '<th>Duration</th><th>Cost</th>'
+                             '<th>Retries</th><th>Status</th></tr>\n')
+                    for sid, sdata in wf_steps.items():
+                        if sdata.get("skipped"):
+                            s_status = '<span class="skip">SKIP</span>'
+                        elif sdata.get("timed_out"):
+                            s_status = '<span class="fail">TIMEOUT</span>'
+                        elif sdata.get("exit_code", 0) == 0:
+                            s_status = '<span class="pass">OK</span>'
+                        else:
+                            s_status = f'<span class="fail">FAIL({sdata.get("exit_code")})</span>'
+                        s_dur = f'{sdata.get("duration_s", 0):.1f}s'
+                        s_cost = (f'${sdata["cost_usd"]:.2f}'
+                                  if sdata.get("cost_usd") else '-')
+                        s_retries = str(sdata.get("retries", 0))
+                        html += (f'<tr><td>{_esc(sid)}</td>'
+                                 f'<td>{_esc(sdata.get("type", ""))}</td>'
+                                 f'<td>{s_dur}</td><td>{s_cost}</td>'
+                                 f'<td>{s_retries}</td><td>{s_status}</td></tr>\n')
+                    html += '</table>\n'
+                    total_retries = wf.get("total_retries", 0)
+                    if total_retries:
+                        html += (f'<p>Total retries: <strong>{total_retries}'
+                                 f'</strong></p>\n')
+                    html += '</details>\n'
+            except (json.JSONDecodeError, OSError):
+                pass
+
         # Input data
         if dataset_path:
             input_text = _read_case_input(dataset_path, case_id)
@@ -2361,7 +2399,8 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
         # Execution logs at the case root — not skill output, exclude from
         # the report.  Only exclude root-level files, not nested ones with the
         # same name (a skill could legitimately produce artifacts/stdout.log).
-        _EXEC_LOG_PATHS = {"stdout.log", "stderr.log", "run_result.json", "input.yaml"}
+        _EXEC_LOG_PATHS = {"stdout.log", "stderr.log", "run_result.json",
+                          "workflow_result.json", "input.yaml"}
         if case_dir.exists():
             def _file_sort_key(f):
                 """Sort visual artifacts first: images, then diagrams, then the rest."""

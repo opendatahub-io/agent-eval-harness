@@ -105,6 +105,8 @@ class ClaudeCodeRunner(EvalRunner):
         max_budget_usd: float = 5.0,
         timeout_s: int = 600,
         extra_env: Optional[dict] = None,
+        continue_session: bool = False,
+        skip_cleanup: bool = False,
     ) -> RunResult:
         cmd = [
             "claude",
@@ -131,6 +133,9 @@ class ClaudeCodeRunner(EvalRunner):
         effective_prompt = system_prompt or self._system_prompt
         if effective_prompt:
             cmd.extend(["--append-system-prompt", effective_prompt])
+
+        if continue_session:
+            cmd.append("--continue")
 
         # Permissions: allow/deny tool patterns
         deny = self._permissions.get("deny", [])
@@ -264,10 +269,8 @@ class ClaudeCodeRunner(EvalRunner):
         duration = time.monotonic() - start
         stdout_text = "\n".join(stdout_lines)
 
-        # Clean up session directory now that SubagentStop hooks have fired
-        # and copied transcripts.  Without this, session files accumulate
-        # in ~/.claude/projects/ for every eval run.
-        self._cleanup_session(workspace)
+        if not skip_cleanup:
+            self._cleanup_session(workspace)
 
         # Extract usage from collected stream-json lines
         raw_output = result_obj
@@ -313,6 +316,10 @@ class ClaudeCodeRunner(EvalRunner):
             permission_denials=denial_list,
             raw_output=raw_output,
         )
+
+    def cleanup_session(self, workspace: Path) -> None:
+        """Public interface for workflow-end session cleanup."""
+        self._cleanup_session(workspace)
 
     @staticmethod
     def _cleanup_session(workspace: Path) -> None:
