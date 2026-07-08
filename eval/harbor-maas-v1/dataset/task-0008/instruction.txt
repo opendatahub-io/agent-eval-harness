@@ -7,13 +7,13 @@ In `getEndpointFromLLMISvc`, when multiple gateways exist, `llmisvc.Status.Addre
 
 The proposed fix:
 - In `providers_llmisvc.go` — `getEndpointFromLLMISvc` now accepts `expectedHostnames`. When non-empty, it filters gateway-external addresses to only those whose hostname matches, and skips fallback to unfiltered addresses (which may belong to the wrong gateway, how we do it now, essentially). When empty, old behavior is preserved for single-gateway deployments.
-- Additionally, added 7 test cases covering `providers_llmisvc.go`. Testing the following scenarios: 
+- Additionally, added 7 test cases covering `providers_llmisvc.go`. Testing the following scenarios:
    1) correct hostname selected from multiple gateways
    2) no match returns empty
    3) legacy behavior without hostnames
    4) single gateway with hostnames
-   5) fallback to first address with old logic 
-   6) no fallback when filtering 
+   5) fallback to first address with old logic
+   6) no fallback when filtering
    7) HTTPS preference
 
 ## How Has This Been Tested?
