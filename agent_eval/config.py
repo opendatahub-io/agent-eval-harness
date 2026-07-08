@@ -319,6 +319,13 @@ class JudgeConfig:
         default_factory=list
     )  # File paths loaded as supplementary context
     feedback_type: str = ""  # Optional: int, float, bool, str. Inferred if omitted.
+    # Numeric scale [lo, hi] for this judge's value. Used by the report to
+    # color per-cell bands proportionally, and can be honored by any consumer
+    # that needs to normalize this judge's raw value. If omitted, LLM judges
+    # default to [1, 5] and other numeric judges to [0, 1]. Set explicitly for
+    # judges on a non-default range (e.g. 1-10, 0-100). Independent of
+    # `reward.score_range`, which governs the reward composition normalization.
+    score_range: Optional[list] = None
     model: str = ""  # Override model for this judge (pairwise, LLM)
     # External code judge
     module: str = ""
@@ -593,6 +600,22 @@ class EvalConfig:
                 raise ValueError(
                     f"Judge '{j.get('name', '')}': 'arguments' must be a mapping"
                 )
+            score_range_val = j.get("score_range")
+            if score_range_val is not None:
+                jname = j.get("name", "")
+                if (not isinstance(score_range_val, list)
+                        or len(score_range_val) != 2):
+                    raise ValueError(
+                        f"Judge '{jname}': 'score_range' must be a [min, max] list")
+                try:
+                    lo, hi = float(score_range_val[0]), float(score_range_val[1])
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"Judge '{jname}': 'score_range' values must be numeric") from exc
+                if lo >= hi:
+                    raise ValueError(
+                        f"Judge '{jname}': 'score_range' must be increasing [min, max]")
+                score_range_val = [lo, hi]
             config.judges.append(
                 JudgeConfig(
                     name=j.get("name", ""),
@@ -603,6 +626,7 @@ class EvalConfig:
                     prompt_file=j.get("prompt_file", ""),
                     context=j.get("context", []),
                     feedback_type=j.get("feedback_type", ""),
+                    score_range=score_range_val,
                     model=j.get("model", ""),
                     module=j.get("module", ""),
                     function=j.get("function", ""),
