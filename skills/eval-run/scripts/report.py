@@ -1951,8 +1951,6 @@ def _render_reward_overview(summary, config):
     if not per_case:
         return ""
 
-    # Try importing the canonical reward engine so the report never diverges
-    # from the reward the harness actually trains on.
     _compose_reward = None
     try:
         from agent_eval.harbor.reward import compose_reward as _cr
@@ -1960,60 +1958,37 @@ def _render_reward_overview(summary, config):
     except ImportError:
         pass
 
-    judges_cfg = config.get("judges", [])
-    classified = set()
+    # Classify judges using judge_type stamped in per-case results by score.py,
+    # not the config YAML (which has no "type" field).
     gate_judges = []
     llm_judges = []
     other_judges = []
-    for j in judges_cfg:
-        name = j.get("name", "")
-        if name in ("grpo_reward",):
+    seen = set()
+    for case_results in per_case.values():
+        if not isinstance(case_results, dict):
             continue
-        classified.add(name)
-        jtype = j.get("type", "")
-        if jtype == "check" and j.get("check", ""):
-            gate_judges.append(name)
-        elif jtype == "llm" or j.get("prompt") or j.get("prompt_file"):
-            llm_judges.append(name)
-        else:
-            other_judges.append(name)
-
-    if not gate_judges and not llm_judges:
-        all_judge_names = set()
-        for case_results in per_case.values():
-            if isinstance(case_results, dict):
-                for jn, jv in case_results.items():
-                    if jn != "grpo_reward" and isinstance(jv, dict):
-                        all_judge_names.add(jn)
-        for jn in sorted(all_judge_names):
-            if jn in classified:
+        for jn, jv in case_results.items():
+            if jn in seen or not isinstance(jv, dict):
                 continue
-            # Scan all cases for a non-None value before classifying
-            sample_val = None
-            for cr in per_case.values():
-                if isinstance(cr, dict) and jn in cr:
-                    v = cr[jn].get("value") if isinstance(cr[jn], dict) else None
-                    if v is not None:
-                        sample_val = v
-                        break
-            if sample_val is None:
-                other_judges.append(jn)
-            elif isinstance(sample_val, bool):
+            seen.add(jn)
+            jtype = jv.get("judge_type", "")
+            if jtype == "check":
                 gate_judges.append(jn)
-            elif isinstance(sample_val, (int, float)):
+            elif jtype in ("llm", "builtin"):
                 llm_judges.append(jn)
             else:
                 other_judges.append(jn)
+    gate_judges.sort()
+    llm_judges.sort()
+    other_judges.sort()
 
-    has_efficiency = any(
-        isinstance(cr, dict) and "efficiency" in cr for cr in per_case.values()
-    )
-    if has_efficiency and "efficiency" not in gate_judges and "efficiency" not in llm_judges:
-        other_judges.append("efficiency")
-    other_judges = [j for j in other_judges if j != "efficiency"] + (
-        ["efficiency"] if "efficiency" in other_judges else [])
-
-    llm_judge_set = set(llm_judges)
+    # Resolve score_range per judge from config for color bands
+    judge_score_range = {}
+    for j in config.get("judges", []):
+        name = j.get("name", "")
+        sr = j.get("score_range")
+        if isinstance(sr, list) and len(sr) >= 2:
+            judge_score_range[name] = (sr[0], sr[1])
 
     def _label(name):
         return _esc(name.replace("_", " ").title())
@@ -2028,20 +2003,14 @@ def _render_reward_overview(summary, config):
             return '<span class="fail">FAIL</span>'
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             s = f"{v:.2f}" if isinstance(v, float) else str(v)
-            if judge_name in llm_judge_set:
-                # 1-5 scale thresholds for LLM judges
-                if v >= 4:
-                    return f'<span class="pass">{s}</span>'
-                elif v >= 2.5:
-                    return f'<span class="warn">{s}</span>'
-                return f'<span class="fail">{s}</span>'
-            else:
-                # 0-1 scale for other numeric judges
-                if v >= 0.7:
-                    return f'<span class="pass">{s}</span>'
-                elif v >= 0.4:
-                    return f'<span class="warn">{s}</span>'
-                return f'<span class="fail">{s}</span>'
+            lo, hi = judge_score_range.get(judge_name, (1, 5) if judge_name in llm_set else (0, 1))
+            span = hi - lo
+            frac = (v - lo) / span if span else 0.5
+            if frac >= 0.75:
+                return f'<span class="pass">{s}</span>'
+            elif frac >= 0.375:
+                return f'<span class="warn">{s}</span>'
+            return f'<span class="fail">{s}</span>'
         return f'<span class="skip">{_esc(str(v)[:20])}</span>'
 
     def _reward_cell(val):
@@ -2058,15 +2027,17 @@ def _render_reward_overview(summary, config):
         except (ValueError, TypeError):
             return f'<span class="skip">{_esc(str(val)[:20])}</span>'
 
+    llm_set = set(llm_judges)
+    all_judges = gate_judges + llm_judges + other_judges
+
     html = '<h2 class="section-heading">Per-Case Reward Overview</h2>\n'
     html += ('<p style="font-size:0.9em;color:var(--text-muted);margin:0 0 0.5em;">'
              'Reward and all judge scores per case. '
              '<span class="pass" style="font-size:0.8em">Gates</span> are binary. '
-             '<span class="warn" style="font-size:0.8em">LLM judges</span> score 1\u20135. '
+             '<span class="warn" style="font-size:0.8em">LLM judges</span> are scored. '
              '<span class="skip" style="font-size:0.8em">Other</span> scores vary.</p>\n')
     html += '<div class="reward-overview"><table>\n'
 
-    # Group header row
     html += '<tr><th rowspan="2" style="vertical-align:bottom">Case</th>'
     html += '<th rowspan="2" style="vertical-align:bottom">Reward</th>'
     if gate_judges:
@@ -2074,12 +2045,12 @@ def _render_reward_overview(summary, config):
                  f'style="text-align:center">Gate Judges</th>')
     if llm_judges:
         html += (f'<th colspan="{len(llm_judges)}" class="rv-llm-hdr" '
-                 f'style="text-align:center">LLM Judges (1\u20135)</th>')
+                 f'style="text-align:center">LLM Judges</th>')
     if other_judges:
         html += (f'<th colspan="{len(other_judges)}" class="rv-other-hdr" '
                  f'style="text-align:center">Other</th>')
     html += '</tr>\n<tr>'
-    for jn in gate_judges + llm_judges + other_judges:
+    for jn in all_judges:
         html += f'<th class="rv-rotate">{_label(jn)}</th>'
     html += '</tr>\n'
 
@@ -2090,26 +2061,30 @@ def _render_reward_overview(summary, config):
         if not isinstance(case_results, dict):
             continue
         total_cases += 1
-        # Use canonical reward engine when available
         reward_val = None
         if _compose_reward is not None:
             try:
-                reward_val, _ = _compose_reward(case_results)
+                reward_val, metrics = _compose_reward(case_results)
+                # compose_reward returns 1.0 when all judges are None/skipped;
+                # treat as unscored instead of inflating the average.
+                if not metrics:
+                    reward_val = None
             except Exception:
                 pass
         html += f'<tr><td>{_esc(case_id)}</td>'
         html += f'<td>{_reward_cell(reward_val)}</td>'
-        for jn in gate_judges + llm_judges + other_judges:
+        for jn in all_judges:
             html += f'<td>{_cell(case_results.get(jn, {}), jn)}</td>'
         html += '</tr>\n'
-        try:
-            rewards.append(float(reward_val))
-        except (ValueError, TypeError):
-            pass
+        if reward_val is not None:
+            try:
+                rewards.append(float(reward_val))
+            except (ValueError, TypeError):
+                pass
 
     if rewards:
         avg = sum(rewards) / len(rewards)
-        n_cols = len(gate_judges) + len(llm_judges) + len(other_judges)
+        n_cols = len(all_judges)
         scored_label = f"{len(rewards)} of {total_cases} scored" if len(rewards) < total_cases else f"{len(rewards)} cases"
         html += (f'<tr class="rv-avg-row"><td>Average ({scored_label})</td>'
                  f'<td>{_reward_cell(avg)}</td>'
