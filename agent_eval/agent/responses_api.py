@@ -267,6 +267,10 @@ class ResponsesAPIRunner(EvalRunner):
         continue_session: bool = False,
         skip_cleanup: bool = False,
     ) -> RunResult:
+        if continue_session:
+            raise NotImplementedError(
+                "ResponsesAPIRunner does not support continue_session. "
+                "Use ClaudeCodeRunner for workflow session continuation.")
         client = None
         effective_model = model or self._default_model
         if not effective_model:
@@ -360,5 +364,5 @@ class ResponsesAPIRunner(EvalRunner):
                 duration_s=duration,
             )
         finally:
-            if container_id and client is not None:
+            if container_id and client is not None and not skip_cleanup:
                 self._delete_container(client, container_id)

@@ -821,6 +821,12 @@ class EvalConfig:
                 if not step_id:
                     raise ValueError(
                         f"workflow.steps[{i}]: 'id' is required")
+                import re as _re
+                if not _re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_-]*', step_id):
+                    raise ValueError(
+                        f"workflow.steps[{i}]: step id '{step_id}' "
+                        f"must start with alphanumeric and contain "
+                        f"only [a-zA-Z0-9_-]")
                 if step_id in step_ids:
                     raise ValueError(
                         f"workflow.steps[{i}]: duplicate step id "
@@ -860,9 +866,14 @@ class EvalConfig:
                             f"workflow.steps[{i}] ('{step_id}'): "
                             f"retry_step '{retry_step}' must reference "
                             f"a skill step")
+                    max_retries_raw = s.get("max_retries", 3)
+                    if not isinstance(max_retries_raw, int) or max_retries_raw < 0:
+                        raise ValueError(
+                            f"workflow.steps[{i}] ('{step_id}'): "
+                            f"max_retries must be a non-negative integer")
                     validate_cfg = StepValidateConfig(
                         retry_step=retry_step,
-                        max_retries=int(s.get("max_retries", 3)),
+                        max_retries=max_retries_raw,
                         retry_prompt=s.get("retry_prompt", ""),
                     )
                 elif step_type == "skill":

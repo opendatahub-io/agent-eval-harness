@@ -39,7 +39,7 @@ workflow:
   steps:
     - id: snapshot
       type: script
-      command: python3 scripts/payload_snapshot.py {payload_tag}
+      command: python3 scripts/payload_snapshot.py "$CASE_PAYLOAD_TAG"
       timeout: 120
 
     - id: analysis
@@ -65,7 +65,7 @@ workflow:
         Regenerate the required files now.
       max_retries: 3
 
-    - id: slack-summary
+    - id: slack_summary
       type: skill
       skill: ci:slack-summary
       arguments: "--input artifacts/payload-analysis.yaml"
@@ -88,8 +88,11 @@ Three types — the minimal set that covers the observed patterns:
 DAGs add complexity (cycle detection, join semantics, visualization) without
 covering additional real-world patterns. The `condition` field on any step
 provides skip-if-not-needed logic, which handles all observed branching patterns
-(timeout nudge, optional post-processing). If DAG workflows emerge later, this
-design extends naturally — add a `depends_on` field and topological sort.
+(timeout nudge, optional post-processing). Conditions are evaluated with an
+AST-whitelisted evaluator (not `eval()`) that only permits attribute access,
+boolean operators, comparisons, and constants — no function calls, imports, or
+arbitrary code. If DAG workflows emerge later, this design extends naturally —
+add a `depends_on` field and topological sort.
 
 **2. `validate` is a distinct step type, not a generic retry wrapper.**
 
@@ -109,11 +112,14 @@ the mechanism.
 
 **4. Inter-step data flow via shared workspace + env vars.**
 
-Steps share the case workspace filesystem. Each completed step also injects
+Steps share the case workspace filesystem. Each completed step injects
 environment variables (`STEP_<ID>_EXIT_CODE`, `STEP_<ID>_DURATION_S`,
-`STEP_<ID>_TIMED_OUT`, etc.) into subsequent steps. Argument templates support
-`{step_id.field}` for referencing prior step results (e.g., `{validate.stderr}`
-in retry prompts).
+`STEP_<ID>_TIMED_OUT`, etc.) into subsequent steps. Step IDs must match
+`[a-zA-Z0-9][a-zA-Z0-9_-]*` and are normalized (uppercased, hyphens → underscores)
+for env var names. Case data fields are passed to script steps via `CASE_<FIELD>`
+env vars (never interpolated into the shell command string) to prevent CWE-78.
+Skill step argument templates support `{step_id.field}` for referencing prior
+step results (e.g., `{validate.stderr}` in retry prompts).
 
 This avoids a separate data-passing mechanism — the filesystem is already the
 primary data channel between skills.
@@ -146,8 +152,9 @@ Each case produces `workflow_result.json` alongside `run_result.json`:
 Judges can access workflow data:
 
 - **Inline checks:** `outputs.get("workflow", {})` — e.g., assert retry count
-- **LLM judges:** `{{ workflow }}` Jinja2 variable — e.g., "the workflow needed
-  {{ workflow.total_retries }} validation retries"
+- **LLM judges:** `{{ workflow }}` Jinja2 variable — sanitized to metadata only
+  (status, timing, counters, retries); stdout/stderr are stripped to prevent
+  untrusted text or secrets from leaking into judge prompts
 - **Builtin/external judges:** receive the full outputs dict including `workflow`
 
 ### Report Integration
@@ -160,14 +167,14 @@ retries across the workflow.
 
 | File | What changed |
 |------|-------------|
-| `agent_eval/config.py` | `WorkflowStepConfig`, `StepValidateConfig`, `WorkflowConfig` dataclasses; `workflow` field and `is_workflow` property on `EvalConfig`; parsing + validation in `from_yaml()` |
+| `agent_eval/config.py` | `WorkflowStepConfig`, `StepValidateConfig`, `WorkflowConfig` dataclasses; `workflow` field and `is_workflow` property on `EvalConfig`; parsing + validation in `from_yaml()` including step ID format, `max_retries` type |
 | `agent_eval/agent/base.py` | `continue_session` and `skip_cleanup` params on `run_skill()` ABC; `cleanup_session()` method |
 | `agent_eval/agent/claude_code.py` | `--continue` flag support; deferred session cleanup |
 | `agent_eval/agent/cli_runner.py` | Signature update for ABC compatibility |
-| `agent_eval/agent/responses_api.py` | Signature update for ABC compatibility |
-| `skills/eval-run/scripts/execute.py` | `StepResult`, `_run_workflow_case()`, `_run_script_step()`, `_eval_step_condition()`, `_step_env()`, `_resolve_step_args()` |
+| `agent_eval/agent/responses_api.py` | Fails fast if `continue_session=True` (unsupported); honors `skip_cleanup` for container deletion |
+| `skills/eval-run/scripts/execute.py` | `StepResult`, `_run_workflow_case()`, `_run_script_step()` (case data via env vars, not shell interpolation), `_eval_step_condition()` (AST-whitelisted, no raw `eval()`), `_step_env()`, `_resolve_step_args()` |
 | `skills/eval-run/scripts/collect.py` | Exclude `workflow_result.json` from skill output collection |
-| `skills/eval-run/scripts/score.py` | Load `workflow_result.json` into case record; expose `{{ workflow }}` in Jinja2 |
+| `skills/eval-run/scripts/score.py` | Load `workflow_result.json` into case record; expose sanitized `{{ workflow }}` in Jinja2 (metadata only, no stdout/stderr) |
 | `skills/eval-run/scripts/report.py` | Workflow steps table in per-case detail view |
 | `tests/test_workflow.py` | 30 unit tests covering config parsing, condition eval, script execution, argument resolution |
 

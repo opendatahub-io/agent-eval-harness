@@ -21,6 +21,7 @@ Usage:
 import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
 
 import argparse
+import ast
 import json
 import os
 import shutil
@@ -471,30 +472,80 @@ def _step_env(step_results):
     return env
 
 
-def _eval_step_condition(condition, step_results):
-    """Evaluate a step condition against accumulated results."""
-    class _StepProxy:
-        def __init__(self, data):
-            self._data = data
-        def __getattr__(self, key):
-            return self._data.get(key, _StepProxy({}))
-        def __bool__(self):
-            return bool(self._data)
+_STEP_FIELDS = frozenset({
+    "exit_code", "duration_s", "cost_usd", "timed_out", "skipped", "retries",
+})
 
-    steps_ns = {}
+_SAFE_AST_NODES = (
+    ast.Expression, ast.BoolOp, ast.And, ast.Or, ast.UnaryOp, ast.Not,
+    ast.Compare, ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+    ast.Is, ast.IsNot, ast.Attribute, ast.Name, ast.Constant, ast.Load,
+)
+
+
+def _eval_step_condition(condition, step_results):
+    """Evaluate a step condition safely using AST whitelisting.
+
+    Only allows: steps.<id>.<field>, boolean operators (and/or/not),
+    comparisons (==, !=, <, >, <=, >=), and constants.
+    """
+    try:
+        tree = ast.parse(condition, mode="eval")
+    except SyntaxError:
+        return False
+
+    for node in ast.walk(tree):
+        if not isinstance(node, _SAFE_AST_NODES):
+            return False
+
+    steps_data = {}
     for step_id, sr in step_results.items():
-        steps_ns[step_id] = _StepProxy({
+        steps_data[step_id] = {
             "exit_code": sr.exit_code,
             "duration_s": sr.duration_s,
             "cost_usd": sr.cost_usd,
             "timed_out": sr.timed_out,
             "skipped": sr.skipped,
             "retries": sr.retries,
-        })
+        }
+
+    class _StepAccessor:
+        def __init__(self, data):
+            self._data = data
+        def __getattr__(self, key):
+            if key.startswith("_"):
+                raise AttributeError(key)
+            val = self._data.get(key)
+            if val is None:
+                return _Missing()
+            if isinstance(val, dict):
+                return _StepAccessor(val)
+            return val
+
+    class _Missing:
+        def __bool__(self):
+            return False
+        def __eq__(self, other):
+            return False
+        def __ne__(self, other):
+            return True
+        def __lt__(self, other):
+            return False
+        def __gt__(self, other):
+            return False
+        def __le__(self, other):
+            return False
+        def __ge__(self, other):
+            return False
+        def __getattr__(self, key):
+            if key.startswith("_"):
+                raise AttributeError(key)
+            return _Missing()
 
     try:
-        return bool(eval(condition, {"__builtins__": {}},
-                         {"steps": _StepProxy(steps_ns)}))
+        code = compile(tree, "<condition>", "eval")
+        return bool(eval(code, {"__builtins__": {}},  # noqa: S307
+                         {"steps": _StepAccessor(steps_data)}))
     except Exception:
         return False
 
@@ -505,17 +556,15 @@ def _run_script_step(step, case_ws, step_results, case_data=None):
 
     env = {**os.environ, **_step_env(step_results)}
 
-    command = step.command
     if case_data and isinstance(case_data, dict):
-        try:
-            command = _resolve_arguments(command, case_data)
-        except (ValueError, KeyError):
-            pass
+        for key, value in case_data.items():
+            if isinstance(key, str) and value is not None:
+                env[f"CASE_{key.upper().replace('-', '_')}"] = str(value)
 
     start = time.monotonic()
     try:
         proc = _sp.run(
-            ["bash", "-c", command],
+            ["bash", "-c", step.command],
             cwd=str(case_ws),
             env=env,
             capture_output=True,

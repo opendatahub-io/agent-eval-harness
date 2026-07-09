@@ -570,7 +570,23 @@ def _render_jinja2_template(template_text, arguments, outputs):
         evidence_text = _extract_verifiable_evidence(out)
         out["evidence"] = evidence_text
 
-    workflow = out.get("workflow", {})
+    workflow_raw = out.get("workflow", {})
+    _safe_step_keys = {
+        "exit_code", "duration_s", "cost_usd", "timed_out",
+        "skipped", "retries", "type",
+    }
+    workflow = {}
+    if isinstance(workflow_raw, dict):
+        for k, v in workflow_raw.items():
+            if k == "steps" and isinstance(v, dict):
+                workflow["steps"] = {
+                    sid: {sk: sv for sk, sv in sdata.items()
+                          if sk in _safe_step_keys}
+                    for sid, sdata in v.items()
+                    if isinstance(sdata, dict)
+                }
+            elif k in ("total_retries", "total_duration_s", "total_cost_usd"):
+                workflow[k] = v
 
     return template.render(
         arguments=arguments or {},

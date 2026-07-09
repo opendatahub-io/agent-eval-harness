@@ -230,6 +230,60 @@ workflow:
   steps: []
 """))
 
+    def test_invalid_step_id_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="must start with alphanumeric"):
+            EvalConfig.from_yaml(_write(tmp_path, """
+name: bad-id
+workflow:
+  steps:
+    - id: "-bad"
+      type: script
+      command: echo
+"""))
+
+    def test_step_id_special_chars_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="must start with alphanumeric"):
+            EvalConfig.from_yaml(_write(tmp_path, """
+name: bad-id
+workflow:
+  steps:
+    - id: "step;drop"
+      type: script
+      command: echo
+"""))
+
+    def test_max_retries_non_integer_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="max_retries must be a non-negative"):
+            EvalConfig.from_yaml(_write(tmp_path, """
+name: bad-retries
+workflow:
+  steps:
+    - id: analyze
+      type: skill
+      skill: test
+    - id: check
+      type: validate
+      command: python validate.py
+      retry_step: analyze
+      max_retries: abc
+"""))
+
+    def test_max_retries_negative_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="max_retries must be a non-negative"):
+            EvalConfig.from_yaml(_write(tmp_path, """
+name: bad-retries
+workflow:
+  steps:
+    - id: analyze
+      type: skill
+      skill: test
+    - id: check
+      type: validate
+      command: python validate.py
+      retry_step: analyze
+      max_retries: -1
+"""))
+
 
 # ── Execution helpers ───────────────────────────────────────
 
@@ -272,6 +326,33 @@ class TestStepConditionEval:
     def test_invalid_expression_returns_false(self):
         from execute import _eval_step_condition
         assert _eval_step_condition("invalid python !!!", {}) is False
+
+    def test_function_call_blocked(self):
+        from execute import _eval_step_condition
+        assert _eval_step_condition("__import__('os').system('id')", {}) is False
+
+    def test_lambda_blocked(self):
+        from execute import _eval_step_condition
+        assert _eval_step_condition("(lambda: True)()", {}) is False
+
+    def test_list_comprehension_blocked(self):
+        from execute import _eval_step_condition
+        assert _eval_step_condition("[x for x in range(10)]", {}) is False
+
+    def test_boolean_operators_allowed(self):
+        from execute import StepResult, _eval_step_condition
+        results = {
+            "a": StepResult(step_id="a", step_type="script",
+                            exit_code=0, duration_s=1, timed_out=False),
+            "b": StepResult(step_id="b", step_type="script",
+                            exit_code=1, duration_s=2, timed_out=True),
+        }
+        assert _eval_step_condition(
+            "steps.a.exit_code == 0 and steps.b.timed_out", results) is True
+        assert _eval_step_condition(
+            "steps.a.timed_out or steps.b.timed_out", results) is True
+        assert _eval_step_condition(
+            "not steps.a.timed_out", results) is True
 
 
 class TestStepEnv:
@@ -342,13 +423,13 @@ class TestRunScriptStep:
         assert result.exit_code == -1
         assert result.timed_out
 
-    def test_script_with_case_data_placeholders(self, tmp_path):
+    def test_script_with_case_data_env_vars(self, tmp_path):
         from execute import _run_script_step
         from agent_eval.config import WorkflowStepConfig
 
         step = WorkflowStepConfig(
             id="echo", type="script",
-            command="echo {payload_tag}")
+            command="echo $CASE_PAYLOAD_TAG")
         result = _run_script_step(
             step, tmp_path, {},
             case_data={"payload_tag": "4.18.0-0.nightly-test"})

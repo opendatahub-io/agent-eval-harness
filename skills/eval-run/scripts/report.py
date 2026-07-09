@@ -2377,7 +2377,7 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
                         html += (f'<p>Total retries: <strong>{total_retries}'
                                  f'</strong></p>\n')
                     html += '</details>\n'
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError, AttributeError, TypeError):
                 pass
 
         # Input data
