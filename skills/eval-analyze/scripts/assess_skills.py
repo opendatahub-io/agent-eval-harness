@@ -12,24 +12,30 @@ import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
 import yaml
+
+from agent_eval.config import discover_configs
 
 # Import skill discovery from sibling module
 sys.path.insert(0, str(Path(__file__).parent))
 from find_skills import list_skills
 
 COMPLEXITY_KEYWORDS = {
-    "diagnose", "classify", "threat", "score",
-    "assessment", "investigate", "severity", "root cause",
-    "stride", "mitre",
+    "diagnose", "classify", "analyze", "investigate",
+    "generate", "refactor", "migrate", "transform",
+    "validate", "assess", "recommend", "orchestrate",
+    "multi-step", "pipeline", "workflow",
 }
 
 FILE_TOOLS = {"Write", "Edit", "NotebookEdit"}
 EXEC_TOOLS = {"Bash"}
 AGENT_TOOLS = {"Agent"}
+ORCHESTRATION_TOOLS = {"Skill"}
+ALL_TOOLS = FILE_TOOLS | EXEC_TOOLS | AGENT_TOOLS | ORCHESTRATION_TOOLS
 
 
 def _parse_frontmatter(content):
@@ -40,44 +46,62 @@ def _parse_frontmatter(content):
     if len(parts) < 3:
         return {}
     try:
-        return yaml.safe_load(parts[1]) or {}
+        data = yaml.safe_load(parts[1])
+        return data if isinstance(data, dict) else {}
     except yaml.YAMLError:
         return {}
 
 
 def _parse_tools(fm):
-    """Extract allowed-tools list from frontmatter."""
-    tools_raw = fm.get("allowed-tools", "")
+    """Extract allowed-tools list from frontmatter.
+
+    Missing allowed-tools means unrestricted (all tools) in Claude Code.
+    """
+    if "allowed-tools" not in fm:
+        return ALL_TOOLS
+    tools_raw = fm["allowed-tools"]
     if isinstance(tools_raw, list):
-        return set(tools_raw)
+        return {str(t) for t in tools_raw if isinstance(t, (str, int, float))}
     return {t.strip() for t in str(tools_raw).split(",") if t.strip()}
 
 
+_COMPLEXITY_RE = re.compile(
+    r"\b(" + "|".join(re.escape(kw) for kw in sorted(COMPLEXITY_KEYWORDS)) + r")\b",
+    re.IGNORECASE,
+)
+
+
 def _find_complexity_signals(body):
-    """Find complexity keywords in the skill body (case-insensitive)."""
-    body_lower = body.lower()
-    return sorted(kw for kw in COMPLEXITY_KEYWORDS if kw in body_lower)
+    """Find complexity keywords in the skill body (word-boundary match)."""
+    return sorted({m.group().lower() for m in _COMPLEXITY_RE.finditer(body)})
 
 
-def _is_thin_wrapper(fm, line_count):
+def _is_thin_wrapper(fm, tools, line_count):
     """Detect skills that are thin wrappers around a single command."""
+    if tools & (FILE_TOOLS | AGENT_TOOLS):
+        return False
     desc = str(fm.get("description", "")).lower()
-    thin_signals = ["simple", "greeting", "label a ", "list "]
-    return line_count < 50 and any(s in desc for s in thin_signals)
+    words = set(desc.split())
+    thin_signals = {"simple", "greeting"}
+    return line_count < 50 and bool(words & thin_signals)
 
 
-def _has_existing_eval(skill_path):
-    """Check if an eval.yaml already exists for this skill."""
+_SCRIPT_EXTS = {".py", ".sh", ".bash", ".js", ".ts", ".rb"}
+
+
+def _count_scripts(skill_path):
+    """Count script/code files in the skill directory tree."""
     skill_dir = Path(skill_path).parent
-    skill_name = skill_dir.name
-    project_root = Path.cwd()
+    count = 0
+    for f in skill_dir.rglob("*"):
+        if f.is_file() and f.suffix in _SCRIPT_EXTS:
+            count += 1
+    return count
 
-    candidates = [
-        project_root / "eval" / skill_name / "eval.yaml",
-        project_root / "eval" / f"{skill_name}.yaml",
-        skill_dir / "eval.yaml",
-    ]
-    return any(c.exists() for c in candidates)
+
+def _build_eval_names():
+    """Build the set of eval names from discover_configs (skill: field)."""
+    return {r.eval_name for r in discover_configs(Path.cwd())}
 
 
 def score_skill(meta):
@@ -94,11 +118,26 @@ def score_skill(meta):
     if meta["uses_agents"]:
         score += 1
         reasons.append("agents")
-    if meta["line_count"] > 200:
+    if meta["uses_orchestration"]:
         score += 1
-    if meta["line_count"] > 400:
+        reasons.append("orchestration")
+    if meta["uses_bash"]:
         score += 1
-    reasons.append(f"{meta['line_count']} lines")
+        reasons.append("bash")
+    tool_count = len(meta["allowed_tools"])
+    if tool_count >= 5:
+        score += 1
+    if tool_count >= 8:
+        score += 1
+    reasons.append(f"{tool_count} tools")
+
+    script_count = meta["script_count"]
+    if script_count >= 2:
+        score += 1
+    if script_count >= 5:
+        score += 1
+    if script_count > 0:
+        reasons.append(f"{script_count} scripts")
 
     signals = meta["complexity_signals"]
     signal_score = min(len(signals), 3)
@@ -123,44 +162,49 @@ def recommend(score, has_eval):
 def assess_all():
     """Assess all project skills and return structured results."""
     skills = list_skills()
+    eval_names = _build_eval_names()
     results = []
 
     for skill in skills:
         path = skill["path"]
         try:
             content = Path(path).read_text()
-        except OSError:
+
+            fm = _parse_frontmatter(content)
+            tools = _parse_tools(fm)
+
+            parts = content.split("---", 2)
+            body = parts[2] if len(parts) >= 3 else content
+            line_count = len(content.splitlines())
+
+            meta = {
+                "name": skill["name"],
+                "dir_name": skill["dir_name"],
+                "path": skill["path"],
+                "description": skill.get("description", ""),
+                "line_count": line_count,
+                "allowed_tools": sorted(tools),
+                "produces_files": bool(tools & FILE_TOOLS),
+                "uses_bash": bool(tools & EXEC_TOOLS),
+                "uses_agents": bool(tools & AGENT_TOOLS),
+                "uses_orchestration": bool(tools & ORCHESTRATION_TOOLS),
+                "script_count": _count_scripts(path),
+                "has_existing_eval": skill["dir_name"] in eval_names,
+                "complexity_signals": _find_complexity_signals(body),
+                "is_thin_wrapper": _is_thin_wrapper(fm, tools, line_count),
+            }
+
+            score, reasons = score_skill(meta)
+            meta["eval_score"] = score
+            meta["score_reasons"] = reasons
+            meta["recommendation"] = recommend(score, meta["has_existing_eval"])
+
+            results.append(meta)
+        except Exception as exc:
+            print(f"  WARNING: failed to assess {path}: {exc}", file=sys.stderr)
             continue
 
-        fm = _parse_frontmatter(content)
-        tools = _parse_tools(fm)
-
-        parts = content.split("---", 2)
-        body = parts[2] if len(parts) >= 3 else content
-        line_count = len(content.splitlines())
-
-        meta = {
-            "name": skill["name"],
-            "path": skill["path"],
-            "description": skill.get("description", ""),
-            "line_count": line_count,
-            "allowed_tools": sorted(tools),
-            "produces_files": bool(tools & FILE_TOOLS),
-            "uses_bash": bool(tools & EXEC_TOOLS),
-            "uses_agents": bool(tools & AGENT_TOOLS),
-            "has_existing_eval": _has_existing_eval(path),
-            "complexity_signals": _find_complexity_signals(body),
-            "is_thin_wrapper": _is_thin_wrapper(fm, line_count),
-        }
-
-        score, reasons = score_skill(meta)
-        meta["eval_score"] = score
-        meta["score_reasons"] = reasons
-        meta["recommendation"] = recommend(score, meta["has_existing_eval"])
-
-        results.append(meta)
-
-    results.sort(key=lambda r: (-r["eval_score"], r["name"]))
+    results.sort(key=lambda r: (-r["eval_score"], r["dir_name"]))
     return results
 
 
@@ -209,13 +253,12 @@ def main():
 
     results = assess_all()
 
-    if not results:
-        print("No skills found in the project.", file=sys.stderr)
-        sys.exit(1)
-
     if args.json:
         json.dump(results, sys.stdout, indent=2)
         print()
+    elif not results:
+        print("No skills found in the project.", file=sys.stderr)
+        sys.exit(1)
     else:
         print_report(results)
 
