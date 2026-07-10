@@ -78,18 +78,18 @@ prompt: |
 
 ## Common Pitfall
 
-❌ **Don't do this**:
-```yaml
-execution:
-  prompt: "placeholder"      # Non-empty prompt to trigger prompt mode
-  arguments: "{prompt}"       # Actual template in wrong field
-```
+**Put the complete template in `prompt`.** In prompt mode `arguments` is ignored, so the `prompt` field must carry the full template — not a placeholder with the real template stranded in `arguments`.
 
-✓ **Do this instead**:
+Correct:
 ```yaml
 execution:
-  prompt: "{prompt}"          # Prompt IS the template
+  prompt: "{prompt}"          # the prompt IS the template
   # arguments not needed in prompt mode
 ```
 
-The prompt field should contain the complete template, not a placeholder.
+Anti-pattern (template misfiled in `arguments`, prompt is just a trigger):
+```yaml
+execution:
+  prompt: "placeholder"
+  arguments: "{prompt}"
+```

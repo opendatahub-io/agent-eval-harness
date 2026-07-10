@@ -47,7 +47,7 @@ execution:
 - Documentation effectiveness: Can agents navigate and use your docs?
 - Pattern understanding: Can agents identify and apply code patterns?
 - Constraint compliance: Do agents respect documented rules?
-- API usage: Can agents correctly use APIs from documentation alone?
+- API usage: Can agents call APIs with the right fields and structure from documentation alone?
 
 Includes builtin documentation generation prompts (navigation, anti-pattern, authoring, component-usage, architecture) for structured evaluation. See `agent_eval/prompts/docs/`.
 
