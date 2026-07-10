@@ -67,21 +67,24 @@ class TestPromptBasedConfigGeneration:
             "dataset": {
                 "path": "eval/dataset",
                 "schema": "input.yaml with 'prompt' field, expected_files list",
-                "test_categories": [
+            },
+            "generation": {
+                "strategy": "synthetic",
+                "seeds": [
                     {
-                        "name": "navigation",
-                        "template": "documentation/navigation",
+                        "category": "navigation",
+                        "builtin": "docs/navigation",
                         "count": 2,
                         "description": "Agent finds relevant documentation"
                     },
                     {
-                        "name": "anti-pattern",
-                        "template": "documentation/anti-pattern",
+                        "category": "anti-pattern",
+                        "builtin": "docs/anti-pattern",
                         "count": 1,
                         "description": "Agent rejects constraint violations"
                     }
                 ],
-                "domain": {
+                "context": {
                     "type": "test-repository",
                     "documentation_structure": {
                         "entry_point": "CLAUDE.md",
@@ -143,31 +146,31 @@ class TestPromptBasedConfigGeneration:
         # Skill field should be absent in execution for prompt mode
         assert "skill" not in sample_docs_config.get("execution", {})
 
-    def test_taxonomy_based_dataset(self, sample_docs_config):
-        """Test that config includes taxonomy-based dataset structure."""
-        dataset = sample_docs_config["dataset"]
+    def test_synthetic_generation_block(self, sample_docs_config):
+        """Test that config includes synthetic generation structure."""
+        generation = sample_docs_config["generation"]
 
-        assert "test_categories" in dataset
-        assert len(dataset["test_categories"]) == 2
+        assert generation["strategy"] == "synthetic"
+        assert len(generation["seeds"]) == 2
 
-        # Check category structure
-        nav_category = dataset["test_categories"][0]
-        assert nav_category["name"] == "navigation"
-        assert nav_category["template"] == "documentation/navigation"
-        assert nav_category["count"] == 2
+        # Check seed structure
+        nav_seed = generation["seeds"][0]
+        assert nav_seed["category"] == "navigation"
+        assert nav_seed["builtin"] == "docs/navigation"
+        assert nav_seed["count"] == 2
 
-    def test_domain_knowledge_extraction(self, sample_docs_config):
-        """Test that domain knowledge is extracted."""
-        domain = sample_docs_config["dataset"]["domain"]
+    def test_context_knowledge_extraction(self, sample_docs_config):
+        """Test that repository knowledge is captured in generation.context."""
+        context = sample_docs_config["generation"]["context"]
 
-        assert domain["type"] == "test-repository"
-        assert "documentation_structure" in domain
-        assert domain["documentation_structure"]["entry_point"] == "CLAUDE.md"
+        assert context["type"] == "test-repository"
+        assert "documentation_structure" in context
+        assert context["documentation_structure"]["entry_point"] == "CLAUDE.md"
 
         # Check constraints
-        assert "constraints" in domain
-        assert len(domain["constraints"]) == 1
-        assert "v1alpha1" in domain["constraints"][0]["rule"]
+        assert "constraints" in context
+        assert len(context["constraints"]) == 1
+        assert "v1alpha1" in context["constraints"][0]["rule"]
 
     def test_config_validation(self, sample_docs_config):
         """Test that generated config can be loaded by EvalConfig."""
@@ -185,16 +188,16 @@ class TestPromptBasedConfigGeneration:
             assert config.execution.prompt  # Prompt mode uses execution.prompt
             assert not config.execution.skill  # Prompt mode has no skill in execution
 
-            # Validate taxonomy fields
-            assert len(config.test_categories) == 2
-            assert config.test_categories[0].name == "navigation"
-            assert config.test_categories[0].template == "documentation/navigation"
-            assert config.test_categories[0].count == 2
+            # Validate generation seeds
+            assert len(config.generation.seeds) == 2
+            assert config.generation.seeds[0].category == "navigation"
+            assert config.generation.seeds[0].builtin == "docs/navigation"
+            assert config.generation.seeds[0].count == 2
 
-            # Validate domain knowledge
-            assert config.dataset.domain["type"] == "test-repository"
-            assert "documentation_structure" in config.dataset.domain
-            assert len(config.dataset.domain["constraints"]) == 1
+            # Validate generation context
+            assert config.generation.context["type"] == "test-repository"
+            assert "documentation_structure" in config.generation.context
+            assert len(config.generation.context["constraints"]) == 1
 
         finally:
             Path(config_path).unlink()

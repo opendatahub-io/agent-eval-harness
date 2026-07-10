@@ -287,64 +287,73 @@ def _validate_field_consistency(config, judges, dataset_path, config_dir, errors
                 )
 
 
-def _validate_prompt_mode_config(config, dataset, test_categories, config_dir, errors, warnings):
+def _validate_prompt_mode_config(config, generation, config_dir, errors, warnings):
     """Validate prompt-mode specific configuration.
 
-    This includes taxonomy-based generation and domain-specific validation
-    (e.g., documentation_structure for documentation templates).
+    This covers synthetic generation (the ``generation`` block) and
+    documentation-specific checks (``context.documentation_structure`` for
+    documentation generation prompts).
     """
-    # --- Taxonomy-based generation checks ---
-    if test_categories:
-        # Check for extra fields that will be silently dropped by TestCategory dataclass
-        known_fields = {"name", "template", "count", "description"}
-        for i, tc in enumerate(test_categories):
-            if not isinstance(tc, dict):
-                continue
-            extra_fields = set(tc.keys()) - known_fields
-            if extra_fields:
-                warnings.append(
-                    f"test_categories[{i}] ({tc.get('name', 'unnamed')}) has extra fields that will be ignored during generation: {', '.join(sorted(extra_fields))}"
-                )
-                warnings.append(
-                    f"  Hint: Move domain-specific metadata (test_prompts, apis, constraints, etc.) to dataset.domain section"
-                )
+    seeds = generation.get("seeds", []) or []
+    context = generation.get("context", {})
 
-        # Check if dataset.domain is populated for taxonomy-based generation
-        domain = dataset.get("domain", {})
-        if not domain or (isinstance(domain, dict) and not domain):
+    if not seeds:
+        return
+
+    # Check for extra fields that will be silently dropped by GenerationSeed
+    known_fields = {"category", "count", "builtin", "prompt_file", "prompt", "description"}
+    for i, s in enumerate(seeds):
+        if not isinstance(s, dict):
+            continue
+        extra_fields = set(s.keys()) - known_fields
+        if extra_fields:
             warnings.append(
-                "Taxonomy-based generation detected (test_categories present) but dataset.domain is empty. "
-                "LLM will generate generic test cases without repository-specific context."
+                f"generation.seeds[{i}] ({s.get('category', 'unnamed')}) has extra fields "
+                f"that will be ignored during generation: {', '.join(sorted(extra_fields))}"
             )
             warnings.append(
-                "  Hint: Add dataset.domain section with constraints, apis, components, or documentation_structure"
+                "  Hint: Move repository knowledge (apis, constraints, etc.) to generation.context"
             )
 
-        # --- Documentation-specific validation (conditional) ---
-        # Only validate documentation_structure when documentation templates are actually used
-        uses_doc_templates = any(
-            isinstance(tc, dict) and
-            tc.get("template", "").startswith(("documentation/", "builtin:"))
-            for tc in test_categories
+    # Check if generation.context is populated
+    if not context or (isinstance(context, dict) and not context):
+        warnings.append(
+            "Synthetic generation detected (generation.seeds present) but "
+            "generation.context is empty. LLM will generate generic test cases "
+            "without repository-specific context."
+        )
+        warnings.append(
+            "  Hint: Add generation.context with constraints, apis, components, or documentation_structure"
         )
 
-        if uses_doc_templates and isinstance(domain, dict):
-            doc_structure = domain.get("documentation_structure", {})
-            entry_point = doc_structure.get("entry_point", "")
-            if entry_point:
-                # Resolve relative to the eval.yaml directory, consistent with
-                # every other path check (dataset.path, prompt_file, context).
-                ep = (Path(entry_point) if Path(entry_point).is_absolute()
-                      else config_dir / entry_point)
-                if not ep.exists():
-                    errors.append(
-                        f"dataset.domain.documentation_structure.entry_point '{entry_point}' does not exist"
-                    )
-            elif not doc_structure:
-                warnings.append(
-                    "Documentation templates detected but dataset.domain.documentation_structure is not defined. "
-                    "Test generation may produce generic documentation test cases without repository-specific structure."
+    # --- Documentation-specific validation (conditional) ---
+    # Only validate documentation_structure when docs generation prompts are used
+    uses_doc_prompts = any(
+        isinstance(s, dict) and str(s.get("builtin", "")).startswith("docs/")
+        for s in seeds
+    )
+
+    if uses_doc_prompts and isinstance(context, dict):
+        doc_structure = context.get("documentation_structure", {})
+        entry_point = (
+            doc_structure.get("entry_point", "")
+            if isinstance(doc_structure, dict) else ""
+        )
+        if entry_point:
+            # Resolve relative to the eval.yaml directory, consistent with
+            # every other path check (dataset.path, prompt_file, context).
+            ep = (Path(entry_point) if Path(entry_point).is_absolute()
+                  else config_dir / entry_point)
+            if not ep.exists():
+                errors.append(
+                    f"generation.context.documentation_structure.entry_point '{entry_point}' does not exist"
                 )
+        elif not doc_structure:
+            warnings.append(
+                "Documentation generation prompts detected but "
+                "generation.context.documentation_structure is not defined. "
+                "Test generation may produce generic documentation test cases without repository-specific structure."
+            )
 
 
 def validate_config(path="eval.yaml"):
@@ -381,9 +390,9 @@ def validate_config(path="eval.yaml"):
         # EvalConfig validation failed - this is a critical schema error
         error_msg = str(e)
         # Make the error message more user-friendly
-        if "test_categories" in error_msg and "template" in error_msg:
+        if "generation.seeds" in error_msg:
             errors.append(f"Schema validation failed: {error_msg}")
-            errors.append("Hint: Each test_categories entry needs a 'template' field (e.g., 'documentation/navigation')")
+            errors.append("Hint: Each generation.seeds entry needs a 'category', a 'count', and exactly one of builtin/prompt_file/prompt (e.g., 'builtin: docs/navigation')")
         else:
             errors.append(f"Schema validation failed: {error_msg}")
     except ImportError as e:
@@ -426,9 +435,9 @@ def validate_config(path="eval.yaml"):
     if not judges:
         warnings.append("No judges — scoring step will have nothing to run")
 
-    # --- Prompt-mode validation (taxonomy-based generation, documentation templates) ---
-    test_categories = dataset.get("test_categories", [])
-    _validate_prompt_mode_config(config, dataset, test_categories, config_dir, errors, warnings)
+    # --- Prompt-mode validation (synthetic generation, documentation prompts) ---
+    generation = config.get("generation", {}) or {}
+    _validate_prompt_mode_config(config, generation, config_dir, errors, warnings)
 
     # --- Skill reference check ---
     # Check execution.skill first, then fall back to top-level skill

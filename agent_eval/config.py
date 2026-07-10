@@ -150,7 +150,6 @@ class DatasetConfig:
 
     path: str = ""
     schema: str = ""
-    domain: Union[str, dict] = field(default_factory=dict)  # Repository-specific knowledge (string for prompt-mode, dict for skill-mode)
     workspace: WorkspaceConfig = field(default_factory=WorkspaceConfig)
 
 
@@ -352,16 +351,39 @@ class ModelsConfig:
 
 
 @dataclass
-class TestCategory:
-    """One test category in a taxonomy-based dataset.
+class GenerationSeed:
+    """One seed in a synthetic ``generation`` block.
 
-    Categories define groups of tests that validate specific capabilities.
-    Each category references a template that defines how to generate test cases.
+    Each seed produces ``count`` test cases of a given ``category`` from a
+    generation prompt. The prompt is chosen by exactly one discriminator
+    (mirroring judges):
+
+    - ``builtin`` — a builtin generation prompt, e.g. ``docs/navigation``
+      (from ``agent_eval/prompts/``)
+    - ``prompt_file`` — a project file path, relative to the eval config
+    - ``prompt`` — an inline prompt string
+
+    ``category`` is stamped onto every generated case as ``annotations.category``.
     """
-    name: str
-    template: str  # Template reference: "category/name" (e.g., "documentation/navigation") or path/to/template.md
+    category: str
     count: int
+    builtin: str = ""
+    prompt_file: str = ""
+    prompt: str = ""
     description: str = ""
+
+
+@dataclass
+class GenerationConfig:
+    """Synthetic test-case generation (optional, prompt-mode).
+
+    Present ⇒ ``/eval-dataset`` generates cases from ``seeds`` instead of
+    skill-based generation. ``context`` is repository knowledge injected into
+    every generation prompt.
+    """
+    strategy: str = ""
+    context: Union[str, dict] = field(default_factory=dict)
+    seeds: list = field(default_factory=list)  # List of GenerationSeed
 
 
 @dataclass
@@ -380,7 +402,7 @@ class JudgeConfig:
 
     1. llm_rubric — Syntactic sugar for simple evaluation criteria.
        Automatically appends "{{ conversation }}" template if not present.
-       Use for concise, criteria-focused judges in taxonomy-based configs.
+       Use for concise, criteria-focused judges in synthetic-generation configs.
        Example: llm_rubric: "Agent cited relevant documentation sources"
 
     2. prompt — Full Jinja2 template with manual control over structure.
@@ -500,8 +522,8 @@ class EvalConfig:
     # Dataset — location, schema, and workspace file provisioning
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
 
-    # Taxonomy-based dataset (optional)
-    test_categories: list = field(default_factory=list)  # List of TestCategory
+    # Generation — synthetic test-case generation (optional, prompt-mode)
+    generation: GenerationConfig = field(default_factory=GenerationConfig)
 
     # Outputs — file artifacts and/or tool calls
     outputs: list = field(default_factory=list)
@@ -721,47 +743,50 @@ class EvalConfig:
                 dataset.get("path", ""), "dataset.path", allow_absolute=True
             ),
             schema=dataset.get("schema", ""),
-            domain=dataset.get("domain", {}),
             workspace=WorkspaceConfig(files=ws_files),
         )
-        # Test categories (taxonomy-based dataset) with validation
-        test_categories = []
-        for i, tc in enumerate(dataset.get("test_categories") or []):
-            # Check for common field name mistakes
-            invalid_fields = []
-            if "target_cases" in tc:
-                invalid_fields.append("target_cases")
-            if "target_count" in tc:
-                invalid_fields.append("target_count")
-            if "num_cases" in tc:
-                invalid_fields.append("num_cases")
-
-            if invalid_fields:
+        # Generation — synthetic test-case generation (optional) with validation
+        gen_raw = raw.get("generation") or {}
+        seeds = []
+        for i, s in enumerate(gen_raw.get("seeds") or []):
+            category = s.get("category", "")
+            count = s.get("count")
+            if not category or not isinstance(category, str):
                 raise ValueError(
-                    f"dataset.test_categories[{i}] has invalid field(s): {', '.join(invalid_fields)}. "
-                    f"Use 'count' to specify the number of test cases to generate.")
-
-            name = tc.get("name", "")
-            template = tc.get("template", "")
-            count = tc.get("count", 1)
-
-            # Validate required fields
-            if not name or not isinstance(name, str):
-                raise ValueError(
-                    f"dataset.test_categories[{i}].name must be a non-empty string, got: {name!r}")
-            if not template or not isinstance(template, str):
-                raise ValueError(
-                    f"dataset.test_categories[{i}].template must be a non-empty string, got: {template!r}")
+                    f"generation.seeds[{i}].category must be a non-empty string, got: {category!r}")
+            # count is required — a silent default would swallow a mistyped field name
             if not isinstance(count, int) or count < 1:
                 raise ValueError(
-                    f"dataset.test_categories[{i}].count must be an integer >= 1, got: {count!r}")
+                    f"generation.seeds[{i}].count must be an integer >= 1, got: {count!r}")
 
-            test_categories.append(TestCategory(
-                name=name,
-                template=template,
+            # Exactly one prompt discriminator (mirrors judges: builtin/prompt_file/prompt)
+            discriminators = [
+                k for k in ("builtin", "prompt_file", "prompt") if s.get(k)
+            ]
+            if len(discriminators) != 1:
+                raise ValueError(
+                    f"generation.seeds[{i}] ('{category}') must set exactly one of "
+                    f"builtin / prompt_file / prompt, got: {discriminators or 'none'}")
+
+            seeds.append(GenerationSeed(
+                category=category,
                 count=count,
-                description=tc.get("description", ""),
+                builtin=s.get("builtin", ""),
+                prompt_file=s.get("prompt_file", ""),
+                prompt=s.get("prompt", ""),
+                description=s.get("description", ""),
             ))
+
+        strategy = gen_raw.get("strategy", "")
+        if strategy == "synthetic" and not seeds:
+            raise ValueError(
+                "generation.strategy is 'synthetic' but generation.seeds is empty.")
+
+        generation_config = GenerationConfig(
+            strategy=strategy,
+            context=gen_raw.get("context", {}),
+            seeds=seeds,
+        )
 
         config = cls(
             name=raw.get("name", path.stem),
@@ -775,7 +800,7 @@ class EvalConfig:
             config_dir=path.resolve().parent,
             config_path=path.resolve(),
             dataset=dataset_config,
-            test_categories=test_categories,
+            generation=generation_config,
         )
 
         # Outputs (path or tool)

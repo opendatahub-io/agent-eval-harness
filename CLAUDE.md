@@ -49,7 +49,7 @@ execution:
 - Constraint compliance: Do agents respect documented rules?
 - API usage: Can agents correctly use APIs from documentation alone?
 
-Includes documentation evaluation templates (navigation, anti-pattern, authoring, component-usage, architecture) for structured evaluation. See `skills/eval-dataset/templates/documentation/`.
+Includes builtin documentation generation prompts (navigation, anti-pattern, authoring, component-usage, architecture) for structured evaluation. See `agent_eval/prompts/docs/`.
 
 **Extensible to other scenarios**: Code generation, API pattern validation, reasoning quality, custom agent benchmarks.
 
@@ -76,6 +76,10 @@ agent_eval/              # Python package (config, runner, state)
     templates/           # task.toml, instruction.md, test.sh templates
   tools/
     interception.py      # Shared tool interception generation (workspace + Harbor)
+  judges/                # Builtin judges (auto-discovered by category)
+  prompts/               # Builtin generation prompts (synthetic generation)
+    __init__.py          # BuiltinPromptRegistry + resolve_seed_prompt
+    docs/                # navigation, anti-pattern, authoring, component-usage, architecture
   mlflow/
     experiment.py        # MLflow experiment setup, server check, feedback logging
     datasets.py          # Dataset create/sync utilities
@@ -103,17 +107,12 @@ skills/eval-analyze/     # Skill: bootstrap eval config
 
 skills/eval-dataset/     # Skill: generate test cases
   SKILL.md               # Bootstrap, expand, or extract cases from traces (skill mode)
-                         # OR taxonomy-based generation from templates (prompt mode)
+                         # OR synthetic generation from seeds (prompt mode)
   scripts/
-    generate_from_taxonomy.py # Taxonomy-based test case generation (prompt mode)
+    generate_synthetic.py # Synthetic test case generation (prompt mode)
+    list_prompts.py      # List builtin generation prompts (from agent_eval/prompts/)
     harbor.py            # CLI: generate Harbor task packages (thin wrapper → harbor.tasks)
-  templates/documentation/  # Documentation evaluation templates (prompt mode)
-    navigation.md        # Finding documentation
-    anti-pattern.md      # Rejecting constraint violations
-    authoring.md         # Creating content following patterns
-    component-usage.md   # API/component usage with examples
-    architecture.md      # System design and component interactions
-    README.md            # Template documentation
+  # Builtin generation prompts live in agent_eval/prompts/ (like builtin judges)
 
 skills/eval-run/         # Skill: execute eval suite
   SKILL.md               # Prepare, execute, collect, score, report
@@ -161,7 +160,8 @@ Projects create an `eval.yaml` config file with:
 - `models` — defaults for `skill`/`subagent`/`judge`/`hook` roles (CLI flags override). `hook` is the model for LLM-based AskUserQuestion answering.
 - `mlflow` — `experiment`, optional `tracking_uri`/`tags`
 - `permissions` — `allow`/`deny` tool patterns for headless execution
-- `dataset` — `path` to test cases directory, `schema` describing case structure in natural language. Optional `test_categories` for taxonomy-based test generation (used with `prompt` mode).
+- `dataset` — `path` to test cases directory, `schema` describing case structure in natural language.
+- `generation` — optional, synthetic test-case generation (prompt mode). `strategy: synthetic` switches `/eval-dataset` to seed-based generation. `context` holds repository knowledge injected into every prompt. `seeds` is a list; each has a `category`, a `count`, and exactly one prompt discriminator (mirroring judges): `builtin` (from `agent_eval/prompts/`, e.g. `docs/navigation`), `prompt_file` (project path), or inline `prompt`. Each seed's `category` is stamped onto generated cases as `annotations.category` (the category list is derived, never declared).
 - `inputs.tools` — tool interception: `match` describes what to intercept, `prompt` how to handle it. AskUserQuestion uses 3-tier answering: exact `case_overrides` → LLM call (`models.hook`) with case context (`input.yaml` + `answers.yaml`) → fallback
 - `outputs` — list of artifact dirs (`path`) and/or tool calls (`tool`) with natural language schemas. Optional `batch_pattern` maps output files to cases in batch mode using `{n}` as a 1-based index
 - `traces` — execution data to capture: stdout/stderr, events, metrics (exit code, tokens, cost)
@@ -189,7 +189,7 @@ The `schema` descriptions are documentation for the LLM agents and judges. Scrip
 ### Prompt Mode Workflow (Agentic Documentation Testing)
 ```text
 /eval-setup                            # Setup: dependencies, MLflow, API keys
-/eval-analyze --prompt examples/openshift-agentic-docs.md # Analyze: analyze docs, generate taxonomy-based eval.yaml
+/eval-analyze --prompt examples/openshift-agentic-docs.md # Analyze: analyze docs, generate synthetic-generation eval.yaml
 /eval-dataset                          # Dataset: generate test cases from templates
 /eval-run --model sonnet               # Run: test agent against documentation
 /eval-review --run-id <id>             # Review: analyze documentation effectiveness

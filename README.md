@@ -111,7 +111,7 @@ This examines the skill's SKILL.md, discovers test cases, and generates `eval.ya
 
 This analyzes your repository's documentation (CLAUDE.md, AGENTS.md, ai-docs/) and generates `eval.yaml` with:
 - `execution.prompt: "{{ input.prompt }}"` (prompt mode)
-- Documentation test templates (documentation/navigation, documentation/anti-pattern, etc.)
+- A `generation:` block with builtin documentation prompts (`docs/navigation`, `docs/anti-pattern`, etc.)
 - LLM rubric judges for semantic evaluation
 - Documentation tracking to verify agents use docs correctly
 
@@ -306,15 +306,14 @@ thresholds:
   
   Additional fields: `arguments` template, optional `timeout` (wall-clock seconds per invocation), `max_budget_usd` (cost cap per invocation), `parallelism` (run up to N cases concurrently in case/prompt modes), and `env` for injecting environment variables into workspaces (`$VAR` syntax resolves from caller's environment).
 - **`schema`** — natural language description of structure. Used on `dataset` and each `outputs` entry. Agents and judges read these to understand the data.
-- **`test_categories`** — (prompt mode only) taxonomy-based test generation. Each category has a `name`, `template` (category/name like `documentation/navigation` or custom path), `count` (number of cases), and `description`. Used by `/eval-dataset` to generate test cases from templates.
-- **`domain`** — (prompt mode only) repository-specific context used during test generation. Can include `type`, `documentation_structure`, `constraints`, `apis`, `components`, etc. Tailors generic templates to your repository.
+- **`generation`** — (prompt mode only) synthetic test generation, a top-level block. `strategy: synthetic` tells `/eval-dataset` to generate from seeds. `context` holds repository-specific knowledge (`documentation_structure`, `constraints`, `apis`, `components`, etc.) injected into every generation prompt. `seeds` is a list; each seed has a `category`, a `count`, and exactly one **generation prompt** discriminator (mirroring judges): `builtin` (from `agent_eval/prompts/`, e.g. `docs/navigation` — discover with `list_prompts.py`), `prompt_file` (a project path), or an inline `prompt`. Each seed's `category` is stamped onto generated cases as `annotations.category`.
 - **`inputs.tools`** — tool interception for headless and interactive execution. Each entry has a `match` (what to intercept) and a `prompt` (how to handle it). AskUserQuestion uses 3-tier answering: exact `case_overrides` → LLM call (`models.hook`) with case context (`input.yaml` + `answers.yaml`) → fallback to first option.
 - **`outputs`** — two types: `path` for file artifacts on disk, `tool` for tool call side effects (Jira, APIs). Both have `schema` descriptions. Optional `batch_pattern` maps output files to cases in batch mode using `{n}` as a 1-based index (e.g. `"RFE-{n:03d}"` → `RFE-001`, `RFE-002`).
 - **`traces`** — execution data to capture: stdout/stderr logs, events (tool calls, reasoning text, results), metrics (exit code, tokens, cost, duration). Available to judges via the `outputs` dict.
 - **`check`** — inline Python snippet for deterministic validation. Receives an `outputs` dict with file contents, execution metadata, tool calls, logs, and `annotations` (from dataset `annotations.yaml`). Returns `(bool, str)`.
 - **`if`** — optional condition on a judge. Python expression evaluated against `annotations` and `outputs`. When false, the judge is skipped for that case (not counted in pass_rate or mean).
 - **`prompt`** / **`prompt_file`** / **`llm_rubric`** — LLM judge evaluation instructions. All three compile to the same internal prompt before Jinja2 rendering. Priority order: `llm_rubric` > `prompt` > `prompt_file`.
-  - **`llm_rubric`**: Syntactic sugar for simple criteria. Auto-appends `{{ conversation }}` template if missing. Best for taxonomy-based configs. Example: `llm_rubric: "Agent cited documentation sources"`
+  - **`llm_rubric`**: Syntactic sugar for simple criteria. Auto-appends `{{ conversation }}` template if missing. Best for synthetic-generation configs. Example: `llm_rubric: "Agent cited documentation sources"`
   - **`prompt`**: Full Jinja2 template with manual control. Use for complex logic or multiple placeholders like `{{ outputs }}`, `{{ conversation }}`, `{{ tool_trace }}`, `{{ reference }}`.
   - **`prompt_file`**: External file path (absolute or relative to project root). Use for sharing prompts across judges. File can contain rubric-style or full template content.
 - **`context`** — list of file paths loaded and appended to the LLM judge prompt as supplementary material (rubrics, guidelines, examples).
@@ -508,31 +507,32 @@ models:
 dataset:
   path: eval/dataset/cases
   schema: "input.yaml with 'prompt' (question) and 'expected_files' (docs to consult)"
-  
-  # Taxonomy-based dataset: generate test cases from templates
-  test_categories:
-    - name: navigation
-      template: documentation/navigation
-      count: 10
-      description: Finding specific documentation
-    - name: anti-pattern
-      template: documentation/anti-pattern
-      count: 5
-      description: Rejecting constraint violations
-  
-  # Repository-specific knowledge for test generation
-  domain:
-    documentation:
-      structure: |
-        - CLAUDE.md: project overview, architecture
-        - AGENTS.md: agentic workflows and patterns
-        - ai-docs/: detailed component documentation
-    
+
+# Synthetic generation: a top-level block, peer of execution/dataset/judges
+generation:
+  strategy: synthetic
+  # Repository knowledge injected into every generation prompt
+  context:
+    documentation_structure:
+      entry_point: CLAUDE.md
+      areas:
+        - path: ai-docs/
+          topics: [component-docs, workflows]
     constraints:
       - rule: "All new APIs must start with v1alpha1"
         documentation: ai-docs/practices/api-evolution.md
       - rule: "Never modify files in vendor/"
         documentation: CLAUDE.md
+  # Each seed picks a generation prompt via builtin / prompt_file / prompt
+  seeds:
+    - category: navigation
+      builtin: docs/navigation          # from agent_eval/prompts/ (see list_prompts.py)
+      count: 10
+      description: Finding specific documentation
+    - category: anti-pattern
+      builtin: docs/anti-pattern
+      count: 5
+      description: Rejecting constraint violations
 
 outputs:
   - path: outputs
@@ -580,9 +580,9 @@ Analyze a target and generate `eval.yaml`. Two modes:
 
 **Prompt mode** (`--prompt`): Uses an analysis prompt to generate evaluation config. Domain-specific analysis prompts (see `examples/`) analyze repository documentation (CLAUDE.md, AGENTS.md, ai-docs/) and produce:
 - `execution.prompt: "{{ input.prompt }}"` (direct agent invocation)
-- Test categories (navigation, anti-pattern, authoring, component-usage, architecture)
+- A `generation:` block with seeds (navigation, anti-pattern, authoring, component-usage, architecture)
 - LLM rubric judges for semantic evaluation
-- Domain context for test generation
+- `generation.context` for test generation
 
 ```bash
 /eval-analyze --skill my-skill                           # Skill mode: analyze skill implementation
@@ -599,16 +599,16 @@ Generate evaluation test cases. Two generation strategies:
 
 **Skill mode**: Creates realistic inputs based on skill analysis. Bootstraps starter dataset, expands existing coverage, or extracts cases from MLflow traces.
 
-**Prompt mode**: Generates taxonomy-based test cases from category templates when `eval.yaml` has `test_categories` defined (from `/eval-analyze --prompt`).
+**Prompt mode**: Generates synthetic test cases from `generation.seeds` when `eval.yaml` has `generation.strategy: synthetic` (from `/eval-analyze --prompt`).
 
 ```bash
 /eval-dataset                              # Bootstrap 5 starter cases (skill mode)
-                                           # OR generate from test_categories (prompt mode)
-/eval-dataset --count 20                   # Generate 20 cases
+                                           # OR generate from generation.seeds (prompt mode)
+/eval-dataset --count 20                   # Generate 20 cases (skill mode; synthetic uses per-seed count)
 /eval-dataset --strategy expand            # Fill coverage gaps (skill mode only)
 ```
 
-**Taxonomy-based generation** (prompt mode) uses test category templates (documentation/navigation, documentation/anti-pattern, documentation/authoring, documentation/component-usage, documentation/architecture) combined with repository-specific `domain` knowledge to create targeted test cases. Extensible with custom template categories.
+**Synthetic generation** (prompt mode) uses builtin generation prompts (`docs/navigation`, `docs/anti-pattern`, `docs/authoring`, `docs/component-usage`, `docs/architecture` — from `agent_eval/prompts/`) combined with repository-specific `generation.context` to create targeted test cases. Extensible with project-specific prompts via `prompt_file:` or inline `prompt:`.
 
 ### /eval-run
 
@@ -721,4 +721,4 @@ echo "/rfe.speedrun --input batch.yaml --headless" | claude-trace --model opus
 
 - `pyyaml >= 6.0`
 - Optional: `mlflow[genai] >= 3.5` (for `/eval-mlflow` and `claude-trace`)
-- Optional: `anthropic >= 0.40` (for LLM judges, pairwise comparison, taxonomy-based dataset generation, and hook answering)
+- Optional: `anthropic >= 0.40` (for LLM judges, pairwise comparison, synthetic dataset generation, and hook answering)

@@ -18,6 +18,11 @@ You generate evaluation test cases for a skill. You read the skill analysis (eva
 | `--harbor` | no | — | Also generate Harbor task packages (Step 8) |
 | `--image <image>` | with `--harbor` | — | Container image for Harbor task packages |
 
+`--count` and `--strategy` apply to **skill-based** generation only. Synthetic generation
+(`generation.strategy: synthetic` in the config) is fully declarative — case counts come from each
+seed's `count` in `generation.seeds`, and `--count`/`--strategy` are ignored. Resize a synthetic
+dataset by editing seed counts in eval.yaml.
+
 ### Config Discovery
 
 If `--config` was explicitly provided, use that path directly. Otherwise, auto-discover:
@@ -75,18 +80,18 @@ After reading the skill analysis and judges, estimate whether `--count` is suffi
 
 ## Step 1.5: Detect Generation Mode
 
-Check if the eval config has `test_categories` defined (use the --config path from Step 0):
+Check the eval config's `generation.strategy` (use the --config path from Step 0):
 
 ```bash
-python3 -c "from pathlib import Path; import yaml; import sys; config = yaml.safe_load(Path(sys.argv[1]).read_text()); print('TAXONOMY' if config.get('dataset', {}).get('test_categories') else 'SKILL')" "<config_path>"
+python3 -c "from pathlib import Path; import yaml; import sys; config = yaml.safe_load(Path(sys.argv[1]).read_text()); print('SYNTHETIC' if config.get('generation', {}).get('strategy') == 'synthetic' else 'SKILL')" "<config_path>"
 ```
 
 Replace `<config_path>` with the actual value from the --config argument (default: eval.yaml).
 
-**If TAXONOMY mode detected**:
-- This is a taxonomy-based eval config (from `/eval-analyze --prompt`)
-- Use taxonomy-based generation instead of skill-based generation
-- Skip to Step 2-Taxonomy (see below)
+**If SYNTHETIC mode detected**:
+- This is a synthetic-generation eval config (from `/eval-analyze --prompt`)
+- Use synthetic generation instead of skill-based generation
+- Skip to Step 2-Synthetic (see below)
 
 **Otherwise**:
 - Continue with skill-based generation (Step 2 below)
@@ -233,22 +238,30 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/harbor.py \
 See `${CLAUDE_SKILL_DIR}/references/case-generation.md` for details.
 ---
 
-## TAXONOMY-BASED GENERATION (Prompt-Mode Evals)
+## SYNTHETIC GENERATION (Prompt-Mode Evals)
 
-## Step 2-Taxonomy: Generate from Test Categories
+## Step 2-Synthetic: Generate from Generation Seeds
 
-**When to use**: When eval.yaml has `dataset.test_categories` defined (from `/eval-analyze --prompt`).
+**When to use**: When eval.yaml has `generation.strategy: synthetic` (from `/eval-analyze --prompt`).
 
-**What it does**: Generates test cases using template categories (e.g., documentation/navigation, documentation/anti-pattern, etc.) combined with repository-specific domain knowledge from `dataset.domain`.
+**What it does**: Generates test cases from the `generation.seeds`. Each seed names a
+`category`, a `count`, and one **generation prompt** via a discriminator (mirroring judges):
+`builtin: docs/navigation` (a builtin from `agent_eval/prompts/`), `prompt_file: ./path.md`
+(project-specific), or an inline `prompt:`. Repository knowledge from `generation.context` is
+injected into every prompt. Discover builtin prompts:
 
-### Execute Taxonomy Generation
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/list_prompts.py
+```
 
-Extract the judge model from the eval config and call the taxonomy generation script (use the --config path from Step 0):
+### Execute Synthetic Generation
+
+Extract the judge model from the eval config and call the generation script (use the --config path from Step 0):
 
 ```bash
 JUDGE_MODEL=$(python3 -c "from pathlib import Path; import yaml; import sys; config = yaml.safe_load(Path(sys.argv[1]).read_text()); print(config.get('models', {}).get('judge', 'claude-opus-4-6'))" "<config_path>")
 
-python3 ${CLAUDE_SKILL_DIR}/scripts/generate_from_taxonomy.py \
+python3 ${CLAUDE_SKILL_DIR}/scripts/generate_synthetic.py \
   --config <config_path> \
   --output <dataset_path> \
   --model "${JUDGE_MODEL}"
@@ -257,11 +270,11 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/generate_from_taxonomy.py \
 Replace `<config_path>` with the actual value from the --config argument (default: eval.yaml).
 
 The script will:
-1. Read `test_categories` from the eval config
-2. Resolve each template reference (`documentation/navigation` → template file)
-3. Use Claude API to generate test cases following template instructions
-4. Apply domain knowledge from `dataset.domain` for repository-specific context
-5. Write cases to `<dataset_path>/case-NNN/`
+1. Read `generation.seeds` from the eval config
+2. Resolve each seed's generation prompt (builtin / prompt_file / inline)
+3. Use Claude API to generate test cases following the prompt instructions
+4. Apply `generation.context` for repository-specific knowledge
+5. Write cases to `<dataset_path>/case-NNN/`, stamping each with `annotations.category`
 
 ### Report Results
 
@@ -269,25 +282,25 @@ Tell the user:
 
 - **Cases generated**: N cases at `<dataset_path>`
 - **Categories**: List which categories and how many cases per category
-- **Domain context**: What repository-specific knowledge was used
+- **Context**: What repository-specific knowledge was used
 - **Model used**: Which model generated the cases (from `models.judge` or default)
 - **Next steps**:
   - Review generated cases in `<dataset_path>/`
   - Run evaluation: `/eval-run --model <model>`
-  - Generate more if needed: `/eval-dataset --count 20`
+  - Generate more: increase per-seed `count` in `generation.seeds`, then re-run `/eval-dataset` (`--count` does not apply in synthetic mode)
 
 ### Example Output
 
 ```text
 Generated 15 test cases:
-  - navigation (5 cases): Finding documentation in ai-docs/
-  - anti-pattern (5 cases): Rejecting constraint violations
-  - authoring (5 cases): Creating content following templates
+  - navigation (5 cases): docs/navigation
+  - anti-pattern (5 cases): docs/anti-pattern
+  - authoring (5 cases): docs/authoring
 
-Domain context applied:
+Context applied:
   - Documentation structure: CLAUDE.md, ai-docs/workflows/, ai-docs/domain/
   - Constraints: 3 rules from ai-docs/practices/
-  - APIs: 5 components from domain.apis
+  - APIs: 5 components from context.apis
 
 Model used: claude-opus-4-6
 
