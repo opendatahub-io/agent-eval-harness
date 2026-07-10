@@ -19,6 +19,8 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from agent_eval.tools.permissions import compile_permission_rules
+
 import yaml
 
 if TYPE_CHECKING:
@@ -153,15 +155,17 @@ def generate_interception(
     claude_dir.mkdir(parents=True, exist_ok=True)
     settings = build_settings_hooks(hook_matchers, hooks_command)
 
-    # Carry permissions from eval.yaml
+    # Carry permissions from eval.yaml, compiling path-based rules into valid
+    # Claude Code patterns (see agent_eval/tools/permissions.py) so the task
+    # package never ships raw {path, tools} dicts (which are invalid rules).
     allow = (config.permissions or {}).get("allow")
     deny = (config.permissions or {}).get("deny")
     if allow or deny:
         perms: dict = {}
         if allow:
-            perms["allow"] = list(allow)
+            perms["allow"] = compile_permission_rules(allow)
         if deny:
-            perms["deny"] = list(deny)
+            perms["deny"] = compile_permission_rules(deny, harden_bash=True)
         settings["permissions"] = perms
 
     # Inject execution.env
