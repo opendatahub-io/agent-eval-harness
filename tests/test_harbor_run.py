@@ -14,7 +14,7 @@ from agent_eval.harbor import run as run_mod
 def _config(tmp_path):
     raw = {
         "name": "t",
-        "skill": "rfe.speedrun",
+        "execution": {"skill": "rfe.speedrun"},
         "dataset": {"path": ""},
         "judges": [
             {"name": "files_exist", "check": "return (True, 'ok')\n"},

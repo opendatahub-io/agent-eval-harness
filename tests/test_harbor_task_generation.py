@@ -28,8 +28,7 @@ def _make_eval(tmp_path):
 
     raw = {
         "name": "rfe-speedrun",
-        "skill": "rfe.speedrun",
-        "execution": {"mode": "batch", "arguments": "--headless --dry-run --input batch.yaml"},
+        "execution": {"skill": "rfe.speedrun", "mode": "batch", "arguments": "--headless --dry-run --input batch.yaml"},
         "dataset": {"path": "cases", "schema": "x"},
         "outputs": [{"path": "artifacts/rfe-tasks", "schema": "rfe files"}],
         "judges": [{"name": "files_exist", "check": "return (True, 'ok')\n"}],

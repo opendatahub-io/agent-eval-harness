@@ -28,7 +28,8 @@ def _write(tmp_path, body):
 def test_hooks_config_parses_all_phases(tmp_path):
     cfg = EvalConfig.from_yaml(_write(tmp_path, textwrap.dedent("""\
         name: t
-        skill: s
+        execution:
+          skill: s
         hooks:
           before_all:
             - command: "echo setup"
@@ -70,7 +71,7 @@ def test_hooks_config_parses_all_phases(tmp_path):
 
 
 def test_hooks_config_defaults_to_empty(tmp_path):
-    cfg = EvalConfig.from_yaml(_write(tmp_path, "name: t\nskill: s\n"))
+    cfg = EvalConfig.from_yaml(_write(tmp_path, "name: t\nexecution:\n  skill: s\n"))
     assert cfg.hooks.before_all == []
     assert cfg.hooks.before_each == []
     assert cfg.hooks.after_each == []
@@ -81,7 +82,8 @@ def test_hooks_config_defaults_to_empty(tmp_path):
 def test_hooks_config_empty_block(tmp_path):
     cfg = EvalConfig.from_yaml(_write(tmp_path, textwrap.dedent("""\
         name: t
-        skill: s
+        execution:
+          skill: s
         hooks:
     """)))
     assert cfg.hooks.before_all == []
@@ -249,7 +251,8 @@ def test_invalid_on_failure_rejected(tmp_path):
     with pytest.raises(ValueError, match="on_failure must be"):
         EvalConfig.from_yaml(_write(tmp_path, textwrap.dedent("""\
             name: t
-            skill: s
+            execution:
+              skill: s
             hooks:
               before_all:
                 - command: "echo x"
@@ -261,7 +264,8 @@ def test_negative_timeout_rejected(tmp_path):
     with pytest.raises(ValueError, match="timeout must be a positive"):
         EvalConfig.from_yaml(_write(tmp_path, textwrap.dedent("""\
             name: t
-            skill: s
+            execution:
+              skill: s
             hooks:
               before_all:
                 - command: "echo x"
@@ -273,7 +277,8 @@ def test_zero_timeout_rejected(tmp_path):
     with pytest.raises(ValueError, match="timeout must be a positive"):
         EvalConfig.from_yaml(_write(tmp_path, textwrap.dedent("""\
             name: t
-            skill: s
+            execution:
+              skill: s
             hooks:
               before_all:
                 - command: "echo x"

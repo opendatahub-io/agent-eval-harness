@@ -18,7 +18,7 @@ def _write(tmp_path, body):
 
 
 def test_workspace_files_defaults_to_empty(tmp_path):
-    cfg = EvalConfig.from_yaml(_write(tmp_path, "name: t\nskill: s\n"))
+    cfg = EvalConfig.from_yaml(_write(tmp_path, "name: t\nexecution:\n  skill: s\n"))
     assert cfg.dataset.workspace.files == []
 
 
@@ -28,7 +28,8 @@ def test_workspace_files_parsed(tmp_path):
             tmp_path,
             """
 name: t
-skill: s
+execution:
+  skill: s
 dataset:
   workspace:
     files:
@@ -52,7 +53,8 @@ def test_workspace_files_rejects_absolute_path(tmp_path):
                 tmp_path,
                 """
 name: t
-skill: s
+execution:
+  skill: s
 dataset:
   workspace:
     files:
@@ -69,7 +71,8 @@ def test_workspace_files_rejects_non_string_entry(tmp_path):
                 tmp_path,
                 """\
 name: t
-skill: s
+execution:
+  skill: s
 dataset:
   workspace:
     files:
@@ -86,7 +89,8 @@ def test_workspace_files_rejects_parent_traversal(tmp_path):
                 tmp_path,
                 """
 name: t
-skill: s
+execution:
+  skill: s
 dataset:
   workspace:
     files:
@@ -103,7 +107,8 @@ def test_dataset_config_grouped(tmp_path):
             tmp_path,
             """
 name: t
-skill: s
+execution:
+  skill: s
 dataset:
   path: cases
   schema: "Each case has a ticket and code."

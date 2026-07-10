@@ -46,7 +46,7 @@ def test_create_project_configmap(tmp_path):
 
 
 def test_create_eval_configmap(tmp_path):
-    (tmp_path / "eval.yaml").write_text("name: test\nskill: my-skill\n")
+    (tmp_path / "eval.yaml").write_text("name: test\nexecution:\n  skill: my-skill\n")
     (tmp_path / "tool_handlers.yaml").write_text("handlers: []\n")
 
     core = _mock_core()
