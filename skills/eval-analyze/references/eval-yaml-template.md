@@ -123,9 +123,17 @@ models:
 # (check its allowed-tools frontmatter for "Skill"), add "Skill"
 # to the allow list — otherwise nested skill calls silently fail.
 #
-# IMPORTANT: Deny rules are ONLY for PROMPT-MODE evaluations (workspace_mode: repo).
+# IMPORTANT: Deny rules are ONLY for PROMPT-MODE evaluations (workspace_mode: repo),
+# where the agent runs in the real repo and must not read the answer key.
 # For SKILL-based evaluations: OMIT deny rules entirely (skill runs in isolated workspace).
-# For PROMPT-based evaluations: Add deny blocks to prevent test cheating.
+#
+# List path-scoped tools — Read, Edit, Grep, Glob (a directory path like "eval/"
+# is denied recursively). Do NOT list "Bash": Claude Code Bash rules match the
+# command string, not file paths, so Bash(eval/**) is a no-op. The Read/Edit deny
+# already covers file reads via the built-in tools and recognized bash file
+# commands (cat/head/tail/sed). CAVEAT: deny rules do NOT stop arbitrary
+# subprocess reads (e.g. `python3 -c "open('eval/x')"`, awk) — for a hard boundary
+# use OS sandboxing (sandbox.filesystem.denyRead), not permissions.deny.
 permissions:
   allow: []     # Tool patterns to allow (e.g., "Skill", "Write(artifacts/**)")
   # deny: []    # ONLY for prompt-mode evals - see note above
@@ -133,16 +141,16 @@ permissions:
   # Example deny rules for PROMPT-MODE evaluations (workspace_mode: repo):
   # deny:
   #   - path: "eval/"
-  #     tools: ["Read", "Grep", "Glob", "Bash"]
+  #     tools: ["Read", "Edit", "Grep", "Glob"]
   #     reason: "Test cases contain answer keys and run results from other agents"
   #   - path: "eval.yaml"
-  #     tools: ["Read", "Grep", "Bash"]
+  #     tools: ["Read", "Edit", "Grep"]
   #     reason: "Eval config contains domain knowledge and expected schemas"
   #   - path: "eval.md"
-  #     tools: ["Read", "Grep", "Bash"]
+  #     tools: ["Read", "Edit", "Grep"]
   #     reason: "Analysis cache contains documentation structure maps"
   #   - path: "tmp/"
-  #     tools: ["Read", "Grep", "Glob", "Bash"]
+  #     tools: ["Read", "Edit", "Grep", "Glob"]
   #     reason: "Harness state files not relevant to execution"
 
 # MLflow logging target (optional)

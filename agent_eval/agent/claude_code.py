@@ -14,6 +14,7 @@ from .stream_capture import (
     make_prompt_event, inject_timestamp, extract_usage,
     count_subagent_turns, count_subagent_turns_by_model, setup_subagent_hook,
 )
+from agent_eval.tools.permissions import compile_permission_rules
 
 _print_lock = threading.Lock()
 
@@ -166,51 +167,25 @@ class ClaudeCodeRunner(EvalRunner):
             if "permissions" not in settings_config:
                 settings_config["permissions"] = {}
 
-            # Convert path-based deny rules to Claude Code permission patterns
-            # Format: "Tool(path/pattern*)"
-            # Handle mixed lists: ["Read", {"path": "eval/", "tools": ["Grep"]}]
+            # Compile eval.yaml deny/allow rules into Claude Code patterns via the
+            # shared compiler (gitignore-recursive paths; Bash skipped as a no-op),
+            # merging with any rules already in the workspace settings (e.g. the
+            # repo-write protection). See agent_eval/tools/permissions.py.
             if deny:
-                # Start with existing deny rules (preserve repo-protection rules from workspace settings)
-                deny_patterns = settings_config["permissions"].get("deny", []).copy() if isinstance(settings_config["permissions"].get("deny"), list) else []
-                for rule in deny:
-                    if isinstance(rule, dict):
-                        # Path-based rule
-                        path_pattern = rule.get("path", "")
-                        tools = rule.get("tools", [])
-                        for tool in tools:
-                            # Convert path pattern to Claude Code format
-                            # "eval/" → "Tool(eval/*)"
-                            # "eval.yaml" → "Tool(eval.yaml)"
-                            if path_pattern.endswith("/"):
-                                pattern = f"{tool}({path_pattern}*)"
-                            else:
-                                pattern = f"{tool}({path_pattern})"
-                            deny_patterns.append(pattern)
-                    else:
-                        # Simple string rule - tool name only
-                        deny_patterns.append(rule)
-                settings_config["permissions"]["deny"] = deny_patterns
+                existing = settings_config["permissions"].get("deny")
+                merged = list(existing) if isinstance(existing, list) else []
+                for pattern in compile_permission_rules(deny, harden_bash=True):
+                    if pattern not in merged:
+                        merged.append(pattern)
+                settings_config["permissions"]["deny"] = merged
 
-            # Convert path-based allow rules similarly
-            # Handle mixed lists: ["Read", {"path": "docs/", "tools": ["Grep"]}]
             if allow:
-                # Start with existing allow rules (preserve case-workspace permissions from workspace settings)
-                allow_patterns = settings_config["permissions"].get("allow", []).copy() if isinstance(settings_config["permissions"].get("allow"), list) else []
-                for rule in allow:
-                    if isinstance(rule, dict):
-                        # Path-based rule
-                        path_pattern = rule.get("path", "")
-                        tools = rule.get("tools", [])
-                        for tool in tools:
-                            if path_pattern.endswith("/"):
-                                pattern = f"{tool}({path_pattern}*)"
-                            else:
-                                pattern = f"{tool}({path_pattern})"
-                            allow_patterns.append(pattern)
-                    else:
-                        # Simple string rule - tool name only
-                        allow_patterns.append(rule)
-                settings_config["permissions"]["allow"] = allow_patterns
+                existing = settings_config["permissions"].get("allow")
+                merged = list(existing) if isinstance(existing, list) else []
+                for pattern in compile_permission_rules(allow):
+                    if pattern not in merged:
+                        merged.append(pattern)
+                settings_config["permissions"]["allow"] = merged
 
             # Write temporary settings file
             temp_settings_file.write_text(json.dumps(settings_config, indent=2))
