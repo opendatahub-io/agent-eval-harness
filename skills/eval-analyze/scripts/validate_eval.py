@@ -294,10 +294,20 @@ def _validate_prompt_mode_config(config, generation, config_dir, errors, warning
     documentation-specific checks (``context.documentation_structure`` for
     documentation generation prompts).
     """
+    strategy = (generation.get("strategy") or "skill")
     seeds = generation.get("seeds", []) or []
     context = generation.get("context", {})
 
-    if not seeds:
+    # from-traces: light check that MLflow is discoverable (experiment or name)
+    if strategy == "from-traces":
+        if not config.get("mlflow", {}).get("experiment") and not config.get("name"):
+            warnings.append(
+                "generation.strategy is 'from-traces' but no mlflow.experiment (or name) "
+                "is set — trace extraction won't know which experiment to read.")
+        return
+
+    # Seed/context checks apply only to synthetic generation
+    if strategy != "synthetic" or not seeds:
         return
 
     # Check for extra fields that will be silently dropped by GenerationSeed
@@ -390,9 +400,12 @@ def validate_config(path="eval.yaml"):
         # EvalConfig validation failed - this is a critical schema error
         error_msg = str(e)
         # Make the error message more user-friendly
-        if "generation.seeds" in error_msg:
+        if "generation.strategy must be one of" in error_msg:
             errors.append(f"Schema validation failed: {error_msg}")
-            errors.append("Hint: Each generation.seeds entry needs a 'category', a 'count', and exactly one of builtin/prompt_file/prompt (e.g., 'builtin: docs/navigation')")
+            errors.append("Hint: generation.strategy is the case provenance — skill (default), synthetic, or from-traces")
+        elif "generation.seeds" in error_msg:
+            errors.append(f"Schema validation failed: {error_msg}")
+            errors.append("Hint: Each generation.seeds entry needs a 'category', a 'count', and exactly one of builtin/prompt_file/prompt (e.g., 'builtin: docs/navigation'). Seeds are only valid with strategy: synthetic")
         else:
             errors.append(f"Schema validation failed: {error_msg}")
     except ImportError as e:

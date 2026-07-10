@@ -373,15 +373,20 @@ class GenerationSeed:
     description: str = ""
 
 
+#: Valid ``generation.strategy`` values (case provenance).
+GENERATION_STRATEGIES = ("skill", "synthetic", "from-traces")
+
+
 @dataclass
 class GenerationConfig:
-    """Synthetic test-case generation (optional, prompt-mode).
+    """Test-case generation provenance (how ``/eval-dataset`` sources cases).
 
-    Present ⇒ ``/eval-dataset`` generates cases from ``seeds`` instead of
-    skill-based generation. ``context`` is repository knowledge injected into
-    every generation prompt.
+    ``strategy`` selects the source: ``skill`` (agent authors from skill
+    analysis — the default), ``synthetic`` (LLM generates from ``seeds`` +
+    ``context``), or ``from-traces`` (extracted from MLflow production traces).
+    ``seeds`` and ``context`` apply only to ``synthetic``.
     """
-    strategy: str = ""
+    strategy: str = "skill"
     context: Union[str, dict] = field(default_factory=dict)
     seeds: list = field(default_factory=list)  # List of GenerationSeed
 
@@ -777,10 +782,19 @@ class EvalConfig:
                 description=s.get("description", ""),
             ))
 
-        strategy = gen_raw.get("strategy", "")
+        # Provenance: absent normalizes to 'skill' (the default source).
+        strategy = gen_raw.get("strategy") or "skill"
+        if strategy not in GENERATION_STRATEGIES:
+            raise ValueError(
+                f"generation.strategy must be one of "
+                f"{', '.join(GENERATION_STRATEGIES)}, got: {strategy!r}")
         if strategy == "synthetic" and not seeds:
             raise ValueError(
                 "generation.strategy is 'synthetic' but generation.seeds is empty.")
+        if seeds and strategy != "synthetic":
+            raise ValueError(
+                f"generation.seeds are only valid with strategy: synthetic "
+                f"(got strategy: {strategy}).")
 
         generation_config = GenerationConfig(
             strategy=strategy,
