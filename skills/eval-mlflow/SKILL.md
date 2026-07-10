@@ -179,5 +179,6 @@ Suggest next steps (include `--config <config>` if a non-default config was used
 - **Idempotent** — safe to run multiple times. `merge_records` deduplicates, `log_feedback` overwrites.
 - **Don't block on traces** — trace feedback is optional. If no traces exist, skip and state that tracing is configured automatically by `/eval-run`.
 - **`scripts/from_traces.py`** — extracts inputs from production traces for dataset generation. It lives here but is invoked by `/eval-dataset` for the `from-traces` provenance (`generation.strategy: from-traces`), not by an `/eval-mlflow` action.
+- **`scripts/trace_from_stdout.py`** — standalone CLI that builds an MLflow trace from a run's `stdout.log` (for backfilling traces when execution didn't emit them). Not part of the `--action` flow; the automatic path uses `agent_eval.mlflow.trace_builder` via `log_results.py`.
 
 $ARGUMENTS

@@ -222,7 +222,7 @@ outputs:
 traces:
   stdout: true     # Capture stdout.log
   stderr: true     # Capture stderr.log
-  events: false    # Execution events: tool calls, reasoning, results (verbose)
+  events: true     # Execution events: tool calls, reasoning, results (default: true)
   metrics: true    # Capture exit code, tokens, cost, duration
 
 # Judges — evaluate output quality
@@ -314,7 +314,7 @@ thresholds:
 - **`if`** — optional condition on a judge. Python expression evaluated against `annotations` and `outputs`. When false, the judge is skipped for that case (not counted in pass_rate or mean).
 - **`prompt`** / **`prompt_file`** / **`llm_rubric`** — LLM judge evaluation instructions. All three compile to the same internal prompt before Jinja2 rendering. Priority order: `llm_rubric` > `prompt` > `prompt_file`.
   - **`llm_rubric`**: Syntactic sugar for simple criteria. Auto-appends `{{ conversation }}` template if missing. Best for synthetic-generation configs. Example: `llm_rubric: "Agent cited documentation sources"`
-  - **`prompt`**: Full Jinja2 template with manual control. Use for complex logic or multiple placeholders like `{{ outputs }}`, `{{ conversation }}`, `{{ tool_trace }}`, `{{ reference }}`.
+  - **`prompt`**: Full Jinja2 template with manual control. Use for complex logic or multiple placeholders like `{{ outputs }}`, `{{ conversation }}`, `{{ tool_trace }}`, `{{ inputs }}`, `{{ evidence }}`.
   - **`prompt_file`**: External file path (absolute or relative to project root). Use for sharing prompts across judges. File can contain rubric-style or full template content.
 - **`context`** — list of file paths loaded and appended to the LLM judge prompt as supplementary material (rubrics, guidelines, examples).
 - **`module`** / **`function`** — external Python code judge for complex validation.
@@ -428,7 +428,8 @@ thresholds:
 name: architecture-context
 execution:
   skill: repo-to-architecture-summary
-runner: claude-code
+runner:
+  type: claude-code
 
 dataset:
   path: eval/dataset/cases
@@ -450,7 +451,7 @@ inputs:
         If asked which version, answer the latest.
 
 outputs:
-  - path: .
+  - path: output
     schema: |
       A single GENERATED_ARCHITECTURE.md file per case with markdown
       sections matching the reference structure.
@@ -465,7 +466,7 @@ judges:
       Check that the generated architecture document contains all
       required sections.
     check: |
-      content = outputs["main_content"]
+      content = outputs["output_content"]
       required = ["Architecture Components", "APIs", "Dependencies",
                   "Network Architecture", "Security"]
       missing = [s for s in required if s.lower() not in content.lower()]
