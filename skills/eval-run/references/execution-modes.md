@@ -1,4 +1,4 @@
-# Execution Modes: execution.prompt vs execution.arguments
+# Execution Modes: skill vs prompt
 
 The eval harness supports two execution modes, controlled by which field is set in `eval.yaml`:
 
