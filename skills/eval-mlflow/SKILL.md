@@ -178,5 +178,6 @@ Suggest next steps (include `--config <config>` if a non-default config was used
 - **Graceful degradation** — if MLflow is not available, scripts exit 0 and the skill reports "MLflow not available, skipping."
 - **Idempotent** — safe to run multiple times. `merge_records` deduplicates, `log_feedback` overwrites.
 - **Don't block on traces** — trace feedback is optional. If no traces exist, skip and state that tracing is configured automatically by `/eval-run`.
+- **`scripts/from_traces.py`** — extracts inputs from production traces for dataset generation. It lives here but is invoked by `/eval-dataset` for the `from-traces` provenance (`generation.strategy: from-traces`), not by an `/eval-mlflow` action.
 
 $ARGUMENTS
