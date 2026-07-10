@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Generate test cases from taxonomy-based templates using LLM.
+"""Generate synthetic test cases from generation prompts using an LLM.
 
-This script reads test_categories from eval.yaml, resolves templates,
-and uses Claude API to generate test cases following template instructions.
+This script reads the ``generation`` block from eval.yaml, resolves each seed's
+generation prompt (builtin / prompt_file / inline), and uses the Claude API to
+generate test cases following the prompt instructions.
 """
 
 import json
@@ -16,23 +17,25 @@ import yaml
 
 # Activate venv before third-party imports
 import agent_eval._bootstrap
-from agent_eval.config import EvalConfig, TestCategory
-
-# resolve_template is in same directory, use absolute import via sys.path
-sys.path.insert(0, str(Path(__file__).parent))
-from resolve_template import resolve_template
+from agent_eval.config import EvalConfig, GenerationSeed
+from agent_eval.prompts import resolve_seed_prompt
 
 
-def generate_from_taxonomy(
+def _seed_source(seed: GenerationSeed) -> str:
+    """Human-readable description of a seed's prompt source (for logs/metadata)."""
+    return seed.builtin or seed.prompt_file or ("inline" if seed.prompt else "?")
+
+
+def generate_synthetic(
     config: EvalConfig,
     output_dir: Path,
     model: str = "claude-opus-4-6",
     api_key: Optional[str] = None,
 ) -> list[dict]:
-    """Generate test cases using category templates.
+    """Generate test cases from the generation seeds in ``config``.
 
     Args:
-        config: EvalConfig with test_categories and domain
+        config: EvalConfig with a ``generation`` block (seeds + context)
         output_dir: Where to write generated test cases
         model: Claude model to use for generation
         api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY or uses ANTHROPIC_VERTEX_PROJECT_ID)
@@ -41,19 +44,19 @@ def generate_from_taxonomy(
         List of generated case metadata
 
     Raises:
-        ValueError: If no test_categories defined
+        ValueError: If no generation seeds defined
         ImportError: If anthropic package not installed
     """
-    if not config.test_categories:
+    if not config.generation.seeds:
         raise ValueError(
-            "No test_categories defined in config. "
-            "Taxonomy-based generation requires test_categories.")
+            "No generation seeds defined in config. "
+            "Synthetic generation requires generation.seeds.")
 
     try:
         import anthropic
     except ImportError:
         raise ImportError(
-            "anthropic package required for taxonomy-based generation. "
+            "anthropic package required for synthetic generation. "
             "Install with: pip install anthropic")
 
     # Support both direct API and Vertex AI authentication
@@ -76,43 +79,42 @@ def generate_from_taxonomy(
     failed_categories = []
     case_counter = 1
 
-    for category in config.test_categories:
-        print(f"Generating {category.count} test cases for category: {category.name}")
+    for seed in config.generation.seeds:
+        print(f"Generating {seed.count} test cases for category: {seed.category}")
 
-        # Resolve template (required field, validated by EvalConfig.from_yaml)
+        # Resolve the generation prompt via the seed's discriminator
+        # (builtin / prompt_file / prompt — validated by EvalConfig.from_yaml)
         try:
-            template_path = resolve_template(category.template)
+            generation_prompt = resolve_seed_prompt(seed, config.config_dir)
         except (ValueError, FileNotFoundError) as e:
-            # Provide helpful error message
             print(
-                f"ERROR: Failed to resolve template for category '{category.name}': {e}",
+                f"ERROR: Failed to resolve generation prompt for category '{seed.category}': {e}",
                 file=sys.stderr,
             )
             raise
-        template_content = template_path.read_text()
 
         # Generate cases for this category
         try:
             cases = _generate_category_cases(
                 client=client,
-                template=template_content,
-                category=category,
-                domain=config.dataset.domain,
-                count=category.count,
+                generation_prompt=generation_prompt,
+                seed=seed,
+                context=config.generation.context,
+                count=seed.count,
                 model=model,
             )
         except ValueError as e:
             print(
-                f"ERROR: Failed to generate cases for category '{category.name}': {e}\n"
+                f"ERROR: Failed to generate cases for category '{seed.category}': {e}\n"
                 f"Continuing with other categories...",
                 file=sys.stderr,
             )
-            failed_categories.append(category.name)
+            failed_categories.append(seed.category)
             # Continue with next category instead of failing entirely
             continue
         except Exception as e:
-            print(f"ERROR: Unexpected error for category '{category.name}': {e}", file=sys.stderr)
-            failed_categories.append(category.name)
+            print(f"ERROR: Unexpected error for category '{seed.category}': {e}", file=sys.stderr)
+            failed_categories.append(seed.category)
             continue
 
         # Write cases to disk
@@ -150,9 +152,10 @@ def generate_from_taxonomy(
                     continue
                 annotations = case["annotations"].copy()
 
-            # CRITICAL: Always set category to match taxonomy category
-            # Judges use `if: "annotations.get('category') == 'navigation'"` for filtering
-            annotations["category"] = category.name
+            # CRITICAL: Always set category to match the seed's category
+            # Judges use `if: "annotations.get('category') == 'navigation'"` for filtering.
+            # This is also how the category list is derived — never declared separately.
+            annotations["category"] = seed.category
 
             case_id = f"case-{case_counter:03d}"
             case_dir = output_dir / case_id
@@ -171,15 +174,15 @@ def generate_from_taxonomy(
             # Track metadata
             all_cases.append({
                 "case_id": case_id,
-                "category": category.name,
-                "template": category.template,
+                "category": seed.category,
+                "source": _seed_source(seed),
             })
 
             case_counter += 1
 
     if not all_cases:
         raise RuntimeError(
-            "Failed to generate any taxonomy cases"
+            "Failed to generate any synthetic cases"
             + (f": {', '.join(failed_categories)}" if failed_categories else "")
         )
     return all_cases
@@ -187,19 +190,19 @@ def generate_from_taxonomy(
 
 def _generate_category_cases(
     client,
-    template: str,
-    category: TestCategory,
-    domain: dict,
+    generation_prompt: str,
+    seed: GenerationSeed,
+    context,
     count: int,
     model: str,
 ) -> list[dict]:
-    """Use LLM to generate cases from template.
+    """Use an LLM to generate cases from a resolved generation prompt.
 
     Args:
         client: Anthropic client
-        template: Template markdown content
-        category: TestCategory config
-        domain: Domain knowledge dict
+        generation_prompt: Resolved generation-prompt markdown content
+        seed: GenerationSeed config
+        context: Repository knowledge (dict or str) injected into the prompt
         count: Number of cases to generate
         model: Claude model to use
 
@@ -207,25 +210,27 @@ def _generate_category_cases(
         List of test case dicts with 'input' and optional 'annotations' keys
     """
     # Build generation prompt
-    domain_yaml = yaml.dump(domain, sort_keys=False, allow_unicode=True) if domain else "None"
+    context_yaml = (
+        yaml.dump(context, sort_keys=False, allow_unicode=True) if context else "None"
+    )
 
     prompt = f"""You are generating test cases for an agent evaluation harness.
 
-# Template
+# Generation Prompt
 
-{template}
+{generation_prompt}
 
-# Domain Context
+# Generation Context
 
 The repository-specific context that should inform test case generation:
 
 ```yaml
-{domain_yaml}
+{context_yaml}
 ```
 
 # Generation Task
 
-Generate exactly {count} test case(s) following the template instructions above.
+Generate exactly {count} test case(s) following the generation prompt above.
 
 **IMPORTANT**: Return ONLY a valid JSON array with no additional text, markdown formatting, or explanation.
 
@@ -245,7 +250,7 @@ Example format:
       "prompt": "User question or task for the agent"
     }},
     "annotations": {{
-      "category": "{category.name}",
+      "category": "{seed.category}",
       "difficulty": "medium",
       "expected_files": ["path/to/relevant-doc.md"],
       "expected_mentions": ["keyword1", "keyword2"]
@@ -261,7 +266,7 @@ CRITICAL RULES:
 - NEVER put expected_files, expected_mentions, or any expected_* fields in "input"
 
 Generate realistic, varied test cases that:
-1. Use actual paths/topics from the domain context (if available)
+1. Use actual paths/topics from the generation context (if available)
 2. Cover different difficulty levels
 3. Test different aspects of the capability
 4. Are specific and verifiable
@@ -297,7 +302,7 @@ Return the JSON array now:"""
     if len(cases) != count:
         print(
             f"WARNING: Requested {count} cases, got {len(cases)} "
-            f"for category {category.name}",
+            f"for category {seed.category}",
             file=sys.stderr,
         )
 
@@ -416,11 +421,11 @@ def _extract_json_from_response(text: str) -> list:
 
 
 def main():
-    """CLI for testing taxonomy-based generation."""
+    """CLI for testing synthetic generation."""
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Generate test cases from taxonomy templates")
+        description="Generate synthetic test cases from generation prompts")
     parser.add_argument(
         "--config", required=True,
         help="Path to eval.yaml")
@@ -439,10 +444,10 @@ def main():
     # Load config
     config = EvalConfig.from_yaml(args.config)
 
-    if not config.test_categories:
+    if not config.generation.seeds:
         print(
-            "ERROR: No test_categories defined in config. "
-            "Taxonomy-based generation requires test_categories.",
+            "ERROR: No generation seeds defined in config. "
+            "Synthetic generation requires generation.seeds.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -451,16 +456,16 @@ def main():
 
     if args.dry_run:
         print("Would generate test cases:")
-        for category in config.test_categories:
-            print(f"  - {category.name}: {category.count} cases from {category.template}")
-        total = sum(c.count for c in config.test_categories)
+        for seed in config.generation.seeds:
+            print(f"  - {seed.category}: {seed.count} cases from {_seed_source(seed)}")
+        total = sum(s.count for s in config.generation.seeds)
         print(f"\nTotal: {total} test cases")
         print(f"Output: {output_dir}")
         return
 
     # Generate cases
     try:
-        cases = generate_from_taxonomy(
+        cases = generate_synthetic(
             config=config,
             output_dir=output_dir,
             model=args.model,

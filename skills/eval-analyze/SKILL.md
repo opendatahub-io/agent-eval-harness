@@ -226,13 +226,20 @@ This is for non-skill evaluations where you want to test agent capabilities dire
 #### Execute Prompt Analysis
 
 1. Resolve prompt: `python3 ${CLAUDE_SKILL_DIR}/scripts/resolve_prompt.py <prompt-ref>`
-2. Launch Explore agent with prompt content defining what to analyze, test categories, judges, and traces
+2. Launch Explore agent with prompt content defining what to analyze, the generation seeds, judges, and traces
 3. Extract generated eval.yaml and write to `<config>`
 4. Validate: `python3 ${CLAUDE_SKILL_DIR}/scripts/validate_eval.py config <config>` (check execution.prompt set, fields populated, paths resolve)
 
+**Prefer builtin generation prompts** — for synthetic-generation datasets, emit a top-level `generation:`
+block with `strategy: synthetic`, `context:` (repository knowledge), and `seeds:`. Each seed sets a
+`category`, a `count`, and one of `builtin:` / `prompt_file:` / `prompt:`. Prefer `builtin:` for
+common patterns (they ship in `agent_eval/prompts/`); discover them with
+`python3 ${CLAUDE_SKILL_DIR}/../eval-dataset/scripts/list_prompts.py`. Use `prompt_file:` for
+project-specific generation prompts.
+
 Report to user:
 - **eval.yaml** created from `<prompt-name>` (execution.prompt, case mode)
-- **Test structure**: {summary of test_categories or schema}
+- **Test structure**: {summary of generation.seeds or schema}
 - **Next**: `/eval-dataset` to generate cases, then `/eval-run --model sonnet`
 
 ---
@@ -245,9 +252,9 @@ Report to user:
 | **Analyzes** | SKILL.md, scripts, sub-skills | Docs, patterns, APIs (prompt-defined) |
 | **Executes** | Skill invocation (`execution.skill`) | Direct prompt (`execution.prompt`) |
 | **Mode** | `case` or `batch` | `case` only |
-| **Dataset** | Schema-based (input/output fields) | Taxonomy-based (test categories) |
+| **Dataset** | Schema-based (input/output fields) | Synthetic (`generation.seeds`) |
 | **Judges** | Output quality checks | Capability checks (rubrics) |
-| **Domain config** | Usually empty | Prompt-defined knowledge/constraints |
+| **Generation context** | Usually empty | Prompt-defined knowledge/constraints |
 | **Purpose** | Does my skill work? | Can agents use my docs? |
 
 ---

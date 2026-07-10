@@ -47,7 +47,7 @@ For each test case:
 
 ## Example
 
-Given domain context:
+Given generation context:
 ```yaml
 documentation_structure:
   areas:

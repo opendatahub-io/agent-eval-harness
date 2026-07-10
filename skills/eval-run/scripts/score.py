@@ -1151,7 +1151,7 @@ def _resolve_judge_model(jc, config):
 
 def _load_llm_judge(jc, config, project_root=None):
     root = Path(project_root).resolve() if project_root else Path.cwd().resolve()
-    # Check llm_rubric first (preferred in taxonomy configs), then prompt
+    # Check llm_rubric first (preferred in synthetic-generation configs), then prompt
     prompt = jc.llm_rubric or jc.prompt
     # Match any spacing so {{conversation}} / {{  conversation  }} aren't
     # double-wrapped (Jinja2 treats them all identically).

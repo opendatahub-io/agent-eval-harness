@@ -1,4 +1,4 @@
-"""Tests for taxonomy-based test case generation."""
+"""Tests for synthetic test case generation."""
 
 import json
 import tempfile
@@ -11,46 +11,65 @@ import yaml
 # Import after path setup
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "skills/eval-dataset/scripts"))
-from generate_from_taxonomy import (
-    generate_from_taxonomy,
+from generate_synthetic import (
+    generate_synthetic,
     _extract_json_from_response,
     _generate_category_cases,
 )
-from resolve_template import resolve_template
+from agent_eval.prompts import BuiltinPromptRegistry, resolve_seed_prompt
 
 
-class TestTemplateResolution:
-    """Test template reference resolution for test case generation."""
+class TestPromptResolution:
+    """Test generation-prompt resolution (builtin / prompt_file / inline)."""
 
-    def test_builtin_template_resolution(self, monkeypatch):
-        """Test builtin templates resolve correctly."""
-        skill_dir = Path(__file__).parent.parent / "skills/eval-dataset"
-        monkeypatch.setenv("CLAUDE_SKILL_DIR", str(skill_dir))
+    def test_builtin_prompt_resolution(self):
+        """Builtin generation prompts resolve to files under agent_eval/prompts/docs."""
+        registry = BuiltinPromptRegistry()
+        registry.discover()
+        for name in ["navigation", "anti-pattern", "authoring", "component-usage", "architecture"]:
+            entry = registry.get(f"docs/{name}")
+            assert entry.path.exists()
+            assert entry.path.name == f"{name}.md"
+            assert "prompts/docs" in str(entry.path)
 
-        for template_name in ["navigation", "anti-pattern", "authoring", "component-usage", "architecture"]:
-            resolved = resolve_template(f"documentation/{template_name}")
-            assert resolved.exists()
-            assert resolved.name == f"{template_name}.md"
-            assert "templates/documentation" in str(resolved)
-
-    def test_all_builtin_templates_have_required_sections(self, monkeypatch):
-        """Test that all builtin templates have required documentation."""
-        skill_dir = Path(__file__).parent.parent / "skills/eval-dataset"
-        monkeypatch.setenv("CLAUDE_SKILL_DIR", str(skill_dir))
-
+    def test_all_builtin_prompts_have_required_sections(self):
+        """All builtin generation prompts have required documentation."""
+        registry = BuiltinPromptRegistry()
+        registry.discover()
         required_sections = [
             "Test Case Structure",
             "Input Schema",
             "Generation Instructions",
             "Example",
         ]
-
-        for template_name in ["navigation", "anti-pattern", "authoring", "component-usage", "architecture"]:
-            template_path = resolve_template(f"documentation/{template_name}")
-            content = template_path.read_text()
-
+        for name in ["navigation", "anti-pattern", "authoring", "component-usage", "architecture"]:
+            content = registry.get(f"docs/{name}").path.read_text()
             for section in required_sections:
-                assert section in content, f"Template {template_name} missing section: {section}"
+                assert section in content, f"Prompt {name} missing section: {section}"
+
+    def test_resolve_seed_prompt_dispatch(self):
+        """resolve_seed_prompt dispatches on builtin / prompt_file / inline."""
+        # builtin
+        builtin_text = resolve_seed_prompt(
+            {"category": "navigation", "builtin": "docs/navigation"}, ".")
+        assert "Navigation Test Template" in builtin_text
+
+        # inline
+        assert resolve_seed_prompt(
+            {"category": "x", "prompt": "inline text"}, ".") == "inline text"
+
+        # prompt_file (relative to config_dir)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            (Path(tmpdir) / "custom.md").write_text("project prompt body")
+            text = resolve_seed_prompt(
+                {"category": "x", "prompt_file": "custom.md"}, tmpdir)
+            assert text == "project prompt body"
+
+    def test_resolve_seed_prompt_missing_file(self):
+        """A missing prompt_file raises FileNotFoundError."""
+        with pytest.raises(FileNotFoundError):
+            resolve_seed_prompt(
+                {"category": "x", "prompt_file": "does-not-exist.md"}, ".")
 
 
 class TestJSONExtraction:
@@ -102,13 +121,13 @@ These test cases cover...'''
             _extract_json_from_response("This is not JSON at all")
 
 
-class TestTaxonomyGeneration:
-    """Test taxonomy-based test case generation."""
+class TestSyntheticGeneration:
+    """Test synthetic test case generation."""
 
     @pytest.fixture
     def sample_config(self):
-        """Sample EvalConfig with taxonomy."""
-        from agent_eval.config import EvalConfig, TestCategory
+        """Sample EvalConfig with a generation block."""
+        from agent_eval.config import EvalConfig
 
         config_data = {
             "name": "test-eval",
@@ -116,14 +135,10 @@ class TestTaxonomyGeneration:
             "dataset": {
                 "path": "eval/dataset",
                 "schema": "input.yaml with prompt field",
-                "test_categories": [
-                    {
-                        "name": "navigation",
-                        "template": "documentation/navigation",
-                        "count": 2,
-                    }
-                ],
-                "domain": {
+            },
+            "generation": {
+                "strategy": "synthetic",
+                "context": {
                     "type": "test-repo",
                     "documentation_structure": {
                         "entry_point": "CLAUDE.md",
@@ -131,7 +146,14 @@ class TestTaxonomyGeneration:
                             {"path": "ai-docs/workflows/", "topics": ["process"]}
                         ]
                     }
-                }
+                },
+                "seeds": [
+                    {
+                        "category": "navigation",
+                        "builtin": "docs/navigation",
+                        "count": 2,
+                    }
+                ],
             },
             "outputs": [{"path": "output", "schema": "stdout.log"}],
         }
@@ -145,18 +167,16 @@ class TestTaxonomyGeneration:
         finally:
             Path(config_path).unlink()
 
-    def test_config_has_taxonomy(self, sample_config):
-        """Test that sample config has taxonomy fields."""
-        assert len(sample_config.test_categories) == 1
-        assert sample_config.test_categories[0].name == "navigation"
-        assert sample_config.test_categories[0].count == 2
-        assert sample_config.dataset.domain["type"] == "test-repo"
+    def test_config_has_generation(self, sample_config):
+        """Test that sample config has generation fields."""
+        assert len(sample_config.generation.seeds) == 1
+        assert sample_config.generation.seeds[0].category == "navigation"
+        assert sample_config.generation.seeds[0].builtin == "docs/navigation"
+        assert sample_config.generation.seeds[0].count == 2
+        assert sample_config.generation.context["type"] == "test-repo"
 
-    def test_generate_from_taxonomy_mocked(self, sample_config, monkeypatch):
+    def test_generate_synthetic_mocked(self, sample_config, monkeypatch):
         """Test generation with mocked API calls."""
-        skill_dir = Path(__file__).parent.parent / "skills/eval-dataset"
-        monkeypatch.setenv("CLAUDE_SKILL_DIR", str(skill_dir))
-
         # Mock the anthropic module to avoid import errors at test collection
         mock_anthropic_module = Mock()
         mock_anthropic_cls = Mock()
@@ -196,7 +216,7 @@ class TestTaxonomyGeneration:
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir) / "dataset"
 
-            cases = generate_from_taxonomy(
+            cases = generate_synthetic(
                 config=sample_config,
                 output_dir=output_dir,
                 model="claude-opus-4-6",
@@ -207,6 +227,7 @@ class TestTaxonomyGeneration:
             assert len(cases) == 2
             assert cases[0]["case_id"] == "case-001"
             assert cases[0]["category"] == "navigation"
+            assert cases[0]["source"] == "docs/navigation"
 
             # Verify files were written
             case1_dir = output_dir / "case-001"
@@ -222,8 +243,8 @@ class TestTaxonomyGeneration:
             assert annotations1["category"] == "navigation"
             assert annotations1["difficulty"] == "easy"
 
-    def test_no_categories_raises_error(self, monkeypatch):
-        """Test that config without test_categories raises error."""
+    def test_no_seeds_raises_error(self, monkeypatch):
+        """Test that config without generation seeds raises error."""
         from agent_eval.config import EvalConfig
 
         config_data = {
@@ -241,8 +262,8 @@ class TestTaxonomyGeneration:
             config = EvalConfig.from_yaml(config_path)
 
             with tempfile.TemporaryDirectory() as tmpdir:
-                with pytest.raises(ValueError, match="No test_categories"):
-                    generate_from_taxonomy(
+                with pytest.raises(ValueError, match="No generation seeds"):
+                    generate_synthetic(
                         config=config,
                         output_dir=Path(tmpdir),
                         api_key="test-key",
@@ -254,22 +275,19 @@ class TestTaxonomyGeneration:
 class TestCLIIntegration:
     """Test CLI dry-run functionality."""
 
-    def test_dry_run_no_api_key_required(self, monkeypatch):
+    def test_dry_run_no_api_key_required(self):
         """Test that dry-run works without API key."""
         from agent_eval.config import EvalConfig
-
-        skill_dir = Path(__file__).parent.parent / "skills/eval-dataset"
-        monkeypatch.setenv("CLAUDE_SKILL_DIR", str(skill_dir))
 
         config_data = {
             "name": "test-eval",
             "execution": {"mode": "case", "prompt": "{{ input.prompt }}"},
-            "dataset": {
-                "path": "eval/dataset",
-                "schema": "test",
-                "test_categories": [
-                    {"name": "navigation", "template": "documentation/navigation", "count": 2}
-                ]
+            "dataset": {"path": "eval/dataset", "schema": "test"},
+            "generation": {
+                "strategy": "synthetic",
+                "seeds": [
+                    {"category": "navigation", "builtin": "docs/navigation", "count": 2}
+                ],
             },
             "outputs": [{"path": "output", "schema": "test"}],
         }
@@ -282,8 +300,8 @@ class TestCLIIntegration:
             config = EvalConfig.from_yaml(config_path)
 
             # Dry run should work
-            assert len(config.test_categories) == 1
-            total_cases = sum(c.count for c in config.test_categories)
+            assert len(config.generation.seeds) == 1
+            total_cases = sum(s.count for s in config.generation.seeds)
             assert total_cases == 2
 
         finally:

@@ -34,14 +34,14 @@ expected_mentions:
 
 For each test case:
 
-1. **Select a topic** from `domain.documentation_structure.areas[*].topics`
+1. **Select a topic** from `context.documentation_structure.areas[*].topics`
 2. **Generate a user question** that requires finding documentation on that topic
 3. **Identify which files** contain the answer (from actual repo structure)
 4. **List keywords** that should appear in the agent's response
 
 ## Example
 
-Given domain context:
+Given generation context:
 ```yaml
 documentation_structure:
   entry_point: CLAUDE.md

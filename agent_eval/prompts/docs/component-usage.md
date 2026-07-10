@@ -36,7 +36,7 @@ expected_files:
 
 For each test case:
 
-1. **Select an API or component** from `domain.apis[]` or `domain.components[]`
+1. **Select an API or component** from `context.apis[]` or `context.components[]`
 2. **Generate a usage question** (how to configure, how to use, what fields are needed)
 3. **Identify required fields** from the API documentation
 4. **Specify example format** (YAML for k8s APIs, code for libraries, etc.)
@@ -44,7 +44,7 @@ For each test case:
 
 ## Example
 
-Given domain context:
+Given generation context:
 ```yaml
 apis:
   - name: MachineConfig
@@ -78,7 +78,7 @@ expected_files:
 ## Validation Criteria
 
 - `prompt` must ask about a specific use case for the API/component
-- `expected_api` must match an entry in domain.apis or domain.components
+- `expected_api` must match an entry in context.apis or context.components
 - `expected_example_type` must match the API's typical format
 - `expected_fields` should include key required fields (not exhaustive)
 - `expected_files` must reference actual API docs

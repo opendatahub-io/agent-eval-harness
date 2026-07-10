@@ -37,14 +37,14 @@ expected_files:
 
 For each test case:
 
-1. **Select components** from `domain.components[]` that interact
+1. **Select components** from `context.components[]` that interact
 2. **Generate an architecture question** (how does X work, how do components communicate, what's the data flow)
 3. **Identify key interactions** between components
 4. **Reference architecture documentation**
 
 ## Example
 
-Given domain context:
+Given generation context:
 ```yaml
 components:
   - machine-config-daemon
@@ -85,7 +85,7 @@ expected_files:
 ## Validation Criteria
 
 - `prompt` must ask about architecture, design, or component relationships
-- `expected_components` must reference 2+ components from domain config
+- `expected_components` must reference 2+ components from generation context
 - `expected_interactions` should describe key communication patterns
 - `expected_files` must reference architecture docs
 - The question should require understanding the big picture, not just one component

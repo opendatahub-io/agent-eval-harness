@@ -50,7 +50,7 @@ Adapt existing recipes for your domain:
 
 - The overall methodology (discover → classify → extract → categories → schema → judges → config)
 - Steps 1-7 structure
-- Pointers to `list_templates.py`, `list_builtins.py`, and `eval-yaml-template.md`
+- Pointers to `list_prompts.py`, `list_builtins.py`, and `eval-yaml-template.md`
 
 ---
 

@@ -107,7 +107,11 @@ Based on what you read, classify the repository:
 
 ---
 
-## Step 3: Extract Domain Knowledge
+## Step 3: Extract Generation Context
+
+These blocks (`documentation_structure`, `constraints`, `apis`, `components`) become the
+`generation.context` in the final eval.yaml — the repository knowledge injected into every
+generation prompt.
 
 ### 3.1 Documentation Structure
 
@@ -192,59 +196,61 @@ components:
 
 ---
 
-## Step 4: Suggest Test Categories
+## Step 4: Suggest Generation Seeds
 
-List available templates:
+List available builtin generation prompts:
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/../eval-dataset/scripts/list_templates.py
+python3 ${CLAUDE_SKILL_DIR}/../eval-dataset/scripts/list_prompts.py
 ```
 
-Based on repository type and content, suggest test categories from the available documentation templates:
+Based on repository type and content, suggest generation seeds that reference the builtin
+documentation prompts (`builtin: docs/...`). Each seed sets a `category`, a `count`, and one of
+`builtin:` / `prompt_file:` / `prompt:`. These become `generation.seeds` in the final eval.yaml:
 
 ### For Type A (Enhancement/Design):
 ```yaml
-test_categories:
-  - name: navigation
-    template: documentation/navigation
+seeds:
+  - category: navigation
+    builtin: docs/navigation
     count: 2
     description: Agent finds relevant process documentation
-    
-  - name: authoring
-    template: documentation/authoring
+
+  - category: authoring
+    builtin: docs/authoring
     count: 1
     description: Agent creates content following documented patterns
-    
-  - name: anti-pattern
-    template: documentation/anti-pattern
+
+  - category: anti-pattern
+    builtin: docs/anti-pattern
     count: 3  # One per major constraint
     description: Agent rejects approaches that violate constraints
 ```
 
 ### For Type B (Component/Code):
 ```yaml
-test_categories:
-  - name: navigation
-    template: documentation/navigation
+seeds:
+  - category: navigation
+    builtin: docs/navigation
     count: 2
     description: Agent finds API/component documentation
-    
-  - name: component-usage
-    template: documentation/component-usage
+
+  - category: component-usage
+    builtin: docs/component-usage
     count: 3  # One per major API
     description: Agent explains how to use APIs with examples
-    
+
   # Optional:
-  # - name: architecture
-  #   template: documentation/architecture
+  # - category: architecture
+  #   builtin: docs/architecture
   #   count: 1
   #   description: Agent explains how components work together
 ```
 
 ### For Type C (General Docs):
 ```yaml
-test_categories:
-  - name: navigation
-    template: documentation/navigation
+seeds:
+  - category: navigation
+    builtin: docs/navigation
     count: 4
     description: Agent finds information via search and hierarchy
 ```
@@ -358,7 +364,30 @@ Read the complete template structure at `${CLAUDE_SKILL_DIR}/references/eval-yam
 3. **Permissions**: Add `deny` rules for `eval/`, `eval.yaml`, `eval.md`, `tmp/` paths
    (These prevent test cheating by blocking answer key access. Only applicable when workspace_mode: repo is set.)
 
-4. **Dataset**: Include `test_categories` and `domain` sections from Steps 3-4
+4. **Generation**: Add a top-level `generation:` block combining Steps 3-4:
+
+   ```yaml
+   generation:
+     strategy: synthetic
+     context:                     # from Step 3 (documentation_structure, constraints, apis, ...)
+       documentation_structure:
+         entry_point: CLAUDE.md
+         areas:
+           - path: ai-docs/workflows/
+             topics: [enhancement-process, testing-workflow]
+       constraints:
+         - rule: "New APIs must start with v1alpha1"
+           documentation: ai-docs/practices/development/api-evolution.md
+     seeds:                       # from Step 4
+       - category: navigation
+         builtin: docs/navigation
+         count: 2
+       - category: anti-pattern
+         builtin: docs/anti-pattern
+         count: 3
+   ```
+
+   `dataset:` keeps only `path` and `schema` — generation is its own block.
 
 5. **Judges**: Use category-specific `if:` conditions and builtin judges where available
 
@@ -392,7 +421,7 @@ The complete configuration file (as shown in Step 7).
 ## Next Steps
 
 1. **Review generated eval.yaml**
-   - Verify test categories match repository goals
+   - Verify generation seeds match repository goals
    - Adjust constraint/API lists if needed
 
 2. **Generate test cases**

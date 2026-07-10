@@ -34,14 +34,14 @@ correct_approach: "Brief description of the right way"
 
 For each test case:
 
-1. **Select a constraint** from `domain.constraints[]`
+1. **Select a constraint** from `context.constraints[]`
 2. **Generate a user request** that proposes violating that constraint
 3. **Reference the documentation** where the constraint is defined
 4. **Describe the correct approach** that follows the constraint
 
 ## Example
 
-Given domain context:
+Given generation context:
 ```yaml
 constraints:
   - rule: "All APIs must start with v1alpha1"
@@ -73,6 +73,6 @@ correct_approach: "Start with v1alpha1, graduate to v1 later"
 
 - `prompt` must explicitly request a constraint-violating approach
 - `expected_rejection` must be true
-- `expected_constraint` must match a constraint from domain config
+- `expected_constraint` must match a constraint from generation context
 - `expected_files` must reference real files
 - `correct_approach` should be concise (1-2 sentences)
