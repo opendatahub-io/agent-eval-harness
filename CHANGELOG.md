@@ -1,3 +1,27 @@
+# [1.22.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.21.0...v1.22.0) (2026-07-10)
+
+
+### Bug Fixes
+
+* **agent,mlflow:** forward extra_env in run_skill shim; correct settings env key ([acb3317](https://github.com/opendatahub-io/agent-eval-harness/commit/acb33173e942a17f9c915e428f443915f94293ca))
+* **config:** resolve skill/prompt target consistently across substrates ([cfc845b](https://github.com/opendatahub-io/agent-eval-harness/commit/cfc845b44f455158dc499d6b9738c82a818d222c))
+* **docs,examples:** migrate example configs to execution.skill; fix broken README example ([20a894c](https://github.com/opendatahub-io/agent-eval-harness/commit/20a894cf98f00d4f5b94b845d11426179b90dfe8))
+* **eval-analyze:** eliminate validate_eval false positives ([56551c5](https://github.com/opendatahub-io/agent-eval-harness/commit/56551c5d4c2632e1fdfbf5660b05f63927b04dbe))
+* **eval-analyze:** move $ARGUMENTS to end, wire reorganize.py, fix bullets ([c3edc5d](https://github.com/opendatahub-io/agent-eval-harness/commit/c3edc5de8cd4eeefcaa4dfa72ee87d6dcf6ca4be))
+* **eval-dataset:** fix setext-heading rule + clarify provenance-independent steps ([ab17539](https://github.com/opendatahub-io/agent-eval-harness/commit/ab175398170332695a5f7ff4c2fdb54782cc2419))
+* **eval-run:** honor deny rules, isolate in-repo failures, strict args ([8c1637f](https://github.com/opendatahub-io/agent-eval-harness/commit/8c1637f9c1dc9f3120cdc241a359de7089409a2f))
+* **eval:** complete prompt-mode implementation with eval_name() and Jinja2 support ([399ba9b](https://github.com/opendatahub-io/agent-eval-harness/commit/399ba9b9cbcb92a5c42766650191e38a58c24054))
+* **eval:** include subagent reads in consulted_docs judge by default ([c86f4f9](https://github.com/opendatahub-io/agent-eval-harness/commit/c86f4f96f3e3aac36751ddc5b2c2d558dce8a941))
+* **permissions:** correct + share the path-based deny compiler across substrates ([3d6b60a](https://github.com/opendatahub-io/agent-eval-harness/commit/3d6b60abae8e22b69ba089cd6fec9fe826b50a17))
+* **scoring:** annotations text, doc coverage, regression + conversation ([908ce4c](https://github.com/opendatahub-io/agent-eval-harness/commit/908ce4c3d089b30fda8a12580edc6f9e85999f14))
+* **skills:** clear skillsaw lint warnings ([c21eb94](https://github.com/opendatahub-io/agent-eval-harness/commit/c21eb948b59ac9e8e1bedd35039670720478caa9))
+
+
+### Features
+
+* **evaluation:** add prompt-based evaluation mode for direct agent capability testing ([936897a](https://github.com/opendatahub-io/agent-eval-harness/commit/936897ab2779eb6e716f5c26a5e81d6716dda47e))
+* **judges:** add tool_trace template variable and enhance consulted_docs ([9374524](https://github.com/opendatahub-io/agent-eval-harness/commit/93745242d94a8d1ee7e04f83e7b23fef2047a985))
+
 # [1.21.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.20.0...v1.21.0) (2026-07-08)
 
 
