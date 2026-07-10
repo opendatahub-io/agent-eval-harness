@@ -100,7 +100,9 @@ Within the `skill` and `from-traces` paths, whether you **create a fresh set** o
 
 ---
 
-## SKILL & FROM-TRACES GENERATION (agent-authored)
+## SKILL & FROM-TRACES GENERATION
+
+Steps 2–5 are the agent-authored paths (`skill` and `from-traces`). Steps 6–8 (Validate, Report, Harbor) are provenance-independent — the `synthetic` path routes into them too (see Step 1.5).
 
 ## Step 2: Parse Schema into Generation Template
 
@@ -236,6 +238,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/harbor.py \
 ```
 
 See `${CLAUDE_SKILL_DIR}/references/case-generation.md` for details.
+
 ---
 
 ## Rules
