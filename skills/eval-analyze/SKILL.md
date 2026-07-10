@@ -31,9 +31,9 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py init tmp/analyze-config.
 
 If `--config` provided, use that path. Otherwise run `python3 ${CLAUDE_SKILL_DIR}/../../scripts/discover.py` and decide:
 - **No configs**: Create `eval.yaml` at project root
-- **One root config** and `--skill` targets a different eval than the existing one: offer to reorganize into `eval/` layout. If the user accepts, run the reorganization script (see Phase 7). If declined, ask where to put the new config.
--- **Nested/flat layout already exists**: place the new config at `eval/<skill-name>/eval.yaml` (nested) or alongside existing flat configs
--- **`--config` provided**: use the explicit path, bypass layout logic
+- **One root config** and `--skill` targets a different eval than the existing one: offer to reorganize into `eval/` layout. If the user accepts, run `python3 ${CLAUDE_SKILL_DIR}/scripts/reorganize.py --eval-name <name>` (add `--project-root <path>` if not the cwd). If declined, ask where to put the new config.
+- **Nested/flat layout already exists**: place the new config at `eval/<skill-name>/eval.yaml` (nested) or alongside existing flat configs
+- **`--config` provided**: use the explicit path, bypass layout logic
 
 Set the resolved config path as `<config>` for all subsequent steps. Set `<eval_md_path>` to the same directory as `<config>`, with filename `eval.md`.
 
@@ -201,8 +201,6 @@ If validation produced warnings, list them so the user knows what's incomplete.
 - **Preserve user work** — when updating, diff carefully. User-modified judges, schema descriptions, and thresholds should be kept.
 - **Fail loudly** — if the skill analysis is incomplete or the dataset can't be found, say so. Don't generate a config full of placeholders.
 
-$ARGUMENTS
-
 ---
 
 ## PROMPT-BASED ANALYSIS (Custom)
@@ -273,4 +271,6 @@ Report to user:
 /eval-analyze --skill my-skill --update                      # Preserve user edits
 /eval-analyze --prompt examples/openshift-agentic-docs.md --config eval/docs.yaml  # Custom output path
 ```
+
+$ARGUMENTS
 
