@@ -226,9 +226,16 @@ This is for non-skill evaluations where you want to test agent capabilities dire
 #### Execute Prompt Analysis
 
 1. Resolve prompt: `python3 ${CLAUDE_SKILL_DIR}/scripts/resolve_prompt.py <prompt-ref>`
-2. Launch Explore agent with prompt content defining what to analyze, the generation seeds, judges, and traces
+2. Launch Explore agent with prompt content defining what to analyze, the generation block, judges, and traces
 3. Extract generated eval.yaml and write to `<config>`
 4. Validate: `python3 ${CLAUDE_SKILL_DIR}/scripts/validate_eval.py config <config>` (check execution.prompt set, fields populated, paths resolve)
+
+**Same config surface as skill mode.** A prompt-mode eval.yaml still needs `models`, `judges`, and
+`thresholds` — read `references/eval-yaml-template.md` and Step 6's field guidance (it applies to both
+modes) rather than re-deriving it. Two prompt-mode specifics that Step 6 flags but the analysis prompt
+may not: set `runner.workspace_mode: repo` when the agent must navigate the real repo (docs/ai-docs
+navigation), and add `permissions.deny` for `eval/`, `eval.yaml`, `eval.md`, `tmp/` so the agent
+can't read the answer key (test-cheating guard — deny rules are prompt-mode only).
 
 **Prefer builtin generation prompts** — for synthetic-generation datasets, emit a top-level `generation:`
 block with `strategy: synthetic`, `context:` (repository knowledge), and `seeds:`. Each seed sets a
@@ -252,7 +259,7 @@ Report to user:
 | **Analyzes** | SKILL.md, scripts, sub-skills | Docs, patterns, APIs (prompt-defined) |
 | **Executes** | Skill invocation (`execution.skill`) | Direct prompt (`execution.prompt`) |
 | **Mode** | `case` or `batch` | `case` only |
-| **Dataset** | Schema-based (input/output fields) | Synthetic (`generation.seeds`) |
+| **Dataset** | Schema-based (input/output fields) | Generated (`generation.strategy`: synthetic \| from-traces) |
 | **Judges** | Output quality checks | Capability checks (rubrics) |
 | **Generation context** | Usually empty | Prompt-defined knowledge/constraints |
 | **Purpose** | Does my skill work? | Can agents use my docs? |
