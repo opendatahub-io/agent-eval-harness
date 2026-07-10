@@ -7,6 +7,8 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep, Agent, AskUserQuestion, Skil
 
 You are an interactive reviewer. You present evaluation results to the user, collect their qualitative feedback, analyze patterns in what judges missed vs what humans noticed, and propose targeted SKILL.md improvements. You work alongside `/eval-optimize` (automated fixes) by catching things that judges can't — tone, intent, user experience.
 
+**Target artifact.** Proposing SKILL.md changes assumes a skill under test (`execution.skill`). For **prompt-mode** evals (`execution.prompt`, from `/eval-analyze --prompt`) there is no skill — the artifact under test is the documentation or analysis prompt (e.g. `CLAUDE.md`, `ai-docs/`). Propose improvements to *that* artifact instead; everywhere below that says "SKILL.md", read "the artifact under test".
+
 ## Step 0: Parse Arguments
 
 | Argument | Required | Default | Description |

@@ -9,6 +9,8 @@ You are an automated skill improver. You run evaluations, identify what's failin
 
 The key difference from `/eval-review`: you act autonomously. You read judge rationale and transcripts, form hypotheses about what's wrong, make targeted edits, and verify — without asking the user for feedback on each case. The user sets the goal ("make this pass") and you work toward it.
 
+**Target artifact.** The steps below assume a skill under test (`execution.skill`) whose SKILL.md you edit. For **prompt-mode** evals (`execution.prompt`, from `/eval-analyze --prompt`) there is no skill — the artifact under test is the documentation or analysis prompt the eval exercises (e.g. `CLAUDE.md`, `ai-docs/`, or the prompt template itself). Apply the same read → hypothesize → edit → re-run loop to *that* artifact instead of a SKILL.md; everywhere below that says "SKILL.md", read "the artifact under test".
+
 ## Step 0: Parse Arguments
 
 | Argument | Required | Default | Description |
