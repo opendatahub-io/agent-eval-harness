@@ -1,11 +1,11 @@
 ---
 name: eval-dataset
-description: Generate evaluation test cases for a skill. Creates realistic test inputs based on skill analysis, bootstraps a starter dataset, or expands an existing one to improve coverage. Use when setting up evaluation for the first time, when the user needs test cases, when coverage is too thin, or after /eval-analyze when no dataset exists yet. Triggers on "create test cases", "generate test data", "need test inputs", "make a dataset", "add more cases", "improve coverage". Also useful when /eval-run reports "no test cases found."
+description: Generate evaluation test cases for an eval.yaml. Sources cases per generation.strategy - skill analysis (default), synthetic LLM generation from generation prompts (documentation and agent-capability evals), or MLflow production traces. Bootstraps a starter dataset or augments an existing one to improve coverage. Use when setting up evaluation, when the user needs test cases, when coverage is too thin, or after /eval-analyze when no dataset exists yet. Triggers on "create test cases", "generate test data", "need test inputs", "make a dataset", "add more cases", "improve coverage", "generate documentation eval cases". Also useful when /eval-run reports "no test cases found."
 user-invocable: true
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, Agent, AskUserQuestion
 ---
 
-You generate evaluation test cases for a skill. You read the skill analysis (eval.md) and eval config (eval.yaml) to understand what the skill does, then create realistic test cases that match the dataset schema. The goal is giving `/eval-run` something meaningful to test against.
+You generate evaluation test cases for an `eval.yaml`. Case **provenance** comes from `generation.strategy` (see Step 1.5): the agent authors cases from the skill analysis (`skill`, the default), a script synthesizes them from generation prompts (`synthetic`), or they are extracted from MLflow production traces (`from-traces`). In every case the goal is giving `/eval-run` something meaningful to test against, matching the dataset schema.
 
 ## Step 0: Parse Arguments
 
@@ -92,7 +92,7 @@ python3 -c "from pathlib import Path; import yaml; import sys; config = yaml.saf
 
 Replace `<config_path>` with the actual value from the --config argument (default: eval.yaml). Route on the result:
 
-- **`synthetic`** → a script generates cases directly from `generation.seeds` + `context`. Skip to Step 2-Synthetic.
+- **`synthetic`** → a script generates cases directly from `generation.seeds` + `context`. Follow `${CLAUDE_SKILL_DIR}/references/synthetic-generation.md` (then validate per Step 6 and, if `--harbor`, emit packages per Step 8).
 - **`skill`** (default) → the agent authors cases from the skill analysis. Continue with Step 2 below.
 - **`from-traces`** → the agent shapes cases from real inputs extracted from MLflow traces. Continue with Step 2 below; Step 4 sources the content.
 
@@ -189,7 +189,7 @@ case-005-ambiguous-phrasing/
 
 **Content**: Use the generation template from Step 2. Every case must include all required files and fields. Vary optional fields across cases — include them in some, omit in others. Use the field semantics to generate realistic content appropriate to each field's purpose.
 
-**Realism**: Cases should look like something a real user would encounter. Don't generate lorem ipsum or obviously synthetic inputs. Use realistic names, scenarios, and domain language appropriate to the skill.
+**Realism**: Cases should look like something a real user would encounter. Don't generate lorem ipsum or obviously templated inputs. Use realistic names, scenarios, and domain language appropriate to the skill.
 
 **External-state placeholders**: For fields marked `[EXTERNAL: System]` in the schema, use `TODO_<SYSTEM>_<FIELD>` as the value (e.g., `project_key: "TODO_JIRA_PROJECT_KEY"`). If you want to show a plausible real value, put it in a YAML comment (e.g., `# replace with real key, such as MYPROJECT`). The `TODO_` prefix signals that this must be replaced with a real value from the target system before execution. List all placeholders in Step 7 so the user knows what needs manual review.
 
@@ -238,81 +238,10 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/harbor.py \
 See `${CLAUDE_SKILL_DIR}/references/case-generation.md` for details.
 ---
 
-## SYNTHETIC GENERATION (Prompt-Mode Evals)
-
-## Step 2-Synthetic: Generate from Generation Seeds
-
-**When to use**: When eval.yaml has `generation.strategy: synthetic` (from `/eval-analyze --prompt`).
-
-**What it does**: Generates test cases from the `generation.seeds`. Each seed names a
-`category`, a `count`, and one **generation prompt** via a discriminator (mirroring judges):
-`builtin: docs/navigation` (a builtin from `agent_eval/prompts/`), `prompt_file: ./path.md`
-(project-specific), or an inline `prompt:`. Repository knowledge from `generation.context` is
-injected into every prompt. Discover builtin prompts:
-
-```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/list_prompts.py
-```
-
-### Execute Synthetic Generation
-
-Extract the judge model from the eval config and call the generation script (use the --config path from Step 0):
-
-```bash
-JUDGE_MODEL=$(python3 -c "from pathlib import Path; import yaml; import sys; config = yaml.safe_load(Path(sys.argv[1]).read_text()); print(config.get('models', {}).get('judge', 'claude-opus-4-6'))" "<config_path>")
-
-python3 ${CLAUDE_SKILL_DIR}/scripts/generate_synthetic.py \
-  --config <config_path> \
-  --output <dataset_path> \
-  --model "${JUDGE_MODEL}"
-```
-
-Replace `<config_path>` with the actual value from the --config argument (default: eval.yaml).
-
-The script will:
-1. Read `generation.seeds` from the eval config
-2. Resolve each seed's generation prompt (builtin / prompt_file / inline)
-3. Use Claude API to generate test cases following the prompt instructions
-4. Apply `generation.context` for repository-specific knowledge
-5. Write cases to `<dataset_path>/case-NNN/`, stamping each with `annotations.category`
-
-### Report Results
-
-Tell the user:
-
-- **Cases generated**: N cases at `<dataset_path>`
-- **Categories**: List which categories and how many cases per category
-- **Context**: What repository-specific knowledge was used
-- **Model used**: Which model generated the cases (from `models.judge` or default)
-- **Next steps**:
-  - Review generated cases in `<dataset_path>/`
-  - Run evaluation: `/eval-run --model <model>`
-  - Generate more: increase per-seed `count` in `generation.seeds`, then re-run `/eval-dataset` (`--count` does not apply in synthetic mode)
-
-### Example Output
-
-```text
-Generated 15 test cases:
-  - navigation (5 cases): docs/navigation
-  - anti-pattern (5 cases): docs/anti-pattern
-  - authoring (5 cases): docs/authoring
-
-Context applied:
-  - Documentation structure: CLAUDE.md, ai-docs/workflows/, ai-docs/domain/
-  - Constraints: 3 rules from ai-docs/practices/
-  - APIs: 5 components from context.apis
-
-Model used: claude-opus-4-6
-
-Next: /eval-run --model opus
-```
-
----
-
 ## Rules
 
 - **Match the schema exactly** — if `dataset.schema` says "input.yaml with a 'prompt' field", create input.yaml with a prompt field. Not input.json, not query.yaml.
-- **Realistic over synthetic** — cases should feel like real usage, not test scaffolding
+- **Realistic over templated** — cases should feel like real usage, not test scaffolding
 - **Cover the skill's range** — don't just generate 5 variations of the same simple input. Test different capabilities the skill claims to have.
 - **Don't fabricate gold outputs** — if you're not confident in what a correct output looks like, leave the reference out. Wrong references are worse than no references.
 - **Name cases descriptively** — `case-003-edge-empty-context` is better than `case-003`. The name should indicate what scenario is being tested.
