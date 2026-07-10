@@ -306,7 +306,7 @@ thresholds:
   
   Additional fields: `arguments` template, optional `timeout` (wall-clock seconds per invocation), `max_budget_usd` (cost cap per invocation), `parallelism` (run up to N cases concurrently in case/prompt modes), and `env` for injecting environment variables into workspaces (`$VAR` syntax resolves from caller's environment).
 - **`schema`** — natural language description of structure. Used on `dataset` and each `outputs` entry. Agents and judges read these to understand the data.
-- **`generation`** — (prompt mode only) synthetic test generation, a top-level block. `strategy: synthetic` tells `/eval-dataset` to generate from seeds. `context` holds repository-specific knowledge (`documentation_structure`, `constraints`, `apis`, `components`, etc.) injected into every generation prompt. `seeds` is a list; each seed has a `category`, a `count`, and exactly one **generation prompt** discriminator (mirroring judges): `builtin` (from `agent_eval/prompts/`, e.g. `docs/navigation` — discover with `list_prompts.py`), `prompt_file` (a project path), or an inline `prompt`. Each seed's `category` is stamped onto generated cases as `annotations.category`.
+- **`generation`** — optional top-level block selecting case **provenance** via `strategy`: `skill` (default — agent authors from skill analysis; needs no block), `synthetic` (LLM generates from seeds), or `from-traces` (extracted from MLflow production traces). For `synthetic`: `context` holds repository-specific knowledge (`documentation_structure`, `constraints`, `apis`, `components`, etc.) injected into every generation prompt, and `seeds` is a list where each seed has a `category`, a `count`, and exactly one **generation prompt** discriminator (mirroring judges): `builtin` (from `agent_eval/prompts/`, e.g. `docs/navigation` — discover with `list_prompts.py`), `prompt_file` (a project path), or an inline `prompt`. Each seed's `category` is stamped onto generated cases as `annotations.category`. `seeds`/`context` apply only to `synthetic`.
 - **`inputs.tools`** — tool interception for headless and interactive execution. Each entry has a `match` (what to intercept) and a `prompt` (how to handle it). AskUserQuestion uses 3-tier answering: exact `case_overrides` → LLM call (`models.hook`) with case context (`input.yaml` + `answers.yaml`) → fallback to first option.
 - **`outputs`** — two types: `path` for file artifacts on disk, `tool` for tool call side effects (Jira, APIs). Both have `schema` descriptions. Optional `batch_pattern` maps output files to cases in batch mode using `{n}` as a 1-based index (e.g. `"RFE-{n:03d}"` → `RFE-001`, `RFE-002`).
 - **`traces`** — execution data to capture: stdout/stderr logs, events (tool calls, reasoning text, results), metrics (exit code, tokens, cost, duration). Available to judges via the `outputs` dict.
@@ -595,20 +595,21 @@ Prompt mode is extensible. Create custom analysis prompts for other agent capabi
 
 ### /eval-dataset
 
-Generate evaluation test cases. Two generation strategies:
+Generate evaluation test cases. Case **provenance** is set in the config via `generation.strategy`:
 
-**Skill mode**: Creates realistic inputs based on skill analysis. Bootstraps starter dataset, expands existing coverage, or extracts cases from MLflow traces.
+- **`skill`** (default — no `generation` block needed): the agent authors realistic inputs from the skill analysis.
+- **`synthetic`**: an LLM generates cases from `generation.seeds` + `generation.context` (from `/eval-analyze --prompt`).
+- **`from-traces`**: cases are extracted from MLflow production traces.
 
-**Prompt mode**: Generates synthetic test cases from `generation.seeds` when `eval.yaml` has `generation.strategy: synthetic` (from `/eval-analyze --prompt`).
+Whether a run **creates a fresh set or augments an existing one** is derived from the current dataset (empty → fresh; populated → gap-fill) — there is no `--strategy` flag.
 
 ```bash
-/eval-dataset                              # Bootstrap 5 starter cases (skill mode)
-                                           # OR generate from generation.seeds (prompt mode)
-/eval-dataset --count 20                   # Generate 20 cases (skill mode; synthetic uses per-seed count)
-/eval-dataset --strategy expand            # Fill coverage gaps (skill mode only)
+/eval-dataset                              # generate per the config's generation.strategy
+/eval-dataset --count 20                   # target 20 cases (skill/from-traces; synthetic uses per-seed count)
+/eval-dataset --run-id <id>                # augment, targeting failures from a prior eval run
 ```
 
-**Synthetic generation** (prompt mode) uses builtin generation prompts (`docs/navigation`, `docs/anti-pattern`, `docs/authoring`, `docs/component-usage`, `docs/architecture` — from `agent_eval/prompts/`) combined with repository-specific `generation.context` to create targeted test cases. Extensible with project-specific prompts via `prompt_file:` or inline `prompt:`.
+**Synthetic generation** uses builtin generation prompts (`docs/navigation`, `docs/anti-pattern`, `docs/authoring`, `docs/component-usage`, `docs/architecture` — from `agent_eval/prompts/`) combined with repository-specific `generation.context` to create targeted test cases. Extensible with project-specific prompts via `prompt_file:` or inline `prompt:`.
 
 ### /eval-run
 

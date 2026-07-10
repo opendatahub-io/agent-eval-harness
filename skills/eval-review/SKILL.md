@@ -129,7 +129,7 @@ If feedback suggests new judges, propose additions to eval.yaml. Prefer builtins
 After applying approved changes, suggest (include `--config <config>` if a non-default config was used):
 - `/eval-run --model <model> --baseline <run-id>` to re-run and compare
 - `/eval-optimize --model <model>` if they want automated iteration from here
-- `/eval-dataset --strategy expand` if the feedback revealed coverage gaps
+- `/eval-dataset` to add cases if the feedback revealed coverage gaps (augments the existing dataset)
 - `/eval-mlflow --run-id <run-id> --action push-feedback` to push review feedback to MLflow traces
 
 ## Rules

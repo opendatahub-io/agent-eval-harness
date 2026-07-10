@@ -272,6 +272,56 @@ class TestSyntheticGeneration:
             Path(config_path).unlink()
 
 
+class TestGenerationStrategy:
+    """Test the generation.strategy provenance enum."""
+
+    @staticmethod
+    def _load(generation=None, execution=None):
+        from agent_eval.config import EvalConfig
+        config_data = {
+            "name": "test-eval",
+            "execution": execution or {"mode": "case", "skill": "x"},
+            "dataset": {"path": "eval/dataset", "schema": "test"},
+        }
+        if generation is not None:
+            config_data["generation"] = generation
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+            yaml.dump(config_data, f)
+            config_path = f.name
+        try:
+            return EvalConfig.from_yaml(config_path)
+        finally:
+            Path(config_path).unlink()
+
+    def test_default_strategy_is_skill(self):
+        """No generation block → strategy defaults to 'skill'."""
+        config = self._load()
+        assert config.generation.strategy == "skill"
+        assert config.generation.seeds == []
+
+    def test_explicit_skill_strategy(self):
+        config = self._load(generation={"strategy": "skill"})
+        assert config.generation.strategy == "skill"
+
+    def test_from_traces_strategy_needs_no_seeds(self):
+        config = self._load(
+            generation={"strategy": "from-traces"},
+            execution={"mode": "case", "prompt": "{{ input.prompt }}"})
+        assert config.generation.strategy == "from-traces"
+        assert config.generation.seeds == []
+
+    def test_unknown_strategy_rejected(self):
+        with pytest.raises(ValueError, match="generation.strategy must be one of"):
+            self._load(generation={"strategy": "bogus"})
+
+    def test_seeds_require_synthetic(self):
+        with pytest.raises(ValueError, match="seeds are only valid with strategy: synthetic"):
+            self._load(generation={
+                "strategy": "from-traces",
+                "seeds": [{"category": "n", "builtin": "docs/navigation", "count": 1}],
+            })
+
+
 class TestCLIIntegration:
     """Test CLI dry-run functionality."""
 

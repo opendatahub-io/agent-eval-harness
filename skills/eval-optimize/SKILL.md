@@ -185,7 +185,7 @@ If max iterations reached with failures remaining:
 - Report what was fixed and what couldn't be fixed
 - For persistent failures, explain what you tried and why it didn't work
 - Suggest `/eval-review --run-id <final-id>` for human assessment of the remaining issues
-- Suggest `/eval-dataset --strategy expand` if failures suggest missing test coverage
+- Suggest `/eval-dataset` to add cases if failures suggest missing test coverage (augments the existing dataset)
 
 In all cases (include `--config <config>` if a non-default config was used):
 - Suggest `/eval-mlflow --run-id <final-id>` to log the optimization results to MLflow for tracking.

@@ -117,7 +117,7 @@ def test_eval_dataset_generates_todo_placeholders(tmp_path, repo_root):
     )
     result = runner.run_skill(
         skill_name="eval-dataset",
-        args="--count 2 --strategy bootstrap",
+        args="--count 2",
         workspace=workspace,
         model="claude-opus-4-6",
         timeout_s=180,

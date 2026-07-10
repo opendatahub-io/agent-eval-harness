@@ -13,15 +13,19 @@ You generate evaluation test cases for a skill. You read the skill analysis (eva
 |----------|----------|---------|-------------|
 | `--config <path>` | no | auto-discover | Path to eval config |
 | `--count <N>` | no | 5 | Number of cases to generate |
-| `--strategy <type>` | no | `bootstrap` | Generation strategy (see Step 3) |
-| `--run-id <id>` | no | — | Previous eval run to learn from (used with `expand`) |
+| `--run-id <id>` | no | — | Prior eval run to learn from when augmenting existing cases |
 | `--harbor` | no | — | Also generate Harbor task packages (Step 8) |
 | `--image <image>` | with `--harbor` | — | Container image for Harbor task packages |
 
-`--count` and `--strategy` apply to **skill-based** generation only. Synthetic generation
-(`generation.strategy: synthetic` in the config) is fully declarative — case counts come from each
-seed's `count` in `generation.seeds`, and `--count`/`--strategy` are ignored. Resize a synthetic
-dataset by editing seed counts in eval.yaml.
+**Provenance is in the config, not a flag.** `generation.strategy` selects where cases come from:
+`skill` (default — agent authors from skill analysis), `synthetic` (LLM generates from
+`generation.seeds`), or `from-traces` (extracted from MLflow production traces). There is no
+`--strategy` flag: whether to create a fresh set or augment an existing one is derived from the
+current dataset state (Step 3), and `--run-id` informs the augment case.
+
+`--count` applies to the `skill` and `from-traces` paths. `synthetic` is fully declarative — case
+counts come from each seed's `count` in `generation.seeds`, so `--count` is ignored there; resize a
+synthetic dataset by editing seed counts in eval.yaml.
 
 ### Config Discovery
 
@@ -78,27 +82,25 @@ If eval.md doesn't exist, you can still work from eval.yaml's schema description
 
 After reading the skill analysis and judges, estimate whether `--count` is sufficient. Count the skill's distinct execution paths (branches, modes, optional steps), the number of judges, and the number of conditional judges. A rough guideline: you need at least one case per execution path, plus enough variety for each judge to have both passing and failing examples. If the skill has 4 execution paths and 6 judges, 5 cases may be thin — suggest a higher count to the user ("This skill has N distinct paths and M judges — consider `--count 12` for better coverage").
 
-## Step 1.5: Detect Generation Mode
+## Step 1.5: Detect Provenance
 
-Check the eval config's `generation.strategy` (use the --config path from Step 0):
+Read the eval config's `generation.strategy` — the case provenance (use the --config path from Step 0). Absent normalizes to `skill`:
 
 ```bash
-python3 -c "from pathlib import Path; import yaml; import sys; config = yaml.safe_load(Path(sys.argv[1]).read_text()); print('SYNTHETIC' if config.get('generation', {}).get('strategy') == 'synthetic' else 'SKILL')" "<config_path>"
+python3 -c "from pathlib import Path; import yaml; import sys; config = yaml.safe_load(Path(sys.argv[1]).read_text()); print((config.get('generation') or {}).get('strategy') or 'skill')" "<config_path>"
 ```
 
-Replace `<config_path>` with the actual value from the --config argument (default: eval.yaml).
+Replace `<config_path>` with the actual value from the --config argument (default: eval.yaml). Route on the result:
 
-**If SYNTHETIC mode detected**:
-- This is a synthetic-generation eval config (from `/eval-analyze --prompt`)
-- Use synthetic generation instead of skill-based generation
-- Skip to Step 2-Synthetic (see below)
+- **`synthetic`** → a script generates cases directly from `generation.seeds` + `context`. Skip to Step 2-Synthetic.
+- **`skill`** (default) → the agent authors cases from the skill analysis. Continue with Step 2 below.
+- **`from-traces`** → the agent shapes cases from real inputs extracted from MLflow traces. Continue with Step 2 below; Step 4 sources the content.
 
-**Otherwise**:
-- Continue with skill-based generation (Step 2 below)
+Within the `skill` and `from-traces` paths, whether you **create a fresh set** or **augment an existing one** is not a flag — derive it from the current dataset state in Step 3 (empty/thin → fresh; populated → add gap-fillers). `--run-id`, if given, points at a prior eval run to target its failures when augmenting.
 
 ---
 
-## SKILL-BASED GENERATION (Default)
+## SKILL & FROM-TRACES GENERATION (agent-authored)
 
 ## Step 2: Parse Schema into Generation Template
 
@@ -129,40 +131,38 @@ Count existing cases and read one to understand the current structure. Note:
 - What topics/scenarios they cover
 - Any obvious gaps (only simple cases? no edge cases? no error scenarios?)
 
-## Step 4: Choose Strategy
+**This assessment decides fresh vs. augment** (there is no flag): an empty or thin dataset means create a fresh starter set; a populated one means add gap-fillers without duplicating. Number new cases continuing from the highest existing case number.
 
-**`bootstrap`** (default) — Generate N cases from scratch. Use this when starting from zero or when fewer than 5 cases exist.
+## Step 4: Source the Cases
 
-Design cases to cover:
+Pick the sub-section for this eval's provenance (from Step 1.5). Both write case directories following the generation template from Step 2.
+
+### 4a. `skill` — author from the skill analysis
+
+**Fresh set** (empty/thin dataset) — design cases to cover:
 - **1 simple case** — straightforward input, expected to pass all judges easily
 - **1 complex case** — longer input, multiple requirements, tests the skill's full capability
 - **1 edge case** — unusual input that tests boundaries (very short, very long, ambiguous, missing fields)
-- **Remaining cases** — map to the judge-driven requirements from Step 1. Each remaining case should target a specific judge criterion that the first three cases don't already stress. If there are more judge criteria than remaining case slots, prioritize the strictest judges (those with high thresholds or binary pass/fail).
+- **Remaining cases** — map to the judge-driven requirements from Step 1. Each should target a specific judge criterion the first three don't already stress. If there are more criteria than slots, prioritize the strictest judges (high thresholds or binary pass/fail).
 
-**`expand`** — Read existing cases, identify gaps, generate cases that fill them. Use this when cases exist but coverage is thin.
-
-Read each existing case's input file to understand what's already covered. Then look for gaps by comparing against:
+**Augment** (populated dataset) — read each existing case's input, then look for gaps against:
 - The skill's documented capabilities (from eval.md)
-- The judges' criteria (from eval.yaml — what do judges check that no case tests?)
+- The judges' criteria (what do judges check that no case tests?)
 - Edge cases mentioned in the skill analysis
 - Input variety (all cases similar? need different lengths, complexities, topics)
 
-If `--run-id` was provided, also read the eval results to target empirical failure patterns:
+If `--run-id` was provided, also read that run's results to target empirical failures:
 
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py read $AGENT_EVAL_RUNS_DIR/<run-id>/summary.yaml
 ```
-
-Use the results to prioritize new cases:
-- If a judge consistently fails across cases, add cases that isolate its specific criterion
+- If a judge consistently fails, add cases that isolate its criterion
 - If a judge scores low on simple inputs but passes on complex ones (or vice versa), add cases that explore that boundary
-- If certain case types have no failures, don't add more of the same — focus on the weak spots
+- If certain case types never fail, focus elsewhere — don't add more of the same
 
-Avoid duplicating existing scenarios — each new case should test something distinct that isn't already covered. Number new cases continuing from the highest existing case number.
+### 4b. `from-traces` — shape from production traces
 
-**`from-traces`** — Extract real inputs from MLflow traces and turn them into test cases. Use this when the skill has been used in production and traces are available.
-
-Run the extraction script:
+Extract real inputs from MLflow traces:
 
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/../eval-mlflow/scripts/from_traces.py \
@@ -170,9 +170,9 @@ python3 ${CLAUDE_SKILL_DIR}/../eval-mlflow/scripts/from_traces.py \
   --count <N>
 ```
 
-This outputs YAML with extracted trace inputs (prompt text, tool interactions). Read the output and create case directories following the generation template from Step 2. The trace inputs give you realistic content for the input fields — but you still need to structure the files according to `dataset.schema`.
+This outputs YAML with extracted trace inputs (prompt text, tool interactions). Read it and create case directories following the generation template from Step 2 — the trace inputs give realistic content, but you still structure the files per `dataset.schema`. When augmenting (populated dataset), skip inputs already covered.
 
-If the script exits with code 2 (no traces found) or MLflow is not configured, tell the user and fall back to `expand` strategy.
+If the script exits with code 2 (no traces found) or MLflow is not configured, tell the user; fall back to `skill` authoring (4a) if appropriate.
 
 ## Step 5: Generate Cases
 
@@ -215,14 +215,14 @@ ls <dataset_path>/case-001-*/
 Tell the user what was created:
 
 - **Cases generated**: N new cases at `<path>`
-- **Strategy used**: bootstrap / expand / from-traces
+- **Provenance**: skill / from-traces; and whether this was a fresh set or an augment
 - **Coverage**: What scenarios are now covered (simple, complex, edge cases)
 - **What's missing**: Reference outputs (if not generated), any gaps still remaining
 - **External-state placeholders**: If any `TODO_` placeholder values were generated, list each one with which case it's in, which external system it references, and what kind of value is needed (e.g., "case-001/input.yaml `TODO_JIRA_PROJECT_KEY` — needs a real Jira project key from your test instance"). These MUST be replaced with real values before running `/eval-run`.
 - **Next steps** (include `--config <config>` if a non-default config was used):
   - `/eval-run --model <model>` to test the skill against these cases
   - `/eval-run --model <model> --gold` to generate gold references from the best outputs
-  - `/eval-dataset --strategy expand --count 10` to add more cases later
+  - `/eval-dataset --count 10` to add more cases later (augment is derived from the existing dataset; add `--run-id <id>` to target a prior run's failures)
 
 ## Step 8 (if `--harbor`): Emit Harbor task packages
 
