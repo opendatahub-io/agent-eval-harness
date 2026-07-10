@@ -66,7 +66,7 @@ def test_compose_reward_ignores_skipped_and_errored():
 def _write_config(tmp_path: Path, judges: list) -> EvalConfig:
     raw = {
         "name": "t",
-        "skill": "t",
+        "execution": {"skill": "t"},
         "dataset": {"path": ""},
         "outputs": [{"path": "artifacts/out", "schema": "any"}],
         "judges": judges,
@@ -316,7 +316,7 @@ def test_compose_reward_falls_back_without_cfg():
 
 def test_reward_config_parsed_from_yaml(tmp_path):
     raw = {
-        "name": "t", "skill": "t",
+        "name": "t", "execution": {"skill": "t"},
         "reward": {
             "formula": "weighted",
             "weights": {"a": 0.5, "b": 0.5},
@@ -340,7 +340,7 @@ def test_reward_config_parsed_from_yaml(tmp_path):
 def _judge_cfg(reward, judges=None):
     """Build a raw eval.yaml dict with a reward block and defined judges."""
     return {
-        "name": "t", "skill": "t",
+        "name": "t", "execution": {"skill": "t"},
         "judges": judges or [{"name": "my_reward", "check": "x"}],
         "reward": reward,
     }
@@ -391,7 +391,7 @@ def test_reward_config_judge_rejects_bad_normalize(tmp_path):
 
 def test_reward_config_rejects_bad_gate(tmp_path):
     raw = {
-        "name": "t", "skill": "t",
+        "name": "t", "execution": {"skill": "t"},
         "reward": {"gate": "false"},
     }
     cfg_path = tmp_path / "eval.yaml"
@@ -402,7 +402,7 @@ def test_reward_config_rejects_bad_gate(tmp_path):
 
 def test_reward_config_rejects_inverted_range(tmp_path):
     raw = {
-        "name": "t", "skill": "t",
+        "name": "t", "execution": {"skill": "t"},
         "reward": {"score_range": [5, 1]},
     }
     cfg_path = tmp_path / "eval.yaml"
@@ -413,7 +413,7 @@ def test_reward_config_rejects_inverted_range(tmp_path):
 
 def test_reward_config_rejects_negative_weight(tmp_path):
     raw = {
-        "name": "t", "skill": "t",
+        "name": "t", "execution": {"skill": "t"},
         "reward": {"formula": "weighted", "weights": {"a": -0.5, "b": 1.0}},
     }
     cfg_path = tmp_path / "eval.yaml"
@@ -425,7 +425,7 @@ def test_reward_config_rejects_negative_weight(tmp_path):
 def test_reward_config_rejects_malformed_formula(tmp_path):
     """A syntactically invalid expression fails at config load, not silently."""
     raw = {
-        "name": "t", "skill": "t",
+        "name": "t", "execution": {"skill": "t"},
         "reward": {"formula": "0.5 * quality + "},
     }
     cfg_path = tmp_path / "eval.yaml"
@@ -437,7 +437,7 @@ def test_reward_config_rejects_malformed_formula(tmp_path):
 def test_reward_config_rejects_unsafe_formula(tmp_path):
     """An unsafe construct is rejected at config load."""
     raw = {
-        "name": "t", "skill": "t",
+        "name": "t", "execution": {"skill": "t"},
         "reward": {"formula": '__import__("os").system("id")'},
     }
     cfg_path = tmp_path / "eval.yaml"
@@ -449,7 +449,7 @@ def test_reward_config_rejects_unsafe_formula(tmp_path):
 def test_reward_config_accepts_valid_expression(tmp_path):
     """A valid expression formula parses and is stored verbatim."""
     raw = {
-        "name": "t", "skill": "t",
+        "name": "t", "execution": {"skill": "t"},
         "reward": {"formula": "0.6 * quality + 0.4 * efficiency",
                    "raw": ["efficiency"]},
     }
@@ -462,7 +462,7 @@ def test_reward_config_accepts_valid_expression(tmp_path):
 # --- formula sandbox hardening (bounded numeric arithmetic) ------------------
 
 def _expect_invalid_formula(tmp_path, formula):
-    raw = {"name": "t", "skill": "t", "reward": {"formula": formula}}
+    raw = {"name": "t", "execution": {"skill": "t"}, "reward": {"formula": formula}}
     cfg_path = tmp_path / "eval.yaml"
     cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
     with pytest.raises(ValueError, match="formula is invalid"):

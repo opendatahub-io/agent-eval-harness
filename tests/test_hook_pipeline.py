@@ -38,8 +38,8 @@ def hook_eval_project(tmp_path):
 
     eval_config = {
         "name": "hooks-pipeline-test",
-        "skill": "test-echo",
         "execution": {
+            "skill": "test-echo",
             "mode": "case",
             "arguments": "{prompt}",
         },

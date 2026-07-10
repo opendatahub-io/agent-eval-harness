@@ -11,8 +11,7 @@ def _setup_eval_project(tmp_path):
     """Create a minimal eval project with config and dataset."""
     config = {
         "name": "integration-test",
-        "skill": "test-skill",
-        "execution": {"mode": "case", "arguments": "--input {query}"},
+        "execution": {"skill": "test-skill", "mode": "case", "arguments": "--input {query}"},
         "dataset": {"path": "cases", "schema": "query field"},
         "outputs": [{"path": "output", "schema": "Result files"}],
         "judges": [

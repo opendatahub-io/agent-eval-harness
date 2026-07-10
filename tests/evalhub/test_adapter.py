@@ -15,8 +15,8 @@ from agent_eval.evalhub.s3_dataset import DatasetInfo
 def _make_eval_yaml(tmpdir: Path, skill: str = "test-skill", arguments: str = "--input {prompt}") -> Path:
     config = {
         "name": "test-eval",
-        "skill": skill,
         "execution": {
+            "skill": skill,
             "mode": "case",
             "arguments": arguments,
             "timeout": 300,

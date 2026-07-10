@@ -24,7 +24,8 @@ class TestCliRunnerConfig:
     def test_command_string_parses(self, tmp_path):
         cfg = EvalConfig.from_yaml(self._write(tmp_path, """
 name: t
-skill: s
+execution:
+  skill: s
 runner:
   type: cli
   command: "my-runner run {agent} --workspace {workspace}"
@@ -35,7 +36,8 @@ runner:
     def test_command_list_parses(self, tmp_path):
         cfg = EvalConfig.from_yaml(self._write(tmp_path, """
 name: t
-skill: s
+execution:
+  skill: s
 runner:
   type: cli
   command:
@@ -52,7 +54,8 @@ runner:
     def test_command_default_is_none(self, tmp_path):
         cfg = EvalConfig.from_yaml(self._write(tmp_path, """
 name: t
-skill: s
+execution:
+  skill: s
 runner:
   type: claude-code
 """))
@@ -300,11 +303,11 @@ class TestFromConfig:
     def test_from_config_string_command(self, tmp_path):
         cfg = EvalConfig.from_yaml(self._write(tmp_path, """
 name: t
-skill: s
 runner:
   type: cli
   command: "my-runner run {agent}"
 execution:
+  skill: s
   env:
     MY_VAR: hello
 """))
@@ -317,7 +320,8 @@ execution:
     def test_from_config_list_command(self, tmp_path):
         cfg = EvalConfig.from_yaml(self._write(tmp_path, """
 name: t
-skill: s
+execution:
+  skill: s
 runner:
   type: cli
   command:
@@ -330,7 +334,8 @@ runner:
     def test_from_config_ignores_extra_overrides(self, tmp_path):
         cfg = EvalConfig.from_yaml(self._write(tmp_path, """
 name: t
-skill: s
+execution:
+  skill: s
 runner:
   type: cli
   command: "echo test"

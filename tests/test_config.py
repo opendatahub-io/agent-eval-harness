@@ -22,8 +22,8 @@ def _write(tmp_path, body, name="eval.yaml"):
 def test_execution_block_parses(tmp_path):
     cfg = EvalConfig.from_yaml(_write(tmp_path, """
 name: t
-skill: s
 execution:
+  skill: s
   mode: batch
   arguments: "--in batch.yaml"
   timeout: 1800
@@ -38,7 +38,8 @@ execution:
 def test_runner_block_parses(tmp_path):
     cfg = EvalConfig.from_yaml(_write(tmp_path, """
 name: t
-skill: s
+execution:
+  skill: s
 runner:
   type: claude-code
   plugin_dirs:
@@ -57,14 +58,15 @@ runner:
 
 
 def test_runner_type_default(tmp_path):
-    cfg = EvalConfig.from_yaml(_write(tmp_path, "name: t\nskill: s\n"))
+    cfg = EvalConfig.from_yaml(_write(tmp_path, "name: t\nexecution:\n  skill: s\n"))
     assert cfg.runner.type == "claude-code"
 
 
 def test_models_block_defaults(tmp_path):
     cfg = EvalConfig.from_yaml(_write(tmp_path, """
 name: t
-skill: s
+execution:
+  skill: s
 models:
   skill: claude-opus-4-7
   judge: claude-opus-4-7
@@ -77,7 +79,8 @@ models:
 def test_mlflow_block_parses(tmp_path):
     cfg = EvalConfig.from_yaml(_write(tmp_path, """
 name: t
-skill: s
+execution:
+  skill: s
 mlflow:
   experiment: e1
   tracking_uri: sqlite:///x.db
@@ -93,7 +96,8 @@ def test_mlflow_experiment_defaults_to_name_when_block_present(tmp_path):
     """`mlflow:` block present but no `experiment:` → fall back to eval name."""
     cfg = EvalConfig.from_yaml(_write(tmp_path, """
 name: my-eval
-skill: s
+execution:
+  skill: s
 mlflow:
   tracking_uri: sqlite:///x.db
 """))
@@ -102,7 +106,7 @@ mlflow:
 
 def test_mlflow_disabled_when_block_absent(tmp_path):
     """No `mlflow:` block → experiment empty, MLflow logging off."""
-    cfg = EvalConfig.from_yaml(_write(tmp_path, "name: my-eval\nskill: s\n"))
+    cfg = EvalConfig.from_yaml(_write(tmp_path, "name: my-eval\nexecution:\n  skill: s\n"))
     assert cfg.mlflow.experiment == ""
 
 
@@ -134,14 +138,14 @@ def test_judge_model_resolution_precedence(tmp_path, monkeypatch):
 
 def test_config_dir_set_from_yaml(tmp_path):
     """config_dir is set to the parent of the loaded eval.yaml."""
-    cfg = EvalConfig.from_yaml(_write(tmp_path, "name: t\nskill: s\n"))
+    cfg = EvalConfig.from_yaml(_write(tmp_path, "name: t\nexecution:\n  skill: s\n"))
     assert cfg.config_dir == tmp_path.resolve()
 
 
 def test_config_dir_subdirectory(tmp_path):
     """config_dir follows the eval.yaml location in subdirectories."""
     sub = tmp_path / "eval" / "my-eval"
-    p = _write(tmp_path, "name: t\nskill: s\n",
+    p = _write(tmp_path, "name: t\nexecution:\n  skill: s\n",
                name="eval/my-eval/eval.yaml")
     cfg = EvalConfig.from_yaml(p)
     assert cfg.config_dir == sub.resolve()
@@ -159,7 +163,8 @@ def test_resolve_path_relative(tmp_path):
     """Relative paths resolve against config_dir."""
     cfg = EvalConfig.from_yaml(_write(tmp_path, """
 name: t
-skill: s
+execution:
+  skill: s
 dataset:
   path: cases/
 """))
@@ -179,7 +184,8 @@ def test_absolute_dataset_path_allowed(tmp_path):
     """Absolute dataset.path is accepted by the validator."""
     cfg = EvalConfig.from_yaml(_write(tmp_path, """
 name: t
-skill: s
+execution:
+  skill: s
 dataset:
   path: /shared/datasets/my-cases
 """))
@@ -191,7 +197,8 @@ def test_parent_traversal_rejected(tmp_path):
     with pytest.raises(ValueError, match="must not contain"):
         EvalConfig.from_yaml(_write(tmp_path, """
 name: t
-skill: s
+execution:
+  skill: s
 dataset:
   path: ../escape
 """))
@@ -204,7 +211,8 @@ def test_dataset_resolves_relative_to_nested_config(tmp_path):
     cases_dir.mkdir(parents=True)
     p = _write(tmp_path, """
 name: t
-skill: s
+execution:
+  skill: s
 dataset:
   path: cases/
 """, name="eval/my-eval/eval.yaml")
@@ -233,7 +241,8 @@ def test_absolute_dataset_path_used_as_is(tmp_path):
     abs_path.mkdir()
     cfg = EvalConfig.from_yaml(_write(tmp_path, f"""
 name: t
-skill: s
+execution:
+  skill: s
 dataset:
   path: {abs_path}
 """, name="eval/my-eval/eval.yaml"))

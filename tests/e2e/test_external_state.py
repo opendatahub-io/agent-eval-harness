@@ -83,9 +83,9 @@ def test_eval_dataset_generates_todo_placeholders(tmp_path, repo_root):
     # so this test doesn't depend on eval-analyze's LLM output.
     eval_config = {
         "name": "fake-jira-eval",
-        "skill": "fake-jira-skill",
         "models": {"skill": "claude-opus-4-6"},
         "execution": {
+            "skill": "fake-jira-skill",
             "mode": "case",
             "arguments": "{prompt}",
         },
