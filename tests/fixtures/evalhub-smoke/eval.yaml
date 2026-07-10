@@ -1,7 +1,6 @@
-skill: ""
 execution:
   mode: case
-  arguments: "{prompt}"
+  prompt: "{prompt}"
   timeout: 120
 runner:
   type: claude-code

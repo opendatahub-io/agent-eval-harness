@@ -126,7 +126,7 @@ The script prints `WORKSPACE: <path>`, `CASES: <count>`, `BATCH: <path>`. Report
 
 If the case count is 0, stop — the filter matched nothing.
 
-## Step 3b: Resolve Tool Interception (if `inputs.tools` configured)
+## Step 3a: Resolve Tool Interception (if `inputs.tools` configured)
 
 If eval.yaml has `inputs.tools` entries, this step is **mandatory**. `workspace.py` emits a skeleton in `tool_handlers.yaml`; you must resolve each handler's `prompt` into concrete runtime checks (`input_filters`, `env_checks`, `case_overrides`). Do not skip this even when the eval.yaml is unchanged — the workspace is created fresh each time.
 

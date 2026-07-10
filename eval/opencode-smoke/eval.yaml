@@ -1,9 +1,9 @@
 name: opencode-smoke
 description: Smoke test for OpenCode CLI agent — creates a file and verifies content
-skill: opencode-smoke
 
 execution:
   mode: case
+  skill: opencode-smoke
   arguments: "{prompt}"
   timeout: 120
   max_budget_usd: 1.0
