@@ -36,6 +36,15 @@ def _resolve_under_cwd(raw, base):
     return candidate
 
 
+def _is_under_cwd(path):
+    """Return True if resolved path is within CWD (catches symlink escapes)."""
+    try:
+        Path(path).resolve().relative_to(Path.cwd().resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def _skills_from_plugin_json(plugin_json):
     """Extract skill directories from a plugin.json file.
 
@@ -136,10 +145,14 @@ def find_skill(name):
     for skills_dir in get_skill_dirs():
         for candidate in candidates:
             skill_path = Path(skills_dir) / candidate / "SKILL.md"
-            if skill_path.exists():
+            if skill_path.exists() and _is_under_cwd(skill_path):
                 return skill_path
 
         for path in sorted(glob(f"{skills_dir}/*/SKILL.md")):
+            if not _is_under_cwd(path):
+                print(f"  WARNING: skipping path outside project: {path}",
+                      file=sys.stderr)
+                continue
             try:
                 with open(path) as f:
                     content = f.read()
@@ -162,6 +175,10 @@ def list_skills():
     skills = []
     for skills_dir in get_skill_dirs():
         for path in sorted(glob(f"{skills_dir}/*/SKILL.md")):
+            if not _is_under_cwd(path):
+                print(f"  WARNING: skipping path outside project: {path}",
+                      file=sys.stderr)
+                continue
             dir_name = Path(path).parent.name
             if dir_name in HARNESS_SKILLS:
                 continue
