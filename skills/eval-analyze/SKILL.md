@@ -44,13 +44,27 @@ Set the resolved config path as `<config>` for all subsequent steps. Set `<eval_
 
 ## Step 1: Find the Target Skill
 
+**If both `--assess` and `--skill` are provided**, warn the user that `--assess` performs batch assessment of all skills and `--skill` is ignored for this mode. Proceed with `--assess`.
+
 **If `--assess` was provided**, skip single-skill selection and run the batch assessment instead:
 
+1. Extract skill profiles (deterministic facts only):
+
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/scripts/assess_skills.py
+python3 ${CLAUDE_SKILL_DIR}/scripts/assess_skills.py --json
 ```
 
-This reads all SKILL.md files in the project, extracts eval-relevant metadata (allowed tools, line count, complexity signals), and scores each skill to recommend whether evals would add value. Display the report to the user and offer to run full `/eval-analyze` on any of the recommended skills. Stop here — do not proceed to Step 2.
+This discovers all project skills and extracts metadata: allowed tools, script counts, capability flags, existing eval status, and a body excerpt from each SKILL.md. If the output is an empty JSON array, report that no skills were found and stop.
+
+2. Read the assessment prompt:
+
+```
+Read ${CLAUDE_SKILL_DIR}/prompts/assess-skills.md
+```
+
+3. Using the criteria from the assessment prompt, evaluate each skill profile from the JSON output. For skills already marked with `recommendation: "EXISTS"`, carry that verdict through. For all others, assign RECOMMENDED, OPTIONAL, or SKIP with a one-line rationale based on what the skill actually does — not on tool counts or keyword matches alone.
+
+4. Display the grouped assessment report to the user. Offer to run `/eval-analyze --skill <name>` on any of the RECOMMENDED skills. Stop here — do not proceed to Step 2.
 
 **If `--skill` was provided**, locate its SKILL.md:
 
