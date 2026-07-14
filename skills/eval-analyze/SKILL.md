@@ -20,6 +20,7 @@ The core principle: **observe, don't assume**. Every field name, file pattern, a
 | `--config <path>` | no | auto-discover | Output path for the config |
 | `--prompt <path>` | no | none | Custom analysis prompt (for non-skill evals) |
 | `--update` | no | false | Fill in missing sections only, preserve user edits |
+| `--assess` | no | false | Assess all skills and recommend which ones need evals |
 
 ```bash
 mkdir -p tmp
@@ -58,19 +59,43 @@ Set the resolved config path as `<config>` for all subsequent steps. Set `<eval_
 
 ### Step 2: Find the Target Skill
 
-If `--skill` was provided, locate its SKILL.md:
+**If both `--assess` and `--skill` are provided**, warn the user that `--assess` performs batch assessment of all skills and `--skill` is ignored for this mode. Proceed with `--assess`.
+
+**If `--assess` was provided**, skip single-skill selection and run the batch assessment instead:
+
+1. Extract skill profiles (deterministic facts only):
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/assess_skills.py --json
+```
+
+This discovers all project skills and extracts metadata: allowed tools, script counts, capability flags, existing eval status, and a body excerpt from each SKILL.md. If the output is an empty JSON array, report that no skills were found and stop.
+
+2. Read the assessment prompt:
+
+```
+Read ${CLAUDE_SKILL_DIR}/prompts/assess-skills.md
+```
+
+3. Using the criteria from the assessment prompt, evaluate each skill profile from the JSON output. For skills already marked with `recommendation: "EXISTS"`, carry that verdict through. For all others, assign RECOMMENDED, OPTIONAL, or SKIP with a one-line rationale based on what the skill actually does — not on tool counts or keyword matches alone.
+
+4. Display the grouped assessment report to the user. Offer to run `/eval-analyze --skill <name>` on any of the RECOMMENDED skills. Stop here — do not proceed to Step 2.
+
+**If `--skill` was provided**, locate its SKILL.md:
 
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/find_skills.py --name <skill>
 ```
 
-If not provided, list all project skills:
+**If neither `--skill` nor `--assess` was provided**, list all project skills:
 
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/find_skills.py
 ```
 
-This reads `.claude-plugin/plugin.json` for custom skill paths, falls back to `.claude/skills/` and `skills/`, and excludes eval harness skills. If only one skill is found, use it automatically. If multiple, ask the user which to analyze. If none are found, tell the user — they may need to check their skill directory paths or create a skill first.
+This reads `.claude-plugin/plugin.json` for custom skill paths, falls back to `.claude/skills/` and `skills/`, and excludes eval harness skills. If only one skill is found, use it automatically. If none are found, tell the user — they may need to check their skill directory paths or create a skill first.
+
+If multiple skills are found, list them and ask the user which one to analyze via AskUserQuestion. For batch assessment, use `--assess` explicitly.
 
 **If `--update` and eval.yaml already has a `skill` field**: use that skill. If `--skill` is also provided and differs, ask the user which they mean — don't silently overwrite.
 
