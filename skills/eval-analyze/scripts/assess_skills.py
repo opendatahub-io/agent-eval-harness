@@ -115,7 +115,9 @@ def assess_all():
                 "uses_orchestration": bool(tools & ORCHESTRATION_TOOLS),
                 "script_count": _count_scripts(path),
                 "has_existing_eval": has_eval,
-                "skill_body_excerpt": body.strip()[:BODY_EXCERPT_LIMIT],
+                "skill_body_excerpt": "<<<EXCERPT>>>"
+                + body.strip()[:BODY_EXCERPT_LIMIT]
+                + "<<<END_EXCERPT>>>",
             }
 
             if has_eval:
