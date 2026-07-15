@@ -1439,7 +1439,12 @@ def _get_anthropic_client():
     region = os.environ.get("CLOUD_ML_REGION", "us-east5")
     if project_id:
         from anthropic import AnthropicVertex
-        return AnthropicVertex(project_id=project_id, region=region)
+        access_token = os.environ.get("GCP_SA_ACCESS_TOKEN")
+        return AnthropicVertex(
+            project_id=project_id,
+            region=region,
+            access_token=access_token or None,
+        )
     api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
     if api_key:
         from anthropic import Anthropic
