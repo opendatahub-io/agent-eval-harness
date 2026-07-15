@@ -164,6 +164,8 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/execute.py \
 
 Launch with `run_in_background: true` (no pipes). Monitor via `tail -20 <output_file>`. After completion, check `run_result.json` — if `exit_code` is non-zero, report the failure and stop. See `${CLAUDE_SKILL_DIR}/references/execution-monitoring.md` for CLI flag fallbacks, monitoring patterns, and problem detection.
 
+> **No pipes means no pipes.** Piping through `head`, `tail`, `grep`, or any filter closes stdout early, sending SIGPIPE to the Python process. Symptom: exit code -1, ~14s runtime, "Broken pipe" in stderr, no stdout.log. Always use `run_in_background: true` and Read the output file afterward.
+
 ## Step 5: Collect Artifacts
 
 Distribute workspace outputs into per-case directories so judges can score each case independently:
