@@ -1,0 +1,6 @@
+# Documentation site toolchain (MkDocs Material).
+# Install with: pip install -r website/requirements.txt
+mkdocs-material>=9.5
+mkdocstrings[python]>=0.26
+pymdown-extensions>=10.7
+mike>=2.1
