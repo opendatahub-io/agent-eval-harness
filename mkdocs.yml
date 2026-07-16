@@ -12,6 +12,9 @@ copyright: Copyright &copy; Red Hat, Inc. — Licensed under Apache-2.0
 
 theme:
   name: material
+  # Fonts are self-hosted (see website/stylesheets/extra.css); disable the
+  # Google Fonts CDN loader.
+  font: false
   features:
     - navigation.tabs
     - navigation.tabs.sticky
@@ -90,6 +93,9 @@ plugins:
             show_symbol_type_heading: true
             separate_signature: true
             merge_init_into_class: true
+
+extra_css:
+  - stylesheets/extra.css
 
 extra:
   social:

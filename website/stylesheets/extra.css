@@ -1,0 +1,30 @@
+/*
+ * Self-hosted web fonts.
+ *
+ * Material's Google Fonts CDN loader is disabled via `theme.font: false` in
+ * mkdocs.yml; these @font-face rules replace it. The files are variable fonts
+ * (weight axis only) served from this repo — see fonts/LICENSE.txt for the
+ * OFL-1.1 license and provenance.
+ */
+
+@font-face {
+  font-family: "Google Sans Flex";
+  src: url("fonts/google-sans-flex.woff2") format("woff2");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/jetbrains-mono.woff2") format("woff2");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Material builds --md-text-font-family / --md-code-font-family from these. */
+:root {
+  --md-text-font: "Google Sans Flex";
+  --md-code-font: "JetBrains Mono";
+}
