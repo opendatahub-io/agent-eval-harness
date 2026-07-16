@@ -35,12 +35,12 @@ See the [builtin prompts reference](../reference/builtin-prompts.md).
 
 ```mermaid
 flowchart LR
-    A[/eval-analyze --prompt recipe] --> B[eval.yaml<br/>generation: synthetic]
-    B --> C[/eval-dataset]
-    C --> D[cases + annotations]
-    D --> E[/eval-run --model sonnet]
-    E --> F[consulted_docs +<br/>LLM rubric judges]
-    F --> G[report.html]
+    A["/eval-analyze --prompt recipe"] --> B["eval.yaml<br/>generation: synthetic"]
+    B --> C["/eval-dataset"]
+    C --> D["cases + annotations"]
+    D --> E["/eval-run --model sonnet"]
+    E --> F["consulted_docs +<br/>LLM rubric judges"]
+    F --> G["report.html"]
 ```
 
 ```bash

@@ -19,15 +19,15 @@ and MLflow logging is opt-in).
 
 ``` mermaid
 graph TD
-    subgraph required [Required for a first run]
-        A[/eval-analyze/<br/>writes eval.yaml] --> D[/eval-dataset/<br/>writes test cases]
-        D --> R[/eval-run/<br/>execute + score + report]
+    subgraph required ["Required for a first run"]
+        A["/eval-analyze<br/>writes eval.yaml"] --> D["/eval-dataset<br/>writes test cases"]
+        D --> R["/eval-run<br/>execute + score + report"]
     end
-    subgraph optional [Optional]
-        S[/eval-setup/<br/>env + MLflow] -.-> A
-        R -.-> V[/eval-review/<br/>human feedback]
-        R -.-> O[/eval-optimize/<br/>auto-refine]
-        R -.-> M[/eval-mlflow/<br/>log + trace]
+    subgraph optional ["Optional"]
+        S["/eval-setup<br/>env + MLflow"] -.-> A
+        R -.-> V["/eval-review<br/>human feedback"]
+        R -.-> O["/eval-optimize<br/>auto-refine"]
+        R -.-> M["/eval-mlflow<br/>log + trace"]
     end
 ```
 
