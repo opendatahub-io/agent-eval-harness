@@ -99,10 +99,19 @@
 
     function positionHighlight() {
       if (!list.isConnected || !total) return;
-      var active = list.querySelector("a.md-nav__link--active");
-      if (!active) { hlPath.style.opacity = "0"; return; }
+      // Material's scroll-spy leaves nothing active above the first heading and
+      // can't activate the last heading at the page bottom. Fix both edges so
+      // the bar always marks the section you're actually on: first at the top,
+      // last at the bottom, Material's active in between.
+      var docEl = document.documentElement;
+      var scrollable = docEl.scrollHeight > window.innerHeight + 8;
+      var atBottom = scrollable && window.scrollY + window.innerHeight >= docEl.scrollHeight - 6;
+      var link = atBottom
+        ? links[links.length - 1]
+        : list.querySelector("a.md-nav__link--active") || links[0];
+      if (!link) { hlPath.style.opacity = "0"; return; }
       var lr = list.getBoundingClientRect();
-      var ar = active.getBoundingClientRect();
+      var ar = link.getBoundingClientRect();
       var cy = ar.top - lr.top + list.scrollTop + ar.height / 2;
       var center = lenAtY(cy);
       var off = Math.max(0, Math.min(center - PILL / 2, total - PILL));
@@ -122,6 +131,9 @@
     new MutationObserver(scheduleThumb).observe(list, {
       subtree: true, attributes: true, attributeFilter: ["class"],
     });
+    // Scroll drives the top/bottom edge cases (Material's active class doesn't
+    // change there, so the observer alone wouldn't re-fire).
+    window.addEventListener("scroll", scheduleThumb, { passive: true });
     window.addEventListener("resize", buildRail, { passive: true });
     // Fonts/late layout can shift positions; rebuild shortly after load.
     buildRail();
