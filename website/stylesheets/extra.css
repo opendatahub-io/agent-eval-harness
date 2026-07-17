@@ -28,3 +28,46 @@
   --md-text-font: "Google Sans Flex";
   --md-code-font: "JetBrains Mono";
 }
+
+/*
+ * Dark theme: higher contrast than Material's default "slate".
+ * Near-black background + brighter (near-white) text. Scoped to the slate
+ * scheme, so light mode is unaffected. Tweak the two bg/fg anchors to taste
+ * (e.g. hsl(220, 22%, 5%) for near-pure-black).
+ */
+[data-md-color-scheme="slate"] {
+  --md-hue: 220;
+
+  /* Background: darker than slate's default (~21% lightness). */
+  --md-default-bg-color:          hsl(220, 22%, 7%);
+  --md-default-bg-color--light:   hsl(220, 18%, 11%);
+  --md-default-bg-color--lighter: hsl(220, 16%, 16%);
+  --md-default-bg-color--lightest:hsl(220, 15%, 22%);
+
+  /* Foreground: brighter, near-white text for stronger contrast. */
+  --md-default-fg-color:          hsla(0, 0%, 100%, 0.96);
+  --md-default-fg-color--light:   hsla(0, 0%, 100%, 0.78);
+  --md-default-fg-color--lighter: hsla(0, 0%, 100%, 0.50);
+  --md-default-fg-color--lightest:hsla(0, 0%, 100%, 0.18);
+  --md-typeset-color:             hsla(0, 0%, 100%, 0.96);
+
+  /* Headings a touch brighter than body copy. */
+  --md-typeset-color--headings:   hsla(0, 0%, 100%, 1);
+
+  /* Code blocks: slightly lifted from the page so they stay distinct. */
+  --md-code-bg-color:             hsl(220, 18%, 12%);
+  --md-code-fg-color:             hsla(0, 0%, 100%, 0.90);
+
+  /* Links: brighter red so they read against the darker background. */
+  --md-typeset-a-color:           hsl(4, 90%, 68%);
+}
+
+/* Match the heading color override above (Material has no built-in var). */
+[data-md-color-scheme="slate"] .md-typeset h1,
+[data-md-color-scheme="slate"] .md-typeset h2,
+[data-md-color-scheme="slate"] .md-typeset h3,
+[data-md-color-scheme="slate"] .md-typeset h4,
+[data-md-color-scheme="slate"] .md-typeset h5,
+[data-md-color-scheme="slate"] .md-typeset h6 {
+  color: var(--md-typeset-color--headings);
+}
