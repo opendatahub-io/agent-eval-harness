@@ -181,19 +181,16 @@
 [data-md-color-scheme="slate"] .md-toc-railpath {
   stroke: hsla(0, 0%, 100%, 0.22);
 }
-.md-toc-railed .md-toc-thumb {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 2px;
-  height: 0;
-  border-radius: 2px;
-  background: var(--md-primary-fg-color);
+/* The moving highlight: a segment of the same path, revealed via stroke-dash,
+   so it rides the track continuously (through the angled jogs) as it slides. */
+.md-toc-railhl {
+  fill: none;
+  stroke: var(--md-primary-fg-color);
+  stroke-width: 2.2;
+  stroke-linecap: round;
   opacity: 0;
-  pointer-events: none;
-  will-change: transform, height;
-  transition: transform 0.28s cubic-bezier(0.2, 0.7, 0.2, 1), height 0.2s ease, opacity 0.2s ease;
+  transition: stroke-dashoffset 0.36s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
 }
 @media (prefers-reduced-motion: reduce) {
-  .md-toc-railed .md-toc-thumb { transition: opacity 0.2s ease; }
+  .md-toc-railhl { transition: opacity 0.2s ease; }
 }

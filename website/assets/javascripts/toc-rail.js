@@ -34,17 +34,22 @@
     list.__railed = true;
     list.classList.add("md-toc-railed");
 
+    var PILL = 20; // arc-length of the moving highlight (px)
     var svg = document.createElementNS(SVGNS, "svg");
     svg.setAttribute("class", "md-toc-railsvg");
     svg.setAttribute("preserveAspectRatio", "none");
-    var path = document.createElementNS(SVGNS, "path");
-    path.setAttribute("class", "md-toc-railpath");
-    svg.appendChild(path);
+    var railPath = document.createElementNS(SVGNS, "path");
+    railPath.setAttribute("class", "md-toc-railpath");
+    // The highlight is a copy of the SAME path, revealed via stroke-dash so it
+    // rides the track continuously — through the angled jog segments — as it
+    // slides between sections.
+    var hlPath = document.createElementNS(SVGNS, "path");
+    hlPath.setAttribute("class", "md-toc-railhl");
+    svg.appendChild(railPath);
+    svg.appendChild(hlPath);
     list.appendChild(svg);
 
-    var thumb = document.createElement("span");
-    thumb.className = "md-toc-thumb";
-    list.appendChild(thumb);
+    var total = 0;
 
     function buildRail() {
       if (!list.isConnected) return;
@@ -73,29 +78,44 @@
         }
         d += " L " + it.x + " " + bmid;
       });
-      path.setAttribute("d", d);
-      positionThumb();
+      railPath.setAttribute("d", d);
+      hlPath.setAttribute("d", d);
+      total = hlPath.getTotalLength();
+      // one visible dash of length PILL, then a gap covering the whole path
+      hlPath.style.strokeDasharray = PILL + " " + (total + PILL);
+      positionHighlight();
     }
 
-    function positionThumb() {
+    // Binary-search the path for the arc-length whose point is at content-y.
+    // (y increases monotonically along the path.)
+    function lenAtY(y) {
+      var lo = 0, hi = total;
+      for (var i = 0; i < 22; i++) {
+        var mid = (lo + hi) / 2;
+        if (hlPath.getPointAtLength(mid).y < y) lo = mid; else hi = mid;
+      }
+      return (lo + hi) / 2;
+    }
+
+    function positionHighlight() {
+      if (!list.isConnected || !total) return;
       var active = list.querySelector("a.md-nav__link--active");
-      if (!active) { thumb.style.opacity = "0"; return; }
+      if (!active) { hlPath.style.opacity = "0"; return; }
       var lr = list.getBoundingClientRect();
       var ar = active.getBoundingClientRect();
-      var top = ar.top - lr.top + list.scrollTop;
-      var x = railX(depth(active, list));
-      var barH = Math.min(Math.max(ar.height - 6, 12), 22);
-      var cy = top + ar.height / 2;
-      thumb.style.opacity = "1";
-      thumb.style.height = barH + "px";
-      thumb.style.transform = "translate(" + (x - 1) + "px, " + (cy - barH / 2) + "px)";
+      var cy = ar.top - lr.top + list.scrollTop + ar.height / 2;
+      var center = lenAtY(cy);
+      var off = Math.max(0, Math.min(center - PILL / 2, total - PILL));
+      hlPath.style.opacity = "1";
+      // negative dashoffset shifts the visible dash to start at `off`
+      hlPath.style.strokeDashoffset = -off + "px";
     }
 
     var pending = false;
     function scheduleThumb() {
       if (pending) return;
       pending = true;
-      requestAnimationFrame(function () { pending = false; if (list.isConnected) positionThumb(); });
+      requestAnimationFrame(function () { pending = false; if (list.isConnected) positionHighlight(); });
     }
 
     // Active entry changes as you scroll (Material toggles --active).
