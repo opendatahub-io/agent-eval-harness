@@ -152,8 +152,9 @@
   width: 1.5rem;
   height: 1.5rem;
   border-radius: 999px;
-  /* soft translucent red tint instead of a solid red disc */
-  background: color-mix(in srgb, var(--md-primary-fg-color) 22%, transparent);
+  /* soft red tint, but OPAQUE (page bg + a little red) so it masks the
+     connecting line where it crosses, instead of the line showing through */
+  background: color-mix(in srgb, var(--md-primary-fg-color) 20%, var(--md-default-bg-color));
   border: 1px solid color-mix(in srgb, var(--md-primary-fg-color) 45%, transparent);
   color: var(--md-default-fg-color);
   font-size: 0.72rem;
