@@ -262,7 +262,9 @@
   display: flex;
   gap: 1rem;
   margin: 1.5rem auto 0;   /* keep md-grid's horizontal centering */
-  padding: 0 1rem 0.5rem;
+  /* top/bottom padding keeps the hover lift + shadow clear of the inner's
+     overflow:auto clip edge (otherwise the lifted top border gets cropped) */
+  padding: 0.6rem 1rem 0.6rem;
 }
 .md-footer__link {
   flex: 0 1 auto;
