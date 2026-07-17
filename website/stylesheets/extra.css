@@ -126,32 +126,38 @@
 .md-typeset .steps > ol {
   counter-reset: step;
   list-style: none;
-  margin-left: 0.75rem;
-  padding-left: 1.5rem;
-  border-left: 2px solid var(--md-default-fg-color--lightest);
+  margin: 0.6rem 0;
+  padding: 0;
 }
 .md-typeset .steps > ol > li {
   position: relative;
   counter-increment: step;
-  margin-bottom: 0.9rem;
+  /* per-item left border = a continuous connecting line through the badges */
+  margin: 0 0 0 0.85rem;
+  padding: 0 0 1.1rem 1.7rem;
+  border-left: 2px solid var(--md-default-fg-color--lightest);
+}
+.md-typeset .steps > ol > li:last-child {
+  border-left-color: transparent;   /* line ends at the last circle */
+  padding-bottom: 0;
 }
 .md-typeset .steps > ol > li::before {
   content: counter(step);
   position: absolute;
-  top: 0;
-  left: -1.5rem;
+  left: -1px;                        /* centered on the connecting line */
+  top: -0.05rem;
   transform: translateX(-50%);
   display: grid;
   place-items: center;
   width: 1.5rem;
   height: 1.5rem;
   border-radius: 999px;
-  background: var(--md-primary-fg-color);
-  color: #fff;
+  /* soft translucent red tint instead of a solid red disc */
+  background: color-mix(in srgb, var(--md-primary-fg-color) 22%, transparent);
+  border: 1px solid color-mix(in srgb, var(--md-primary-fg-color) 45%, transparent);
+  color: var(--md-default-fg-color);
   font-size: 0.72rem;
   font-weight: 700;
-  /* mask the rail behind the badge with the page color */
-  box-shadow: 0 0 0 3px var(--md-default-bg-color);
 }
 
 /*
