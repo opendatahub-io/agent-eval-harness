@@ -92,6 +92,26 @@ plugins:
             show_symbol_type_heading: true
             separate_signature: true
             merge_init_into_class: true
+  # LLM-friendly export: generates /llms.txt (index) and /llms-full.txt
+  # (full concatenated docs) for coding agents / LLMs.
+  - llmstxt:
+      markdown_description: >-
+        Evaluation framework for Claude Code skills and agent capabilities,
+        built on MLflow for tracing, datasets, and reporting.
+      full_output: llms-full.txt
+      sections:
+        Getting started:
+          - index.md
+          - get-started/*.md
+        Guides:
+          - guides/*.md
+        Concepts:
+          - concepts/*.md
+        Reference:
+          - reference/*.md
+          - reference/config/*.md
+        Cookbook:
+          - cookbook/*.md
 
 extra_css:
   - stylesheets/extra.css
@@ -99,8 +119,27 @@ extra_css:
 
 extra_javascript:
   - assets/javascripts/harbor-diagram.js
+  - assets/javascripts/toc-rail.js
 
 extra:
+  # "Was this page helpful?" widget. Ratings are recorded only if an analytics
+  # provider is configured; without one, the widget still renders and the note
+  # (with an issue link) is shown after a click.
+  analytics:
+    feedback:
+      title: Was this page helpful?
+      ratings:
+        - icon: material/thumb-up-outline
+          name: This page was helpful
+          data: 1
+          note: Thanks for the feedback!
+        - icon: material/thumb-down-outline
+          name: This page could be improved
+          data: 0
+          note: >-
+            Thanks — please
+            <a href="https://github.com/opendatahub-io/agent-eval-harness/issues/new" target="_blank" rel="noopener">open an issue</a>
+            so we can improve this page.
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/opendatahub-io/agent-eval-harness

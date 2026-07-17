@@ -153,3 +153,33 @@
   /* mask the rail behind the badge with the page color */
   box-shadow: 0 0 0 3px var(--md-default-bg-color);
 }
+
+/*
+ * Scroll-following table-of-contents rail (toc-rail.js). Adds a vertical rail
+ * down the right-hand TOC with an accent "thumb" that slides to the active
+ * section as you scroll. The .md-toc-railed class + thumb are injected by JS.
+ */
+.md-toc-railed {
+  position: relative;
+  border-left: 2px solid var(--md-default-fg-color--lightest);
+}
+.md-toc-railed .md-toc-thumb {
+  position: absolute;
+  left: -2px;
+  top: 0;
+  width: 2px;
+  height: 0;
+  border-radius: 2px;
+  background: var(--md-primary-fg-color);
+  opacity: 0;
+  pointer-events: none;
+  will-change: transform, height;
+  transition: transform 0.28s cubic-bezier(0.2, 0.7, 0.2, 1), height 0.28s ease, opacity 0.2s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .md-toc-railed .md-toc-thumb { transition: opacity 0.2s ease; }
+}
+/* The inactive rail is very faint in dark mode; lift it a touch. */
+[data-md-color-scheme="slate"] .md-toc-railed {
+  border-left-color: hsla(0, 0%, 100%, 0.26);
+}
