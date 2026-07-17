@@ -161,11 +161,29 @@
  */
 .md-toc-railed {
   position: relative;
-  border-left: 2px solid var(--md-default-fg-color--lightest);
+  padding-left: 18px;         /* gutter for the stepped rail */
+}
+.md-toc-railsvg {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 20px;
+  overflow: visible;
+  pointer-events: none;
+}
+.md-toc-railpath {
+  fill: none;
+  stroke: var(--md-default-fg-color--lightest);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+[data-md-color-scheme="slate"] .md-toc-railpath {
+  stroke: hsla(0, 0%, 100%, 0.22);
 }
 .md-toc-railed .md-toc-thumb {
   position: absolute;
-  left: -2px;
+  left: 0;
   top: 0;
   width: 2px;
   height: 0;
@@ -174,12 +192,8 @@
   opacity: 0;
   pointer-events: none;
   will-change: transform, height;
-  transition: transform 0.28s cubic-bezier(0.2, 0.7, 0.2, 1), height 0.28s ease, opacity 0.2s ease;
+  transition: transform 0.28s cubic-bezier(0.2, 0.7, 0.2, 1), height 0.2s ease, opacity 0.2s ease;
 }
 @media (prefers-reduced-motion: reduce) {
   .md-toc-railed .md-toc-thumb { transition: opacity 0.2s ease; }
-}
-/* The inactive rail is very faint in dark mode; lift it a touch. */
-[data-md-color-scheme="slate"] .md-toc-railed {
-  border-left-color: hsla(0, 0%, 100%, 0.26);
 }
