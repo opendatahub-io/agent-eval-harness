@@ -10,6 +10,20 @@ substrate is a CLI flag, never part of the eval config.
     agents (`claude-code`, `opencode`, `codex`, …) — while keeping your judges, thresholds,
     MLflow logging, and the same `runs/<id>/` report layout as a local run.
 
+## The eval flow on Kubernetes
+
+Each test case runs in its **own trial pod**, in parallel. The harness drives every pod
+through the same exec back-and-forth — launch, upload, run, verify, collect — over the
+Kubernetes API. Step through it below, or press **Simulate**:
+
+<div class="harbor-diagram" aria-label="Interactive diagram of the Harbor eval flow on Kubernetes: an orchestrator driving parallel trial pods through launch, setup, run, test, collect, and score."></div>
+
+!!! note "This is the `--env kubernetes` / `openshift` path"
+    Podman (`--env podman`) follows the same lifecycle with one local container per case
+    instead of a pod. Pods are created from a prebuilt image via `KubernetesEnvironment`;
+    all file transfer and command execution happen as tar + base64 streamed over the
+    Kubernetes exec websocket.
+
 ## How it fits together
 
 Harbor runs **self-contained task packages**. `/eval-dataset` emits one package per case;

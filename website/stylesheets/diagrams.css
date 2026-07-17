@@ -1,0 +1,139 @@
+/*
+ * Styling for the interactive Harbor eval diagram (harbor-diagram.js).
+ * Colors come from CSS variables so the widget follows the light/dark toggle.
+ */
+
+.harbor-diagram {
+  --hd-accent: #3b82f6;
+  --hd-accent-strong: #2563eb;
+  --hd-ok: #22c55e;
+  --hd-node: #ffffff;
+  --hd-node-2: #f3f6fa;
+  --hd-border: #d6dbe3;
+  --hd-fg: #1b1f24;
+  --hd-muted: #5c6672;
+  --hd-edge: #c3ccd7;
+  --hd-cluster: #b6c0cc;
+  --hd-pill: #eef1f5;
+
+  margin: 1.5em 0;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 12px;
+  padding: 0.5rem 0.75rem 0.9rem;
+  background: var(--md-default-bg-color);
+}
+
+[data-md-color-scheme="slate"] .harbor-diagram {
+  --hd-node: #141a22;
+  --hd-node-2: #1b2029;
+  --hd-border: #2c3743;
+  --hd-fg: #eef2f6;
+  --hd-muted: #98a5b4;
+  --hd-edge: #38434f;
+  --hd-cluster: #3a4653;
+  --hd-pill: #232c37;
+}
+
+.harbor-diagram .hd-stage { width: 100%; }
+.harbor-diagram svg { width: 100%; height: auto; display: block; overflow: visible; }
+.harbor-diagram text { font-family: var(--md-text-font, inherit); }
+
+/* ---- nodes ---- */
+.harbor-diagram .hd-box {
+  fill: var(--hd-node);
+  stroke: var(--hd-border);
+  stroke-width: 1.2;
+  transition: stroke 0.25s ease, fill 0.25s ease, filter 0.25s ease;
+}
+.harbor-diagram .hd-cluster .hd-box {
+  fill: none;
+  stroke: var(--hd-cluster);
+  stroke-width: 1.4;
+  stroke-dasharray: 6 6;
+}
+.harbor-diagram .hd-gateway .hd-box,
+.harbor-diagram .hd-res .hd-box { fill: var(--hd-node-2); }
+
+.harbor-diagram .hd-node.is-active .hd-box {
+  stroke: var(--hd-accent);
+  stroke-width: 1.8;
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--hd-accent) 45%, transparent));
+}
+.harbor-diagram .hd-cluster.is-active .hd-box { stroke: var(--hd-accent); filter: none; }
+
+.harbor-diagram .hd-title { fill: var(--hd-fg); font-size: 15.5px; font-weight: 600; }
+.harbor-diagram .hd-sub,
+.harbor-diagram .hd-row-text { fill: var(--hd-muted); font-size: 12.5px; }
+.harbor-diagram .hd-cluster-title { fill: var(--hd-fg); opacity: 0.72; font-size: 13px; font-weight: 700; letter-spacing: 0.04em; }
+.harbor-diagram .hd-res-title { fill: var(--hd-muted); font-size: 12.5px; }
+
+.harbor-diagram .hd-dot { fill: var(--hd-border); transition: fill 0.25s ease; }
+.harbor-diagram .hd-row.is-active .hd-dot { fill: var(--hd-accent); }
+.harbor-diagram .hd-row.is-active .hd-row-text { fill: var(--hd-fg); }
+
+/* status pill */
+.harbor-diagram .hd-pill-box { fill: var(--hd-pill); stroke: none; transition: fill 0.25s ease; }
+.harbor-diagram .hd-pill-box.is-run { fill: color-mix(in srgb, var(--hd-accent) 22%, var(--hd-node)); }
+.harbor-diagram .hd-pill-box.is-done { fill: color-mix(in srgb, var(--hd-ok) 24%, var(--hd-node)); }
+.harbor-diagram .hd-pill-text { fill: var(--hd-fg); font-size: 11.5px; font-weight: 600; }
+
+/* ---- edges + particles ---- */
+.harbor-diagram .hd-edge {
+  fill: none;
+  stroke: var(--hd-edge);
+  stroke-width: 1.3;
+  transition: stroke 0.25s ease, stroke-width 0.25s ease;
+}
+.harbor-diagram .hd-edge.is-active { stroke: var(--hd-accent); stroke-width: 2; }
+.harbor-diagram .hd-arrowhead { fill: var(--hd-edge); fill: context-stroke; }
+.harbor-diagram .hd-particle { fill: var(--hd-accent); }
+
+/* ---- controls ---- */
+.harbor-diagram .hd-controls { margin-top: 0.5rem; }
+.harbor-diagram .hd-steps {
+  display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.6rem;
+}
+.harbor-diagram .hd-step {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  background: var(--hd-node-2);
+  color: var(--hd-muted);
+  border-radius: 999px; padding: 0.25rem 0.7rem 0.25rem 0.35rem;
+  font-size: 0.76rem; font-weight: 600; cursor: pointer;
+  transition: all 0.2s ease;
+}
+.harbor-diagram .hd-step:hover { color: var(--hd-fg); border-color: var(--hd-accent); }
+.harbor-diagram .hd-step-num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.25rem; height: 1.25rem; border-radius: 999px;
+  background: var(--hd-pill); color: var(--hd-muted); font-size: 0.72rem;
+}
+.harbor-diagram .hd-step[aria-selected="true"] {
+  color: #fff; background: var(--hd-accent-strong); border-color: var(--hd-accent-strong);
+}
+.harbor-diagram .hd-step[aria-selected="true"] .hd-step-num { background: rgba(255, 255, 255, 0.25); color: #fff; }
+
+.harbor-diagram .hd-bar { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.harbor-diagram .hd-btn {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  background: var(--hd-node-2); color: var(--hd-fg);
+  border-radius: 7px; padding: 0.3rem 0.7rem; font-size: 0.78rem; font-weight: 600; cursor: pointer;
+  transition: all 0.2s ease;
+}
+.harbor-diagram .hd-btn:hover:not(:disabled) { border-color: var(--hd-accent); color: var(--hd-accent); }
+.harbor-diagram .hd-btn:disabled { opacity: 0.4; cursor: default; }
+.harbor-diagram .hd-play { margin-left: auto; }
+.harbor-diagram .hd-counter { font-size: 0.78rem; color: var(--hd-muted); min-width: 3.2rem; text-align: center; }
+
+.harbor-diagram .hd-caption {
+  margin: 0.7rem 0 0.1rem; font-size: 0.82rem; line-height: 1.5;
+  color: var(--md-default-fg-color--light); min-height: 3.6em;
+}
+
+/* Focus visibility for keyboard users. */
+.harbor-diagram .hd-step:focus-visible,
+.harbor-diagram .hd-btn:focus-visible { outline: 2px solid var(--hd-accent); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .harbor-diagram .hd-box, .harbor-diagram .hd-edge { transition: none; }
+}

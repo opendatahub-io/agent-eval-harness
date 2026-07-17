@@ -95,6 +95,10 @@ plugins:
 
 extra_css:
   - stylesheets/extra.css
+  - stylesheets/diagrams.css
+
+extra_javascript:
+  - assets/javascripts/harbor-diagram.js
 
 extra:
   social:
