@@ -71,3 +71,85 @@
 [data-md-color-scheme="slate"] .md-typeset h6 {
   color: var(--md-typeset-color--headings);
 }
+
+/*
+ * Light theme: a calm off-white page instead of pure white, with code and
+ * cards as distinct surfaces (a "raised card on a soft page" look). Scoped to
+ * the default scheme so dark mode is unaffected.
+ */
+[data-md-color-scheme="default"] {
+  --md-default-bg-color: #f4f6fa;   /* soft off-white page */
+  --md-code-bg-color:    #e8ecf3;   /* code recessed, distinct from the page */
+}
+
+/* Grid cards read as raised white surfaces on the off-white page. */
+[data-md-color-scheme="default"] .md-typeset .grid.cards > ul > li,
+[data-md-color-scheme="default"] .md-typeset .grid.cards > ol > li {
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+[data-md-color-scheme="slate"] .md-typeset .grid.cards > ul > li,
+[data-md-color-scheme="slate"] .md-typeset .grid.cards > ol > li {
+  background: var(--md-default-bg-color--light);
+}
+
+/*
+ * Admonitions / details: flatter, calmer, denser — a thin left accent bar and
+ * no drop shadow, closer to the Fumadocs callout look. Per-type colors and
+ * icons stay Material's defaults.
+ */
+.md-typeset .admonition,
+.md-typeset details {
+  border-radius: 0.4rem;
+  border-width: 0 0 0 3px;
+  box-shadow: none;
+  font-size: 0.72rem;
+}
+.md-typeset .admonition-title,
+.md-typeset summary {
+  padding-block: 0.45rem;
+  font-weight: 700;
+  background-color: color-mix(in srgb, var(--md-default-fg-color--lightest) 40%, transparent);
+}
+
+/*
+ * Steps component: a numbered vertical walkthrough with a connecting rail.
+ * Usage in Markdown:
+ *
+ *   <div class="steps" markdown>
+ *
+ *   1. First step …
+ *   2. Second step …
+ *
+ *   </div>
+ */
+.md-typeset .steps > ol {
+  counter-reset: step;
+  list-style: none;
+  margin-left: 0.75rem;
+  padding-left: 1.5rem;
+  border-left: 2px solid var(--md-default-fg-color--lightest);
+}
+.md-typeset .steps > ol > li {
+  position: relative;
+  counter-increment: step;
+  margin-bottom: 0.9rem;
+}
+.md-typeset .steps > ol > li::before {
+  content: counter(step);
+  position: absolute;
+  top: 0;
+  left: -1.5rem;
+  transform: translateX(-50%);
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 999px;
+  background: var(--md-primary-fg-color);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  /* mask the rail behind the badge with the page color */
+  box-shadow: 0 0 0 3px var(--md-default-bg-color);
+}

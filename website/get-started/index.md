@@ -6,11 +6,16 @@ scored HTML report.
 
 ## The shortest path
 
-```bash
-/eval-analyze --skill my-skill   # writes eval.yaml by reading your skill
-/eval-dataset                    # generates test cases
-/eval-run --model opus           # executes, scores, and builds the report
-```
+<div class="steps" markdown>
+
+1. **Analyze** — point the harness at a skill and let it write `eval.yaml`.
+   `/eval-analyze --skill my-skill`
+2. **Build a dataset** — generate test cases that match the config.
+   `/eval-dataset`
+3. **Run** — execute, score with judges, and build the HTML report.
+   `/eval-run --model opus`
+
+</div>
 
 That's it — `/eval-setup` and `/eval-mlflow` are optional (dependencies auto-install,
 and MLflow logging is opt-in).
