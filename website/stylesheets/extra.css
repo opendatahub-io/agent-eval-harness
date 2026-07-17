@@ -243,3 +243,76 @@
 .md-tabs__link--active {
   color: var(--md-default-fg-color);
 }
+
+/*
+ * Footer: drop the bulky full-width dark bar. Blend the footer into the page,
+ * render prev/next as modern cards aligned with the content column, and slim
+ * the copyright meta.
+ */
+.md-footer {
+  --md-footer-bg-color: transparent;
+  --md-footer-bg-color--dark: transparent;
+  --md-footer-fg-color: var(--md-default-fg-color);
+  --md-footer-fg-color--light: var(--md-default-fg-color--light);
+  --md-footer-fg-color--lighter: var(--md-default-fg-color--lighter);
+}
+
+/* prev/next as side-by-side cards */
+.md-footer__inner {
+  display: flex;
+  gap: 1rem;
+  margin: 1.5rem auto 0;   /* keep md-grid's horizontal centering */
+  padding: 0 1rem 0.5rem;
+}
+.md-footer__link {
+  flex: 0 1 auto;
+  width: calc(50% - 0.5rem);
+  margin: 0;
+  padding: 0.7rem 0.95rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.6rem;
+  opacity: 1;
+  transition: border-color 0.2s ease, background-color 0.2s ease, transform 0.2s ease;
+}
+.md-footer__link--next { margin-left: auto; }
+/* raised white cards on the off-white light page (like the grid cards) */
+[data-md-color-scheme="default"] .md-footer__link {
+  background-color: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+.md-footer__link:is(:hover, :focus-visible) {
+  border-color: var(--md-accent-fg-color);
+  background-color: color-mix(in srgb, var(--md-accent-fg-color) 6%, transparent);
+  transform: translateY(-1px);
+}
+.md-footer__button {
+  padding: 0.3rem;
+  background: transparent;
+}
+.md-footer__direction {
+  opacity: 0.65;
+  font-size: 0.66rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.md-footer__title {
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+/* copyright / meta — slim, blended, with a hairline divider */
+.md-footer-meta__inner {
+  padding-top: 0.9rem;
+  padding-bottom: 1.1rem;
+  border-top: 1px solid var(--md-default-fg-color--lightest);
+}
+.md-copyright { font-size: 0.68rem; }
+
+/* Align footer content with the article column when both sidebars are shown. */
+@media screen and (min-width: 76.25em) {
+  .md-footer__inner,
+  .md-footer-meta__inner {
+    padding-left: 12.1rem;
+    padding-right: 12.1rem;
+  }
+}
