@@ -194,3 +194,52 @@
 @media (prefers-reduced-motion: reduce) {
   .md-toc-railhl { transition: opacity 0.2s ease; }
 }
+
+/*
+ * Frosted, neutral header — a translucent blurred bar instead of a solid color
+ * one, so page content is faintly visible through it. The brand accent (red)
+ * stays on links, active states, and the TOC rail; the chrome goes neutral.
+ */
+.md-header,
+.md-tabs {
+  background-color: rgba(255, 255, 255, 0.65);
+  color: var(--md-default-fg-color);
+  -webkit-backdrop-filter: saturate(1.8) blur(16px);
+  backdrop-filter: saturate(1.8) blur(16px);
+  transition: background-color 0.25s ease, box-shadow 0.25s ease;
+}
+[data-md-color-scheme="slate"] .md-header,
+[data-md-color-scheme="slate"] .md-tabs {
+  background-color: rgba(14, 16, 21, 0.62);
+}
+.md-header {
+  /* hairline divider instead of the theme's opaque drop shadow */
+  box-shadow: 0 1px 0 var(--md-default-fg-color--lightest);
+}
+.md-header__title,
+.md-header__topic,
+.md-header__button {
+  color: var(--md-default-fg-color);
+}
+.md-header__button.md-logo :is(img, svg) { fill: currentColor; }
+
+/* Search field, tuned for the neutral header. */
+.md-search__input {
+  background-color: color-mix(in srgb, var(--md-default-fg-color) 6%, transparent);
+  color: var(--md-default-fg-color);
+}
+.md-search__input:hover {
+  background-color: color-mix(in srgb, var(--md-default-fg-color) 9%, transparent);
+}
+.md-search__input::placeholder { color: var(--md-default-fg-color--light); }
+.md-search__icon { color: var(--md-default-fg-color--light); }
+
+/* Navigation tabs (below the header). */
+.md-tabs__link {
+  color: var(--md-default-fg-color--light);
+  opacity: 1;
+}
+.md-tabs__link:hover,
+.md-tabs__link--active {
+  color: var(--md-default-fg-color);
+}
