@@ -255,6 +255,11 @@
         scheduleThumb();
       },
       syncHash: function () { setPinFromHash(); scheduleThumb(); },
+      // Pin directly from a click on a same-page anchor. hashchange alone isn't
+      // enough: clicking a ¶ permalink (or TOC link) whose target equals the
+      // current URL hash fires NO hashchange, and browsers often skip the
+      // re-scroll too — so nothing would update and a stale section stays lit.
+      pinTo: function (id) { pinned = id; pinnedAt = Date.now(); pinBaseY = null; scheduleThumb(); },
     };
 
     setPinFromHash();       // honor an #anchor we loaded on
@@ -291,6 +296,20 @@
     window.addEventListener("scroll", function () { eachList(function (t) { t.onScroll(); }); }, { passive: true });
     window.addEventListener("resize", function () { eachList(function (t) { t.rebuild(); }); }, { passive: true });
     window.addEventListener("hashchange", function () { eachList(function (t) { t.syncHash(); }); });
+    // Clicking any same-page anchor (TOC link or heading ¶ permalink) pins its
+    // section, even when the hash doesn't change and the browser doesn't scroll.
+    // Capture phase so we run before Material's instant-navigation handler.
+    window.addEventListener("click", function (e) {
+      var a = e.target && e.target.closest ? e.target.closest("a[href]") : null;
+      if (!a) return;
+      var url;
+      try { url = new URL(a.href, location.href); } catch (_) { return; }
+      if (!url.hash || url.pathname !== location.pathname) return;
+      var id = url.hash.slice(1);
+      try { id = decodeURIComponent(id); } catch (_) {}
+      if (!id || !document.getElementById(id)) return;
+      eachList(function (t) { t.pinTo(id); });
+    }, true);
   }
 
   function initAll() {
