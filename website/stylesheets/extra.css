@@ -366,3 +366,8 @@
 .md-clipboard { border-radius: 0.35rem; }
 .md-search__form { border-radius: var(--doc-radius); }
 .md-search__output { border-radius: 0 0 var(--doc-radius) var(--doc-radius); }
+
+/* Grid cards ("slates") — round to match code blocks/tables */
+.md-typeset .grid.cards > :is(ul, ol) > li,
+.md-typeset .grid.cards > .card,
+.md-typeset .grid > .card { border-radius: var(--doc-radius); }
