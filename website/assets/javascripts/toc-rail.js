@@ -46,11 +46,22 @@
     catch (e) { return document.getElementById(id); }
   }
 
-  // Reading line: just below the fixed header, where a section "becomes current".
+  // Reading line: where a section "becomes current". Align it just BELOW where
+  // #anchor navigation lands a heading, so a clicked/navigated section counts as
+  // "reached" by the scroll-spy even when the hash pin has been dropped (e.g. by
+  // trackpad momentum). Otherwise a heading that lands a few px below the line
+  // reads as the PREVIOUS section (landing at ~68 with a line at 60 highlights
+  // the section above the one you navigated to). Material sets scroll-margin-top
+  // (default --md-scroll-margin: 3.6rem) only on the :target, so read it there
+  // when present, else resolve the default via the root font size.
   function readingOffset() {
+    var rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    var landing = 3.6 * rem;
+    var tgt = document.querySelector(".md-content :target");
+    if (tgt) { var s = parseFloat(getComputedStyle(tgt).scrollMarginTop); if (s) landing = s; }
     var hdr = document.querySelector(".md-header");
-    var h = hdr ? hdr.getBoundingClientRect().height : 48;
-    return h + 12;
+    var floor = (hdr ? hdr.getBoundingClientRect().height : 48) + 12;
+    return Math.max(floor, landing + 6);
   }
 
   function setup(list) {
@@ -78,6 +89,7 @@
     var total = 0;
     var currentHl = null;   // the single TOC item colored as highlighted
     var pinned = null;      // heading id honored after #anchor navigation
+    var pinnedAt = 0;       // when the pin was set (to ignore momentum scroll)
     var actScroll = [];     // per-link absolute scrollY at which it activates
 
     // Absolute scrollY at which each section becomes current. Sections near the
@@ -209,6 +221,7 @@
       var h = location.hash ? location.hash.slice(1) : "";
       if (h) { try { h = decodeURIComponent(h); } catch (e) {} }
       pinned = h || null;
+      if (pinned) pinnedAt = Date.now();
     }
 
     var pending = false;
@@ -222,7 +235,17 @@
     list.__toc = {
       rebuild: buildRail,
       refresh: scheduleThumb,
-      clearPin: function () { if (pinned !== null) { pinned = null; scheduleThumb(); } },
+      // Only a deliberate scroll AWAY from a just-jumped-to anchor should hand
+      // control back to the spy. Ignore the programmatic jump's own scroll and
+      // any trackpad momentum for a moment after the pin is set, or a flick that
+      // ends on a click would immediately unpin (and the spy, landing the
+      // heading at its scroll-margin, could show the neighbouring section).
+      clearPin: function () {
+        if (pinned === null) return;
+        if (Date.now() - pinnedAt < 700) return;
+        pinned = null;
+        scheduleThumb();
+      },
       syncHash: function () { setPinFromHash(); scheduleThumb(); },
     };
 
