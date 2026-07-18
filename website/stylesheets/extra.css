@@ -325,3 +325,44 @@
     padding-right: 12.1rem;
   }
 }
+
+/*
+ * Rounded corners (cuga-style) on code blocks, tab panes, tables, and buttons.
+ */
+:root { --doc-radius: 0.55rem; }
+
+/* Code blocks */
+.md-typeset pre > code { border-radius: var(--doc-radius); }
+/* titled code blocks (```lang title="…") — round the title bar + block joint */
+.md-typeset .highlight .filename {
+  border-radius: var(--doc-radius) var(--doc-radius) 0 0;
+}
+.md-typeset .highlight .filename + pre > code {
+  border-radius: 0 0 var(--doc-radius) var(--doc-radius);
+}
+/* line-number tables */
+.md-typeset .highlighttable {
+  border-radius: var(--doc-radius);
+  overflow: hidden;
+}
+.md-typeset .highlighttable .linenos,
+.md-typeset .highlighttable pre > code { border-radius: 0; }
+/* inline code */
+.md-typeset code { border-radius: 0.3rem; }
+
+/* Content-tab panes */
+.md-typeset .tabbed-set { border-radius: var(--doc-radius); }
+.md-typeset .tabbed-content { border-bottom-left-radius: var(--doc-radius); border-bottom-right-radius: var(--doc-radius); }
+
+/* Tables — clip corners to the radius */
+.md-typeset table:not([class]) {
+  border-radius: var(--doc-radius);
+  border-spacing: 0;
+  overflow: hidden;
+}
+
+/* Buttons */
+.md-typeset .md-button { border-radius: var(--doc-radius); }
+.md-clipboard { border-radius: 0.35rem; }
+.md-search__form { border-radius: var(--doc-radius); }
+.md-search__output { border-radius: 0 0 var(--doc-radius) var(--doc-radius); }
