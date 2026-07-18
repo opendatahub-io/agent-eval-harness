@@ -50,6 +50,7 @@
     list.appendChild(svg);
 
     var total = 0;
+    var currentEdge = null; // link we force-highlight at the top/bottom edges
 
     function buildRail() {
       if (!list.isConnected) return;
@@ -110,6 +111,16 @@
         ? links[links.length - 1]
         : list.querySelector("a.md-nav__link--active") || links[0];
       if (!link) { hlPath.style.opacity = "0"; return; }
+      // When we pick an edge item that Material hasn't marked active (first at
+      // the top, last at the bottom), color its text too so it reads as fully
+      // highlighted — not just the rail bar. Only mutate on change to avoid a
+      // MutationObserver loop.
+      var wantEdge = link.classList.contains("md-nav__link--active") ? null : link;
+      if (wantEdge !== currentEdge) {
+        if (currentEdge) currentEdge.classList.remove("md-toc-edge-active");
+        if (wantEdge) wantEdge.classList.add("md-toc-edge-active");
+        currentEdge = wantEdge;
+      }
       var lr = list.getBoundingClientRect();
       var ar = link.getBoundingClientRect();
       var cy = ar.top - lr.top + list.scrollTop + ar.height / 2;

@@ -198,6 +198,9 @@
   opacity: 0;
   transition: stroke-dashoffset 0.36s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
 }
+/* Edge item (first at top / last at bottom) — color its text like the active
+   link, since Material doesn't mark those active at the scroll extremes. */
+.md-nav__link.md-toc-edge-active { color: var(--md-typeset-a-color); }
 @media (prefers-reduced-motion: reduce) {
   .md-toc-railhl { transition: opacity 0.2s ease; }
 }
