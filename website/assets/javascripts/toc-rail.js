@@ -87,6 +87,7 @@
     list.appendChild(svg);
 
     var total = 0;
+    var primed = false;     // has the bar been placed once (skip the intro slide)?
     var currentHl = null;   // the single TOC item colored as highlighted
     var pinned = null;      // heading id honored after #anchor navigation
     var pinnedAt = 0;       // when the pin was set (to ignore momentum scroll)
@@ -214,8 +215,20 @@
       var center = lenAtY(cy);
       var off = Math.max(0, Math.min(center - PILL / 2, total - PILL));
       hlPath.style.opacity = "1";
-      // negative dashoffset shifts the visible dash to start at `off`
-      hlPath.style.strokeDashoffset = -off + "px";
+      // negative dashoffset shifts the visible dash to start at `off`.
+      if (!primed) {
+        // First placement on a fresh rail (initial load, or an instant-navigation
+        // re-init): a new path defaults to dashoffset 0, so animating here would
+        // slide the bar in FROM THE TOP. Jump straight to the target once; every
+        // change after that animates normally.
+        hlPath.style.transition = "none";
+        hlPath.style.strokeDashoffset = -off + "px";
+        void hlPath.getBoundingClientRect(); // flush so the jump isn't animated
+        hlPath.style.transition = "";
+        primed = true;
+      } else {
+        hlPath.style.strokeDashoffset = -off + "px";
+      }
     }
 
     function setPinFromHash() {
