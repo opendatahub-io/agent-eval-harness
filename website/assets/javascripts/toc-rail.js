@@ -90,6 +90,7 @@
     var currentHl = null;   // the single TOC item colored as highlighted
     var pinned = null;      // heading id honored after #anchor navigation
     var pinnedAt = 0;       // when the pin was set (to ignore momentum scroll)
+    var pinBaseY = null;    // scroll baseline; pin releases when user scrolls off it
     var actScroll = [];     // per-link absolute scrollY at which it activates
 
     // Absolute scrollY at which each section becomes current. Sections near the
@@ -221,7 +222,7 @@
       var h = location.hash ? location.hash.slice(1) : "";
       if (h) { try { h = decodeURIComponent(h); } catch (e) {} }
       pinned = h || null;
-      if (pinned) pinnedAt = Date.now();
+      if (pinned) { pinnedAt = Date.now(); pinBaseY = null; }
     }
 
     var pending = false;
@@ -234,16 +235,23 @@
     // Exposed to the shared, once-only window listeners.
     list.__toc = {
       rebuild: buildRail,
-      refresh: scheduleThumb,
-      // Only a deliberate scroll AWAY from a just-jumped-to anchor should hand
-      // control back to the spy. Ignore the programmatic jump's own scroll and
-      // any trackpad momentum for a moment after the pin is set, or a flick that
-      // ends on a click would immediately unpin (and the spy, landing the
-      // heading at its scroll-margin, could show the neighbouring section).
-      clearPin: function () {
-        if (pinned === null) return;
-        if (Date.now() - pinnedAt < 700) return;
-        pinned = null;
+      // The hash pin is released only when the user genuinely scrolls the page
+      // AWAY from where the anchor landed — keyed on scroll POSITION, not wheel
+      // events. So trackpad momentum, and "scroll down" while already at the
+      // bottom (which moves nothing, fires no scroll), never drop it — the case
+      // where a near-bottom anchor would otherwise flip to the last section. A
+      // 700ms guard lets the jump + momentum settle; during it we track the
+      // landing, then release once the user moves off that baseline.
+      onScroll: function () {
+        if (pinned !== null) {
+          if (Date.now() - pinnedAt < 700) {
+            pinBaseY = window.scrollY;
+          } else if (pinBaseY === null) {
+            pinBaseY = window.scrollY;
+          } else if (Math.abs(window.scrollY - pinBaseY) > 24) {
+            pinned = null;
+          }
+        }
         scheduleThumb();
       },
       syncHash: function () { setPinFromHash(); scheduleThumb(); },
@@ -280,17 +288,9 @@
   function wire() {
     if (wired) return;
     wired = true;
-    window.addEventListener("scroll", function () { eachList(function (t) { t.refresh(); }); }, { passive: true });
+    window.addEventListener("scroll", function () { eachList(function (t) { t.onScroll(); }); }, { passive: true });
     window.addEventListener("resize", function () { eachList(function (t) { t.rebuild(); }); }, { passive: true });
     window.addEventListener("hashchange", function () { eachList(function (t) { t.syncHash(); }); });
-    // Genuine user scroll intent means they've left the anchor — hand back to
-    // the scroll-spy. (The anchor's own programmatic scroll fires none of these.)
-    var release = function () { eachList(function (t) { t.clearPin(); }); };
-    window.addEventListener("wheel", release, { passive: true });
-    window.addEventListener("touchmove", release, { passive: true });
-    window.addEventListener("keydown", function (e) {
-      if (["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End", " ", "Spacebar"].indexOf(e.key) >= 0) release();
-    });
   }
 
   function initAll() {
