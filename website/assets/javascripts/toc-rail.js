@@ -6,9 +6,17 @@
  * entries step inward, with rounded jog connectors. An accent "thumb" rides the
  * rail at the active section's position and column, sliding as you scroll.
  *
- * MkDocs Material marks the active entry with `.md-nav__link--active`.
- * Instant-navigation safe (document$ + DOM-ready fallback, idempotent),
- * rAF-throttled, and honors prefers-reduced-motion.
+ * We compute the active heading OURSELVES from geometry rather than following
+ * Material's `.md-nav__link--active`, which is unreliable at the page bottom: it
+ * skips trailing sections that can't scroll to the top and, on direct #anchor
+ * navigation to a near-bottom section, marks the NEXT heading active. Our
+ * scroll-spy (a) redistributes trailing headings that can't reach the reading
+ * line across the final scroll band so every section gets a turn (the last
+ * activating exactly at the bottom), and (b) honors the URL hash after #anchor
+ * navigation until the user scrolls away.
+ *
+ * Instant-navigation safe (document$ + DOM-ready fallback, idempotent, window
+ * listeners wired once), rAF-throttled, honors prefers-reduced-motion.
  */
 (function () {
   "use strict";
@@ -26,6 +34,24 @@
     return d;
   }
   function railX(d) { return d === 0 ? X0 : X1; }
+
+  // The heading a TOC link points at (via its #fragment).
+  function headingFor(link) {
+    var href = link.getAttribute("href") || "";
+    var i = href.indexOf("#");
+    if (i < 0) return null;
+    var id = href.slice(i + 1);
+    if (!id) return null;
+    try { return document.getElementById(decodeURIComponent(id)); }
+    catch (e) { return document.getElementById(id); }
+  }
+
+  // Reading line: just below the fixed header, where a section "becomes current".
+  function readingOffset() {
+    var hdr = document.querySelector(".md-header");
+    var h = hdr ? hdr.getBoundingClientRect().height : 48;
+    return h + 12;
+  }
 
   function setup(list) {
     if (list.__railed) return;
@@ -50,7 +76,64 @@
     list.appendChild(svg);
 
     var total = 0;
-    var currentHl = null; // the single TOC item colored as highlighted
+    var currentHl = null;   // the single TOC item colored as highlighted
+    var pinned = null;      // heading id honored after #anchor navigation
+    var actScroll = [];     // per-link absolute scrollY at which it activates
+
+    // Absolute scrollY at which each section becomes current. Sections near the
+    // bottom can't scroll their heading up to the reading line, so their natural
+    // activation points pile up against the max scroll and collapse to tiny (or
+    // zero) windows — e.g. a section reachable by only 11px before the page
+    // bottoms out would never be highlightable while scrolling. Walk from the
+    // bottom and guarantee each section a minimum window, with the last
+    // activating exactly at the bottom, so every section gets a fair, reachable
+    // slice. For well-spaced sections this is a no-op.
+    function computeActivation() {
+      var off = readingOffset();
+      var maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      var raw = links.map(function (a) {
+        var h = headingFor(a);
+        if (!h) return null;
+        var abs = h.getBoundingClientRect().top + window.scrollY;
+        return Math.max(0, abs - off);
+      });
+      if (maxScroll > 1) {
+        var MIN = 72;         // smallest scroll window a section may occupy
+        var upper = maxScroll; // top of the current section's window
+        for (var i = raw.length - 1; i >= 0; i--) {
+          if (raw[i] == null) continue;
+          var cap = upper - MIN; // must start >= MIN below its window's top
+          if (raw[i] > cap) raw[i] = cap;
+          if (raw[i] < 0) raw[i] = 0;
+          upper = raw[i];
+        }
+      }
+      actScroll = raw;
+    }
+
+    // Index of the last section whose activation scroll we've passed (-1 = above
+    // the first, i.e. at the very top).
+    function spyIndex() {
+      var y = window.scrollY;
+      var chosen = -1;
+      for (var i = 0; i < actScroll.length; i++) {
+        if (actScroll[i] == null) continue;
+        if (y + 1 >= actScroll[i]) chosen = i; else break;
+      }
+      return chosen;
+    }
+
+    function activeLink() {
+      if (pinned) {
+        for (var i = 0; i < links.length; i++) {
+          var h = headingFor(links[i]);
+          if (h && h.id === pinned) return links[i];
+        }
+        pinned = null; // hash points at nothing in this TOC — drop it
+      }
+      var idx = spyIndex();
+      return idx < 0 ? links[0] : links[idx];
+    }
 
     function buildRail() {
       if (!list.isConnected) return;
@@ -84,6 +167,7 @@
       total = hlPath.getTotalLength();
       // one visible dash of length PILL, then a gap covering the whole path
       hlPath.style.strokeDasharray = PILL + " " + (total + PILL);
+      computeActivation();
       positionHighlight();
     }
 
@@ -100,21 +184,12 @@
 
     function positionHighlight() {
       if (!list.isConnected || !total) return;
-      // Material's scroll-spy leaves nothing active above the first heading and
-      // can't activate the last heading at the page bottom. Fix both edges so
-      // the bar always marks the section you're actually on: first at the top,
-      // last at the bottom, Material's active in between.
-      var docEl = document.documentElement;
-      var scrollable = docEl.scrollHeight > window.innerHeight + 8;
-      var atBottom = scrollable && window.scrollY + window.innerHeight >= docEl.scrollHeight - 6;
-      var link = atBottom
-        ? links[links.length - 1]
-        : list.querySelector("a.md-nav__link--active") || links[0];
+      var link = activeLink();
       if (!link) { hlPath.style.opacity = "0"; return; }
       // Color the text of EXACTLY this item — the single source of truth for
       // "highlighted". Material's own active text color is neutralized in CSS,
-      // so at the edges its stale active item (n-1/n-2) can't stay red alongside
-      // the one we pick. Only mutate on change to avoid a MutationObserver loop.
+      // so no stale active item can stay red alongside the one we pick. Only
+      // mutate on change to avoid a MutationObserver-style loop.
       if (link !== currentHl) {
         if (currentHl) currentHl.classList.remove("md-toc-hl");
         link.classList.add("md-toc-hl");
@@ -130,6 +205,12 @@
       hlPath.style.strokeDashoffset = -off + "px";
     }
 
+    function setPinFromHash() {
+      var h = location.hash ? location.hash.slice(1) : "";
+      if (h) { try { h = decodeURIComponent(h); } catch (e) {} }
+      pinned = h || null;
+    }
+
     var pending = false;
     function scheduleThumb() {
       if (pending) return;
@@ -137,23 +218,63 @@
       requestAnimationFrame(function () { pending = false; if (list.isConnected) positionHighlight(); });
     }
 
-    // Active entry changes as you scroll (Material toggles --active).
-    new MutationObserver(scheduleThumb).observe(list, {
-      subtree: true, attributes: true, attributeFilter: ["class"],
-    });
-    // Scroll drives the top/bottom edge cases (Material's active class doesn't
-    // change there, so the observer alone wouldn't re-fire).
-    window.addEventListener("scroll", scheduleThumb, { passive: true });
-    window.addEventListener("resize", buildRail, { passive: true });
-    // Fonts/late layout can shift positions; rebuild shortly after load.
+    // Exposed to the shared, once-only window listeners.
+    list.__toc = {
+      rebuild: buildRail,
+      refresh: scheduleThumb,
+      clearPin: function () { if (pinned !== null) { pinned = null; scheduleThumb(); } },
+      syncHash: function () { setPinFromHash(); scheduleThumb(); },
+    };
+
+    setPinFromHash();       // honor an #anchor we loaded on
     buildRail();
-    setTimeout(buildRail, 400);
+    setTimeout(buildRail, 400); // fonts/late layout can shift positions
+
+    // Content height can change without a window resize (late images, content
+    // tabs, collapsible admonitions), which would stale the activation array.
+    // Recompute when the content box changes size. (buildRail only mutates the
+    // TOC's own SVG, so this can't feed back into a loop.)
+    if (window.ResizeObserver) {
+      var roPending = false;
+      var ro = new ResizeObserver(function () {
+        if (roPending) return;
+        roPending = true;
+        requestAnimationFrame(function () { roPending = false; if (list.isConnected) buildRail(); });
+      });
+      ro.observe(document.querySelector(".md-content") || document.body);
+    }
+  }
+
+  function eachList(fn) {
+    document.querySelectorAll('.md-sidebar--secondary [data-md-component="toc"]').forEach(function (list) {
+      if (list.__toc) { try { fn(list.__toc); } catch (e) {} }
+    });
+  }
+
+  // Window listeners wired ONCE (instant navigation replaces the TOC element,
+  // so stale lists simply drop out of the query — no per-page listener leak).
+  var wired = false;
+  function wire() {
+    if (wired) return;
+    wired = true;
+    window.addEventListener("scroll", function () { eachList(function (t) { t.refresh(); }); }, { passive: true });
+    window.addEventListener("resize", function () { eachList(function (t) { t.rebuild(); }); }, { passive: true });
+    window.addEventListener("hashchange", function () { eachList(function (t) { t.syncHash(); }); });
+    // Genuine user scroll intent means they've left the anchor — hand back to
+    // the scroll-spy. (The anchor's own programmatic scroll fires none of these.)
+    var release = function () { eachList(function (t) { t.clearPin(); }); };
+    window.addEventListener("wheel", release, { passive: true });
+    window.addEventListener("touchmove", release, { passive: true });
+    window.addEventListener("keydown", function (e) {
+      if (["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End", " ", "Spacebar"].indexOf(e.key) >= 0) release();
+    });
   }
 
   function initAll() {
     document.querySelectorAll('.md-sidebar--secondary [data-md-component="toc"]').forEach(function (list) {
       try { setup(list); } catch (e) { console.error("toc-rail: setup failed", e); }
     });
+    wire();
   }
 
   if (window.document$ && typeof window.document$.subscribe === "function") {
