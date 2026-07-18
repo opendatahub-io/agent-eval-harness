@@ -50,7 +50,7 @@
     list.appendChild(svg);
 
     var total = 0;
-    var currentEdge = null; // link we force-highlight at the top/bottom edges
+    var currentHl = null; // the single TOC item colored as highlighted
 
     function buildRail() {
       if (!list.isConnected) return;
@@ -111,15 +111,14 @@
         ? links[links.length - 1]
         : list.querySelector("a.md-nav__link--active") || links[0];
       if (!link) { hlPath.style.opacity = "0"; return; }
-      // When we pick an edge item that Material hasn't marked active (first at
-      // the top, last at the bottom), color its text too so it reads as fully
-      // highlighted — not just the rail bar. Only mutate on change to avoid a
-      // MutationObserver loop.
-      var wantEdge = link.classList.contains("md-nav__link--active") ? null : link;
-      if (wantEdge !== currentEdge) {
-        if (currentEdge) currentEdge.classList.remove("md-toc-edge-active");
-        if (wantEdge) wantEdge.classList.add("md-toc-edge-active");
-        currentEdge = wantEdge;
+      // Color the text of EXACTLY this item — the single source of truth for
+      // "highlighted". Material's own active text color is neutralized in CSS,
+      // so at the edges its stale active item (n-1/n-2) can't stay red alongside
+      // the one we pick. Only mutate on change to avoid a MutationObserver loop.
+      if (link !== currentHl) {
+        if (currentHl) currentHl.classList.remove("md-toc-hl");
+        link.classList.add("md-toc-hl");
+        currentHl = link;
       }
       var lr = list.getBoundingClientRect();
       var ar = link.getBoundingClientRect();
