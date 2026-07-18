@@ -371,3 +371,15 @@
 .md-typeset .grid.cards > :is(ul, ol) > li,
 .md-typeset .grid.cards > .card,
 .md-typeset .grid > .card { border-radius: var(--doc-radius); }
+
+/*
+ * Keep the primary (left) sidebar full-height so a long nav isn't cut off when
+ * scrolled to the page bottom. Material shrinks it to sit above the footer; but
+ * our footer's left gutter is empty (copyright is content-aligned), so letting
+ * the sidebar span the viewport there is harmless and shows the whole menu.
+ */
+@media screen and (min-width: 76.25em) {
+  .md-sidebar--primary .md-sidebar__scrollwrap {
+    height: calc(100vh - 4.2rem) !important;
+  }
+}
