@@ -30,15 +30,17 @@ flowchart TD
     E --> B
     B -->|all cases done| F[before_scoring] --> G[judges] --> H[after_all]
     E -.finally.-> H
-    %% Pin an explicit text color + stroke on every filled node. Material makes
-    %% node label text theme-adaptive (light in dark mode), which would be
-    %% unreadable on these fixed light fills; a per-node color: (emitted as an
-    %% inline !important) keeps them legible in BOTH light and dark themes.
-    style A fill:#e3f2fd,stroke:#64b5f6,color:#0d47a1
-    style F fill:#e3f2fd,stroke:#64b5f6,color:#0d47a1
-    style H fill:#fff3e0,stroke:#ffb74d,color:#e65100
-    style C fill:#e8f5e9,stroke:#66bb6a,color:#1b5e20
-    style E fill:#e8f5e9,stroke:#66bb6a,color:#1b5e20
+    %% Color-code phases with borders, NOT fills. Material renders Mermaid in a
+    %% closed shadow DOM and forces node label text to a theme-adaptive color
+    %% (white in dark mode) that page CSS can't reach; a light fill would leave
+    %% white-on-light text. Leaving the fill to the theme keeps the label
+    %% readable (white on the dark node), and a colored stroke carries the
+    %% grouping legibly in both light and dark modes.
+    style A stroke:#42a5f5,stroke-width:3px
+    style F stroke:#42a5f5,stroke-width:3px
+    style H stroke:#ffa726,stroke-width:3px
+    style C stroke:#66bb6a,stroke-width:3px
+    style E stroke:#66bb6a,stroke-width:3px
 ```
 
 !!! note "try/finally guarantees"

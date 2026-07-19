@@ -39,9 +39,11 @@ flowchart LR
     review -. any time .-> mlflow
     optimize -. any time .-> mlflow
 
-    %% color: pins the label text (inline !important) so the light fill stays
-    %% readable in dark mode, where Material would otherwise make the text light.
-    classDef opt fill:#f5f5f5,stroke:#9e9e9e,stroke-dasharray:3 3,color:#424242;
+    %% Mark optional steps with a dashed border, NOT a fill. Material forces node
+    %% label text to a theme-adaptive color (white in dark mode) inside a closed
+    %% shadow DOM, so a light fill would render white-on-light text. Leaving the
+    %% fill to the theme keeps the label readable; the dashed stroke marks them.
+    classDef opt stroke:#9e9e9e,stroke-width:1.5px,stroke-dasharray:4 3;
     class setup,review,optimize,mlflow opt;
 ```
 
