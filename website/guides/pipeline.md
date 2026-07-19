@@ -39,7 +39,9 @@ flowchart LR
     review -. any time .-> mlflow
     optimize -. any time .-> mlflow
 
-    classDef opt fill:#f5f5f5,stroke:#bbb,stroke-dasharray:3 3;
+    %% color: pins the label text (inline !important) so the light fill stays
+    %% readable in dark mode, where Material would otherwise make the text light.
+    classDef opt fill:#f5f5f5,stroke:#9e9e9e,stroke-dasharray:3 3,color:#424242;
     class setup,review,optimize,mlflow opt;
 ```
 

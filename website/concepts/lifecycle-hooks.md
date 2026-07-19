@@ -30,11 +30,15 @@ flowchart TD
     E --> B
     B -->|all cases done| F[before_scoring] --> G[judges] --> H[after_all]
     E -.finally.-> H
-    style A fill:#e3f2fd
-    style F fill:#e3f2fd
-    style H fill:#fff3e0
-    style C fill:#e8f5e9
-    style E fill:#e8f5e9
+    %% Pin an explicit text color + stroke on every filled node. Material makes
+    %% node label text theme-adaptive (light in dark mode), which would be
+    %% unreadable on these fixed light fills; a per-node color: (emitted as an
+    %% inline !important) keeps them legible in BOTH light and dark themes.
+    style A fill:#e3f2fd,stroke:#64b5f6,color:#0d47a1
+    style F fill:#e3f2fd,stroke:#64b5f6,color:#0d47a1
+    style H fill:#fff3e0,stroke:#ffb74d,color:#e65100
+    style C fill:#e8f5e9,stroke:#66bb6a,color:#1b5e20
+    style E fill:#e8f5e9,stroke:#66bb6a,color:#1b5e20
 ```
 
 !!! note "try/finally guarantees"
