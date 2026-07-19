@@ -404,6 +404,10 @@
   position: relative;
   overflow: hidden;
 }
+/* Whole card is clickable (card-nav.js); text stays selectable. */
+.md-typeset .grid.cards > :is(ul, ol) > li.card-clickable,
+.md-typeset .grid.cards > .card.card-clickable,
+.md-typeset .grid > .card.card-clickable { cursor: pointer; }
 .md-typeset .grid.cards > :is(ul, ol) > li::before,
 .md-typeset .grid.cards > :is(ul, ol) > li::after,
 .md-typeset .grid.cards > .card::before,

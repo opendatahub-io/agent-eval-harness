@@ -122,6 +122,7 @@ extra_javascript:
   - assets/javascripts/toc-rail.js
   - assets/javascripts/table-wrap.js
   - assets/javascripts/card-glow.js
+  - assets/javascripts/card-nav.js
 
 extra:
   # "Was this page helpful?" widget. Ratings are recorded only if an analytics
