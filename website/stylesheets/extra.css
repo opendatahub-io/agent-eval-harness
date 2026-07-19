@@ -392,6 +392,79 @@
 .md-typeset .grid > .card { border-radius: var(--doc-radius); }
 
 /*
+ * Pointer-following glow on grid cards (qwen-style). card-glow.js writes the
+ * cursor position within the hovered card to --glow-x/--glow-y; two layered
+ * radial gradients — a soft interior fill (::before) and a masked 1px border
+ * highlight (::after) — fade in on hover and track the pointer. Pseudo-elements
+ * are pointer-events:none so links/behaviour are untouched.
+ */
+.md-typeset .grid.cards > :is(ul, ol) > li,
+.md-typeset .grid.cards > .card,
+.md-typeset .grid > .card {
+  position: relative;
+  overflow: hidden;
+}
+.md-typeset .grid.cards > :is(ul, ol) > li::before,
+.md-typeset .grid.cards > :is(ul, ol) > li::after,
+.md-typeset .grid.cards > .card::before,
+.md-typeset .grid.cards > .card::after,
+.md-typeset .grid > .card::before,
+.md-typeset .grid > .card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+}
+/* Glow strength — stronger on the dark theme so a faint red reads as a spotlight
+   on near-black rather than a diffuse wash. */
+[data-md-color-scheme="default"] {
+  --card-glow-fill: color-mix(in srgb, var(--md-primary-fg-color) 15%, transparent);
+  --card-glow-edge: color-mix(in srgb, var(--md-primary-fg-color) 60%, transparent);
+}
+[data-md-color-scheme="slate"] {
+  --card-glow-fill: color-mix(in srgb, var(--md-primary-fg-color) 30%, transparent);
+  --card-glow-edge: color-mix(in srgb, var(--md-primary-fg-color) 85%, transparent);
+}
+/* soft interior glow */
+.md-typeset .grid.cards > :is(ul, ol) > li::before,
+.md-typeset .grid.cards > .card::before,
+.md-typeset .grid > .card::before {
+  background: radial-gradient(circle 10rem at var(--glow-x, 50%) var(--glow-y, 50%),
+    var(--card-glow-fill), transparent 60%);
+}
+/* masked border highlight (1px ring that lights up near the cursor) */
+.md-typeset .grid.cards > :is(ul, ol) > li::after,
+.md-typeset .grid.cards > .card::after,
+.md-typeset .grid > .card::after {
+  padding: 1px;
+  background: radial-gradient(circle 9rem at var(--glow-x, 50%) var(--glow-y, 50%),
+    var(--card-glow-edge), transparent 55%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+}
+.md-typeset .grid.cards > :is(ul, ol) > li:hover::before,
+.md-typeset .grid.cards > :is(ul, ol) > li:hover::after,
+.md-typeset .grid.cards > .card:hover::before,
+.md-typeset .grid.cards > .card:hover::after,
+.md-typeset .grid > .card:hover::before,
+.md-typeset .grid > .card:hover::after {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .md-typeset .grid.cards > :is(ul, ol) > li::before,
+  .md-typeset .grid.cards > :is(ul, ol) > li::after,
+  .md-typeset .grid.cards > .card::before,
+  .md-typeset .grid.cards > .card::after,
+  .md-typeset .grid > .card::before,
+  .md-typeset .grid > .card::after { transition: none; }
+}
+
+/*
  * Keep the primary (left) sidebar full-height so a long nav isn't cut off when
  * scrolled to the page bottom. Material shrinks it to sit above the footer; but
  * our footer's left gutter is empty (copyright is content-aligned), so letting
