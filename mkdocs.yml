@@ -120,6 +120,7 @@ extra_css:
 extra_javascript:
   - assets/javascripts/harbor-diagram.js
   - assets/javascripts/toc-rail.js
+  - assets/javascripts/table-wrap.js
 
 extra:
   # "Was this page helpful?" widget. Ratings are recorded only if an analytics

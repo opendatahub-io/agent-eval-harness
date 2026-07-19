@@ -368,6 +368,18 @@
   overflow: hidden;
 }
 
+/*
+ * Keep inline-code tokens in table cells whole instead of breaking mid-word
+ * (e.g. "workspace.py" splitting between "p" and "y"). `keep-all` treats each
+ * identifier as unbreakable so the column auto-sizes to fit it; `overflow-wrap:
+ * break-word` is only an emergency fallback for a token too long for any width.
+ * Tokens with spaces (e.g. "--subagent-model <model>") still wrap at the space.
+ */
+.md-typeset table:not([class]) code {
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
 /* Buttons */
 .md-typeset .md-button { border-radius: var(--doc-radius); }
 .md-clipboard { border-radius: 0.35rem; }
