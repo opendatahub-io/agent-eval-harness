@@ -162,7 +162,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/execute.py \
   [--parallelism <n>]
 ```
 
-Launch with `run_in_background: true` (no pipes). Monitor via `tail -20 <output_file>`. After completion, check `run_result.json` — if `exit_code` is non-zero, report the failure and stop. See `${CLAUDE_SKILL_DIR}/references/execution-monitoring.md` for CLI flag fallbacks, monitoring patterns, and problem detection.
+Launch with `run_in_background: true` (no pipes). **You must poll until the task completes** — do not end your turn while execute.py is running. In `-p` mode, ending the turn kills the session and all background tasks. See `${CLAUDE_SKILL_DIR}/references/execution-monitoring.md` for polling patterns, problem detection, and CLI flag fallbacks.
 
 ## Step 5: Collect Artifacts
 
