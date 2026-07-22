@@ -103,6 +103,41 @@ def test_disk_to_tags_round_trip(tmp_path: Path):
     assert fetched["harness_content_sha"] == snap["harness_content_sha"]
 
 
+def test_fullsend_shaped_snapshot_maps_to_provenance_tags(tmp_path: Path):
+    """Producer-shaped JSON (agent runtime) → join tags Provenance expects."""
+    snap = {
+        "schema_version": "1",
+        "recorded_at": "2026-07-22T00:00:00Z",
+        "agent": "code",
+        "role": "coder",
+        "slug": "code",
+        "model": "claude",
+        "harness_path": "/harnesses/code.yaml",
+        "harness_content_sha": "0123456789abcdef",
+        "skills": ["code"],
+        "forge_platform": "github",
+        "trace_id": "4bf92a13a9009265",
+        "traceparent": "00-4bf92a13a9009265-00f067aa0ba902b7-01",
+        "repository_url": "https://github.com/acme/repo",
+        "ref_revision": "c0ffee",
+        "ref_name": "main",
+        "change_id": "42",
+        "pipeline_run_id": "99",
+        "pipeline_run_url": "https://github.com/acme/repo/actions/runs/99",
+    }
+    (tmp_path / HARNESS_SNAPSHOT_ARTIFACT).write_text(json.dumps(snap))
+    tags = collect_ci_context(eval_run_id="eval-1", run_dir=tmp_path)
+    # Provenance / MLflow join names from the frozen contract
+    assert tags["commit_sha"] == "c0ffee"
+    assert tags["harness_fingerprint"] == "0123456789abcdef"
+    assert tags["repository_url"] == "https://github.com/acme/repo"
+    assert tags["change_id"] == "42"
+    assert tags["pipeline_run_id"] == "99"
+    assert tags["forge_platform"] == "github"
+    assert tags["trace_id"] == "4bf92a13a9009265"
+    assert tags["eval_run_id"] == "eval-1"
+
+
 def test_prefer_mlflow_over_disk(tmp_path: Path, monkeypatch):
     disk = tmp_path / HARNESS_SNAPSHOT_ARTIFACT
     disk.write_text(json.dumps({"agent": "from-disk", "harness_content_sha": "d"}))
