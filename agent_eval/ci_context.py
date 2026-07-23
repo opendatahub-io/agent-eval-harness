@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -87,6 +88,16 @@ def load_harness_snapshot(path: Path | str) -> dict:
     return data
 
 
+def try_load_harness_snapshot(path: Path | str) -> dict | None:
+    """Best-effort parse; warn and return None on I/O or JSON errors."""
+    try:
+        return load_harness_snapshot(path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"WARNING: failed to load harness snapshot at {path}: {exc}",
+              file=sys.stderr)
+        return None
+
+
 def context_from_snapshot(
     data: Mapping,
     *,
@@ -136,7 +147,19 @@ def collect_from_snapshot_dir(
     path = find_harness_snapshot(run_dir)
     if path is None:
         return None
-    return context_from_snapshot(load_harness_snapshot(path), eval_run_id=eval_run_id)
+    data = try_load_harness_snapshot(path)
+    if data is None:
+        return None
+    return context_from_snapshot(data, eval_run_id=eval_run_id)
+
+
+def _mlflow_run_name_filter(eval_run_id: str) -> str | None:
+    """Build a safe MLflow filter_string value, or None if unsafe."""
+    # MLflow has no bound parameters for filter_string; reject chars that
+    # would break out of the quoted run-name literal.
+    if not eval_run_id or "'" in eval_run_id or "\\" in eval_run_id:
+        return None
+    return f"tags.mlflow.runName = '{eval_run_id}'"
 
 
 def fetch_harness_snapshot(
@@ -155,6 +178,15 @@ def fetch_harness_snapshot(
     if not experiment_id or not eval_run_id:
         return None
 
+    filter_string = _mlflow_run_name_filter(eval_run_id)
+    if filter_string is None:
+        print(
+            f"WARNING: skipping MLflow snapshot fetch; "
+            f"eval_run_id has unsafe characters: {eval_run_id!r}",
+            file=sys.stderr,
+        )
+        return None
+
     if search_runs is None or client is None:
         try:
             import mlflow
@@ -169,9 +201,13 @@ def fetch_harness_snapshot(
     try:
         runs = search_runs(
             experiment_ids=[experiment_id],
-            filter_string=f"tags.mlflow.runName = '{eval_run_id}'",
+            filter_string=filter_string,
         )
-    except Exception:
+    except Exception as exc:
+        print(
+            f"WARNING: MLflow search_runs failed for {eval_run_id!r}: {exc}",
+            file=sys.stderr,
+        )
         return None
     if runs is None or getattr(runs, "empty", True):
         return None
@@ -182,13 +218,18 @@ def fetch_harness_snapshot(
                 local = client.download_artifacts(
                     mlflow_run_id, HARNESS_SNAPSHOT_ARTIFACT, tmp
                 )
-            except Exception:
+            except Exception as exc:
+                print(
+                    f"WARNING: download_artifacts failed for run "
+                    f"{mlflow_run_id}: {exc}",
+                    file=sys.stderr,
+                )
                 continue
             path = Path(local)
             if path.is_dir():
                 path = path / HARNESS_SNAPSHOT_ARTIFACT
             if path.is_file():
-                return load_harness_snapshot(path)
+                return try_load_harness_snapshot(path)
     return None
 
 
@@ -277,8 +318,11 @@ def collect_ci_context(
                 return ctx.as_mlflow_tags()
         snap_path = os.environ.get("HARNESS_SNAPSHOT_PATH", "").strip()
         if snap_path and Path(snap_path).is_file():
+            data = try_load_harness_snapshot(snap_path)
+            if data is None:
+                return None
             return context_from_snapshot(
-                load_harness_snapshot(snap_path),
+                data,
                 eval_run_id=eval_run_id,
             ).as_mlflow_tags()
         return None

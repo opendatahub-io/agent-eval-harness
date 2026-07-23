@@ -286,19 +286,30 @@ def main():
         mlflow.set_tag("num_judges", str(len(judges)))
         # Disk handoff: harness-snapshot.json under run_dir → tags + artifact.
         # Later readers should fetch the MLflow artifact (prefer_mlflow).
-        for tag_key, tag_value in merge_mlflow_tags(
-            collect_ci_context(eval_run_id=args.run_id, run_dir=run_dir),
-            config.mlflow.tags,
-        ).items():
-            if tag_value:
-                mlflow.set_tag(tag_key, str(tag_value))
+        try:
+            for tag_key, tag_value in merge_mlflow_tags(
+                collect_ci_context(
+                    eval_run_id=args.run_id,
+                    run_dir=run_dir,
+                    experiment_id=experiment_id,
+                ),
+                config.mlflow.tags,
+            ).items():
+                if tag_value:
+                    mlflow.set_tag(tag_key, str(tag_value))
+        except Exception as e:
+            print(f"WARNING: failed to set CI/harness tags: {e}", file=sys.stderr)
 
         # ── Artifacts ────────────────────────────────────────────
         if summary_path.exists():
             mlflow.log_artifact(str(summary_path))
-        snap_path = find_harness_snapshot(run_dir)
-        if snap_path is not None:
-            mlflow.log_artifact(str(snap_path))
+        try:
+            snap_path = find_harness_snapshot(run_dir)
+            if snap_path is not None:
+                mlflow.log_artifact(str(snap_path))
+        except Exception as e:
+            print(f"WARNING: failed to log harness snapshot artifact: {e}",
+                  file=sys.stderr)
 
         # Log input files for from-traces extraction.
         for name in ("batch.yaml", "case_order.yaml"):

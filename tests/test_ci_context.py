@@ -184,3 +184,31 @@ def test_merge_mlflow_tags_config_overrides():
 
 def test_ci_context_empty_tags():
     assert CIContext().as_mlflow_tags() == {}
+
+
+def test_malformed_snapshot_falls_back(tmp_path: Path, monkeypatch):
+    """Corrupt JSON must not raise; CI env fallback still works."""
+    import os
+
+    for key in list(os.environ):
+        if key.startswith(("GITHUB_", "CI_", "AGENT_EVAL_", "BITBUCKET_", "HARNESS_")):
+            monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_SHA", "fallbacksha")
+    (tmp_path / HARNESS_SNAPSHOT_ARTIFACT).write_text("{not-json")
+    tags = collect_ci_context(eval_run_id="r", run_dir=tmp_path)
+    assert tags["commit_sha"] == "fallbacksha"
+
+
+def test_fetch_rejects_unsafe_eval_run_id():
+    client = MagicMock()
+    assert (
+        fetch_harness_snapshot(
+            "exp",
+            "bad' OR tags.x = 'y",
+            client=client,
+            search_runs=lambda **k: MagicMock(),
+        )
+        is None
+    )
+    client.download_artifacts.assert_not_called()
