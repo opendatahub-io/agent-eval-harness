@@ -158,6 +158,13 @@ mlflow:
   experiment: <project>-eval
   # tracking_uri: sqlite:///mlflow.db   # Override env var for self-contained runs
   # tags: { team: ml }
+  #
+  # Join keys (commit_sha, harness_fingerprint, …) come from
+  # harness-snapshot.json when the agent runtime left it under the run/case
+  # output directory — log_results uploads it as an MLflow artifact and
+  # projects fields to tags. Later readers should fetch that artifact from
+  # MLflow (same discovery as inputs/: experiment + eval_run_id / run name),
+  # not scrape CI env. Override with mlflow.tags or HARNESS_SNAPSHOT_PATH.
 
 # Dataset — describe what you actually observed in the sample case
 dataset:

@@ -30,6 +30,11 @@ except ImportError:
           file=sys.stderr)
     sys.exit(0)
 
+from agent_eval.ci_context import (
+    collect_ci_context,
+    find_harness_snapshot,
+    merge_mlflow_tags,
+)
 from agent_eval.config import EvalConfig, _validate_path_segment
 from agent_eval.mlflow.experiment import resolve_tracking_uri
 
@@ -279,12 +284,32 @@ def main():
                         has_regressions = True
         mlflow.set_tag("regressions_detected", "yes" if has_regressions else "no")
         mlflow.set_tag("num_judges", str(len(judges)))
-        for tag_key, tag_value in (config.mlflow.tags or {}).items():
-            mlflow.set_tag(tag_key, str(tag_value))
+        # Disk handoff: harness-snapshot.json under run_dir → tags + artifact.
+        # Later readers should fetch the MLflow artifact (prefer_mlflow).
+        try:
+            for tag_key, tag_value in merge_mlflow_tags(
+                collect_ci_context(
+                    eval_run_id=args.run_id,
+                    run_dir=run_dir,
+                    experiment_id=experiment_id,
+                ),
+                config.mlflow.tags,
+            ).items():
+                if tag_value:
+                    mlflow.set_tag(tag_key, str(tag_value))
+        except Exception as e:
+            print(f"WARNING: failed to set CI/harness tags: {e}", file=sys.stderr)
 
         # ── Artifacts ────────────────────────────────────────────
         if summary_path.exists():
             mlflow.log_artifact(str(summary_path))
+        try:
+            snap_path = find_harness_snapshot(run_dir)
+            if snap_path is not None:
+                mlflow.log_artifact(str(snap_path))
+        except Exception as e:
+            print(f"WARNING: failed to log harness snapshot artifact: {e}",
+                  file=sys.stderr)
 
         # Log input files for from-traces extraction.
         for name in ("batch.yaml", "case_order.yaml"):
