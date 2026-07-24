@@ -20,7 +20,8 @@
 
   window.__cardGlowWired = true;
   var SEL = ".md-typeset .grid.cards > ul > li, .md-typeset .grid.cards > ol > li, " +
-            ".md-typeset .grid.cards > .card, .md-typeset .grid > .card";
+            ".md-typeset .grid.cards > .card, .md-typeset .grid > .card, " +
+            ".md-typeset .md-button, .md-footer__link";
 
   var raf = 0, pending = null;
   document.addEventListener("pointermove", function (e) {

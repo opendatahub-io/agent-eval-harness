@@ -301,6 +301,41 @@
   background-color: color-mix(in srgb, var(--md-accent-fg-color) 6%, transparent);
   transform: translateY(-1px);
 }
+/*
+ * Pointer-following glow on the footer prev/next nav buttons (card-glow.js) —
+ * same red spotlight as the grid cards, since these are card-like surfaces.
+ * Reuses the theme-scoped --card-glow-fill/--card-glow-edge.
+ */
+.md-footer__link { position: relative; overflow: hidden; }
+.md-footer__link::before,
+.md-footer__link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+}
+.md-footer__link::before {
+  background: radial-gradient(circle 10rem at var(--glow-x, 50%) var(--glow-y, 50%),
+    var(--card-glow-fill), transparent 60%);
+}
+.md-footer__link::after {
+  padding: 1px;
+  background: radial-gradient(circle 9rem at var(--glow-x, 50%) var(--glow-y, 50%),
+    var(--card-glow-edge), transparent 55%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+}
+.md-footer__link:hover::before,
+.md-footer__link:hover::after { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .md-footer__link::before,
+  .md-footer__link::after { transition: none; }
+}
 .md-footer__button {
   padding: 0.3rem;
   background: transparent;
@@ -382,6 +417,48 @@
 
 /* Buttons */
 .md-typeset .md-button { border-radius: var(--doc-radius); }
+
+/*
+ * Pointer-following glow on large buttons, matching the grid cards. card-glow.js
+ * tracks the cursor into --glow-x/--glow-y; Material fills every button with the
+ * accent (red) on hover, so the spotlight is white to read on that. Interior
+ * fill (::before) + masked 1px border highlight (::after), pointer-events:none.
+ */
+.md-typeset .md-button {
+  position: relative;
+  overflow: hidden;
+  --btn-glow-fill: rgba(255, 255, 255, 0.22);
+  --btn-glow-edge: rgba(255, 255, 255, 0.6);
+}
+.md-typeset .md-button::before,
+.md-typeset .md-button::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+}
+.md-typeset .md-button::before {
+  background: radial-gradient(circle 7rem at var(--glow-x, 50%) var(--glow-y, 50%),
+    var(--btn-glow-fill), transparent 65%);
+}
+.md-typeset .md-button::after {
+  padding: 1px;
+  background: radial-gradient(circle 6rem at var(--glow-x, 50%) var(--glow-y, 50%),
+    var(--btn-glow-edge), transparent 60%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+}
+.md-typeset .md-button:hover::before,
+.md-typeset .md-button:hover::after { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .md-typeset .md-button::before,
+  .md-typeset .md-button::after { transition: none; }
+}
 .md-clipboard { border-radius: 0.35rem; }
 .md-search__form { border-radius: var(--doc-radius); }
 .md-search__output { border-radius: 0 0 var(--doc-radius) var(--doc-radius); }
