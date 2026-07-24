@@ -1,9 +1,19 @@
 # Agent Eval Harness
 
-A generic evaluation framework for **Claude Code skills** and **agent capabilities**,
-built on MLflow for tracing, datasets, and reporting. Analyze a skill, generate a
-dataset, run it, score it with LLM and code judges, and improve it — with the same
-`eval.yaml` running unchanged across your laptop, containers, and a platform.
+A generic evaluation framework for **skills** and **agent capabilities**. Analyze a
+skill, generate a dataset, run it, score it with LLM and code judges, and improve it
+— all driven by a single declarative `eval.yaml`.
+
+That same `eval.yaml` runs unchanged across your laptop, containers, and a platform:
+drive any agent runner (**Claude Code**, **OpenCode**, ...), execute locally or on the
+**Harbor** and **EvalHub** backends, export rewards for RL training with **NVIDIA
+NeMo RL**, and record traces, datasets, and reports in **MLflow**.
+
+Finer-grained control is built in: **tool interception** to stub or assert on the
+agent's tool calls, **user simulation** that auto-answers `AskUserQuestion` prompts,
+**permissions** to allow/deny what the agent may run, **lifecycle hooks** around
+cases and scoring, and a rich HTML **report** with scoring summaries and per-case
+diffs.
 
 ```bash
 # 1. Add the harness to your project (it ships as a Claude Code plugin)
