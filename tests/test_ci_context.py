@@ -185,10 +185,10 @@ def test_merge_mlflow_tags_config_overrides():
 def test_merge_mlflow_tags_preserves_run_name():
     """eval.yaml must not override mlflow.runName (join key for artifact fetch)."""
     merged = merge_mlflow_tags(
-        {"eval_run_id": "r1"},
+        {"eval_run_id": "r1", "mlflow.runName": "original"},
         {"mlflow.runName": "hijacked", "team": "ml"},
     )
-    assert "mlflow.runName" not in merged
+    assert merged["mlflow.runName"] == "original"
     assert merged["team"] == "ml"
 
 
