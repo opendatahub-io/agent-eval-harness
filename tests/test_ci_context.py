@@ -182,6 +182,16 @@ def test_merge_mlflow_tags_config_overrides():
     assert merged["team"] == "ml"
 
 
+def test_merge_mlflow_tags_preserves_run_name():
+    """eval.yaml must not override mlflow.runName (join key for artifact fetch)."""
+    merged = merge_mlflow_tags(
+        {"eval_run_id": "r1"},
+        {"mlflow.runName": "hijacked", "team": "ml"},
+    )
+    assert "mlflow.runName" not in merged
+    assert merged["team"] == "ml"
+
+
 def test_ci_context_empty_tags():
     assert CIContext().as_mlflow_tags() == {}
 
@@ -202,13 +212,15 @@ def test_malformed_snapshot_falls_back(tmp_path: Path, monkeypatch):
 
 def test_fetch_rejects_unsafe_eval_run_id():
     client = MagicMock()
+    search_runs = MagicMock(return_value=MagicMock())
     assert (
         fetch_harness_snapshot(
             "exp",
             "bad' OR tags.x = 'y",
             client=client,
-            search_runs=lambda **k: MagicMock(),
+            search_runs=search_runs,
         )
         is None
     )
+    search_runs.assert_not_called()
     client.download_artifacts.assert_not_called()

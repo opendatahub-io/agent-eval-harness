@@ -165,6 +165,8 @@ mlflow:
   # projects fields to tags. Later readers should fetch that artifact from
   # MLflow (same discovery as inputs/: experiment + eval_run_id / run name),
   # not scrape CI env. Override with mlflow.tags or HARNESS_SNAPSHOT_PATH.
+  # Do not set tags.mlflow.runName — log_results sets it from the eval run id;
+  # join consumers look up the run by that name.
 
 # Dataset — describe what you actually observed in the sample case
 dataset:

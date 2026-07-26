@@ -287,6 +287,8 @@ def main():
         # Disk handoff: harness-snapshot.json under run_dir → tags + artifact.
         # Later readers should fetch the MLflow artifact (prefer_mlflow).
         try:
+            # merge_mlflow_tags drops mlflow.runName from config so start_run's
+            # run name (eval run id) stays the join key for artifact fetch.
             for tag_key, tag_value in merge_mlflow_tags(
                 collect_ci_context(
                     eval_run_id=args.run_id,
@@ -295,7 +297,7 @@ def main():
                 ),
                 config.mlflow.tags,
             ).items():
-                if tag_value:
+                if tag_value and tag_key != "mlflow.runName":
                     mlflow.set_tag(tag_key, str(tag_value))
         except Exception as e:
             print(f"WARNING: failed to set CI/harness tags: {e}", file=sys.stderr)

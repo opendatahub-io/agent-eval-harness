@@ -339,14 +339,27 @@ def collect_ci_context(
     return collect_ci_fallback(eval_run_id=eval_run_id).as_mlflow_tags()
 
 
+# Set by mlflow.start_run(run_name=eval_run_id). Join consumers look up runs via
+# tags.mlflow.runName — eval.yaml must not override it.
+_IMMUTABLE_MLFLOW_TAGS = frozenset({"mlflow.runName"})
+
+
 def merge_mlflow_tags(
     ci_tags: Mapping[str, str],
     config_tags: Mapping[str, str] | None,
 ) -> dict[str, str]:
-    """Merge collected tags with eval.yaml tags; config wins on conflict."""
+    """Merge collected tags with eval.yaml tags; config wins on conflict.
+
+    ``mlflow.runName`` is never taken from config — it stays the value set by
+    ``start_run`` (the eval run id) so MLflow artifact fetch can join on it.
+    """
     merged = dict(ci_tags)
     if config_tags:
-        merged.update({str(k): str(v) for k, v in config_tags.items()})
+        for key, value in config_tags.items():
+            k = str(key)
+            if k in _IMMUTABLE_MLFLOW_TAGS:
+                continue
+            merged[k] = str(value)
     return merged
 
 
