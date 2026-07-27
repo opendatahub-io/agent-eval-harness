@@ -162,7 +162,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/execute.py \
   [--parallelism <n>]
 ```
 
-Launch with `run_in_background: true` (no pipes). **You must poll until the task completes** — do not end your turn while execute.py is running. In `-p` mode, ending the turn kills the session and all background tasks. After completion, check `run_result.json` — if `exit_code` is non-zero, report the failure and stop. See `${CLAUDE_SKILL_DIR}/references/execution-monitoring.md` for polling patterns, problem detection, and CLI flag fallbacks.
+Launch with `run_in_background: true` (no pipes). **You must poll until the task completes** — do not end your turn while execute.py is running. Background tasks are killed when the session becomes idle: in `-p` mode, an `end_turn` exits the session immediately; in interactive mode, Claude Code SIGTERMs background tasks after ~55 minutes of inactivity. Poll progress every 2–3 minutes with `tail -20 <output_file>` to keep the session active. After completion, check `run_result.json` — if `exit_code` is non-zero, report the failure and stop. See `${CLAUDE_SKILL_DIR}/references/execution-monitoring.md` for polling patterns, problem detection, and CLI flag fallbacks.
 
 ## Step 5: Collect Artifacts
 

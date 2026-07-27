@@ -9,9 +9,19 @@ buffers all output and prevents progress monitoring. The command must be the bar
 
 ## Session lifecycle warning
 
-**Do not end your turn while execute.py is running.** In `-p` mode, ending the
-turn terminates the session and kills all background tasks — producing empty
-results that CI reports as green. You must keep polling until execution completes.
+**Do not end your turn while execute.py is running.** Background tasks are killed
+when the session becomes idle — this applies to both headless and interactive
+modes:
+
+- **Headless (`-p`):** ending the turn exits the session immediately, killing all
+  background tasks and producing empty results that CI reports as green.
+- **Interactive:** Claude Code SIGTERMs background tasks after ~55 minutes of
+  session inactivity. A long-running execute.py (common with 20+ cases) will be
+  killed silently if no tool calls keep the session active.
+
+You must keep polling until execution completes. Poll every 2–3 minutes with
+`tail -20 <output_file>` — this keeps the session active and prevents the idle
+timeout from firing.
 
 ## Monitoring progress
 
