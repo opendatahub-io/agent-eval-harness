@@ -227,7 +227,7 @@
 .schema-diagram .sd-col.score   .sd-card { --sd-bar: var(--sd-score); }
 .schema-diagram .sd-col.observe .sd-card { --sd-bar: var(--sd-observe); }
 .schema-diagram .sd-card:hover { border-color: var(--sd-bar, var(--md-default-fg-color--lighter)); }
-.schema-diagram .sd-card.deprecated { opacity: 0.65; }
+.schema-diagram .sd-card.deprecated { border-style: dashed; }
 
 .schema-diagram .sd-key {
   font-family: var(--md-code-font, monospace);
@@ -276,7 +276,7 @@
 .schema-diagram .sd-badge {
   margin-left: clamp(0.14rem, 0.5cqi, 0.28rem);
   padding: 0 0.26rem;
-  border: 1px solid currentColor;
+  border: 1px solid currentcolor;
   border-radius: 999px;
   font-family: var(--md-text-font, inherit);
   font-size: clamp(0.44rem, 1.15cqi, 0.56rem);

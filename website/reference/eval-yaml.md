@@ -10,7 +10,7 @@ one `judge`.
     Harbor, EvalHub) is always a CLI flag (`--runner`), never a config key — so the
     same file runs unchanged everywhere.
 
-<div class="schema-diagram" role="img" aria-label="eval.yaml schema map, grouped into four stages. Define: dataset, generation, inputs.tools, outputs. Execute: execution, runner, models, permissions, hooks (top-level skill is deprecated). Score: judges, thresholds, reward. Observe: mlflow, traces. Every top-level key is optional.">
+<div class="schema-diagram" role="region" aria-label="eval.yaml schema map">
   <p class="sd-meta">
     Every top-level key is optional. <code>name</code> and <code>description</code> are the only non-deprecated top-level scalars.
     <span class="sd-badge llm">LLM</span> marks natural-language fields interpreted by agents &amp; judges,
