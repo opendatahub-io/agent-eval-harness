@@ -150,6 +150,11 @@ skills/eval-check/ # Skill: full-harness configuration health check
   SKILL.md               # Scans all skills, commands, CLAUDE.md, hooks for overlap and issues
   scripts/
     harness_inventory.py # Project artifact discovery and word counting
+
+skills/eval-security/    # Skill: deterministic security scanning of harness components
+  SKILL.md               # 9 security rules, per-component verdicts, semantic review
+  scripts/
+    security_scanner.py  # Standalone scanner (regex + AST, stdlib + PyYAML only)
 ```
 
 ## How It Works
@@ -184,6 +189,7 @@ The `schema` descriptions are documentation for the LLM agents and judges. Scrip
 /eval-review --run-id <id>             # Review: interactive human feedback + changes
 /eval-mlflow --run-id <id>             # MLflow: sync dataset, log results
 /eval-optimize --model opus            # Optimize: automated refinement loop
+/eval-security                         # Security: audit setup components for vulnerabilities
 ```
 
 ### Prompt Mode Workflow (Agentic Documentation Testing)
