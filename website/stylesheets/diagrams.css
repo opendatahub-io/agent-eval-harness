@@ -137,3 +137,160 @@
 @media (prefers-reduced-motion: reduce) {
   .harbor-diagram .hd-box, .harbor-diagram .hd-edge { transition: none; }
 }
+
+/*
+ * Static, theme-aware eval.yaml schema map (embedded in reference/eval-yaml.md).
+ * Text, borders and surfaces use Material vars so the widget follows the
+ * light/dark toggle automatically. The four category hues and the two field
+ * badges are local tokens with a slate override — the same pattern as
+ * .harbor-diagram above.
+ */
+.schema-diagram {
+  --sd-define: #2563eb;
+  --sd-execute: #15803d;
+  --sd-score: #b45309;
+  --sd-observe: #7c3aed;
+  --sd-llm: #1d4ed8;
+  --sd-py: #92400e;
+
+  margin: 1.5em 0;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 12px;
+  container-type: inline-size;
+  padding: 1rem 1rem 1.15rem;
+  background: var(--md-default-bg-color);
+}
+
+[data-md-color-scheme="slate"] .schema-diagram {
+  --sd-define: #60a5fa;
+  --sd-execute: #4ade80;
+  --sd-score: #fbbf24;
+  --sd-observe: #a78bfa;
+  --sd-llm: #60a5fa;
+  --sd-py: #fbbf24;
+}
+
+.schema-diagram .sd-meta {
+  margin: 0 0 0.9rem;
+  font-size: clamp(0.58rem, 1.55cqi, 0.72rem);
+  line-height: 1.55;
+  color: var(--md-default-fg-color--light);
+}
+
+.schema-diagram .sd-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: clamp(0.4rem, 1.35cqi, 0.85rem);
+  align-items: start;
+}
+
+/* Phones / very narrow windows: four columns stop being legible — fall back
+   to two, preserving the Define → Execute → Score → Observe reading order.
+   Uses a viewport media query (reliable) rather than a container query. */
+@media screen and (max-width: 600px) {
+  .schema-diagram .sd-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media screen and (max-width: 430px) {
+  .schema-diagram .sd-grid { grid-template-columns: 1fr; }
+}
+
+.schema-diagram .sd-col {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(0.38rem, 1.05cqi, 0.6rem);
+  min-width: 0;
+}
+
+.schema-diagram .sd-group {
+  padding-left: 0.15rem;
+  font-size: clamp(0.52rem, 1.5cqi, 0.7rem);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+}
+.schema-diagram .sd-col.define  .sd-group { color: var(--sd-define); }
+.schema-diagram .sd-col.execute .sd-group { color: var(--sd-execute); }
+.schema-diagram .sd-col.score   .sd-group { color: var(--sd-score); }
+.schema-diagram .sd-col.observe .sd-group { color: var(--sd-observe); }
+
+.schema-diagram .sd-card {
+  position: relative;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-left: 3px solid var(--sd-bar, var(--md-default-fg-color--lighter));
+  border-radius: var(--doc-radius, 0.55rem);
+  padding: clamp(0.35rem, 1.05cqi, 0.5rem) clamp(0.4rem, 1.2cqi, 0.6rem) clamp(0.4rem, 1.15cqi, 0.55rem);
+  background: var(--md-default-bg-color);
+  transition: border-color 0.2s ease;
+}
+.schema-diagram .sd-col.define  .sd-card { --sd-bar: var(--sd-define); }
+.schema-diagram .sd-col.execute .sd-card { --sd-bar: var(--sd-execute); }
+.schema-diagram .sd-col.score   .sd-card { --sd-bar: var(--sd-score); }
+.schema-diagram .sd-col.observe .sd-card { --sd-bar: var(--sd-observe); }
+.schema-diagram .sd-card:hover { border-color: var(--sd-bar, var(--md-default-fg-color--lighter)); }
+.schema-diagram .sd-card.deprecated { opacity: 0.65; }
+
+.schema-diagram .sd-key {
+  font-family: var(--md-code-font, monospace);
+  font-size: clamp(0.6rem, 1.9cqi, 0.82rem);
+  font-weight: 700;
+  color: var(--md-default-fg-color);
+}
+
+/* Card title as a link; the ::after stretches over the whole card so a click
+   anywhere on the pane navigates to that key's reference page. */
+.schema-diagram a.sd-key {
+  text-decoration: none;
+  color: var(--md-default-fg-color);
+}
+.schema-diagram a.sd-key:hover { color: var(--sd-bar, var(--md-default-fg-color)); }
+.schema-diagram a.sd-link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+.schema-diagram .sd-purpose {
+  margin: 0.12rem 0 0.42rem;
+  font-size: clamp(0.52rem, 1.5cqi, 0.71rem);
+  line-height: 1.4;
+  color: var(--md-default-fg-color--light);
+}
+
+.schema-diagram .sd-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: clamp(0.16rem, 0.5cqi, 0.28rem);
+}
+
+.schema-diagram .sd-f {
+  font-family: var(--md-code-font, monospace);
+  font-size: clamp(0.5rem, 1.45cqi, 0.68rem);
+  color: var(--md-default-fg-color);
+  background: var(--md-code-bg-color);
+  border-radius: 0.3rem;
+  padding: 0.06rem clamp(0.24rem, 0.7cqi, 0.36rem);
+  overflow-wrap: anywhere;
+}
+
+.schema-diagram .sd-badge {
+  margin-left: clamp(0.14rem, 0.5cqi, 0.28rem);
+  padding: 0 0.26rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-family: var(--md-text-font, inherit);
+  font-size: clamp(0.44rem, 1.15cqi, 0.56rem);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+.schema-diagram .sd-badge.llm { color: var(--sd-llm); }
+.schema-diagram .sd-badge.py  { color: var(--sd-py); }
+.schema-diagram .sd-badge.dep { color: var(--md-primary-fg-color); }
+
+.schema-diagram .sd-meta code { font-size: 0.9em; }
+
+@media (prefers-reduced-motion: reduce) {
+  .schema-diagram .sd-card { transition: none; }
+}

@@ -10,6 +10,196 @@ one `judge`.
     Harbor, EvalHub) is always a CLI flag (`--runner`), never a config key — so the
     same file runs unchanged everywhere.
 
+<div class="schema-diagram" role="img" aria-label="eval.yaml schema map, grouped into four stages. Define: dataset, generation, inputs.tools, outputs. Execute: execution, runner, models, permissions, hooks (top-level skill is deprecated). Score: judges, thresholds, reward. Observe: mlflow, traces. Every top-level key is optional.">
+  <p class="sd-meta">
+    Every top-level key is optional. <code>name</code> and <code>description</code> are the only non-deprecated top-level scalars.
+    <span class="sd-badge llm">LLM</span> marks natural-language fields interpreted by agents &amp; judges,
+    <span class="sd-badge py">PY</span> marks Python code or expressions, and <code>[]</code> marks a list.
+  </p>
+  <div class="sd-grid">
+
+    <div class="sd-col define">
+      <div class="sd-group">Define · what to evaluate</div>
+      <div class="sd-card">
+        <a class="sd-key sd-link" href="../config/dataset/">dataset</a>
+        <div class="sd-purpose">Where cases live and what they contain</div>
+        <div class="sd-fields">
+          <span class="sd-f">path</span>
+          <span class="sd-f">schema<span class="sd-badge llm">LLM</span></span>
+          <span class="sd-f">workspace.files[]</span>
+        </div>
+      </div>
+      <div class="sd-card">
+        <a class="sd-key sd-link" href="../config/generation/">generation</a>
+        <div class="sd-purpose">How <code>/eval-dataset</code> sources cases</div>
+        <div class="sd-fields">
+          <span class="sd-f">strategy</span>
+          <span class="sd-f">context<span class="sd-badge llm">LLM</span></span>
+          <span class="sd-f">seeds[]</span>
+        </div>
+      </div>
+      <div class="sd-card">
+        <a class="sd-key sd-link" href="../config/inputs-tools/">inputs.tools[]</a>
+        <div class="sd-purpose">Tool interception for headless runs</div>
+        <div class="sd-fields">
+          <span class="sd-f">match<span class="sd-badge llm">LLM</span></span>
+          <span class="sd-f">prompt<span class="sd-badge llm">LLM</span></span>
+          <span class="sd-f">prompt_file<span class="sd-badge llm">LLM</span></span>
+        </div>
+      </div>
+      <div class="sd-card">
+        <a class="sd-key sd-link" href="../config/outputs/">outputs[]</a>
+        <div class="sd-purpose">Artifacts and tool calls to collect</div>
+        <div class="sd-fields">
+          <span class="sd-f">path</span>
+          <span class="sd-f">tool</span>
+          <span class="sd-f">schema<span class="sd-badge llm">LLM</span></span>
+          <span class="sd-f">batch_pattern</span>
+          <span class="sd-f">types</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="sd-col execute">
+      <div class="sd-group">Execute · how it runs</div>
+      <div class="sd-card">
+        <a class="sd-key sd-link" href="../config/execution/">execution</a>
+        <div class="sd-purpose">What runs (skill <em>or</em> prompt), per case or batch</div>
+        <div class="sd-fields">
+          <span class="sd-f">mode</span>
+          <span class="sd-f">skill</span>
+          <span class="sd-f">prompt<span class="sd-badge llm">LLM</span></span>
+          <span class="sd-f">arguments</span>
+          <span class="sd-f">timeout</span>
+          <span class="sd-f">max_budget_usd</span>
+          <span class="sd-f">parallelism</span>
+          <span class="sd-f">env</span>
+        </div>
+      </div>
+      <div class="sd-card">
+        <a class="sd-key sd-link" href="../config/runner/">runner</a>
+        <div class="sd-purpose">Agent runtime and knobs</div>
+        <div class="sd-fields">
+          <span class="sd-f">type</span>
+          <span class="sd-f">effort</span>
+          <span class="sd-f">settings</span>
+          <span class="sd-f">plugin_dirs[]</span>
+          <span class="sd-f">env</span>
+          <span class="sd-f">system_prompt<span class="sd-badge llm">LLM</span></span>
+          <span class="sd-f">command</span>
+          <span class="sd-f">workspace_mode</span>
+        </div>
+      </div>
+      <div class="sd-card">
+        <a class="sd-key sd-link" href="../config/models/">models</a>
+        <div class="sd-purpose">Model per role (CLI flags override)</div>
+        <div class="sd-fields">
+          <span class="sd-f">skill</span>
+          <span class="sd-f">subagent</span>
+          <span class="sd-f">judge</span>
+          <span class="sd-f">hook</span>
+        </div>
+      </div>
+      <div class="sd-card">
+        <a class="sd-key sd-link" href="../config/permissions/">permissions</a>
+        <div class="sd-purpose">Tool allow / deny for headless runs</div>
+        <div class="sd-fields">
+          <span class="sd-f">allow[]</span>
+          <span class="sd-f">deny[]</span>
+        </div>
+      </div>
+      <div class="sd-card">
+        <a class="sd-key sd-link" href="../config/hooks/">hooks</a>
+        <div class="sd-purpose">Lifecycle shell commands</div>
+        <div class="sd-fields">
+          <span class="sd-f">before_all[]</span>
+          <span class="sd-f">before_each[]</span>
+          <span class="sd-f">after_each[]</span>
+          <span class="sd-f">before_scoring[]</span>
+          <span class="sd-f">after_all[]</span>
+          <span class="sd-f">before_report[]</span>
+        </div>
+      </div>
+      <div class="sd-card deprecated">
+        <div class="sd-key">skill<span class="sd-badge dep">deprecated</span></div>
+        <div class="sd-purpose">Top-level <code>skill:</code> — use <code>execution.skill</code></div>
+      </div>
+    </div>
+
+    <div class="sd-col score">
+      <div class="sd-group">Score · how it's judged</div>
+      <div class="sd-card">
+        <a class="sd-key sd-link" href="../config/judges/">judges[]</a>
+        <div class="sd-purpose">How each case is scored — four judge types</div>
+        <div class="sd-fields">
+          <span class="sd-f">name</span>
+          <span class="sd-f">description<span class="sd-badge llm">LLM</span></span>
+          <span class="sd-f">if<span class="sd-badge py">PY</span></span>
+          <span class="sd-f">check<span class="sd-badge py">PY</span></span>
+          <span class="sd-f">prompt<span class="sd-badge llm">LLM</span></span>
+          <span class="sd-f">prompt_file<span class="sd-badge llm">LLM</span></span>
+          <span class="sd-f">llm_rubric<span class="sd-badge llm">LLM</span></span>
+          <span class="sd-f">builtin</span>
+          <span class="sd-f">module<span class="sd-badge py">PY</span></span>
+          <span class="sd-f">function<span class="sd-badge py">PY</span></span>
+          <span class="sd-f">context[]</span>
+          <span class="sd-f">model</span>
+          <span class="sd-f">arguments</span>
+          <span class="sd-f">samples</span>
+          <span class="sd-f">score_range</span>
+          <span class="sd-f">feedback_type</span>
+        </div>
+      </div>
+      <div class="sd-card">
+        <a class="sd-key sd-link" href="../config/thresholds/">thresholds</a>
+        <div class="sd-purpose">Regression gates per judge</div>
+        <div class="sd-fields">
+          <span class="sd-f">min_mean</span>
+          <span class="sd-f">min_pass_rate</span>
+          <span class="sd-f">min_win_rate</span>
+        </div>
+      </div>
+      <div class="sd-card">
+        <a class="sd-key sd-link" href="../config/reward/">reward</a>
+        <div class="sd-purpose">Collapse judges into an RL scalar in [0, 1]</div>
+        <div class="sd-fields">
+          <span class="sd-f">judge</span>
+          <span class="sd-f">normalize</span>
+          <span class="sd-f">formula<span class="sd-badge py">PY</span></span>
+          <span class="sd-f">weights</span>
+          <span class="sd-f">gate</span>
+          <span class="sd-f">score_range</span>
+          <span class="sd-f">raw[]</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="sd-col observe">
+      <div class="sd-group">Observe · what's captured</div>
+      <div class="sd-card">
+        <a class="sd-key sd-link" href="../config/mlflow/">mlflow</a>
+        <div class="sd-purpose">Experiment tracking — presence opts in</div>
+        <div class="sd-fields">
+          <span class="sd-f">experiment</span>
+          <span class="sd-f">tracking_uri</span>
+          <span class="sd-f">tags</span>
+        </div>
+      </div>
+      <div class="sd-card">
+        <a class="sd-key sd-link" href="../config/traces/">traces</a>
+        <div class="sd-purpose">Execution data captured for judges</div>
+        <div class="sd-fields">
+          <span class="sd-f">stdout</span>
+          <span class="sd-f">stderr</span>
+          <span class="sd-f">events</span>
+          <span class="sd-f">metrics</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
 ## Top-level keys
 
 | Key | Purpose | Reference |
