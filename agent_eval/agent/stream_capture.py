@@ -49,6 +49,19 @@ def inject_timestamp(line: str) -> str:
 
 # ── Usage extraction ─────────────────────────────────────────────────
 
+def _is_real_model(name):
+    """Whether ``name`` is a genuine model, not a Claude Code placeholder.
+
+    Claude Code stamps some assistant messages with a bracketed pseudo-model
+    such as ``"<synthetic>"`` — zero-token placeholder turns it materializes
+    itself (e.g. a turn terminated by a stop sequence, which has no
+    server-attributed model). These must be excluded from model/turn
+    accounting, otherwise the pseudo-model surfaces as a spurious "subagent
+    model" and pollutes per-model turn counts.
+    """
+    return bool(name) and not (name.startswith("<") and name.endswith(">"))
+
+
 def extract_usage(stdout_lines):
     """Extract token usage, cost, turns, and models from stream-json events.
 
@@ -92,16 +105,19 @@ def extract_usage(stdout_lines):
         if obj.get("type") == "assistant":
             msg_id = obj.get("message", {}).get("id")
             model = obj.get("message", {}).get("model")
+            # Keep placeholder turns in seen_msg_ids (they are real stream
+            # turns for dedup/total counting), but exclude their pseudo-model
+            # from per-model accounting and models_seen.
             if msg_id:
                 seen_msg_ids.add(msg_id)
-                if model:
+                if _is_real_model(model):
                     seen_msg_ids_by_model.setdefault(model, set()).add(msg_id)
             u = obj.get("message", {}).get("usage", {})
             fb_input += u.get("input_tokens", 0)
             fb_output += u.get("output_tokens", 0)
             fb_cache_read += u.get("cache_read_input_tokens", 0)
             fb_cache_create += u.get("cache_creation_input_tokens", 0)
-            if model:
+            if _is_real_model(model):
                 models_seen.add(model)
         elif obj.get("type") == "result":
             cost_usd = obj.get("total_cost_usd", cost_usd)
@@ -227,7 +243,7 @@ def count_subagent_turns_by_model(subagent_dir, already_seen_by_model=None):
                     if msg.get("role") == "assistant":
                         msg_id = msg.get("id")
                         model = msg.get("model")
-                        if msg_id and model:
+                        if msg_id and _is_real_model(model):
                             seen.setdefault(model, set()).add(msg_id)
         except OSError:
             continue
