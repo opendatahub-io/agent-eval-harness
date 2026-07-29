@@ -42,12 +42,6 @@ If `--config` provided, use that path. Otherwise run `python3 ${CLAUDE_SKILL_DIR
 
 Set the resolved config path as `<config>` for all subsequent steps. Set `<eval_md_path>` to the same directory as `<config>`, with filename `eval.md`.
 
-**Modes**: 
-- `--skill my-skill` → skill-based eval (`execution.skill`, case/batch mode)
-- `--prompt examples/openshift-agentic-docs.md` → prompt-based eval (`execution.prompt`, case mode, tests agent capabilities)
-- `--assess` → batch assessment of all skills (no eval.yaml generated)
-- See `examples/` for domain-specific analysis prompt recipes
-
 ## Batch Assessment
 
 If `--assess` was provided (even with `--skill`, which is ignored in this mode):
