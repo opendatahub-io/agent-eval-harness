@@ -2,10 +2,14 @@
 
 ## Launching
 
-Launch execute.py using the Bash tool with `run_in_background: true`. **Do NOT
-pipe the command** through `tail`, `head`, `grep`, or any other filter — piping
-buffers all output and prevents progress monitoring. The command must be the bare
-`python3 ... execute.py ...` invocation with no pipes.
+Launch execute.py using the Bash tool with `run_in_background: true`, and **do NOT
+redirect or pipe its output** — no `>`, `|`, `tee`, `2>&1`, `tail`, `head`, or
+`grep`. Claude Code's background-command viewer (and the output-file path the Bash
+tool returns) shows the process's *own* stdout/stderr stream; any redirect or pipe
+diverts that stream and leaves the viewer blank. The command must be the bare
+`python3 ... execute.py ...` invocation. You don't need a redirect for a durable
+log: execute.py already mirrors its live console to `<output_dir>/console.log`, and
+emits a `WARNING:` if it detects its stdout was redirected into the run directory.
 
 ## Session lifecycle warning
 
@@ -20,15 +24,19 @@ modes:
   killed silently if no tool calls keep the session active.
 
 You must keep polling until execution completes. Poll every 2–3 minutes with
-`tail -20 <output_file>` — this keeps the session active and prevents the idle
+`tail -20 <output_file>` (the path the Bash tool returned) or
+`tail -20 <output_dir>/console.log` (the run dir passed via `--output`) — never a
+self-created redirect. Polling keeps the session active and prevents the idle
 timeout from firing.
 
 ## Monitoring progress
 
-Once launched, the Bash tool returns an output file path. Monitor by reading it:
+Once launched, the Bash tool returns an output file path. Monitor by reading it (or
+the stable `console.log` mirror) — never a self-created redirect:
 
 ```bash
-tail -20 <output_file>
+tail -20 <output_file>             # the path the Bash tool returned
+tail -20 <output_dir>/console.log  # execute.py's own mirrored console
 ```
 
 Look for phase markers (`## Phase`, `## Step`, `Batch N/M`), agent counts
