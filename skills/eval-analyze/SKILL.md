@@ -42,6 +42,12 @@ If `--config` provided, use that path. Otherwise run `python3 ${CLAUDE_SKILL_DIR
 
 Set the resolved config path as `<config>` for all subsequent steps. Set `<eval_md_path>` to the same directory as `<config>`, with filename `eval.md`.
 
+**Modes**: 
+- `--skill my-skill` → skill-based eval (`execution.skill`, case/batch mode)
+- `--prompt examples/openshift-agentic-docs.md` → prompt-based eval (`execution.prompt`, case mode, tests agent capabilities)
+- `--assess` → batch assessment of all skills (no eval.yaml generated)
+- See `examples/` for domain-specific analysis prompt recipes
+
 ## Batch Assessment
 
 If `--assess` was provided (even with `--skill`, which is ignored in this mode):
@@ -51,11 +57,6 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/assess_skills.py --json
 ```
 
 If empty, report no skills found and stop. Otherwise, read `${CLAUDE_SKILL_DIR}/prompts/assess-skills.md` and follow its instructions to classify each skill and display the grouped report. Offer to run `/eval-analyze --skill <name>` on RECOMMENDED skills. **Stop here — do not proceed to Step 1.**
-
-**Modes**: 
-- `--skill my-skill` → skill-based eval (`execution.skill`, case/batch mode)
-- `--prompt examples/openshift-agentic-docs.md` → prompt-based eval (`execution.prompt`, case mode, tests agent capabilities)
-- See `examples/` for domain-specific analysis prompt recipes
 
 ## Step 1: Determine Analysis Mode
 
@@ -79,7 +80,7 @@ If empty, report no skills found and stop. Otherwise, read `${CLAUDE_SKILL_DIR}/
 python3 ${CLAUDE_SKILL_DIR}/scripts/find_skills.py --name <skill>
 ```
 
-**If neither `--skill` nor `--assess` was provided**, list all project skills:
+**If `--skill` was not provided**, list all project skills:
 
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/find_skills.py
