@@ -13,7 +13,7 @@ or clean up. They are configured under the top-level `hooks:` key in `eval.yaml`
     [tool interception](tool-interception.md). If you're trying to fake a Jira API or
     auto-answer an `AskUserQuestion`, you want tool interception, not this page.
 
-## The five phases
+## The six phases
 
 | Phase | Runs | Working directory | Guaranteed? |
 | --- | --- | --- | --- |
@@ -22,6 +22,7 @@ or clean up. They are configured under the top-level `hooks:` key in `eval.yaml`
 | `after_each` | After every case (case/prompt mode only) | case workspace | **Yes** — `finally`, even on error |
 | `before_scoring` | Once, before judges run (in `score.py`) | project root | No — a failure aborts scoring |
 | `after_all` | Once, after all cases complete | project root | **Yes** — `finally`, even on error |
+| `before_report` | Once, during report generation — after `analysis.md` is authored, before the HTML is assembled | project root | **Yes** — runs via `run_hooks_safe`, so a failure is logged and never fails the report |
 
 ```mermaid
 flowchart TD
@@ -29,6 +30,7 @@ flowchart TD
     B --> C[before_each] --> D[execute case] --> E[after_each]
     E --> B
     B -->|all cases done| F[before_scoring] --> G[judges] --> H[after_all]
+    H --> R[before_report] --> RPT[report]
     E -.finally.-> H
     %% Color-code phases with borders, NOT fills. Material renders Mermaid in a
     %% closed shadow DOM and forces node label text to a theme-adaptive color
@@ -39,6 +41,7 @@ flowchart TD
     style A stroke:#42a5f5,stroke-width:3px
     style F stroke:#42a5f5,stroke-width:3px
     style H stroke:#ffa726,stroke-width:3px
+    style R stroke:#ffa726,stroke-width:3px
     style C stroke:#66bb6a,stroke-width:3px
     style E stroke:#66bb6a,stroke-width:3px
 ```

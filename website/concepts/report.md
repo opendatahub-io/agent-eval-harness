@@ -144,10 +144,11 @@ harness trains on, so the number shown matches your configured
 formula). Numeric cells are green/amber/red by where the score falls in the
 judge's `score_range`; a bottom **Average** row summarises scored cases.
 
-!!! note "Only meaningful with a reward config"
-    Without a `reward:` block the table still renders using the default
-    resolution (boolean gates × averaged normalised numerics). Define
-    `reward:` to make the column reflect real training behaviour.
+!!! note "Only rendered with a reward config"
+    The Per-Case Reward Overview is **omitted entirely** unless the config defines
+    a `reward:` block — judge-only evals don't get this section (the Scoring
+    Summary and Per-Case Details already cover every judge score). Define
+    `reward:` to enable it and reflect real training behaviour.
 
 ## The sampling-stability view
 

@@ -11,7 +11,7 @@ afterwards. Each phase is a list of hook entries executed in order.
     which rewrites tool calls *inside* the agent. Two different mechanisms — this
     page is only about the pipeline lifecycle hooks.
 
-## The five phases
+## The six phases
 
 ```mermaid
 flowchart TD
@@ -23,6 +23,7 @@ flowchart TD
     B -->|all cases done| F[before_scoring]
     F --> G[judges run]
     G --> H[after_all]
+    H --> R[before_report]
 ```
 
 | Phase | When it runs | Working directory | On failure |
@@ -32,6 +33,7 @@ flowchart TD
 | `after_each` | After each case (guaranteed, even on error) | Case workspace | Always continues |
 | `before_scoring` | Once, after all cases, before judges | Project root | Aborts scoring |
 | `after_all` | Once, after everything (guaranteed) | Project root | Always continues |
+| `before_report` | Once, during report generation (after `analysis.md`, before HTML render) | Project root | Always continues (`run_hooks_safe`) |
 
 !!! note "Guaranteed cleanup phases"
     `after_each` and `after_all` run inside a `finally` block, so they fire even
