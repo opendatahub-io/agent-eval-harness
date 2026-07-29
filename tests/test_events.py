@@ -502,6 +502,209 @@ class TestConversationRendering:
         assert extract_conversation_text(events) == ""
 
 
+class TestThinkingPreservation:
+    """Extended-thinking (chain-of-thought) blocks must survive parsing and,
+    via extract_conversation_text(include_thinking=True), reach the
+    reasoning-quality judge through {{ reasoning }}. Without
+    this the judge grades only terse inter-tool narration (e.g. "DONE RFE-017").
+    The plain {{ conversation }} (include_thinking=False) stays visible-text-only
+    so judges that grade output (e.g. safety) don't see private CoT."""
+
+    def test_parse_stream_preserves_thinking(self):
+        """Main-stream assistant events keep thinking alongside text/tools."""
+        raw = {
+            "type": "assistant",
+            "message": {
+                "id": "msg_t1",
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking",
+                     "thinking": "Let me weigh the rubric criteria.",
+                     "signature": "sig"},
+                    {"type": "text", "text": "DONE RFE-017"},
+                    {"type": "tool_use", "name": "Write", "id": "tu_1",
+                     "input": {"file_path": "/f"}},
+                ],
+            },
+            "timestamp": "2026-04-14T20:00:01.000Z",
+        }
+        events = parse_stream_events(json.dumps(raw))
+        assert len(events) == 1
+        assert events[0]["thinking"] == "Let me weigh the rubric criteria."
+        assert events[0]["text"] == "DONE RFE-017"
+        assert events[0]["tools"][0]["name"] == "Write"
+
+    def test_parse_stream_no_thinking_key_when_absent(self):
+        """Events without thinking blocks omit the key (backward compatible)."""
+        raw = {
+            "type": "assistant",
+            "message": {"id": "msg_t2", "role": "assistant",
+                        "content": [{"type": "text", "text": "hi"}]},
+            "timestamp": "2026-04-14T20:00:01.000Z",
+        }
+        events = parse_stream_events(json.dumps(raw))
+        assert "thinking" not in events[0]
+
+    def test_parse_null_thinking_does_not_crash(self):
+        """A null/non-string thinking value (non-Anthropic provider) is skipped,
+        not fatal — otherwise the whole stream parse would abort."""
+        raw = {
+            "type": "assistant",
+            "message": {"id": "msg_n", "role": "assistant",
+                        "content": [
+                            {"type": "thinking", "thinking": None},
+                            {"type": "text", "text": "ok"},
+                        ]},
+            "timestamp": "2026-04-14T20:00:01.000Z",
+        }
+        events = parse_stream_events(json.dumps(raw))  # must not raise
+        assert events[0]["text"] == "ok"
+        assert "thinking" not in events[0]
+
+    def test_redacted_thinking_marker(self):
+        """redacted_thinking contributes a marker so a redacted turn isn't
+        mistaken for absence of reasoning."""
+        raw = {
+            "type": "assistant",
+            "message": {"id": "msg_r", "role": "assistant",
+                        "content": [
+                            {"type": "redacted_thinking", "data": "enc"},
+                            {"type": "tool_use", "name": "Read", "id": "tu_r",
+                             "input": {}},
+                        ]},
+            "timestamp": "2026-04-14T20:00:01.000Z",
+        }
+        events = parse_stream_events(json.dumps(raw))
+        assert events[0]["thinking"] == "[redacted thinking]"
+        assert "[redacted thinking]" in extract_conversation_text(
+            events, include_thinking=True)
+
+    def test_multiple_thinking_blocks_separated(self):
+        """Multiple thinking blocks in one message keep their boundaries."""
+        raw = {
+            "type": "assistant",
+            "message": {"id": "msg_m", "role": "assistant",
+                        "content": [
+                            {"type": "thinking", "thinking": "first"},
+                            {"type": "thinking", "thinking": "second"},
+                        ]},
+            "timestamp": "2026-04-14T20:00:01.000Z",
+        }
+        events = parse_stream_events(json.dumps(raw))
+        assert events[0]["thinking"] == "first\nsecond"
+
+    def test_merge_subagent_preserves_thinking(self, tmp_path):
+        """Subagent transcripts (the reasoning_quality source) keep thinking."""
+        subdir = tmp_path / "subagents"
+        subdir.mkdir()
+        transcript = [
+            {"message": {"id": "msg_s1", "role": "assistant",
+                         "content": [
+                             {"type": "thinking",
+                              "thinking": "Deliberating S/M/L sizing."},
+                             {"type": "text", "text": "sized M"},
+                         ]},
+             "timestamp": "2026-04-14T20:00:01.000Z"},
+        ]
+        (subdir / "agent-sub1.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in transcript))
+        merged = merge_subagent_transcripts([], str(subdir))
+        assert len(merged) == 1
+        assert merged[0]["thinking"] == "Deliberating S/M/L sizing."
+        assert merged[0]["agent_id"] == "agent-sub1"
+
+    def test_merge_backfills_thinking_on_dedup(self, tmp_path):
+        """Case mode: a thinking-less stdout copy seen first gets its CoT
+        backfilled from the transcript copy rather than dropped."""
+        stream = {
+            "type": "assistant",
+            "parent_tool_use_id": "tu_agent",
+            "agent_id": "agent-sub1",
+            "message": {"id": "msg_dup", "role": "assistant",
+                        "content": [{"type": "tool_use", "name": "Read",
+                                     "id": "tu_x", "input": {"file_path": "/f"}}]},
+            "timestamp": "2026-04-14T20:00:01.000Z",
+        }
+        seed = parse_stream_events(json.dumps(stream))
+        assert "thinking" not in seed[0]
+
+        subdir = tmp_path / "subagents"
+        subdir.mkdir()
+        transcript = [
+            {"message": {"id": "msg_dup", "role": "assistant",
+                         "content": [
+                             {"type": "thinking", "thinking": "the real CoT"},
+                             {"type": "tool_use", "name": "Read", "id": "tu_x",
+                              "input": {"file_path": "/f"}},
+                         ]},
+             "timestamp": "2026-04-14T20:00:01.000Z"},
+        ]
+        (subdir / "agent-sub1.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in transcript))
+        merged = merge_subagent_transcripts(seed, str(subdir))
+        dup = [e for e in merged if e.get("_msg_id") == "msg_dup"]
+        assert len(dup) == 1  # deduped, not duplicated
+        assert dup[0]["thinking"] == "the real CoT"
+
+    def test_conversation_default_excludes_thinking(self):
+        """Default extract stays visible-text-only (safety judge / baseline safe)."""
+        events = [
+            {"type": "assistant", "thinking": "private cot", "text": "visible",
+             "tools": [], "timestamp": "2026-04-14T20:00:01.000Z"},
+        ]
+        rendered = extract_conversation_text(events)  # include_thinking=False
+        assert rendered == "visible"
+        assert "private cot" not in rendered
+        assert "[thinking]" not in rendered
+
+    def test_conversation_includes_thinking_before_text(self):
+        """include_thinking emits thinking (labeled) before visible text."""
+        events = [
+            {"type": "assistant",
+             "thinking": "Deliberating S/M/L sizing.",
+             "text": "sized M", "tools": [],
+             "timestamp": "2026-04-14T20:00:01.000Z"},
+        ]
+        rendered = extract_conversation_text(events, include_thinking=True)
+        assert "[thinking]" in rendered
+        assert "Deliberating S/M/L sizing." in rendered
+        assert rendered.index("Deliberating") < rendered.index("sized M")
+
+    def test_conversation_thinking_only(self):
+        """A turn with only thinking (no visible text) still contributes."""
+        events = [
+            {"type": "assistant", "thinking": "pure reasoning", "text": "",
+             "tools": [], "timestamp": "2026-04-14T20:00:01.000Z"},
+        ]
+        assert "pure reasoning" in extract_conversation_text(
+            events, include_thinking=True)
+
+    def test_conversation_skips_subagent_thinking(self):
+        """Subagent-embedded events (parent_tool_use_id) remain filtered even
+        with include_thinking."""
+        events = [
+            {"type": "assistant", "thinking": "sub cot", "text": "sub text",
+             "tools": [], "parent_tool_use_id": "tu_agent",
+             "agent_id": "agent-001",
+             "timestamp": "2026-04-14T20:00:01.000Z"},
+        ]
+        assert extract_conversation_text(events, include_thinking=True) == ""
+
+    def test_conversation_thinking_capped(self):
+        """Reasoning-inclusive conversation is capped so a verbose run can't
+        overflow the judge prompt."""
+        from agent_eval.events import CONVERSATION_THINKING_CAP
+        big = "x" * (CONVERSATION_THINKING_CAP + 5000)
+        events = [
+            {"type": "assistant", "thinking": big, "text": "", "tools": [],
+             "timestamp": "2026-04-14T20:00:01.000Z"},
+        ]
+        rendered = extract_conversation_text(events, include_thinking=True)
+        assert rendered.endswith("[conversation truncated]")
+        assert len(rendered) <= CONVERSATION_THINKING_CAP + len(
+            "\n\n[conversation truncated]")
+
+
 
 # ---------------------------------------------------------------------------
 # T014: process quality judge pattern
