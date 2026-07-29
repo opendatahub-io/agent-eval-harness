@@ -48,6 +48,11 @@ def _parse_frontmatter(content):
         return {}
 
 
+def _base_tool_name(tool_spec):
+    """Strip scope suffix from a tool specifier, e.g. 'Bash(git:*)' -> 'Bash'."""
+    return tool_spec.split("(", 1)[0].strip()
+
+
 def _parse_tools(fm):
     """Extract allowed-tools list from frontmatter.
 
@@ -57,9 +62,10 @@ def _parse_tools(fm):
     if tools_raw is None:
         return ALL_TOOLS
     if isinstance(tools_raw, list):
-        return {str(t) for t in tools_raw if isinstance(t, (str, int, float))}
+        return {_base_tool_name(str(t)) for t in tools_raw
+                if isinstance(t, (str, int, float))}
     if isinstance(tools_raw, str) and tools_raw.strip():
-        return {t.strip() for t in tools_raw.split(",") if t.strip()}
+        return {_base_tool_name(t) for t in tools_raw.split(",") if t.strip()}
     return ALL_TOOLS
 
 
@@ -101,7 +107,8 @@ def assess_all():
             tools = _parse_tools(fm)
             body = _extract_body(content)
 
-            has_eval = skill["dir_name"] in eval_names
+            has_eval = (skill["dir_name"] in eval_names
+                       or skill["name"] in eval_names)
 
             meta = {
                 "name": skill["name"],
@@ -116,7 +123,10 @@ def assess_all():
                 "script_count": _count_scripts(path),
                 "has_existing_eval": has_eval,
                 "skill_body_excerpt": "<<<EXCERPT>>>"
-                + body.strip()[:BODY_EXCERPT_LIMIT]
+                + (body.strip()
+                   .replace("<<<EXCERPT>>>", "")
+                   .replace("<<<END_EXCERPT>>>", "")
+                   [:BODY_EXCERPT_LIMIT])
                 + "<<<END_EXCERPT>>>",
             }
 

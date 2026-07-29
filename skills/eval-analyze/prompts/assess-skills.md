@@ -45,3 +45,5 @@ For each: `skill-name` — one sentence explaining why evals aren't needed.
 End with a summary line: `N recommended, N optional, N skip, N already have evals (N total)`.
 
 Omit any group that has no skills in it.
+
+After displaying the report, offer to run `/eval-analyze --skill <name>` on any of the RECOMMENDED skills.
