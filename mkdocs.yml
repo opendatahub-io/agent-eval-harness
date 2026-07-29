@@ -98,7 +98,7 @@ plugins:
   - llmstxt:
       markdown_description: >-
         A generic evaluation framework for skills and agent capabilities, driven by a
-        single declarative eval.yaml — drive any agent runner (Claude Code, OpenCode),
+        single declarative eval.yaml — drive any agent harness (Claude Code, OpenCode, Pi, etc),
         run locally or on the Harbor and EvalHub backends, export rewards for RL training,
         and record traces, datasets, and reports in MLflow.
       full_output: llms-full.txt
