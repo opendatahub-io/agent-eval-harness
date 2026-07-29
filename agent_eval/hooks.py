@@ -273,7 +273,7 @@ def main():
                         help="Path to eval.yaml")
     parser.add_argument("--phase", required=True,
                         choices=["before_all", "before_each", "after_each",
-                                 "before_scoring", "after_all"],
+                                 "before_scoring", "after_all", "before_report"],
                         help="Hook phase to run")
     parser.add_argument("--workspace", required=True,
                         help="Workspace root path")
