@@ -141,6 +141,16 @@ def main():
     # Generate events.json from run-level stdout.log (shared across all cases)
     if config.traces.events:
         _generate_events_json(workspace, output_dir, config)
+        # In batch mode there is no per-case transcript; route each case's own
+        # subagent transcripts into a per-case events.json so judges that read
+        # {{ conversation }} see that case's reasoning, not the shared whole-batch
+        # trace. Unmapped cases keep the run-root fallback.
+        bp = next((o.batch_pattern for o in config.outputs
+                   if o.batch_pattern and "{" in o.batch_pattern), None)
+        routed = _route_subagent_events_per_case(
+            workspace, output_dir, case_order, bp)
+        if routed:
+            print(f"  routed per-case subagent traces for {routed} cases")
 
     if not results:
         print("WARNING: no artifacts collected", file=sys.stderr)
@@ -224,6 +234,96 @@ def _collect_per_case(workspace, output_dir, config):
 
     if not results:
         print("WARNING: no artifacts collected", file=sys.stderr)
+
+
+def _subagent_entity_num(transcript_path, prefix):
+    """Map a subagent transcript to the entity number it worked on, or None.
+
+    Batch runs assign each subagent an id like ``<prefix><n>`` (the numbering
+    the output batch_pattern uses). The opening task message carries it either
+    as an explicit ``ID=<prefix><n>`` or as the first ``<prefix><n>`` mention.
+    Returns the integer ``<n>``, or None when no id is present — in which case
+    the caller leaves that case on the shared run-root trace (never worse than
+    the prior behaviour).
+    """
+    import re
+    esc = re.escape(prefix)
+    try:
+        with open(transcript_path, encoding="utf-8", errors="replace") as fh:
+            first = fh.readline()
+    except OSError:
+        return None
+    try:
+        content = json.loads(first).get("message", {}).get("content", "")
+    except (json.JSONDecodeError, ValueError, AttributeError):
+        content = ""
+    if isinstance(content, list):
+        content = " ".join(
+            c.get("text", "") if isinstance(c, dict) else str(c) for c in content)
+    content = str(content)
+    m = (re.search(r'ID=' + esc + r'0*(\d+)', content)
+         or re.search(esc + r'0*(\d+)', content))
+    return int(m.group(1)) if m else None
+
+
+def _route_subagent_events_per_case(workspace, output_dir, case_order, batch_pattern):
+    """Write a per-case events.json from each case's own subagent transcripts.
+
+    In batch mode there is no per-case transcript, so judges that read
+    {{ conversation }} otherwise fall back to the shared whole-batch trace and
+    score every case against the same text. This maps each subagent transcript
+    to its case via the ``<prefix><n>`` id it processed (same numbering the
+    batch_pattern uses) and merges that case's transcripts into
+    cases/<case>/events.json, which score.py prefers over the run-root fallback.
+    Cases with no mapped transcript are left untouched (they keep the shared
+    fallback). Returns the number of cases given a per-case trace.
+    """
+    subdir = workspace / "subagents"
+    if not subdir.is_dir() or not batch_pattern or "{" not in batch_pattern:
+        return 0
+    prefix = batch_pattern.split("{", 1)[0]
+    if not prefix:
+        return 0
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for tp in sorted(subdir.glob("*.jsonl")):
+        n = _subagent_entity_num(tp, prefix)
+        if n is not None:
+            groups[n].append(tp)
+    if not groups:
+        return 0
+
+    routed = 0
+    batch_idx = 1
+    for entry in case_order:
+        cid = entry["case_id"] if isinstance(entry, dict) else entry
+        count = entry.get("entry_count", 1) if isinstance(entry, dict) else 1
+        tps = [t for n in range(batch_idx, batch_idx + count)
+               for t in groups.get(n, [])]
+        batch_idx += count
+        if not tps:
+            continue
+        case_dir = output_dir / "cases" / _safe_path_component(cid, "case_id")
+        case_sub = case_dir / "subagents"
+        case_sub.mkdir(parents=True, exist_ok=True)
+        for tp in tps:
+            shutil.copy2(tp, case_sub / tp.name)
+        events = merge_subagent_transcripts([], str(case_sub),
+                                            result_cap=DEFAULT_RESULT_CAP)
+        dest = case_dir / "events.json"
+        fd, tmp_path = tempfile.mkstemp(dir=str(case_dir), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(events, f, indent=2)
+            os.rename(tmp_path, str(dest))
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        routed += 1
+    return routed
 
 
 def _generate_events_json(case_dir, output_case_dir, config):
