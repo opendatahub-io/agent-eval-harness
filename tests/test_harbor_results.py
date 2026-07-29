@@ -203,3 +203,38 @@ def test_trial_error_reason_is_sanitized(tmp_path):
     assert "\x1b" not in reason and "\t" not in reason   # raw control chars gone
     assert "\\x1b" in reason                              # escaped form retained
     assert len(reason) <= 200
+
+
+def test_merge_per_model_accumulates():
+    acc: dict = {}
+    R._merge_per_model(acc, {"m1": {"input": 10, "output": 5, "cost_usd": 0.1}})
+    R._merge_per_model(acc, {"m1": {"input": 3, "output": 2, "cost_usd": 0.05},
+                             "m2": {"input": 7, "output": 1, "cost_usd": None}})
+    R._merge_per_model(acc, None)  # None-safe no-op
+    assert acc["m1"]["input"] == 13
+    assert acc["m1"]["output"] == 7
+    assert acc["m1"]["cache_read"] == 0 and acc["m1"]["cache_create"] == 0
+    assert abs(acc["m1"]["cost_usd"] - 0.15) < 1e-9
+    assert acc["m2"] == {"input": 7, "output": 1, "cache_read": 0,
+                         "cache_create": 0, "cost_usd": None}
+
+
+def test_extract_transcript_metrics_per_model(tmp_path):
+    tp = tmp_path / "transcript.jsonl"
+    result_ev = {
+        "type": "result", "total_cost_usd": 0.42, "num_turns": 3,
+        "usage": {"input_tokens": 100, "output_tokens": 50},
+        "modelUsage": {
+            "z-ai/glm-5.2": {
+                "inputTokens": 100, "outputTokens": 50,
+                "cacheReadInputTokens": 10, "cacheCreationInputTokens": 0,
+                "costUSD": 0.42,
+            },
+        },
+    }
+    tp.write_text(json.dumps(result_ev) + "\n")
+    m = R._extract_transcript_metrics(tp)
+    assert m["per_model_usage"] == {
+        "z-ai/glm-5.2": {"input": 100, "output": 50, "cache_read": 10,
+                         "cache_create": 0, "cost_usd": 0.42},
+    }
