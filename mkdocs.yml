@@ -2,7 +2,8 @@
 # Re-run that generator (or edit nav here directly once content stabilizes).
 site_name: Agent Eval Harness
 site_description: >-
-  Evaluation framework for Claude Code skills and agent capabilities, built on MLflow.
+  A generic evaluation framework for skills and agent capabilities — analyze, build a
+  dataset, run, score with LLM and code judges, and improve, all from one declarative eval.yaml.
 site_url: https://opendatahub-io.github.io/agent-eval-harness/
 repo_url: https://github.com/opendatahub-io/agent-eval-harness
 repo_name: opendatahub-io/agent-eval-harness
@@ -96,8 +97,10 @@ plugins:
   # (full concatenated docs) for coding agents / LLMs.
   - llmstxt:
       markdown_description: >-
-        Evaluation framework for Claude Code skills and agent capabilities,
-        built on MLflow for tracing, datasets, and reporting.
+        A generic evaluation framework for skills and agent capabilities, driven by a
+        single declarative eval.yaml — drive any agent runner (Claude Code, OpenCode),
+        run locally or on the Harbor and EvalHub backends, export rewards for RL training,
+        and record traces, datasets, and reports in MLflow.
       full_output: llms-full.txt
       sections:
         Getting started:
