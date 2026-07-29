@@ -162,7 +162,9 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/execute.py \
   [--parallelism <n>]
 ```
 
-Launch with `run_in_background: true` (no pipes). **You must poll until the task completes** — do not end your turn while execute.py is running. Background tasks are killed when the session becomes idle: in `-p` mode, an `end_turn` exits the session immediately; in interactive mode, Claude Code SIGTERMs background tasks after ~55 minutes of inactivity. Poll progress every 2–3 minutes with `tail -20 <output_file>` to keep the session active. After completion, check `run_result.json` — if `exit_code` is non-zero, report the failure and stop. See `${CLAUDE_SKILL_DIR}/references/execution-monitoring.md` for polling patterns, problem detection, and CLI flag fallbacks.
+**Launch with `run_in_background: true` and do NOT redirect its output — no `>`, `|`, `tee`, or `2>&1`.** Claude Code's background-command viewer (and the output-file path the Bash tool returns) shows the process's *own* stdout/stderr stream; a redirect diverts that stream and leaves the viewer blank. You don't need a redirect for a stable log path: `execute.py` already mirrors its live console to `<output_dir>/console.log`.
+
+**You must poll until the task completes** — do not end your turn while execute.py is running. Background tasks are killed when the session becomes idle: in `-p` mode, an `end_turn` exits the session immediately; in interactive mode, Claude Code SIGTERMs background tasks after ~55 minutes of inactivity. **Monitor** every 2–3 minutes via the output-file path the Bash tool returns, or `tail -20 <output_dir>/console.log` (never a self-created redirect) — this tracks progress and keeps the session active. `execute.py` also emits a `WARNING:` if it detects its stdout was redirected into the run directory. After completion, check `run_result.json` — if `exit_code` is non-zero, report the failure and stop. See `${CLAUDE_SKILL_DIR}/references/execution-monitoring.md` for polling patterns, problem detection, and CLI flag fallbacks.
 
 ## Step 5: Collect Artifacts
 

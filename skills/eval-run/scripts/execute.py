@@ -49,6 +49,111 @@ _HARNESS_SYSTEM_PROMPT = (
 )
 
 
+class _Tee:
+    """Mirror writes to a real stream and a log file, flushing both.
+
+    Installed on ``sys.stdout``/``sys.stderr`` so execute.py populates the
+    background-command output stream (the real stdout/stderr that Claude
+    Code's viewer displays) AND a stable ``<output_dir>/console.log`` for
+    tailing. This removes any reason to redirect with ``>`` (which would
+    divert the real stream and leave the background viewer blank).
+    """
+
+    def __init__(self, stream, logfile):
+        self._stream = stream
+        self._logfile = logfile
+
+    def write(self, data):
+        n = self._stream.write(data)
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+        try:
+            self._logfile.write(data)
+            self._logfile.flush()
+        except Exception:
+            pass  # logging is best-effort; never break the run
+        return n
+
+    def flush(self):
+        for s in (self._stream, self._logfile):
+            try:
+                s.flush()
+            except Exception:
+                pass
+
+    def isatty(self):
+        try:
+            return self._stream.isatty()
+        except Exception:
+            return False
+
+    def fileno(self):
+        return self._stream.fileno()
+
+    def __getattr__(self, name):
+        # Delegate everything else (encoding, writable, buffer, …) to the
+        # real stream so the Tee is a faithful stand-in.
+        return getattr(self._stream, name)
+
+
+def _fd_path(fd):
+    """Best-effort absolute path backing a file descriptor, or None."""
+    try:
+        if sys.platform == "darwin":
+            import fcntl
+            F_GETPATH = 50  # macOS fcntl command: resolve an fd to its path
+            raw = fcntl.fcntl(fd, F_GETPATH, b"\0" * 1024)
+            return os.fsdecode(raw.split(b"\0", 1)[0])
+        return os.readlink(f"/proc/self/fd/{fd}")
+    except (OSError, ValueError, ImportError):
+        return None
+
+
+def _setup_console_log(output_dir):
+    """Mirror console output to ``<output_dir>/console.log`` and warn on a
+    stdout redirect into the run directory.
+
+    Claude Code's background-command viewer displays the launched process's
+    own stdout/stderr stream. Redirecting that stream to a file
+    (``python3 execute.py … > run/execute.log 2>&1``) leaves the viewer
+    blank. Teeing here gives a stable, tailable log without any redirect;
+    the guard flags the specific footgun of redirecting into the run dir
+    (the harness's own capture file lives in a separate temp tasks dir, so
+    this never false-fires on a correct background launch).
+
+    Returns the console.log Path, or None if it could not be opened.
+    """
+    console_log = output_dir / "console.log"
+    try:
+        fh = open(console_log, "w", buffering=1, encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    sys.stdout = _Tee(sys.stdout, fh)
+    sys.stderr = _Tee(sys.stderr, fh)
+    import atexit
+    atexit.register(fh.flush)
+
+    fd1 = _fd_path(1)
+    if fd1:
+        try:
+            p = Path(fd1).resolve()
+            out = output_dir.resolve()
+            if out == p or out in p.parents:
+                print(
+                    f"WARNING: execute.py stdout is redirected to {p}, inside the run "
+                    f"directory. Claude Code's background-command viewer shows the "
+                    f"process's own stdout stream and will appear BLANK. Re-launch "
+                    f"WITHOUT a '>' redirect (see eval-run SKILL.md Step 4); the live "
+                    f"console is already mirrored to {console_log}.",
+                    file=sys.stderr,
+                )
+        except OSError:
+            pass
+    return console_log
+
+
 def _resolve_permissions(config):
     """Return the permission rules to pass to the runner.
 
@@ -127,6 +232,11 @@ def main():
 
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Mirror all console output to <output_dir>/console.log so callers never
+    # need to redirect stdout with '>' (which blanks the background-command
+    # viewer). The real stdout/stderr streams still receive everything.
+    _setup_console_log(output_dir)
 
     # Resolve skill args: CLI override > config > empty
     # Treat empty/whitespace-only strings as unset (normalize before fallback)
