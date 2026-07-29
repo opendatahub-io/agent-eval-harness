@@ -77,6 +77,12 @@ def main():
         print("ERROR: run-id must match [A-Za-z0-9._-]+", file=sys.stderr)
         sys.exit(1)
 
+    # Auto-tag every model request with the run-id for per-run cost attribution.
+    # Configs whose execution.env references $EVAL_RUN_HEADER (e.g. eval-openrouter.yaml
+    # -> ANTHROPIC_CUSTOM_HEADERS) pick this up via _inject_env; other configs ignore it.
+    # Overriding here guarantees the tag always matches --run-id (no manual export).
+    os.environ["EVAL_RUN_HEADER"] = f"x-eval-run-id: {args.run_id}"
+
     # Create workspace in secure temp directory
     base_dir = (Path(tempfile.gettempdir()) / "agent-eval").resolve()
     workspace = (base_dir / args.run_id).resolve()
