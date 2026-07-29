@@ -304,6 +304,7 @@ def run_eval_on_harbor(
         "mean_reward": parsed["mean_reward"],
         "cost_usd": parsed.get("cost_usd"),
         "token_usage": parsed.get("token_usage"),
+        "per_model_usage": parsed.get("per_model_usage"),
         "harbor_job_dir": parsed["job_dir"],
         "n_infra_errors": parsed.get("n_infra_errors", 0),
         "infra_errors": parsed.get("infra_errors", []),
