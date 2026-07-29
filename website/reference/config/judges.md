@@ -129,7 +129,8 @@ LLM prompts (and `context` files) are rendered with these variables:
 | Variable | Contents |
 | --- | --- |
 | `{{ outputs }}` | File artifacts and modified files rendered as markdown. Also supports structured access: `{{ outputs.files }}`, `{{ outputs.events }}`. |
-| `{{ conversation }}` | Root-level assistant text (excludes subagent text and tool calls). |
+| `{{ conversation }}` | Root-level assistant **visible** text only (excludes subagent text, tool calls, and extended-thinking). |
+| `{{ reasoning }}` | Like `{{ conversation }}` but also includes the model's extended-thinking (chain-of-thought) — for reasoning-quality judges. Needs `traces.events: true`. |
 | `{{ tool_trace }}` | Chronological trace of tool calls (Read, Bash, Agent, …). |
 | `{{ inputs }}` | The case's `input.yaml` rendered as `**key**: value` per field. |
 | `{{ evidence }}` | Summary of tool activity (turns, cost, tools, files read/written). Lazily derived and cached. |

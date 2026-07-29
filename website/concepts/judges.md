@@ -103,10 +103,12 @@ parsing, so key names come straight from disk. Commonly available keys:
 !!! tip "LLM judge template variables"
     Inside a `prompt`/`prompt_file`/`llm_rubric` template you also get convenience
     variables rendered from the record: `{{ outputs }}` (formatted file listing),
-    `{{ conversation }}`, `{{ tool_trace }}` (chronological tool calls),
-    `{{ inputs }}`, `{{ annotations }}`, `{{ evidence }}` (verifiable tool-call
-    summary), and `{{ arguments }}`. Use `{{ tool_trace }}` to judge *behaviour*
-    (navigation, tool usage) and `{{ conversation }}` to judge the *response*.
+    `{{ conversation }}` (visible text only), `{{ reasoning }}` (visible text plus
+    the model's extended-thinking / chain-of-thought, for reasoning-quality judges),
+    `{{ tool_trace }}` (chronological tool calls), `{{ inputs }}`, `{{ annotations }}`,
+    `{{ evidence }}` (verifiable tool-call summary), and `{{ arguments }}`. Use
+    `{{ tool_trace }}` to judge *behaviour* (navigation, tool usage) and
+    `{{ conversation }}` to judge the *response*.
 
 ## Boolean vs numeric values
 

@@ -181,7 +181,8 @@ The prompt is rendered with these variables:
 | Variable | Value |
 | --- | --- |
 | `{{ outputs }}` | The record. Bare, it renders every artifact file as text; use `{{ outputs.files }}`, `{{ outputs.cost_usd }}`, etc. for structured access |
-| `{{ conversation }}` | Root-level assistant text from the event stream |
+| `{{ conversation }}` | Root-level assistant **visible** text from the event stream (excludes extended-thinking) |
+| `{{ reasoning }}` | `{{ conversation }}` plus the model's extended-thinking (chain-of-thought), for reasoning-quality judges |
 | `{{ inputs }}` | The case's `input.yaml`, formatted as `**key**: value` |
 | `{{ tool_trace }}` | Chronological trace of tool calls (Read, Bash, …) |
 | `{{ evidence }}` | Summary of verifiable tool evidence (turns, cost, files read/written) — derived only if referenced |
@@ -192,8 +193,8 @@ The prompt is rendered with these variables:
 !!! tip "Score scale vs. pass/fail"
     By default an LLM judge returns an integer **1–5 score** (aggregated as a mean). Set
     `feedback_type: bool` to make it a **pass/fail** judge (aggregated as a pass rate).
-    `{{ tool_trace }}` and `{{ evidence }}` need `traces.events: true`; `{{ conversation }}`
-    falls back to `stdout.log` when no events were captured.
+    `{{ tool_trace }}`, `{{ evidence }}`, and `{{ reasoning }}` need `traces.events: true`;
+    `{{ conversation }}` falls back to `stdout.log` when no events were captured.
 
 LLM judges are the only type that can be **sampled**. Set `samples: 3` to call the model
 several times per case and reduce the noise (median for scores, majority vote for
