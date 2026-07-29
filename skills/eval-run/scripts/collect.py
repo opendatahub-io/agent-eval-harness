@@ -145,8 +145,18 @@ def main():
         # subagent transcripts into a per-case events.json so judges that read
         # {{ conversation }} see that case's reasoning, not the shared whole-batch
         # trace. Unmapped cases keep the run-root fallback.
-        bp = next((o.batch_pattern for o in config.outputs
-                   if o.batch_pattern and "{" in o.batch_pattern), None)
+        # Routing keys on the batch_pattern's prefix (e.g. "RFE-" from
+        # "RFE-{n:03d}"). If placeholder outputs disagree on that prefix, one
+        # can't be chosen reliably — warn and use the first (unmapped cases
+        # still fall back to the run-root trace).
+        placeholder_bps = [o.batch_pattern for o in config.outputs
+                           if o.batch_pattern and "{" in o.batch_pattern]
+        prefixes = {b.split("{", 1)[0] for b in placeholder_bps}
+        if len(prefixes) > 1:
+            print(f"  WARNING: outputs use different batch-pattern prefixes "
+                  f"{sorted(prefixes)}; per-case trace routing uses the first",
+                  file=sys.stderr)
+        bp = placeholder_bps[0] if placeholder_bps else None
         routed = _route_subagent_events_per_case(
             workspace, output_dir, case_order, bp)
         if routed:
@@ -286,10 +296,18 @@ def _route_subagent_events_per_case(workspace, output_dir, case_order, batch_pat
         return 0
     from collections import defaultdict
     groups = defaultdict(list)
+    total = unmapped = 0
     for tp in sorted(subdir.glob("*.jsonl")):
+        total += 1
         n = _subagent_entity_num(tp, prefix)
         if n is not None:
             groups[n].append(tp)
+        else:
+            unmapped += 1
+    if unmapped:
+        print(f"  WARNING: {unmapped}/{total} subagent transcripts had no "
+              f"'{prefix}<n>' id marker; left on the shared run-root trace",
+              file=sys.stderr)
     if not groups:
         return 0
 

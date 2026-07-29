@@ -600,6 +600,12 @@ def _render_jinja2_template(template_text, arguments, outputs):
         from agent_eval.events import extract_conversation_text
         reasoning = extract_conversation_text(
             out["events"], include_thinking=True)
+    # Loud-not-silent: a judge referencing {{ reasoning }} with no event trace
+    # would silently score visible text only. Warn (reasoning needs traces.events).
+    if not out.get("events") and re.search(r"\{\{\s*reasoning\s*\}\}", template_text):
+        _TEMPLATE_LOGGER.warning(
+            "template references {{ reasoning }} but no event trace is available; "
+            "set traces.events: true — reasoning will be empty")
 
     # Pre-render case inputs for {{ inputs }}
     inputs_text = out.get("inputs", "")
