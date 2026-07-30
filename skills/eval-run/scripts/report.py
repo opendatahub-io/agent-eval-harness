@@ -2735,12 +2735,16 @@ def main():
     # because of a reporting-side hook.
     if config_obj.hooks.before_report:
         from agent_eval.hooks import build_hook_env, run_hooks_safe
+        # Give the hook the real run context: AGENT_EVAL_WORKSPACE = the run dir
+        # (so $AGENT_EVAL_WORKSPACE/analysis.md and other artifacts resolve), and
+        # the model from run_result.json.
+        _rr = _load_json(run_dir / "run_result.json") or {}
         hook_env = build_hook_env(
-            workspace="",
+            workspace=str(run_dir),
             run_id=args.run_id,
             config_path=str(Path(args.config).resolve()),
             project_root=str(Path.cwd()),
-            model="",
+            model=_rr.get("model", ""),
         )
         print("Running before_report hooks...", file=sys.stderr)
         run_hooks_safe(config_obj.hooks.before_report, env=hook_env,

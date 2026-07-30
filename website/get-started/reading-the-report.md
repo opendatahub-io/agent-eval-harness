@@ -49,7 +49,7 @@ flowchart TD
     AN --> SS[Scoring Summary — per-judge pass_rate / mean]
     SS --> RG[Regressions — only if a threshold is breached]
     RG --> SO[Shared Outputs — batch_pattern '*' files]
-    SO --> RO[Per-Case Reward Overview — grid of all judge scores]
+    SO --> RO["Per-Case Reward Overview — reward config only"]
     RO --> PC[Per-Case Details — rationale, artifacts, diffs]
 ```
 
@@ -99,7 +99,7 @@ color-coded cell. Judges are grouped into **Gate** (binary `check`), **LLM**
 (scored), and **Other** columns. The reward is composed the same way the
 [reward API](../concepts/reward-api.md) computes it for RL training, so what you
 see is what you'd train on. The final row shows the average across scored cases.
-This section appears only when a `reward:` block is configured; judge-only evals
+This section appears only when a non-empty `reward:` block is configured; judge-only evals
 omit it (per-judge scores are in the Scoring Summary and Per-Case Details).
 
 ### Per-case details

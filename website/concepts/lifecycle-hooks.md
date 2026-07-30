@@ -50,8 +50,10 @@ flowchart TD
     `after_each` and `after_all` are executed from a `finally` block, so they run even
     if `before_each`, the agent, or the skill under test raises. Internally they use
     `run_hooks_safe`, which forces `on_failure: continue` — a cleanup hook can fail
-    without masking the original error or aborting the rest of the run. The "before"
-    phases use the strict `run_hooks`, which raises on failure when `on_failure: fail`.
+    without masking the original error or aborting the rest of the run.
+    `before_report` likewise runs via `run_hooks_safe`. The `before_all`,
+    `before_each`, and `before_scoring` phases use the strict `run_hooks`, which
+    raises on failure when `on_failure: fail`.
 
 ## Configuration
 

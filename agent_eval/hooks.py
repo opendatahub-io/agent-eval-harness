@@ -312,7 +312,8 @@ def main():
     log_dir = Path(args.output) / "hooks"
 
     phase = args.phase
-    if phase == "after_all":
+    # before_report (like after_all) is documented as continue-on-failure.
+    if phase in ("after_all", "before_report"):
         run_hooks_safe(entries, env, cwd, log_dir, phase,
                        case_id=args.case_id)
     else:

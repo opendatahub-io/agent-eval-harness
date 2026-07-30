@@ -46,7 +46,7 @@ flowchart TD
     AN --> SS[Scoring Summary + stability bars]
     SS --> RG[Regressions — only if a threshold failed]
     RG --> SO[Shared Outputs — batch_pattern '*']
-    SO --> RO[Per-Case Reward Overview]
+    SO --> RO["Per-Case Reward Overview — only with a reward config"]
     RO --> PC[Per-Case Details: rationale, artifacts, diffs]
 ```
 
@@ -56,7 +56,7 @@ flowchart TD
 | Analysis | `analysis.md` | The agent's recommendation, rendered as markdown in a highlighted callout. Optional YAML frontmatter (`agent`, `model`, `date`) drives the subtitle. |
 | Scoring Summary | `summary.yaml` + `thresholds` | One row per judge: type, metric (`pass_rate` or `mean`), value, threshold, PASS/FAIL/SKIP/ERROR. Pairwise gets its own row. |
 | Regressions | thresholds | Only appears when a judge is below its [threshold](../concepts/thresholds.md). |
-| Per-Case Reward Overview | `summary.yaml` + `reward` | Compact matrix of the [reward](../concepts/reward-api.md) and every judge score per case. |
+| Per-Case Reward Overview | `summary.yaml` + `reward` | Compact matrix of the [reward](../concepts/reward-api.md) and every judge score per case. **Rendered only when a non-empty `reward:` block is configured.** |
 | Per-Case Details | `cases/` tree | Judge rationales, inputs, rendered output artifacts, and baseline diffs — one collapsible card per case. |
 
 ## Scoring summary and per-case rationale
@@ -145,10 +145,11 @@ formula). Numeric cells are green/amber/red by where the score falls in the
 judge's `score_range`; a bottom **Average** row summarises scored cases.
 
 !!! note "Only rendered with a reward config"
-    The Per-Case Reward Overview is **omitted entirely** unless the config defines
-    a `reward:` block — judge-only evals don't get this section (the Scoring
-    Summary and Per-Case Details already cover every judge score). Define
-    `reward:` to enable it and reflect real training behaviour.
+    The Per-Case Reward Overview is **omitted entirely** unless the config sets a
+    **non-empty** `reward:` block (an empty `reward: {}` doesn't enable it) —
+    judge-only evals don't get this section (the Scoring Summary and Per-Case
+    Details already cover every judge score). Define a `reward:` to enable it and
+    reflect real training behaviour.
 
 ## The sampling-stability view
 
