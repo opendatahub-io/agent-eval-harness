@@ -125,6 +125,7 @@ extra_css:
 
 extra_javascript:
   - assets/javascripts/harbor-diagram.js
+  - assets/javascripts/loop-diagram.js
   - assets/javascripts/toc-rail.js
   - assets/javascripts/table-wrap.js
   - assets/javascripts/card-glow.js

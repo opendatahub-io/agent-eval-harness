@@ -43,7 +43,7 @@ optimize. Same config on your laptop, Harbor containers, or EvalHub.
 
 ## How the loop works
 
-Six stages. Only analyze → dataset → run are required for a first score.
+<div class="loop-diagram"></div>
 
 <div class="grid cards" markdown>
 
