@@ -76,6 +76,11 @@ skills/eval-mlflow/      # Skill: MLflow integration
 skills/eval-optimize/    # Skill: automated refinement loop
   SKILL.md               # Composes with /eval-run via Skill tool
 
+skills/eval-compare/     # Skill: cross-model/cross-run comparison report
+  SKILL.md               # Discover runs, generate tabbed HTML, LLM analysis sections
+  scripts/
+    compare.py           # Discover run artifacts + generate comparison report HTML
+
 skills/eval-check/ # Skill: full-harness configuration health check
   SKILL.md               # Scans all skills, commands, CLAUDE.md, hooks for overlap and issues
   scripts/
@@ -112,6 +117,7 @@ The `schema` descriptions are documentation for the LLM agents and judges. Scrip
 /eval-review --run-id <id>             # Review: interactive human feedback + changes
 /eval-mlflow --run-id <id>             # MLflow: sync dataset, log results
 /eval-optimize --model opus            # Optimize: automated refinement loop
+/eval-compare <input-dir>              # Compare: tabbed HTML report across models/runs
 ```
 
 ## Tests
