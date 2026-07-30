@@ -47,42 +47,42 @@ optimize. Same config on your laptop, Harbor containers, or EvalHub.
 
 <div class="grid cards" markdown>
 
--   **1 · Analyze**
+-   **[1 · Analyze](guides/eval-analyze.md)**
 
     ---
 
     Point `/eval-analyze` at a skill or a prompt brief. The harness writes
     `eval.yaml` with judges, schema, and thresholds.
 
--   **2 · Dataset**
+-   **[2 · Dataset](guides/eval-dataset.md)**
 
     ---
 
     `/eval-dataset` fills cases from your schema — or bring your own
     `cases/` tree with gold references.
 
--   **3 · Run & judge**
+-   **[3 · Run & judge](guides/eval-run.md)**
 
     ---
 
     `/eval-run` executes on Claude Code (or another runner), scores with
     LLM + code judges, and emits a rich HTML report.
 
--   **4 · Review**
+-   **[4 · Review](guides/eval-review.md)**
 
     ---
 
     Optional `/eval-review` captures human feedback on scored cases before
     you change the skill or config.
 
--   **5 · Trace**
+-   **[5 · Trace](guides/eval-mlflow.md)**
 
     ---
 
     Optional `/eval-mlflow` syncs metrics, artifacts, and hierarchical
     GenAI traces for every case.
 
--   **6 · Optimize**
+-   **[6 · Optimize](guides/eval-optimize.md)**
 
     ---
 
