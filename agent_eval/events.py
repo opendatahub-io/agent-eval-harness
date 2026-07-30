@@ -126,8 +126,8 @@ def _extract_content_blocks(content_blocks, result_cap):
     """Split an assistant message's content blocks into (text, thinking, tools).
 
     Only string values are collected, so a null or non-string ``text`` /
-    ``thinking`` from a non-Anthropic provider (via the LiteLLM proxy) is
-    skipped rather than raising and aborting the whole parse. A
+    ``thinking`` from a non-Anthropic provider is skipped rather than raising
+    and aborting the whole parse. A
     ``redacted_thinking`` block contributes a marker so a fully-redacted turn
     isn't mistaken for an absence of reasoning. Multiple thinking blocks are
     joined with newlines to preserve their boundaries.
