@@ -172,7 +172,11 @@ def find_skill(name):
         for path in sorted(glob(f"{skills_dir}/*/SKILL.md")):
             resolved = _is_under_cwd(path, trusted)
             if not resolved:
-                print(f"  WARNING: skipping path outside project: {path}",
+                print(f"  WARNING: skipping '{path}': it resolves outside the "
+                      f"project (a symlink escaping the project boundary), "
+                      f"excluded for safety. If this is an intended "
+                      f"shared/monorepo skill, point a skills dir at its real "
+                      f"location instead of symlinking it in.",
                       file=sys.stderr)
                 continue
             try:
@@ -203,7 +207,11 @@ def list_skills():
         for path in sorted(glob(f"{skills_dir}/*/SKILL.md")):
             resolved = _is_under_cwd(path, trusted)
             if not resolved:
-                print(f"  WARNING: skipping path outside project: {path}",
+                print(f"  WARNING: skipping '{path}': it resolves outside the "
+                      f"project (a symlink escaping the project boundary), "
+                      f"excluded for safety. If this is an intended "
+                      f"shared/monorepo skill, point a skills dir at its real "
+                      f"location instead of symlinking it in.",
                       file=sys.stderr)
                 continue
             dir_name = resolved.parent.name
