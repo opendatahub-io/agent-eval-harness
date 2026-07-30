@@ -54,19 +54,23 @@ def _base_tool_name(tool_spec):
 
 
 def _parse_tools(fm):
-    """Extract allowed-tools list from frontmatter.
+    """Extract the set of base tool names from allowed-tools frontmatter.
 
-    Missing or null allowed-tools means unrestricted (all tools) in Claude Code.
+    Only a genuinely absent value (key missing or null) means unrestricted
+    (all tools) in Claude Code. An explicit but empty value (``[]`` or ``""``)
+    means *no* tools, and a malformed value (wrong type) is treated the same as
+    empty rather than silently granting the full tool surface — otherwise a
+    locked-down or misconfigured skill would report every capability flag.
     """
-    tools_raw = fm.get("allowed-tools")
-    if tools_raw is None:
-        return ALL_TOOLS
+    if "allowed-tools" not in fm or fm["allowed-tools"] is None:
+        return set(ALL_TOOLS)
+    tools_raw = fm["allowed-tools"]
     if isinstance(tools_raw, list):
         return {_base_tool_name(str(t)) for t in tools_raw
                 if isinstance(t, (str, int, float))}
-    if isinstance(tools_raw, str) and tools_raw.strip():
+    if isinstance(tools_raw, str):
         return {_base_tool_name(t) for t in tools_raw.split(",") if t.strip()}
-    return ALL_TOOLS
+    return set()
 
 
 def _extract_body(content):
@@ -92,6 +96,38 @@ def _build_eval_names():
     return {r.eval_name for r in discover_configs(Path.cwd())}
 
 
+def _eval_matches_skill(eval_name, skill_id):
+    """True if an eval's skill reference names this skill.
+
+    ``eval_name`` comes from a config's raw ``execution.skill``/``skill`` value,
+    which may be plugin-qualified (e.g. ``rfe.create`` or ``skill:enhance``)
+    while the on-disk skill is the bare tail (``create``/``enhance``). Match the
+    exact name plus the colon- and dot-scoped tails, mirroring the prefix
+    stripping ``find_skill`` already does, so a skill that already has an eval is
+    correctly detected as EXISTS instead of being re-recommended.
+    """
+    if not skill_id:
+        return False
+    return (eval_name == skill_id
+            or eval_name.endswith(f":{skill_id}")
+            or eval_name.endswith(f".{skill_id}"))
+
+
+def _strip_excerpt_fences(text):
+    """Remove excerpt delimiters from untrusted body content until none remain.
+
+    A single ``str.replace`` pass is bypassable: interleaved markers such as
+    ``<<<END_<<<END_EXCERPT>>>EXCERPT>>>`` reconstruct a valid delimiter after
+    one pass. Loop to a fixpoint so the body cannot forge a closing fence and
+    break out of the ``<<<EXCERPT>>>``…``<<<END_EXCERPT>>>`` data envelope.
+    """
+    prev = None
+    while prev != text:
+        prev = text
+        text = text.replace("<<<EXCERPT>>>", "").replace("<<<END_EXCERPT>>>", "")
+    return text
+
+
 def assess_all():
     """Extract metadata profiles for all project skills."""
     skills = list_skills()
@@ -107,8 +143,10 @@ def assess_all():
             tools = _parse_tools(fm)
             body = _extract_body(content)
 
-            has_eval = (skill["dir_name"] in eval_names
-                       or skill["name"] in eval_names)
+            has_eval = any(
+                _eval_matches_skill(en, skill["dir_name"])
+                or _eval_matches_skill(en, skill["name"])
+                for en in eval_names)
 
             meta = {
                 "name": skill["name"],
@@ -123,10 +161,7 @@ def assess_all():
                 "script_count": _count_scripts(path),
                 "has_existing_eval": has_eval,
                 "skill_body_excerpt": "<<<EXCERPT>>>"
-                + (body.strip()
-                   .replace("<<<EXCERPT>>>", "")
-                   .replace("<<<END_EXCERPT>>>", "")
-                   [:BODY_EXCERPT_LIMIT])
+                + _strip_excerpt_fences(body.strip())[:BODY_EXCERPT_LIMIT]
                 + "<<<END_EXCERPT>>>",
             }
 
