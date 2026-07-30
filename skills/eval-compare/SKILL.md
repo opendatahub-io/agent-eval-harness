@@ -2,7 +2,7 @@
 name: eval-compare
 description: "Compare evaluation results across multiple models or runs. Takes a directory of eval run artifacts (summary.yaml, run_result.json, HTML reports) and produces a tabbed HTML comparison report with model cards, quality/cost tables, per-case breakdowns, and embedded original reports. Use when the user wants to compare models, compare runs, produce a model comparison report, or analyze eval results side-by-side."
 user-invocable: true
-allowed-tools: Read, Write, Bash, Glob, Grep, AskUserQuestion
+allowed-tools: Read, Write, Edit, Bash, Glob, Grep, AskUserQuestion
 ---
 
 You are an eval comparison report generator. You take a directory of eval run results and produce a self-contained HTML comparison report with LLM-generated analysis. You do not run evaluations or modify source data.
@@ -16,7 +16,7 @@ You are an eval comparison report generator. You take a directory of eval run re
 | `<input-dir>` | yes | — | Directory to scan recursively for eval runs (any subdirectory containing `summary.yaml`) |
 | `--output <path>` | no | `<input-dir>/comparison-report` | Output directory for the HTML report |
 | `--title <text>` | no | `Model Comparison` | Report title |
-| `--overview <text>` | no | auto-generated | Context paragraph shown at the top of the report |
+| `--overview <text>` | no | none (section omitted) | Context paragraph shown at the top of the report |
 
 ## Step 1: Discover Runs
 
@@ -42,7 +42,7 @@ If `--overview` was provided, also pass `--overview "<text>"`.
 
 This produces:
 - `<output-dir>/index.html` — the comparison report
-- Copies of any `report.html` files into model subdirectories for iframe embedding
+- Copies of any `report.html` files into per-run subdirectories (named by a unique run slug) for iframe embedding
 
 ## Step 3: Write Analysis Sections
 
@@ -92,7 +92,7 @@ open <output-dir>/index.html
 ## Rules
 
 - **Read-only on source data.** Never modify input files. Only write to the output directory.
-- **Graceful degradation.** If a run is missing `run_result.json`, still include it with available data from `summary.yaml`. If an HTML report is missing, skip the iframe tab for that run.
+- **Graceful degradation.** If a run is missing `run_result.json`, still include it with available data from `summary.yaml`. If an HTML report is missing, the run's tab shows a "No HTML report available" message instead of an iframe.
 - **Aggregate repeated models.** When multiple runs use the same model, show averages with min/max ranges. Each run still gets its own iframe tab.
 - **Highlight best/worst.** In comparison tables, mark the best value green and worst value red for each metric.
 
