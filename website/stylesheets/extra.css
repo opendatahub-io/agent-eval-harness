@@ -210,6 +210,28 @@
 }
 
 /*
+ * Flatten the sticky sidebar headers. Material gives both menus' sticky headers
+ * a background-color "halo" scroll-mask — box-shadow: 0 0 .4rem .4rem
+ * var(--md-default-bg-color) — that reads as an unwanted drop shadow / bottom
+ * border, plus a hairline (inset 0 .05rem 0) on the list under a title:
+ *   - right menu: .md-nav--secondary .md-nav__title  (Table of contents)
+ *   - left menu:  .md-nav--lifted … --active > .md-nav__link  (lifted section)
+ *   - mobile drawer: .md-nav--primary .md-nav__title
+ * Drop them all. The headers keep their opaque background, so list items still
+ * don't bleed through as they scroll underneath — only the shadow/line goes.
+ * Selectors are scoped under .md-sidebar so they outrank Material's own rules by
+ * specificity (not just source order), leaving no ambiguity about which wins.
+ */
+.md-sidebar .md-nav--secondary .md-nav__title,
+.md-sidebar .md-nav--primary .md-nav__title,
+.md-sidebar .md-nav--lifted > .md-nav__list > .md-nav__item--active > .md-nav__link {
+  box-shadow: none;
+}
+.md-sidebar .md-nav--secondary .md-nav__title ~ .md-nav__list {
+  box-shadow: none;
+}
+
+/*
  * Frosted, neutral header — a translucent blurred bar instead of a solid color
  * one, so page content is faintly visible through it. The brand accent (red)
  * stays on links, active states, and the TOC rail; the chrome goes neutral.
