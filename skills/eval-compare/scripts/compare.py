@@ -298,32 +298,55 @@ def fmt_range(agg, fmt_type="num"):
 
 CSS = """
 :root {
-  --bg: #0d1117; --surface: #161b22; --surface2: #1c2333;
-  --border: #30363d; --text: #e6edf3; --text-muted: #8b949e;
-  --accent: #58a6ff; --green: #3fb950; --yellow: #d29922;
-  --red: #f85149; --orange: #db6d28; --purple: #bc8cff;
+  --bg: #cbd1da; --surface: #ffffff; --surface2: #f1f5f9;
+  --border: #e2e8f0; --text: #0f172a; --text-muted: #64748b;
+  --accent: #2563eb; --green: #16a34a; --yellow: #d97706; --red: #dc2626;
+  --hover: rgba(15,23,42,0.04);
+  --best-bg: #dcfce7; --worst-bg: #fee2e2;
+  --header-1: #ffffff; --header-2: #e2e8f0;
+  --verdict-1: rgba(22,163,74,0.08); --verdict-2: rgba(37,99,235,0.06);
+  --verdict-border: rgba(22,163,74,0.35);
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #0b1220; --surface: #0f1729; --surface2: #162033;
+  --border: #1e2c44; --text: #e2e8f0; --text-muted: #94a3b8;
+  --accent: #60a5fa; --green: #4ade80; --yellow: #fbbf24; --red: #f87171;
+  --hover: rgba(255,255,255,0.03);
+  --best-bg: rgba(74,222,128,0.10); --worst-bg: rgba(248,113,113,0.10);
+  --header-1: #162033; --header-2: #0b1220;
+  --verdict-1: rgba(74,222,128,0.08); --verdict-2: rgba(96,165,250,0.06);
+  --verdict-border: rgba(74,222,128,0.25);
+  color-scheme: dark;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
+html { background: var(--bg); }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-       background: var(--bg); color: var(--text); line-height: 1.6; }
-.header { background: linear-gradient(135deg, #1a1e2e 0%, #0d1117 100%);
+       background: var(--bg); color: var(--text); line-height: 1.6;
+       transition: background-color .15s ease, color .15s ease; }
+.header { position: relative; background: linear-gradient(135deg, var(--header-1) 0%, var(--header-2) 100%);
            border-bottom: 1px solid var(--border); padding: 24px 32px; }
 .header h1 { font-size: 24px; font-weight: 600; margin-bottom: 4px; }
 .header .subtitle { color: var(--text-muted); font-size: 14px; }
+#theme-toggle { position: absolute; top: 20px; right: 24px; width: 34px; height: 34px;
+                background: var(--surface); border: 1px solid var(--border); color: var(--text);
+                border-radius: 8px; cursor: pointer; font-size: 16px; line-height: 1;
+                display: flex; align-items: center; justify-content: center; transition: border-color .15s; }
+#theme-toggle:hover { border-color: var(--accent); }
 .tab-bar { display: flex; background: var(--surface); border-bottom: 1px solid var(--border);
            padding: 0 16px; overflow-x: auto; }
 .tab-bar button { background: none; border: none; color: var(--text-muted); padding: 12px 20px;
                   cursor: pointer; font-size: 14px; font-weight: 500;
                   border-bottom: 2px solid transparent; white-space: nowrap; transition: all 0.15s; }
-.tab-bar button:hover { color: var(--text); background: rgba(255,255,255,0.03); }
+.tab-bar button:hover { color: var(--text); background: var(--hover); }
 .tab-bar button.active { border-bottom-color: var(--accent); }
 .tab-content { display: none; }
 .tab-content.active { display: block; }
 .page { max-width: 1400px; margin: 0 auto; padding: 24px 32px; }
 .overview { background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
             padding: 20px 24px; margin-bottom: 20px; font-size: 14px; line-height: 1.7; color: var(--text-muted); }
-.verdict { background: linear-gradient(135deg, rgba(63,185,80,0.08) 0%, rgba(88,166,255,0.06) 100%);
-           border: 1px solid rgba(63,185,80,0.25); border-radius: 12px;
+.verdict { background: linear-gradient(135deg, var(--verdict-1) 0%, var(--verdict-2) 100%);
+           border: 1px solid var(--verdict-border); border-radius: 12px;
            padding: 24px 28px; margin-bottom: 28px; }
 .verdict h2 { font-size: 18px; color: var(--green); margin-bottom: 10px; }
 .verdict p { font-size: 15px; line-height: 1.7; }
@@ -349,9 +372,9 @@ thead th { text-align: left; padding: 10px 12px; background: var(--surface);
            border-bottom: 1px solid var(--border); font-weight: 600; color: var(--text-muted);
            text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
 tbody td { padding: 10px 12px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
-tbody tr:hover { background: rgba(255,255,255,0.02); }
-.best { background: rgba(63,185,80,0.08); font-weight: 600; color: var(--green); }
-.worst { background: rgba(248,81,73,0.06); color: var(--red); }
+tbody tr:hover { background: var(--hover); }
+.best { background: var(--best-bg); font-weight: 600; color: var(--green); }
+.worst { background: var(--worst-bg); color: var(--red); }
 .insight { background: var(--surface2); border-left: 3px solid var(--accent); padding: 14px 18px;
            margin: 14px 0; border-radius: 0 6px 6px 0; font-size: 14px; line-height: 1.6; }
 .analysis-section { background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
@@ -370,6 +393,42 @@ tbody tr:hover { background: rgba(255,255,255,0.02); }
                   cursor: pointer; font-size: 13px; border-bottom: 2px solid transparent; font-weight: 500; }
 .sub-bar button.active { color: var(--accent); border-bottom-color: var(--accent); }
 @media (max-width: 900px) { .cards { grid-template-columns: 1fr; } .page { padding: 16px; } }
+@media print { :root { color-scheme: light; } }
+"""
+
+
+# Set the theme before first paint (avoids a flash). Shares the localStorage key
+# with the per-run eval reports (report.py) so a chosen theme carries across both.
+THEME_SCRIPT = """
+(function () {
+  try {
+    var stored = localStorage.getItem('eval-report-theme');
+    var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', stored || (prefersDark ? 'dark' : 'light'));
+  } catch (e) {
+    document.documentElement.setAttribute('data-theme', 'light');
+  }
+})();
+"""
+
+TOGGLE_SCRIPT = """
+(function () {
+  var btn = document.getElementById('theme-toggle');
+  if (!btn) return;
+  function paint() {
+    var t = document.documentElement.getAttribute('data-theme') || 'light';
+    btn.textContent = t === 'dark' ? '\\u2600' : '\\u263E';
+    btn.title = t === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
+    btn.setAttribute('aria-label', btn.title);
+  }
+  btn.addEventListener('click', function () {
+    var next = (document.documentElement.getAttribute('data-theme') || 'light') === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    try { localStorage.setItem('eval-report-theme', next); } catch (e) {}
+    paint();
+  });
+  paint();
+})();
 """
 
 
@@ -483,10 +542,12 @@ def generate_report(runs, title, overview, output_dir):
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{escape(title)}</title>
 <style>{CSS}</style>
+<script>{THEME_SCRIPT}</script>
 </head>
 <body>
 
 <div class="header">
+  <button id="theme-toggle" type="button" aria-label="Toggle theme">&#9728;</button>
   <h1>{escape(title)}</h1>
   <div class="subtitle">{len(runs)} eval runs across {len(models)} models</div>
 </div>
@@ -720,8 +781,7 @@ document.querySelectorAll('.sub-bar').forEach(bar => {
   });
 });
 </script>
-</body>
-</html>"""
+""" + f"<script>{TOGGLE_SCRIPT}</script>\n</body>\n</html>"
 
     out_path = output_dir / "index.html"
     with open(out_path, "w") as f:
