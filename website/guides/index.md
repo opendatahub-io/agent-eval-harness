@@ -62,6 +62,14 @@ The `/eval-*` slash commands drive the workflow in order. Each maps to a skill u
 
     [:octicons-arrow-right-24: Run an eval](eval-run.md)
 
+-   :material-compare: **/eval-compare**
+
+    ---
+
+    Compare models or runs side-by-side into one self-contained HTML report.
+
+    [:octicons-arrow-right-24: Compare models/runs](eval-compare.md)
+
 -   :material-account-check: **/eval-review**
 
     ---
