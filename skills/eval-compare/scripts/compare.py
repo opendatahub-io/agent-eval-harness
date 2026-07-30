@@ -8,6 +8,7 @@ Usage:
 
 import argparse
 import json
+import re
 import shutil
 import sys
 from collections import defaultdict
@@ -19,13 +20,59 @@ import yaml
 
 
 def load_yaml(path):
-    with open(path) as f:
-        return yaml.safe_load(f) or {}
+    """Load a YAML mapping, tolerating unreadable/malformed files.
+
+    Returns {} on any read/parse error or when the document is not a mapping,
+    so a single corrupt summary.yaml never aborts the whole comparison.
+    """
+    try:
+        with open(path) as f:
+            data = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError) as e:
+        print(f"WARNING: could not parse {path}: {e}", file=sys.stderr)
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def load_json(path):
-    with open(path) as f:
-        return json.load(f)
+    """Load a JSON object, tolerating unreadable/malformed files.
+
+    Returns None on any read/parse error so the run is treated as missing its
+    run_result.json rather than crashing the whole comparison.
+    """
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"WARNING: could not parse {path}: {e}", file=sys.stderr)
+        return None
+
+
+def _slugify(text):
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", text).strip("-")
+    return slug or "run"
+
+
+def _unique_slug(run_dir, input_dir, used):
+    """Filesystem-safe, unique-per-run identifier.
+
+    Derived from the run directory's path relative to input_dir (not just its
+    basename), so two runs whose parent dirs differ but whose basenames match
+    (e.g. evalA/2026-07-30-opus and evalB/2026-07-30-opus) do not collide when
+    their report.html is copied into the output tree or referenced by iframes.
+    """
+    try:
+        rel = run_dir.relative_to(input_dir)
+    except ValueError:
+        rel = Path(run_dir.name)
+    base = _slugify(rel.as_posix())
+    slug = base
+    i = 2
+    while slug in used:
+        slug = f"{base}-{i}"
+        i += 1
+    used.add(slug)
+    return slug
 
 
 def discover_runs(input_dir):
@@ -33,12 +80,14 @@ def discover_runs(input_dir):
     if not input_dir.exists() or not input_dir.is_dir():
         raise NotADirectoryError(f"Input directory not found: {input_dir}")
     runs = []
+    used_slugs = set()
     for summary_path in sorted(input_dir.rglob("summary.yaml")):
         d = summary_path.parent
         summary = load_yaml(summary_path)
         run = {
             "dir": str(d),
             "name": d.name,
+            "slug": _unique_slug(d, input_dir, used_slugs),
             "summary": summary,
             "run_result": None,
             "html_report": None,
@@ -55,12 +104,19 @@ def discover_runs(input_dir):
 
 def get_model(run):
     if run["run_result"]:
-        return run["run_result"].get("model", "unknown")
-    run_id = run["summary"].get("run_id", "")
-    for token in run_id.split("-"):
-        if token.startswith("claude"):
-            return run_id.split("-", 3)[-1] if "claude" in run_id else "unknown"
-    return "unknown"
+        return run["run_result"].get("model") or "unknown"
+    # No run_result.json: recover the model from the run_id if it embeds a
+    # "claude-..." id (default run_ids can look like "<date>-claude-opus-4-8").
+    # Reconstruct the FULL id so it matches the run_result branch and the
+    # MODEL_COLORS/MODEL_SHORT keys — never a bare "opus-4-8".
+    run_id = run["summary"].get("run_id", "") or ""
+    tokens = run_id.split("-")
+    for i, token in enumerate(tokens):
+        if token == "claude":
+            return "-".join(tokens[i:])
+    # Truly unknown: fall back to the run's own name so distinct runs are not
+    # merged (and averaged) together under a single meaningless "unknown" model.
+    return run.get("name") or "unknown"
 
 
 def get_metric(run, key, default=None):
@@ -108,17 +164,18 @@ def get_all_judge_names(runs):
     return sorted(names)
 
 
-def _is_pass_rate(judge_name, value, runs):
-    """Heuristic: a judge is pass-rate style if all its per-case values are 0 or 1."""
-    if value is None:
-        return False
+def _is_pass_rate(judge_name, runs):
+    """Whether a judge is pass-rate (boolean) style.
+
+    Authoritative, not a value-shape guess: score.py records a ``pass_rate`` for
+    boolean judges and leaves it ``None`` for numeric ones, so a numeric judge
+    whose scores happen to all be 0/1 is no longer mis-rendered as a percentage.
+    """
     for r in runs:
-        for case in (r["summary"].get("per_case") or {}).values():
-            j = case.get(judge_name, {})
-            v = j.get("value")
-            if v is not None and v not in (0, 1, True, False, 0.0, 1.0):
-                return False
-    return True
+        j = (r["summary"].get("judges") or {}).get(judge_name)
+        if isinstance(j, dict) and j.get("pass_rate") is not None:
+            return True
+    return False
 
 
 def pick_card_judges(all_judges, model_aggs, models, max_judges=4):
@@ -170,6 +227,7 @@ MODEL_COLORS = {
     "claude-opus-4-6": "#58a6ff",
     "claude-opus-4-7": "#bc8cff",
     "claude-opus-4-8": "#db6d28",
+    "claude-opus-4-8[1m]": "#db6d28",
     "claude-sonnet-4-6": "#f0883e",
     "claude-sonnet-4-6[1m]": "#f0883e",
     "claude-haiku-4-5": "#f85149",
@@ -179,6 +237,7 @@ MODEL_SHORT = {
     "claude-opus-4-6": "Opus 4.6",
     "claude-opus-4-7": "Opus 4.7",
     "claude-opus-4-8": "Opus 4.8",
+    "claude-opus-4-8[1m]": "Opus 4.8 [1M]",
     "claude-sonnet-4-6": "Sonnet 4.6",
     "claude-sonnet-4-6[1m]": "Sonnet 4.6 [1M]",
     "claude-haiku-4-5": "Haiku 4.5",
@@ -186,7 +245,21 @@ MODEL_SHORT = {
 
 
 def short_name(model):
-    return MODEL_SHORT.get(model, model)
+    """Human-readable model label.
+
+    Falls back to deriving one from a "claude-<family>-<version>[suffix]" id so
+    models not in MODEL_SHORT (e.g. a newly-shipped version) still render cleanly
+    instead of showing the raw id.
+    """
+    if model in MODEL_SHORT:
+        return MODEL_SHORT[model]
+    m = re.match(r"^claude-([a-z]+)-([0-9]+(?:-[0-9]+)*)(\[.*\])?$", model or "")
+    if m:
+        family = m.group(1).capitalize()
+        version = m.group(2).replace("-", ".")
+        suffix = f" {m.group(3).upper()}" if m.group(3) else ""
+        return f"{family} {version}{suffix}"
+    return model
 
 
 def color_for(model):
@@ -203,11 +276,15 @@ def fmt(v, fmt_type="num"):
     if fmt_type == "int":
         return f"{int(v):,}"
     if fmt_type == "time":
+        if v < 60:
+            return f"{int(v)}s"
         return f"{int(v / 60)} min"
     if fmt_type == "tokens":
         if v >= 1_000_000:
             return f"{v / 1_000_000:.1f}M"
-        return f"{int(v / 1000)}K"
+        if v >= 1000:
+            return f"{v / 1000:.1f}K"
+        return f"{int(v)}"
     return f"{v:.2f}"
 
 
@@ -302,7 +379,9 @@ def _rank_color(value, all_values, higher_is_better):
         return "muted"
     clean = sorted([v for v in all_values if v is not None],
                    reverse=higher_is_better)
-    if len(clean) < 2:
+    # Need at least two distinct values to rank; when everything ties, nothing
+    # is uniquely best or worst, so leave it uncolored.
+    if len(clean) < 2 or clean[0] == clean[-1]:
         return ""
     if value == clean[0]:
         return "green"
@@ -326,24 +405,29 @@ def best_worst_indices(values, higher_is_better=True):
     return best_i, worst_i
 
 
-def render_comparison_table(models, rows, higher_is_better_map=None):
-    if higher_is_better_map is None:
-        higher_is_better_map = {}
+def render_comparison_table(models, rows):
+    """Render a metric-by-model table.
+
+    Each row is ``(label, aggs, fmt_type, higher_is_better)`` where ``aggs`` is a
+    per-model list of aggregate() dicts. Best/worst highlighting is computed on
+    each aggregate's ``avg``; cells show ``avg (min-max)`` for models with more
+    than one run (via fmt_range) and just the value for single-run models.
+    """
     html = "<table><thead><tr><th>Metric</th>"
     for m in models:
         html += f"<th>{escape(short_name(m))}</th>"
     html += "</tr></thead><tbody>"
-    for label, values, fmt_type in rows:
-        higher = higher_is_better_map.get(label, True)
+    for label, aggs, fmt_type, higher in rows:
+        values = [a.get("avg") for a in aggs]
         best_i, worst_i = best_worst_indices(values, higher)
         html += f"<tr><td>{escape(label)}</td>"
-        for i, v in enumerate(values):
+        for i, a in enumerate(aggs):
             cls = ""
             if i == best_i:
                 cls = ' class="best"'
             elif i == worst_i:
                 cls = ' class="worst"'
-            html += f"<td{cls}>{fmt(v, fmt_type)}</td>"
+            html += f"<td{cls}>{fmt_range(a, fmt_type)}</td>"
         html += "</tr>"
     html += "</tbody></table>"
     return html
@@ -354,36 +438,40 @@ def generate_report(runs, title, overview, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     groups = group_by_model(runs)
-    all_judges_for_sort = get_all_judge_names(runs)
-    first_judge = all_judges_for_sort[0] if all_judges_for_sort else None
-    if first_judge:
-        models = sorted(groups.keys(),
-                        key=lambda m: aggregate([get_judge_mean(r, first_judge)
-                                                 for r in groups[m]]).get("avg") or 0,
-                        reverse=True)
-    else:
-        models = sorted(groups.keys())
+    all_judges = get_all_judge_names(runs)
 
+    # Aggregate per model first (order-independent) so we can rank judges by
+    # cross-model variance before deciding the tab/card order.
     model_aggs = {}
     for m, model_runs in groups.items():
         agg = {}
         for key in ["cost_usd", "num_turns", "wall_clock_s", "output_tokens",
                      "cache_hit_rate", "cost_per_turn", "output_tokens_per_turn"]:
             agg[key] = aggregate([get_metric(r, key) for r in model_runs])
-        for judge in get_all_judge_names(runs):
+        for judge in all_judges:
             agg[f"judge_{judge}"] = aggregate([get_judge_mean(r, judge) for r in model_runs])
         model_aggs[m] = agg
 
-    all_judges = get_all_judge_names(runs)
-    card_judges = pick_card_judges(all_judges, model_aggs, models)
-    primary_judge = card_judges[0] if card_judges else None
+    # The most discriminating judge (highest variance across models) drives both
+    # the card stats and the model ordering — not the alphabetically-first judge.
+    card_judges = pick_card_judges(all_judges, model_aggs, list(groups.keys()))
+    primary_judge = card_judges[0] if card_judges else (all_judges[0] if all_judges else None)
+    if primary_judge:
+        models = sorted(groups.keys(),
+                        key=lambda m: model_aggs[m].get(f"judge_{primary_judge}", {}).get("avg") or 0,
+                        reverse=True)
+    else:
+        models = sorted(groups.keys())
+
+    multi_run = any(len(model_runs) > 1 for model_runs in groups.values())
 
     # Badges are added by the LLM agent in Step 3, not auto-computed
 
-    # Copy HTML reports
+    # Copy HTML reports into a unique per-run subdir (slug), so runs that share a
+    # directory basename don't overwrite each other or alias the same iframe.
     for r in runs:
         if r["html_report"]:
-            dest = output_dir / r["name"]
+            dest = output_dir / r["slug"]
             dest.mkdir(parents=True, exist_ok=True)
             shutil.copy2(r["html_report"], dest / "report.html")
 
@@ -439,15 +527,15 @@ def generate_report(runs, title, overview, output_dir):
     for m in models:
         agg = model_aggs[m]
         c = color_for(m)
-        extra_style = ""
-        badge = ""
 
         cost = agg["cost_usd"].get("avg")
         turns = agg["num_turns"].get("avg")
         out_tok = agg["output_tokens"].get("avg")
         wall = agg["wall_clock_s"].get("avg")
 
-        html += f'<div class="card"{extra_style}>{badge}\n'
+        # The badge <div> and card border-color are injected by the LLM agent
+        # in Step 3 (see SKILL.md); the generator emits a plain card.
+        html += '<div class="card">\n'
         html += f'  <h3><span class="dot" style="background:{c}"></span> {escape(short_name(m))}'
         n = len(groups[m])
         if n > 1:
@@ -456,7 +544,7 @@ def generate_report(runs, title, overview, output_dir):
 
         for judge in card_judges:
             jv = agg.get(f"judge_{judge}", {}).get("avg")
-            is_pct = _is_pass_rate(judge, jv, runs)
+            is_pct = _is_pass_rate(judge, runs)
             judge_label = judge.replace("_", " ").title()
             rank_cls = _rank_color(jv, judge_all_values.get(judge, []), True)
             html += f'    <div class="stat"><span class="label">{escape(judge_label)}</span><span class="value {rank_cls}">{fmt(jv, "pct" if is_pct else "num") if jv is not None else "--"}</span></div>\n'
@@ -468,38 +556,31 @@ def generate_report(runs, title, overview, output_dir):
         html += '  </div>\n</div>\n'
     html += '</div>\n\n'
 
-    # Cost table
+    # Cost table. Labels reflect per-run averages when any model has >1 run
+    # (cells then show "avg (min-max)"); otherwise a single run's own totals.
     html += '<section>\n<h2>Cost &amp; Efficiency</h2>\n'
-    cost_rows = []
-    for label, key, ft, hib in [
-        ("Total Cost", "cost_usd", "usd", False),
-        ("Output Tokens", "output_tokens", "tokens", False),
+    cost_spec = [
+        ("Avg Run Cost" if multi_run else "Total Cost", "cost_usd", "usd", False),
+        ("Avg Output Tokens" if multi_run else "Output Tokens", "output_tokens", "tokens", False),
         ("Tokens / Turn", "output_tokens_per_turn", "int", True),
-        ("Total Turns", "num_turns", "int", False),
+        ("Avg Turns" if multi_run else "Total Turns", "num_turns", "int", False),
         ("Wall Clock", "wall_clock_s", "time", False),
         ("Cost / Turn", "cost_per_turn", "usd", False),
         ("Cache Hit Rate", "cache_hit_rate", "pct", True),
-    ]:
-        values = [model_aggs[m][key].get("avg") for m in models]
-        cost_rows.append((label, values, ft))
-    hib_map = {"Total Cost": False, "Output Tokens": False, "Total Turns": False,
-               "Wall Clock": False, "Cost / Turn": False, "Tokens / Turn": True, "Cache Hit Rate": True}
-    html += render_comparison_table(models, cost_rows, hib_map)
+    ]
+    cost_rows = [(label, [model_aggs[m][key] for m in models], ft, hib)
+                 for label, key, ft, hib in cost_spec]
+    html += render_comparison_table(models, cost_rows)
     html += '</section>\n\n'
 
     # Quality table
     html += '<section>\n<h2>Quality Scores</h2>\n'
     quality_rows = []
     for judge in all_judges:
-        values = []
-        for m in models:
-            agg = model_aggs[m].get(f"judge_{judge}", {})
-            v = agg.get("avg")
-            values.append(v)
-        sample_v = next((v for v in values if v is not None), None)
-        ft = "pct" if _is_pass_rate(judge, sample_v, runs) else "num"
+        aggs = [model_aggs[m].get(f"judge_{judge}", aggregate([])) for m in models]
+        ft = "pct" if _is_pass_rate(judge, runs) else "num"
         label = judge.replace("_", " ").title()
-        quality_rows.append((label, values, ft))
+        quality_rows.append((label, aggs, ft, True))
     html += render_comparison_table(models, quality_rows)
     html += '</section>\n\n'
 
@@ -523,8 +604,7 @@ def generate_report(runs, title, overview, output_dir):
                 continue
 
             judge_label = judge.replace("_", " ").title()
-            sample_v = next((get_judge_mean(r, judge) for r in runs if get_judge_mean(r, judge) is not None), None)
-            is_pct = _is_pass_rate(judge, sample_v, runs)
+            is_pct = _is_pass_rate(judge, runs)
             html += f'<section>\n<h2>Per-Case: {escape(judge_label)}</h2>\n'
             html += "<table><thead><tr><th>Case</th>"
             for m in models:
@@ -532,7 +612,7 @@ def generate_report(runs, title, overview, output_dir):
             html += "</tr></thead><tbody>"
             for case in all_cases:
                 case_short = case.replace("case-", "").replace("-", " ", 1).split(" ", 1)
-                label = case_short[1] if len(case_short) > 1 else case
+                label = case_short[1] if len(case_short) > 1 else case_short[0]
                 html += f"<tr><td>{escape(label)}</td>"
                 values = []
                 for m in models:
@@ -587,7 +667,7 @@ def generate_report(runs, title, overview, output_dir):
             r = model_runs[0]
             html += f'<div class="tab-content" id="tab-{escape(m)}">\n'
             if r["html_report"]:
-                html += f'  <iframe class="iframe-wrap" src="{quote(r["name"], safe="")}/report.html"></iframe>\n'
+                html += f'  <iframe class="iframe-wrap" src="{quote(r["slug"], safe="")}/report.html"></iframe>\n'
             else:
                 html += '  <div class="page"><p>No HTML report available for this run.</p></div>\n'
             html += '</div>\n\n'
@@ -603,7 +683,7 @@ def generate_report(runs, title, overview, output_dir):
                 display = "" if j == 0 else ' style="display:none;"'
                 html += f'  <div class="sub-panel" data-model="{escape(m)}" data-idx="{j}"{display}>\n'
                 if r["html_report"]:
-                    html += f'    <iframe class="iframe-wrap" src="{quote(r["name"], safe="")}/report.html"></iframe>\n'
+                    html += f'    <iframe class="iframe-wrap" src="{quote(r["slug"], safe="")}/report.html"></iframe>\n'
                 else:
                     html += '    <div class="page"><p>No HTML report available.</p></div>\n'
                 html += '  </div>\n'
