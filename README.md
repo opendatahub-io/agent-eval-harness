@@ -594,9 +594,12 @@ Analyze a target and generate `eval.yaml`. Two modes:
 /eval-analyze --skill my-skill --update                  # Update existing skill mode eval.yaml
 /eval-analyze --prompt examples/openshift-agentic-docs.md # Prompt mode: analyze agentic documentation
 /eval-analyze --prompt custom.md                         # Prompt mode: use custom analysis prompt
+/eval-analyze --assess                                   # Batch: assess which skills would benefit from evals
 ```
 
 Prompt mode is extensible. Create custom analysis prompts for other agent capability testing scenarios (code generation, API usage patterns, reasoning quality, etc.).
+
+**Batch assessment** (`--assess`): profiles every skill in the project and classifies each as RECOMMENDED / OPTIONAL / SKIP / EXISTS, so you can decide where evals are worth building before analyzing any single skill. It ignores `--skill` and writes no config.
 
 ### /eval-dataset
 

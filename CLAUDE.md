@@ -99,9 +99,11 @@ skills/eval-analyze/     # Skill: bootstrap eval config
     find_skills.py       # Skill discovery (reads plugin.json for paths)
     validate_eval.py     # Config and memory validation
     resolve_prompt.py    # Resolve prompt file paths
+    assess_skills.py     # --assess: extract per-skill facts (LLM judges eval-worthiness)
   prompts/
     analyze-skill.md     # Skill analysis prompt (skill mode)
     generate-eval-md.md  # eval.md generation prompt
+    assess-skills.md     # --assess classification (RECOMMENDED/OPTIONAL/SKIP/EXISTS)
   references/
     eval-yaml-template.md # Full eval.yaml template for generation
 

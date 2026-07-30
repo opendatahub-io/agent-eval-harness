@@ -60,6 +60,7 @@ The analysis mode is decided by which flag you pass.
 | `--config <path>` | no | auto-discover | Output path for the generated config |
 | `--prompt <path>` | no | none | Custom analysis prompt (non-skill evals) |
 | `--update` | no | `false` | Fill in missing sections only; preserve your edits |
+| `--assess` | no | `false` | Assess all skills and recommend which need evals (ignores `--skill`; writes no config) |
 
 ```bash
 # Explicit skill, custom output path
@@ -72,6 +73,26 @@ The analysis mode is decided by which flag you pass.
 !!! note "Auto-triggered when the config is missing"
     You don't always call it directly. `/eval-run` invokes `/eval-analyze`
     automatically when no `eval.yaml` exists, so the pipeline bootstraps itself.
+
+## Batch assessment (`--assess`)
+
+Not sure which skills are even worth evaluating? `/eval-analyze --assess` skips config
+generation entirely and instead profiles **every** skill in the project — its tools,
+script count, whether it already has an eval, and a short body excerpt — then
+classifies each one:
+
+- **RECOMMENDED** — non-deterministic, quality-sensitive output where judges catch regressions linters can't
+- **OPTIONAL** — some judgment involved but straightforward; worth evals if heavily used
+- **SKIP** — deterministic output or a thin wrapper; a linter or unit test suffices
+- **EXISTS** — already has an eval config
+
+```bash
+/eval-analyze --assess
+```
+
+It's the natural first step in a repo with several skills: assess once, then run
+`/eval-analyze --skill <name>` on the ones it recommends. `--assess` ignores `--skill`
+and writes no config — the verdicts are guidance, not a generated `eval.yaml`.
 
 ## The core principle: observe, don't assume
 
