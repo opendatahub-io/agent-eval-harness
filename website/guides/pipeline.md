@@ -17,6 +17,7 @@ same runs directory, so you can stop, edit, and resume anywhere.
 | 4b | [`/eval-optimize`](eval-optimize.md) | Automated refine-and-rerun loop (composes with `/eval-run`) | Optional |
 | ⟳ | [`/eval-mlflow`](eval-mlflow.md) | Sync dataset, log run results, push/pull trace feedback | Optional — any time **after** a run |
 | ✓ | [`/eval-check`](eval-check.md) | Whole-harness health check (overlap between skills, hooks, CLAUDE.md) | Optional |
+| ⇄ | [`/eval-compare`](eval-compare.md) | Compare results across models/runs into one HTML report | Optional — after ≥2 runs |
 
 !!! note "`/eval-setup` is genuinely optional"
     Dependencies live in an isolated venv that the plugin's SessionStart hook creates

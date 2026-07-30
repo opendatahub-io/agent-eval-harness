@@ -168,6 +168,7 @@ nav:
     - "Generate a config (/eval-analyze)": guides/eval-analyze.md
     - "Build a dataset (/eval-dataset)": guides/eval-dataset.md
     - "Run an eval (/eval-run)": guides/eval-run.md
+    - "Compare models/runs (/eval-compare)": guides/eval-compare.md
     - "Review results (/eval-review)": guides/eval-review.md
     - "Optimize a skill (/eval-optimize)": guides/eval-optimize.md
     - "Log to MLflow (/eval-mlflow)": guides/eval-mlflow.md

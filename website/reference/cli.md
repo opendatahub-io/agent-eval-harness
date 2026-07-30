@@ -20,6 +20,7 @@ flowchart TD
     subgraph SC["Slash commands (inside Claude Code)"]
         A["/eval-setup → /eval-analyze → /eval-dataset →<br/>/eval-run → /eval-review → /eval-optimize → /eval-mlflow"]
         C["/eval-check"]
+        C2["/eval-compare"]
     end
     subgraph CS["Console script (pip-installed)"]
         T["claude-trace"]
@@ -35,7 +36,7 @@ flowchart TD
 
 ## Slash commands
 
-Eight skills ship as slash commands. Each one is a stage in the pipeline; run them in
+Nine skills ship as slash commands. Each one is a stage in the pipeline; run them in
 order for a first eval, or invoke individually.
 
 | Command | Purpose | Guide |
@@ -44,6 +45,7 @@ order for a first eval, or invoke individually.
 | `/eval-analyze` | Analyze a skill or docs, generate `eval.yaml` + `eval.md` | [eval-analyze](../guides/eval-analyze.md) |
 | `/eval-dataset` | Generate or expand test cases (and Harbor task packages) | [eval-dataset](../guides/eval-dataset.md) |
 | `/eval-run` | Execute the suite, collect artifacts, score, report | [eval-run](../guides/eval-run.md) |
+| `/eval-compare` | Compare results across models/runs into one HTML report | [eval-compare](../guides/eval-compare.md) |
 | `/eval-review` | Interactive human review of a run; propose config changes | [eval-review](../guides/eval-review.md) |
 | `/eval-optimize` | Automated refinement loop (composes with `/eval-run`) | [eval-optimize](../guides/eval-optimize.md) |
 | `/eval-mlflow` | Dataset sync, result logging, trace feedback | [eval-mlflow](../guides/eval-mlflow.md) |
