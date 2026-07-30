@@ -85,7 +85,7 @@ pip install -e ./agent-eval-harness
 claude --plugin-dir ./agent-eval-harness
 ```
 
-This makes all eval skills available: `/eval-setup`, `/eval-analyze`, `/eval-dataset`, `/eval-run`, `/eval-review`, `/eval-mlflow`, `/eval-optimize`, and `/eval-check`.
+This makes all eval skills available: `/eval-setup`, `/eval-analyze`, `/eval-dataset`, `/eval-run`, `/eval-review`, `/eval-mlflow`, `/eval-optimize`, `/eval-compare`, and `/eval-check`.
 
 ### 2. Set up environment
 
@@ -631,6 +631,17 @@ Execute the evaluation suite: prepare workspace, run the skill headlessly, colle
 /eval-run --model opus --no-llm-judges          # Skip LLM judges
 ```
 
+### /eval-compare
+
+Compare evaluation results across multiple models or runs. Scans a directory of eval run artifacts (`summary.yaml`, `run_result.json`, `report.html`) and produces a self-contained tabbed HTML comparison report with model cards, quality/cost tables, per-case breakdowns, embedded per-run reports, and LLM-written analysis (Bottom Line, Where Each Model Shined, Shared Weaknesses, Recommendations).
+
+```
+/eval-compare <input-dir>                          # Discover runs and generate the report
+/eval-compare <input-dir> --output <dir>           # Custom output directory
+/eval-compare <input-dir> --title "Opus vs Sonnet" # Custom report title
+/eval-compare <input-dir> --overview "<context>"   # Add a context paragraph
+```
+
 ### /eval-review
 
 Interactive human review of eval results. Presents judge scores and outputs, collects qualitative feedback, analyzes patterns, and proposes SKILL.md changes.
@@ -694,7 +705,8 @@ skills/
   eval-review/           # Interactive human review
   eval-mlflow/           # MLflow integration
   eval-optimize/         # Automated refinement loop
-  eval-check/    # Full-harness configuration health check
+  eval-compare/          # Cross-run / cross-model comparison report
+  eval-check/            # Full-harness configuration health check
 ```
 
 ## Agent Support
