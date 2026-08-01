@@ -187,7 +187,7 @@ Report per-case counts. If any case has 0 artifacts, warn — the skill may not 
 
 ## Step 6: Score
 
-Run all configured judges against the collected outputs. Five judge types are supported: `builtin` (reusable from the harness library), inline `check` (Python snippets), LLM `prompt`/`prompt_file` (Jinja2 rendered), external `module`/`function`, and `agent` (a tool-using judge run through the runner abstraction with read-only file tools and a staged workspace — writes its verdict to `output/score.json`; see references/data-pipeline.md). All support optional `arguments:` for parameterization.
+Run all configured judges against the collected outputs. Five judge types: `builtin`, inline `check`, LLM (`prompt`/`prompt_file`/`llm_rubric`), external `module`/`function`, and `agent` (a tool-using judge run through the runner; writes `output/score.json`). All take optional `arguments:`. See `references/data-pipeline.md`.
 
 If `--no-llm-judges` was specified, skip judges that make LLM API calls (prompt, prompt_file, LLM builtins, and `agent` judges). Run deterministic judges only (check, Python builtins, external code).
 
@@ -200,18 +200,9 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/score.py judges \
   [--no-llm-judges]   # add when the run requested skipping model-calling judges
 ```
 
-`--no-llm-judges` drops judges that call a model (`llm`, `agent`, and LLM-kind builtins), running only deterministic judges (`check`, Python builtins, external `module`/`function`).
-
 If `hooks.before_scoring` is configured in eval.yaml, score.py runs those hooks before judge execution. Pass `--workspace` and `--model` so hook environment variables are populated.
 
-Judges receive a record dict with:
-- **File contents**: `outputs["files"]`, `outputs["<dir>_content"]`
-- **Execution metadata**: `outputs["exit_code"]`, `outputs["duration_s"]`, `outputs["cost_usd"]`, `outputs["num_turns"]` (if `traces.metrics` enabled)
-- **Tool calls**: `outputs["tool_calls"]` (if `outputs` has `tool:` entries)
-- **Logs**: `outputs["stdout"]`, `outputs["stderr"]` (if `traces.stdout`/`stderr` enabled)
-- **Annotations**: `outputs["annotations"]` — parsed `annotations.yaml` from the dataset case directory (always present, empty dict if no file). Use for outcome-aware scoring where expected results depend on the test case.
-
-This means judges can check output quality, execution efficiency, AND expected outcomes from annotations.
+Judges receive the case `outputs` record — file contents (`outputs["files"]`, `<dir>_content`), execution metadata, `tool_calls`, logs, and `annotations` (parsed `annotations.yaml`, for outcome-aware scoring). Full field reference: `references/data-pipeline.md`.
 
 If `--baseline` was specified, also run pairwise comparison:
 
