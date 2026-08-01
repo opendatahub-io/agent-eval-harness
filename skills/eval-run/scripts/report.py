@@ -2020,7 +2020,9 @@ def _render_reward_overview(summary, config, reward_cfg=None):
             jtype = jv.get("judge_type", "")
             if jtype == "check":
                 gate_judges.append(jn)
-            elif jtype == "llm":
+            elif jtype in ("llm", "agent"):
+                # Agent judges are model-based scored judges (score + rationale),
+                # so they render alongside LLM judges rather than under "Other".
                 llm_judges.append(jn)
             elif jtype == "builtin":
                 # LLM-prompt builtins → LLM group; Python builtins → Other.
