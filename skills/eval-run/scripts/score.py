@@ -2049,7 +2049,7 @@ def _drop_model_calling_judges(judges, config):
         except Exception as e:
             raise RuntimeError(
                 f"--no-llm-judges: cannot classify builtin judges (registry "
-                f"discovery failed: {e}); refusing to run to avoid a model call")
+                f"discovery failed: {e}); refusing to run to avoid a model call") from e
 
     def _calls_model(name, jtype):
         if jtype in ("llm", "agent"):
