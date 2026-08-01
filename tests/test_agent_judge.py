@@ -496,3 +496,48 @@ class TestSamples:
         with _patched_runners(fake):
             score_cases(judges, [case_dir], config, samples_override=2)
         assert fake._state["calls"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Hardening / correctness (CodeRabbit review of PR #170)
+# ---------------------------------------------------------------------------
+
+class TestAgentJudgeHardening:
+
+    def test_workspace_mode_repo_rejected(self):
+        """runner.workspace_mode: repo is an isolation escape and must be rejected (CWE-829)."""
+        judge = _agent_judge(runner=RunnerConfig(workspace_mode="repo"))
+        config = _config(judge)
+        with pytest.raises(ValueError, match="workspace_mode"):
+            load_judges(config)
+
+    def test_null_max_budget_does_not_crash(self):
+        """max_budget_usd: null (present-but-empty) falls back to the default, not TypeError."""
+        judge = _agent_judge(max_budget_usd=None)
+        config = _config(judge)
+        judges = load_judges(config)  # must not raise
+        assert judges[0][3] == "agent"
+
+    def test_staging_rejects_path_traversal(self, tmp_path):
+        """A '..'-bearing (untrusted) case-file key must not escape the judge workspace (CWE-22)."""
+        from score import _stage_agent_workspace
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        record = {"files": {"../evil.txt": "PWNED", "sub/ok.txt": "fine"}}
+        _stage_agent_workspace(ws, record, None, [], tmp_path)
+        assert not (tmp_path / "evil.txt").exists()  # escape blocked
+        assert (ws / "sub" / "ok.txt").read_text() == "fine"
+
+    def test_no_llm_judges_filter_drops_model_callers(self):
+        """--no-llm-judges drops llm + agent judges, keeps deterministic ones."""
+        from score import _drop_model_calling_judges
+        config = EvalConfig(name="t", skill="t")
+        config.judges = []
+        judges = [
+            ("a", object(), "", "agent", 1),
+            ("l", object(), "", "llm", 1),
+            ("c", object(), "", "check", 1),
+            ("e", object(), "", "code", 1),
+        ]
+        kept = [t[0] for t in _drop_model_calling_judges(judges, config)]
+        assert kept == ["c", "e"]

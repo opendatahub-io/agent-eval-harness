@@ -1296,6 +1296,7 @@ def _stage_agent_workspace(workspace, record, stage_inputs, context_dirs, root):
         names = [str(s).strip("/").split("/")[0] for s in stage_inputs]
         if "." not in names:  # "." means stage everything
             selected = set(names)
+    wsr = workspace.resolve()
     for rel, content in (record.get("files") or {}).items():
         if isinstance(content, dict):
             continue  # skip binary placeholders
@@ -1303,6 +1304,11 @@ def _stage_agent_workspace(workspace, record, stage_inputs, context_dirs, root):
         if selected is not None and top not in selected:
             continue
         dest = workspace / rel
+        # Containment: case file keys are untrusted (skill-produced); never let a
+        # '..'-bearing relpath write outside the judge workspace (CWE-22).
+        resolved = dest.resolve()
+        if resolved != wsr and wsr not in resolved.parents:
+            continue
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(content)
@@ -1379,9 +1385,13 @@ def _load_agent_judge(jc, config, project_root=None):
     context_dirs = agent.get("context") or []
     is_bool = (jc.feedback_type == "bool")
     timeout_s = int(agent.get("timeout") or config.execution.timeout or 600)
-    max_budget = float(agent.get("max_budget_usd", 2.0))
+    max_budget = float(agent.get("max_budget_usd") or 2.0)
     judge_model = _resolve_judge_model(jc, config)
     judge_runner = agent.get("runner") or RunnerConfig()
+    if getattr(judge_runner, "workspace_mode", None) == "repo":
+        raise ValueError(
+            f"Agent judge '{jc.name}': runner.workspace_mode 'repo' is not allowed "
+            f"— agent judges must run in an isolated staged workspace (CWE-829).")
     arguments = jc.arguments
 
     # --- Output-contract note appended to every rendered prompt ---
@@ -2016,6 +2026,32 @@ def compute_run_metrics(run_result):
     return metrics or None
 
 
+def _drop_model_calling_judges(judges, config):
+    """Filter for --no-llm-judges: drop judges that call a model — llm, agent,
+    and LLM-kind builtins. Deterministic judges (check, Python builtins, external
+    code) are kept. `judges` are load_judges 5-tuples (name, scorer, cond, type, n)."""
+    try:
+        from agent_eval.judges import BuiltinJudgeRegistry
+        reg = BuiltinJudgeRegistry()
+        reg.discover()
+    except Exception:
+        reg = None
+    builtin_of = {j.name: j.builtin for j in config.judges
+                  if getattr(j, "builtin", "")}
+
+    def _calls_model(name, jtype):
+        if jtype in ("llm", "agent"):
+            return True
+        if jtype == "builtin" and reg is not None:
+            try:
+                return reg.get(builtin_of.get(name, "")).kind == "llm"
+            except Exception:
+                return False
+        return False
+
+    return [t for t in judges if not _calls_model(t[0], t[3])]
+
+
 def cmd_judges(args):
     config = EvalConfig.from_yaml(args.config)
     runs_dir = _get_runs_dir(config.eval_name())
@@ -2040,6 +2076,12 @@ def cmd_judges(args):
                   cwd=project_root, log_dir=log_dir,
                   phase_name="before_scoring")
     judges = load_judges(config, project_root)
+    if getattr(args, "no_llm_judges", False):
+        kept = _drop_model_calling_judges(judges, config)
+        print(f"--no-llm-judges: skipped {len(judges) - len(kept)} model-calling "
+              f"judge(s) (llm/agent/LLM-builtin); running {len(kept)} "
+              f"deterministic judge(s)", file=sys.stderr)
+        judges = kept
     n_llm = sum(1 for _, _, _, jt, _ in judges if jt == "llm")
     sampled = [n for n, _, _, jt, s in judges
                if jt == "llm" and ((samples_override if samples_override is not None else s) > 1)]
@@ -2220,6 +2262,9 @@ def main():
     jdg_p = subparsers.add_parser("judges", help="Run all judges")
     jdg_p.add_argument("--run-id", required=True)
     jdg_p.add_argument("--config", required=True)
+    jdg_p.add_argument("--no-llm-judges", action="store_true",
+                       help="Skip judges that call a model (llm, agent, and "
+                            "LLM-kind builtins); run deterministic judges only")
     jdg_p.add_argument("--samples", type=int, default=None,
                        help="Override per-judge samples config: sample each LLM "
                             "judge N times per case; median (score) / majority "

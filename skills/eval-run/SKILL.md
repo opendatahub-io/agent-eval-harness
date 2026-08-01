@@ -196,8 +196,11 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/score.py judges \
   --run-id <id> \
   --config <config> \
   --workspace <workspace_path> \
-  --model <model>
+  --model <model> \
+  [--no-llm-judges]   # add when the run requested skipping model-calling judges
 ```
+
+`--no-llm-judges` drops judges that call a model (`llm`, `agent`, and LLM-kind builtins), running only deterministic judges (`check`, Python builtins, external `module`/`function`).
 
 If `hooks.before_scoring` is configured in eval.yaml, score.py runs those hooks before judge execution. Pass `--workspace` and `--model` so hook environment variables are populated.
 
