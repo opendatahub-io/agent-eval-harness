@@ -24,7 +24,7 @@ flowchart TD
     L --> O["Collected outputs<br/>artifacts + tool calls + traces"]
     H --> O
     E --> O
-    O --> J["Judges<br/>(check / LLM / builtin / module)"]
+    O --> J["Judges<br/>(check / LLM / agent / builtin / module)"]
     J --> T["Thresholds<br/>(regression gate)"]
     J --> RW["Reward scalar<br/>(optional, RL)"]
     J --> REP["report.html + results"]
@@ -137,7 +137,7 @@ See [Judges & scoring](judges.md).
 - [**Runners**](runners.md) — the `EvalRunner` abstraction and `runner.type`
 - [**Execution backends**](backends.md) — Local, Harbor, EvalHub from one config
 - [**Datasets & case provenance**](datasets.md) — case anatomy and the three strategies
-- [**Judges & scoring**](judges.md) — the four judge types and the outputs record
+- [**Judges & scoring**](judges.md) — the five judge types and the outputs record
 - [**Regression thresholds**](thresholds.md) — how a run is gated
 - [**The Reward API**](reward-api.md) — collapsing judges into an RL scalar
 - [**Tool interception**](tool-interception.md) — the PreToolUse hook

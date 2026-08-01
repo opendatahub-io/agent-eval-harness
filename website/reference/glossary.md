@@ -47,7 +47,7 @@ flowchart LR
 
 | Term | Definition | More |
 | --- | --- | --- |
-| **Judge** | A scorer applied to each case. Four types by which field is set: `builtin`, inline `check` (Python), LLM (`prompt`/`prompt_file`/`llm_rubric`), or external `module`/`function`. | [Judges](../concepts/judges.md) · [judges config](config/judges.md) |
+| **Judge** | A scorer applied to each case. Five types by which field is set: `builtin`, inline `check` (Python), LLM (`prompt`/`prompt_file`/`llm_rubric`), tool-using `agent` (`agent:` block), or external `module`/`function`. | [Judges](../concepts/judges.md) · [judges config](config/judges.md) |
 | **Threshold** | A per-judge regression gate. Valid keys: `min_mean`, `min_pass_rate`, `min_win_rate`. | [Thresholds](../concepts/thresholds.md) · [thresholds config](config/thresholds.md) |
 | **Reward** | Optional collapse of per-judge results into a single scalar in `[0, 1]` for RL training (GRPO) — either a single `judge` or a `formula` (`weighted` or a Python expression), with optional `gate`. | [Reward API](../concepts/reward-api.md) · [reward config](config/reward.md) |
 

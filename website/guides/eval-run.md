@@ -107,7 +107,7 @@ Parsed from `$ARGUMENTS` at Step 0. CLI flags override the corresponding `eval.y
 | `--run-id <id>` | `YYYY-MM-DD-<model>` | Identifier for this run (names the output directory) |
 | `--cases <id> [<id> …]` | all cases | Run only the listed case IDs |
 | `--baseline <run-id>` | — | Add a pairwise A/B comparison against a prior run under the same eval-name |
-| `--no-llm-judges` | false | Skip LLM judges (`prompt`, `prompt_file`, `llm_rubric`, LLM builtins); run only deterministic judges |
+| `--no-llm-judges` | false | Skip every judge that calls a model — `llm` (`prompt`, `prompt_file`, `llm_rubric`), `agent`, and LLM builtins; run only deterministic judges |
 | `--gold` | false | After scoring, save collected artifacts back to the dataset cases as gold references |
 | `--effort <level>` | `runner.effort` | Claude Code reasoning effort (`low`…`max`). Claude Code only — ignored by other runners |
 | `--runner <type>` | `local` | `local` (default pipeline), `harbor` (containerized), or `evalhub` (platform) |
@@ -115,8 +115,8 @@ Parsed from `$ARGUMENTS` at Step 0. CLI flags override the corresponding `eval.y
 
 !!! note "`--no-llm-judges` is your fast, cheap dry run"
     It exercises the full execute → collect → score pipeline while skipping every judge
-    that makes an API call. Deterministic `check` scripts, Python builtins, and external
-    `module`/`function` judges still run.
+    that calls a model — `llm` judges, `agent` judges, and LLM builtins. Deterministic
+    `check` scripts, Python builtins, and external `module`/`function` judges still run.
 
 ## Preflight: run-id and baseline collisions
 

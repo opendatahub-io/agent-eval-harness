@@ -266,7 +266,7 @@ Because there's no stream-json to mine, judging leans on files and exit code. In
 | `stdout`, `stderr` | Captured logs (need `traces.stdout` / `traces.stderr`) |
 
 See [judges](../concepts/judges.md) and the [judges reference](../reference/config/judges.md)
-for the other three judge types.
+for the other four judge types.
 
 ## Run it
 

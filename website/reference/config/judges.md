@@ -1,6 +1,6 @@
 # judges
 
-`judges` is a list of scorers applied to every case. Each judge is one of **four
+`judges` is a list of scorers applied to every case. Each judge is one of **five
 types** — determined by which field you set — and returns either a boolean
 (pass/fail) or a number (a score). The harness aggregates results into pass rates
 and means, which [thresholds](thresholds.md) gate on and [reward](reward.md)
@@ -24,7 +24,7 @@ judges:
     prompt: "Score 1-5 for completeness, clarity, and accuracy.\n\n{{ outputs }}"
 ```
 
-## The four judge types
+## The five judge types
 
 A judge's type is inferred from which field is populated. There is no `type:` key.
 
@@ -32,13 +32,16 @@ A judge's type is inferred from which field is populated. There is no `type:` ke
 | --- | --- | --- | --- |
 | **builtin** | `builtin:` | bool or score | reusable judge from the harness library |
 | **check** | `check:` | `(bool\|number, str)` | inline Python, in-process |
+| **agent** | `agent:` (+ `prompt`/`prompt_file`/`llm_rubric`) | bool or score | tool-using judge run through the runner abstraction against a staged workspace |
 | **LLM** | `prompt:` / `prompt_file:` / `llm_rubric:` | bool or score | Anthropic API call |
 | **code** | `module:` + `function:` | judge's return | your Python module |
 
 !!! info "Type precedence"
     When more than one discriminator is present, the loader resolves the type in a
-    fixed order: **`builtin` → `check` → LLM (`prompt`/`prompt_file`/`llm_rubric`) →
-    `module`+`function`**. A judge with none of these is skipped with a warning. To
+    fixed order: **`builtin` → `check` → `agent` → LLM (`prompt`/`prompt_file`/`llm_rubric`)
+    → `module`+`function`**. `agent` is checked before the plain-LLM branch, so an
+    `agent:` block upgrades an otherwise-LLM judge into a tool-using run (see
+    [Agent judges](#agent-judges)). A judge with none of these is skipped with a warning. To
     avoid ambiguity, `builtin` is validated as *mutually exclusive* with `check`,
     `prompt`, `prompt_file`, `module`, and `function` — combining them fails at load.
 
@@ -48,7 +51,9 @@ flowchart TD
     B -- yes --> BUILTIN[builtin judge]
     B -- no --> C{check set?}
     C -- yes --> CHECK[inline check]
-    C -- no --> D{prompt / prompt_file / llm_rubric set?}
+    C -- no --> AG{agent set?}
+    AG -- yes --> AGENT[agent judge]
+    AG -- no --> D{prompt / prompt_file / llm_rubric set?}
     D -- yes --> LLM[LLM judge]
     D -- no --> E{module + function set?}
     E -- yes --> CODE[external code judge]
@@ -63,18 +68,19 @@ flowchart TD
 | `description` | string | all | What the judge checks. Context for LLM judges; documentation for the rest. |
 | `builtin` | string | builtin | Registered judge name from `agent_eval/judges/<category>/` (e.g. `cost_budget`). |
 | `check` | string | check | Python snippet receiving `outputs`, `arguments`; returns `(value, rationale)`. |
-| `llm_rubric` | string | LLM | Concise criteria. Auto-wrapped with `{{ conversation }}` if absent. |
-| `prompt` | string | LLM | Full Jinja2 template with manual control over structure. |
-| `prompt_file` | string | LLM | Path to a prompt file (absolute or relative to project root). |
+| `agent` | mapping | agent | Runs the judge as a tool-using agent; see [Agent judges](#agent-judges) below. |
+| `llm_rubric` | string | LLM, agent | Concise criteria. Auto-wrapped with `{{ conversation }}` if absent. |
+| `prompt` | string | LLM, agent | Full Jinja2 template with manual control over structure. |
+| `prompt_file` | string | LLM, agent | Path to a prompt file (absolute or relative to project root). |
 | `context` | list of paths | LLM | Files appended to the prompt as `## Context: <name>` sections. |
 | `module` | string | code | Importable module holding the judge function. |
 | `function` | string | code | Callable in `module`; receives `outputs=` plus any `arguments`. |
 | `arguments` | mapping | all | `**kwargs` for Python judges; `{{ arguments }}` for LLM judges. |
 | `if` | string | all | Python expression over `annotations`/`outputs`; skip the case when false. |
-| `feedback_type` | string | LLM | `bool` for pass/fail; anything else scores 1-5. Inferred if omitted. |
-| `model` | string | LLM | Per-judge model override (highest precedence). |
-| `samples` | int | LLM | Run N times per case and reduce (median/majority). Default `1`. |
-| `score_range` | `[min, max]` | numeric | Value scale for report coloring. Default `[1, 5]` for LLM, `[0, 1]` otherwise. |
+| `feedback_type` | string | LLM, agent | `bool` for pass/fail; anything else scores 1-5. Inferred if omitted. |
+| `model` | string | LLM, agent | Per-judge model override (highest precedence). |
+| `samples` | int | LLM, agent | Run N times per case and reduce (median/majority). Default `1`. |
+| `score_range` | `[min, max]` | numeric (LLM, agent) | Value scale for report coloring. Default `[1, 5]` for LLM, `[0, 1]` otherwise. |
 
 !!! note "Boolean vs numeric aggregation"
     A judge whose values are all booleans aggregates into a **pass rate**; all-numeric
@@ -152,6 +158,100 @@ per-judge model:  >  models.judge  >  EVAL_JUDGE_MODEL env var
 ```
 
 If none resolves to a non-empty value, the judge raises at run time.
+
+## Agent judges
+
+An `agent:` block turns an LLM judge into a **tool-using agent judge**. Instead of a
+single stateless model call, the judge runs as an agent *through the runner abstraction*
+against an isolated, staged workspace — so it can `Read`/`Grep`/`Glob` the case outputs
+and any reference docs to **ground its verdict** (e.g. verify architecture claims against
+the real docs) instead of guessing from prompt text. The instructions still come from
+`prompt` / `prompt_file` / `llm_rubric`; the `agent:` block is what upgrades the judge.
+It reuses `model`, `feedback_type`, `score_range`, `samples`, `if`, and `thresholds`
+exactly like an LLM judge.
+
+### The `agent:` block
+
+Every sub-key is optional.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `runner` | mapping | `{type: claude-code}` | Per-judge runner block, parsed exactly like the top-level [`runner`](runner.md) (`type`, `effort`, `command`, `env`, …). Lets the judge use a different runner/model stack than the skill-under-test. |
+| `allowed_tools` | list | `[Read, Grep, Glob]` | Tool allowlist for the judge. Read-only by default; add `Bash` only under sandboxing (see below). |
+| `context` | list of paths | `[]` | Dirs/files staged **read-only** under `./.context/<name>` for the agent to consult. Distinct from the top-level `context:`, which is appended to the prompt text. |
+| `inputs` | list | all output dirs | Which collected output dirs (by `outputs[].path` name) to stage as files. Use `[.]` to stage everything. |
+| `timeout` | int | `execution.timeout` or `600` | Per-run wall-clock budget in seconds. |
+| `max_budget_usd` | number | `2.0` | Per-judge-run cost cap. |
+
+### How it runs
+
+Per case, the harness:
+
+1. **Stages an isolated workspace** in a temp dir — the case's output files (filtered by
+   `agent.inputs`; default all of `outputs["files"]`) plus each `agent.context` entry
+   symlinked under `./.context/` are **read-only staged inputs**, and a pre-created
+   `./output/` dir is **writable** for the verdict.
+2. **Instantiates the judge's own runner** (`RUNNERS[agent.runner.type]`, default
+   `claude-code`) with `permissions={"allow": agent.allowed_tools}`, so the judge gets its
+   own runner and read-only tool policy — independent of the skill-under-test, via a
+   shallow `EvalConfig` copy carrying the judge's runner and permissions.
+3. **Runs one prompt-mode turn** with the rendered instructions (same template variables
+   LLM judges get), reads the verdict, and tears the workspace down. Runner cost/tokens
+   are attributed to the judge.
+
+### Output contract
+
+The judge writes `./output/score.json`:
+
+```json
+{"score": 2, "rationale": "All three components exist in the arch docs."}
+```
+
+or, for a boolean judge:
+
+```json
+{"passed": true, "rationale": "Touched tests pass."}
+```
+
+`feedback_type` selects `score` vs `passed`; `score_range` bands a numeric score. The
+harness appends this output contract (plus an untrusted-data guard) to the prompt
+automatically, so rubric authors write only the criteria.
+
+!!! note "Fallback and errors"
+    If `score.json` is absent, the harness parses the last `{"score"|"passed", …}` JSON
+    object from the run's stdout. If neither yields a value, it records an **error
+    sample** — never silently passing.
+
+### Security
+
+The judge reads model-generated, **untrusted** case artifacts, so isolation is enforced:
+
+!!! warning "Enable `Bash` only on a sandboxed runner"
+    The default `allowed_tools` is read-only (`[Read, Grep, Glob]`). Add `Bash` **only**
+    on a runner with OS-level sandboxing — no network, cleaned host credentials, path
+    confinement — because the judge executes against untrusted material (CWE-78/CWE-200).
+
+- Untrusted case-file relpaths are **containment-checked**, so a `..`-bearing key cannot
+  escape the staged workspace (CWE-22).
+- `runner.workspace_mode: repo` is **rejected** for agent judges — they must run in the
+  isolated staged workspace, never the real repo tree (CWE-829).
+
+### Example
+
+```yaml
+judges:
+  - name: architecture_score
+    prompt_file: eval/prompts/architecture-agent-judge.md
+    model: claude-opus-4-8
+    feedback_type: int
+    score_range: [0, 2]
+    samples: 3
+    agent:
+      runner: { type: claude-code }              # optional; defaults to claude-code
+      allowed_tools: [Read, Grep, Glob]          # read-only default
+      context: [.context/architecture-context]   # staged read-only under ./.context/
+      inputs: [strat-tasks]                       # which output dirs to stage (default: all)
+```
 
 ## check judges
 

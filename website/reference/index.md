@@ -25,7 +25,7 @@ task-oriented walkthroughs, see [Guides](../guides/index.md).
 - [**traces**](../reference/config/traces.md) — `stdout`, `stderr`, `events`, `metrics`
 - [**permissions**](../reference/config/permissions.md) — `allow` / `deny` tool patterns
 - [**hooks**](../reference/config/hooks.md) — Lifecycle shell hooks
-- [**judges**](../reference/config/judges.md) — The four judge types and every field
+- [**judges**](../reference/config/judges.md) — The five judge types and every field
 - [**thresholds**](../reference/config/thresholds.md) — `min_mean`, `min_pass_rate`, `min_win_rate`
 - [**reward**](../reference/config/reward.md) — Collapse judges into an RL reward scalar
 

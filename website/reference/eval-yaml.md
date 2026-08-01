@@ -130,7 +130,7 @@ one `judge`.
       <div class="sd-group">Score · how it's judged</div>
       <div class="sd-card">
         <a class="sd-key sd-link" href="../config/judges/">judges[]</a>
-        <div class="sd-purpose">How each case is scored — four judge types</div>
+        <div class="sd-purpose">How each case is scored — five judge types</div>
         <div class="sd-fields">
           <span class="sd-f">name</span>
           <span class="sd-f">description<span class="sd-badge llm">LLM</span></span>
@@ -142,6 +142,7 @@ one `judge`.
           <span class="sd-f">builtin</span>
           <span class="sd-f">module<span class="sd-badge py">PY</span></span>
           <span class="sd-f">function<span class="sd-badge py">PY</span></span>
+          <span class="sd-f">agent</span>
           <span class="sd-f">context[]</span>
           <span class="sd-f">model</span>
           <span class="sd-f">arguments</span>
@@ -275,7 +276,7 @@ See [the execution model](../concepts/execution-model.md) for the difference.
 
 The repository's root [`eval.yaml`](https://github.com/opendatahub-io/agent-eval-harness/blob/main/eval.yaml)
 is the canonical, heavily-commented reference — every block with inline comments and
-commented-out variants for all four judge types, tool interception, `batch_pattern`,
+commented-out variants for all five judge types, tool interception, `batch_pattern`,
 and thresholds. It's the best single file to copy from.
 
 ```yaml title="eval.yaml (excerpt)"
@@ -357,7 +358,7 @@ thresholds:
 - [**outputs**](config/outputs.md) — path vs tool, schema, batch_pattern, types
 - [**traces**](config/traces.md) — stdout, stderr, events, metrics
 - [**hooks**](config/hooks.md) — before/after all/each, before_scoring
-- [**judges**](config/judges.md) — the four judge types and all fields
+- [**judges**](config/judges.md) — the five judge types and all fields
 - [**thresholds**](config/thresholds.md) — min_mean, min_pass_rate, min_win_rate
 - [**reward**](config/reward.md) — single-judge and formula reward modes
 

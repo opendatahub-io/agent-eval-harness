@@ -1,12 +1,12 @@
 # Writing custom judges
 
 Judges turn a case's collected outputs into a score. This page shows how to write each
-of the four judge types by hand, which variables they receive, and how to parameterize
+of the five judge types by hand, which variables they receive, and how to parameterize
 and conditionally skip them. For the conceptual overview see
 [Judges](../concepts/judges.md); for every field, the
 [judges reference](../reference/config/judges.md).
 
-## The four types
+## The five types
 
 A judge's *type* is inferred from which field you set — you never declare it.
 
@@ -15,6 +15,7 @@ flowchart TD
     J[judge entry] --> B{which field?}
     B -->|builtin| BI[library judge]
     B -->|check| CK[inline Python]
+    B -->|prompt / prompt_file / llm_rubric<br/>+ agent| AG[agent judge]
     B -->|prompt / prompt_file / llm_rubric| LLM[LLM judge]
     B -->|module + function| EXT[external code]
 ```
@@ -24,6 +25,7 @@ flowchart TD
 | `builtin` | Library judge | Deterministic Python | `(bool\|number, str)` |
 | `check` | Inline Python | Deterministic | `(bool\|number, str)` |
 | `prompt` / `prompt_file` / `llm_rubric` | LLM judge | An API call to `models.judge` | pass/fail or a 1–5 score |
+| the above **+ `agent`** | Agent judge | A tool-using agent run via the runner | pass/fail or a numeric score |
 | `module` + `function` | External code | Your imported callable | `(bool\|number, str)` |
 
 !!! warning "One type per judge"
@@ -196,10 +198,80 @@ The prompt is rendered with these variables:
     `{{ tool_trace }}`, `{{ evidence }}`, and `{{ reasoning }}` need `traces.events: true`;
     `{{ conversation }}` falls back to `stdout.log` when no events were captured.
 
-LLM judges are the only type that can be **sampled**. Set `samples: 3` to call the model
-several times per case and reduce the noise (median for scores, majority vote for
-booleans); the report flags cases where samples disagreed. `samples` on any other type is
-ignored with a warning.
+LLM judges — including the agent judges below — are the only types that can be
+**sampled**. Set `samples: 3` to call the model several times per case and reduce the
+noise (median for scores, majority vote for booleans); the report flags cases where
+samples disagreed. `samples` on any other type is ignored with a warning.
+
+## Agent judges
+
+The four types above make (at most) one model call — they score from the prompt text they
+are handed. An **agent judge** upgrades an LLM judge into a *tool-using* run: add an
+`agent:` block and the judge is executed through the [runner abstraction](../concepts/runners.md)
+in a staged, isolated workspace where it can `Read`/`Grep`/`Glob` the case's artifacts
+**and reference docs** before it decides. Reach for it when a verdict must *look something
+up* rather than guess.
+
+The judge still takes its instructions from `prompt` / `prompt_file` / `llm_rubric`, and
+reuses `model`, `feedback_type`, `score_range`, `samples`, `if`, and thresholds exactly
+like an LLM judge — the `agent:` block is the only thing that changes how it runs. Its
+inputs are the case's collected output files (filtered by `agent.inputs`, default all)
+plus each `agent.context` dir staged read-only under `./.context/`; its one writable spot
+is `./output/`, for the verdict file.
+
+Say you grade whether a strategy's architecture claims are real. A text-only LLM judge
+has no way to check component names, CRDs, or API fields against the platform docs, so it
+trusts the output and inflates the score to full marks. An agent judge greps the actual
+architecture-context docs and marks down invented components:
+
+```yaml title="eval.yaml"
+judges:
+  - name: architecture_score
+    description: Component/CRD/API claims check out against the real arch-context docs.
+    prompt_file: eval/prompts/architecture-agent-judge.md
+    model: claude-opus-4-8
+    feedback_type: int
+    score_range: [0, 2]
+    samples: 3
+    agent:
+      runner: { type: claude-code }             # per-judge runner (default claude-code)
+      allowed_tools: [Read, Grep, Glob]         # read-only default
+      context: [.context/architecture-context]  # staged read-only under ./.context/
+      inputs: [strat-tasks]                      # which output dirs to stage (default: all)
+      # timeout: 420        # default: execution.timeout or 600s
+      # max_budget_usd: 2.0 # per-judge-run cap (default 2.0)
+```
+
+The prompt file holds only the criteria — the harness appends the output contract and an
+untrusted-data guard for you:
+
+```markdown title="eval/prompts/architecture-agent-judge.md"
+Grade the strategy in ./strat-tasks/. For every component, CRD, and API it names,
+Grep ./.context/architecture-context/ to confirm it exists. Score 0 (claims are
+invented) to 2 (every claim verified).
+```
+
+The agent ends by writing its verdict to `./output/score.json` — numeric here because
+`feedback_type: int`:
+
+```json title="output/score.json"
+{"score": 1, "rationale": "TrainingRuntime CRD and the Kueue integration verified against arch-context; the referenced ModelMeshRouter component does not exist."}
+```
+
+!!! tip "Output contract, and the stdout fallback"
+    Write `{"score": <number>, "rationale": "…"}` for numeric judges or
+    `{"passed": <bool>, "rationale": "…"}` when `feedback_type: bool`. If `score.json` is
+    missing, the harness parses the last such JSON object from the run's stdout; if
+    neither yields a value the case records an **error** sample — an agent judge never
+    silently passes.
+
+!!! warning "`Bash` needs a sandboxed runner"
+    The default `allowed_tools` is read-only (`[Read, Grep, Glob]`). Only add `Bash`
+    (e.g. to run the tests a change touched) on a runner with OS-level sandboxing — no
+    network, cleaned credentials, path confinement — because the judge reads untrusted
+    case artifacts. `..`-bearing artifact paths are containment-checked, and
+    `runner.workspace_mode: repo` is rejected for agent judges: they must run in the
+    isolated staged workspace.
 
 ## `arguments`: parameterizing a judge
 

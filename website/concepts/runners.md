@@ -14,6 +14,14 @@ runtime-agnostic.
     never in the config. The same `eval.yaml` runs unchanged across all three
     backends. See [Execution backends](backends.md) for that axis.
 
+!!! note "Runners also back `agent` judges"
+    The same abstraction runs judges, not just cases. An
+    [`agent`](../reference/config/judges.md) judge carries its own per-judge `runner:`
+    block (parsed like the top-level `runner:`, default `claude-code`) and runs the judge
+    itself as a tool-using agent in an isolated, read-only staged workspace — independent
+    of the runner used for the skill under test. See
+    [judges](../reference/config/judges.md).
+
 ```mermaid
 flowchart TD
     C["eval.yaml → runner.type"] --> R{RUNNERS registry}

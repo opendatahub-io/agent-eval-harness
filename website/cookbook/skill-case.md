@@ -157,7 +157,7 @@ eval/dataset/cases/
 
 ## 3. The judges
 
-This recipe uses two of the [four judge types](../reference/config/judges.md):
+This recipe uses two of the [five judge types](../reference/config/judges.md):
 
 | Judge | Type | What it verifies |
 | --- | --- | --- |
@@ -200,7 +200,7 @@ Common flags:
 | `--model <name>` | Model for the skill under test (overrides `models.skill`) |
 | `--cases <ids>` | Run only specific cases |
 | `--baseline <run-id>` | Add a pairwise A/B comparison against a prior run |
-| `--no-llm-judges` | Skip LLM judges for a fast, cheap dry run |
+| `--no-llm-judges` | Skip every model-calling judge — `llm`, `agent`, and LLM builtins — for a fast, cheap dry run; deterministic `check`/`module`/Python builtins still run |
 
 `/eval-run` prepares an isolated workspace per case, executes the skill
 headlessly, collects `outputs`, scores with your judges, checks thresholds, and

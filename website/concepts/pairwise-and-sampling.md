@@ -142,6 +142,12 @@ Reduction depends on the value type (`_aggregate_samples`):
 The kept `rationale` is taken from a sample that matches the reduced value, so the shown
 reasoning always agrees with the final score.
 
+!!! note "`agent` judges sample the same way"
+    A tool-using [`agent`](judges.md) judge calls a model, so `samples: N` applies to it
+    exactly as it does to an LLM judge — it runs N times per case and reduces with the same
+    rules (median for numeric, strict majority for boolean), carrying the same `stability`
+    block.
+
 ### The stability block
 
 Every sampled result carries a `stability` block. A result is **`stable` only when every
@@ -185,9 +191,10 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/score.py judges \
 ```
 
 !!! warning "Sampling only applies to LLM judges"
-    `--samples` and `samples:` affect **stochastic (LLM) judges only**. Deterministic
-    judges — inline `check`, external `module`/`function`, and Python `builtin` judges —
-    are forced to `samples=1` and always run once; the CLI override never touches them.
+    `--samples` and `samples:` affect **stochastic (LLM and `agent`) judges only**.
+    Deterministic judges — inline `check`, external `module`/`function`, and Python
+    `builtin` judges — are forced to `samples=1` and always run once; the CLI override
+    never touches them.
     Configuring `samples: N` on a deterministic judge is ignored with a warning at load.
 
 ### Sampling a pairwise comparison
@@ -207,7 +214,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/score.py pairwise \
 
 <div class="grid cards" markdown>
 
-- [**Judges**](judges.md) — the four judge types and how they score a case
+- [**Judges**](judges.md) — the five judge types and how they score a case
 - [**Thresholds**](thresholds.md) — `min_win_rate`, `min_mean`, `min_pass_rate` gates
 - [**judges reference**](../reference/config/judges.md) — every judge field, including `samples`
 - [**The report**](report.md) — where stability and pairwise verdicts are rendered

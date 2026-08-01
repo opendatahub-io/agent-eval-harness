@@ -131,8 +131,9 @@ Verification always compares against the previous iteration so regressions surfa
 ```
 
 !!! tip "Cheaper structural checks"
-    Add `--no-llm-judges` to skip LLM API calls and run only deterministic judges
-    (`check`, Python `builtin`) when you only need to verify a structural fix.
+    Add `--no-llm-judges` to skip every model-calling judge (`llm` and `agent`) and run
+    only deterministic judges (`check`, Python `builtin`) when you only need to verify a
+    structural fix.
 
 ### Step 6 — Handle regressions
 

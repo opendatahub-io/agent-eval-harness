@@ -6,7 +6,7 @@ deterministic (Python) or stochastic (LLM), boolean or numeric — and the harne
 aggregates them into per-judge pass rates and means for the report and
 [thresholds](thresholds.md).
 
-## The four judge types
+## The five judge types
 
 The type is **inferred from which field you set** — there is no `type:` key. When more
 than one could apply, the harness resolves in this priority order (see
@@ -16,13 +16,19 @@ than one could apply, the harness resolves in this priority order (see
 | --- | --- | --- | --- | --- |
 | 1 | **builtin** | `builtin` | Registered judge from `agent_eval/judges/` | Python judge: whatever it returns · LLM judge (`.md`): boolean |
 | 2 | **inline check** | `check` | A Python snippet, in-process | `(bool \| number, rationale)` |
-| 3 | **LLM** | `prompt` / `prompt_file` / `llm_rubric` | An Anthropic model call | numeric `1–5` (default) or boolean |
-| 4 | **external code** | `module` + `function` | An imported Python callable | whatever it returns |
+| 3 | **agent** | `agent` (+ `prompt` / `prompt_file` / `llm_rubric`) | An agent run through the runner abstraction (reads a staged workspace) | numeric or boolean via `output/score.json` |
+| 4 | **LLM** | `prompt` / `prompt_file` / `llm_rubric` | An Anthropic model call | numeric `1–5` (default) or boolean |
+| 5 | **external code** | `module` + `function` | An imported Python callable | whatever it returns |
 
 !!! warning "`builtin` is mutually exclusive"
     Setting `builtin` alongside `check`, `prompt`, `prompt_file`, `module`, or
     `function` raises a load-time error. The other types are distinguished purely by
     which field is present, so don't set more than one.
+
+!!! note "`agent:` upgrades an LLM judge"
+    `agent:` is not mutually exclusive — it coexists with `prompt`/`prompt_file`/`llm_rubric`.
+    Adding an `agent:` block upgrades that otherwise-LLM judge from a single model call
+    into a tool-using agent run (it's checked *before* the LLM branch).
 
 === "builtin"
 
@@ -79,6 +85,44 @@ than one could apply, the harness resolves in this priority order (see
     Imports `function` from `module` (resolved against the project root) and calls it
     with `outputs=` (plus any `arguments` as kwargs). Use for validation too complex
     for an inline `check`.
+
+=== "agent"
+
+    ```yaml
+    judges:
+      - name: architecture_score
+        prompt_file: eval/prompts/architecture-agent-judge.md
+        model: claude-opus-4-8
+        feedback_type: int
+        score_range: [0, 2]
+        samples: 3
+        agent:
+          runner: {type: claude-code}               # optional; defaults to claude-code
+          allowed_tools: [Read, Grep, Glob]         # read-only default
+          context: [.context/architecture-context]  # staged read-only under ./.context/
+          inputs: [strat-tasks]                      # output dirs to stage (default: all)
+    ```
+
+    An `agent:` block runs the judge as a tool-using agent *through the runner
+    abstraction*, against an isolated, staged workspace: the case's output files (filtered
+    by `agent.inputs`) plus each `agent.context` dir/file are symlinked in read-only, and a
+    writable `./output/` receives the verdict. The judge writes `./output/score.json` —
+    `{"score": <number>, "rationale": "…"}` or `{"passed": <bool>, "rationale": "…"}`
+    (`feedback_type` selects which; the harness appends the contract + an untrusted-data
+    guard to the prompt automatically). It still takes its instructions from
+    `prompt`/`prompt_file`/`llm_rubric` and reuses `model`, `samples`, `score_range`,
+    `feedback_type`, `if`, and thresholds like an LLM judge.
+
+    Use it for grading that must **look something up** rather than guess from prompt text:
+    verify component/CRD/API claims against real docs, cross-reference a spec, or run the
+    touched tests (add `Bash` to `allowed_tools`). See the [judges config
+    reference](../reference/config/judges.md) for every `agent:` field.
+
+    !!! warning "`Bash` needs a sandboxed runner"
+        The default `allowed_tools` is read-only (`[Read, Grep, Glob]`). Enable `Bash` only
+        on a runner with OS-level sandboxing (no network, clean credentials, path
+        confinement) — the judge reads untrusted case artifacts. `runner.workspace_mode:
+        repo` is rejected for agent judges.
 
 ## What judges receive: the `outputs` record
 
