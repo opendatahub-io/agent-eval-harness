@@ -190,7 +190,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/score.py judges \
   --run-id <run-id> --config eval.yaml --samples 5
 ```
 
-!!! warning "Sampling only applies to LLM judges"
+!!! warning "Sampling only applies to stochastic judges"
     `--samples` and `samples:` affect **stochastic (LLM and `agent`) judges only**.
     Deterministic judges — inline `check`, external `module`/`function`, and Python
     `builtin` judges — are forced to `samples=1` and always run once; the CLI override

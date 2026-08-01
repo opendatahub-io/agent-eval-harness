@@ -107,7 +107,7 @@ Common flags:
 | `--model <name>` | Model for the skill under test (overrides `models.skill`) |
 | `--cases <ids>` | Run only specific cases |
 | `--baseline <run-id>` | Add a pairwise A/B comparison against a prior run |
-| `--no-llm-judges` | Skip model-calling judges (LLM and `agent`); fast, cheap dry run |
+| `--no-llm-judges` | Skip model-calling judges (`llm`, `agent`, LLM builtins); deterministic judges still run — fast, cheap dry run |
 
 ## Step 4 — Read the report
 

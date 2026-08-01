@@ -205,12 +205,15 @@ samples disagreed. `samples` on any other type is ignored with a warning.
 
 ## Agent judges
 
-The four types above make (at most) one model call — they score from the prompt text they
-are handed. An **agent judge** upgrades an LLM judge into a *tool-using* run: add an
-`agent:` block and the judge is executed through the [runner abstraction](../concepts/runners.md)
-in a staged, isolated workspace where it can `Read`/`Grep`/`Glob` the case's artifacts
-**and reference docs** before it decides. Reach for it when a verdict must *look something
-up* rather than guess.
+Of the types above, only **LLM** judges (`prompt`/`prompt_file`/`llm_rubric`, and LLM
+`builtin`s) make a model call — a single, stateless one from the prompt text they're
+handed; `check`, external `module`/`function`, and Python `builtin` judges run
+deterministic code with no model call. An **agent judge** upgrades an LLM judge into a
+*tool-using* run: add an `agent:` block and the judge executes through the
+[runner abstraction](../concepts/runners.md) in a staged, isolated workspace, where it may
+take **multiple tool-using turns** — `Read`/`Grep`/`Glob` over the case's artifacts **and
+reference docs** — before it decides. Reach for it when a verdict must *look something up*
+rather than guess.
 
 The judge still takes its instructions from `prompt` / `prompt_file` / `llm_rubric`, and
 reuses `model`, `feedback_type`, `score_range`, `samples`, `if`, and thresholds exactly

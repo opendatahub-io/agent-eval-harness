@@ -43,7 +43,9 @@ A judge's type is inferred from which field is populated. There is no `type:` ke
     `agent:` block upgrades an otherwise-LLM judge into a tool-using run (see
     [Agent judges](#agent-judges)). A judge with none of these is skipped with a warning. To
     avoid ambiguity, `builtin` is validated as *mutually exclusive* with `check`,
-    `prompt`, `prompt_file`, `module`, and `function` — combining them fails at load.
+    `prompt`, `prompt_file`, `agent`, `module`, and `function` — combining them fails
+    at load (so `builtin` + `agent` is rejected; `agent` otherwise coexists with the
+    prompt fields, which supply its instructions).
 
 ```mermaid
 flowchart TD
@@ -69,18 +71,18 @@ flowchart TD
 | `builtin` | string | builtin | Registered judge name from `agent_eval/judges/<category>/` (e.g. `cost_budget`). |
 | `check` | string | check | Python snippet receiving `outputs`, `arguments`; returns `(value, rationale)`. |
 | `agent` | mapping | agent | Runs the judge as a tool-using agent; see [Agent judges](#agent-judges) below. |
-| `llm_rubric` | string | LLM, agent | Concise criteria. Auto-wrapped with `{{ conversation }}` if absent. |
+| `llm_rubric` | string | LLM, agent | Concise criteria. LLM judges auto-wrap it with `{{ conversation }}` if absent; agent judges use it as-is (they read the staged workspace, not an inlined conversation). |
 | `prompt` | string | LLM, agent | Full Jinja2 template with manual control over structure. |
 | `prompt_file` | string | LLM, agent | Path to a prompt file (absolute or relative to project root). |
-| `context` | list of paths | LLM | Files appended to the prompt as `## Context: <name>` sections. |
+| `context` | list of paths | LLM, agent | Files appended to the prompt as `## Context: <name>` sections. Distinct from `agent.context`, which stages dirs/files into the judge workspace for the agent to read. |
 | `module` | string | code | Importable module holding the judge function. |
 | `function` | string | code | Callable in `module`; receives `outputs=` plus any `arguments`. |
 | `arguments` | mapping | all | `**kwargs` for Python judges; `{{ arguments }}` for LLM judges. |
 | `if` | string | all | Python expression over `annotations`/`outputs`; skip the case when false. |
-| `feedback_type` | string | LLM, agent | `bool` for pass/fail; anything else scores 1-5. Inferred if omitted. |
+| `feedback_type` | string | LLM, agent | `bool` selects a `passed` verdict; any other value selects a numeric `score` (bounds from `score_range`). Inferred if omitted. |
 | `model` | string | LLM, agent | Per-judge model override (highest precedence). |
 | `samples` | int | LLM, agent | Run N times per case and reduce (median/majority). Default `1`. |
-| `score_range` | `[min, max]` | numeric (LLM, agent) | Value scale for report coloring. Default `[1, 5]` for LLM, `[0, 1]` otherwise. |
+| `score_range` | `[min, max]` | numeric (LLM, agent) | Numeric bounds + report-color scale. Default `[1, 5]` for LLM/agent, `[0, 1]` for other numeric judges; agent judges use it in the `score.json` contract. |
 
 !!! note "Boolean vs numeric aggregation"
     A judge whose values are all booleans aggregates into a **pass rate**; all-numeric

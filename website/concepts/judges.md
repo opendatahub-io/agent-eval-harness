@@ -21,7 +21,7 @@ than one could apply, the harness resolves in this priority order (see
 | 5 | **external code** | `module` + `function` | An imported Python callable | whatever it returns |
 
 !!! warning "`builtin` is mutually exclusive"
-    Setting `builtin` alongside `check`, `prompt`, `prompt_file`, `module`, or
+    Setting `builtin` alongside `check`, `prompt`, `prompt_file`, `agent`, `module`, or
     `function` raises a load-time error. The other types are distinguished purely by
     which field is present, so don't set more than one.
 

@@ -1301,6 +1301,11 @@ def _stage_agent_workspace(workspace, record, stage_inputs, context_dirs, root):
         if isinstance(content, dict):
             continue  # skip binary placeholders
         top = rel.split("/", 1)[0]
+        # Reserved namespaces: the verdict dir (./output/) and staged context
+        # (./.context/). Case artifacts are skill-produced (untrusted); never let
+        # one pre-seed ./output/score.json and forge a passing verdict (CWE-345/20).
+        if top in ("output", ".context"):
+            continue
         if selected is not None and top not in selected:
             continue
         dest = workspace / rel
@@ -2030,23 +2035,30 @@ def _drop_model_calling_judges(judges, config):
     """Filter for --no-llm-judges: drop judges that call a model — llm, agent,
     and LLM-kind builtins. Deterministic judges (check, Python builtins, external
     code) are kept. `judges` are load_judges 5-tuples (name, scorer, cond, type, n)."""
-    try:
-        from agent_eval.judges import BuiltinJudgeRegistry
-        reg = BuiltinJudgeRegistry()
-        reg.discover()
-    except Exception:
-        reg = None
     builtin_of = {j.name: j.builtin for j in config.judges
                   if getattr(j, "builtin", "")}
+    # Fail CLOSED: --no-llm-judges is an explicit "don't call a model" request, so a
+    # builtin we cannot classify must be dropped, not retained (CWE-754). If the
+    # registry can't even be discovered while builtins are present, refuse to run.
+    reg = None
+    if any(t[3] == "builtin" for t in judges):
+        try:
+            from agent_eval.judges import BuiltinJudgeRegistry
+            reg = BuiltinJudgeRegistry()
+            reg.discover()
+        except Exception as e:
+            raise RuntimeError(
+                f"--no-llm-judges: cannot classify builtin judges (registry "
+                f"discovery failed: {e}); refusing to run to avoid a model call")
 
     def _calls_model(name, jtype):
         if jtype in ("llm", "agent"):
             return True
-        if jtype == "builtin" and reg is not None:
+        if jtype == "builtin":
             try:
                 return reg.get(builtin_of.get(name, "")).kind == "llm"
             except Exception:
-                return False
+                return True  # fail closed: unclassifiable builtin -> treat as model-calling
         return False
 
     return [t for t in judges if not _calls_model(t[0], t[3])]
