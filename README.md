@@ -322,6 +322,31 @@ thresholds:
   - **`prompt_file`**: External file path (absolute or relative to project root). Use for sharing prompts across judges. File can contain rubric-style or full template content.
 - **`context`** — list of file paths loaded and appended to the LLM judge prompt as supplementary material (rubrics, guidelines, examples).
 - **`module`** / **`function`** — external Python code judge for complex validation.
+- **`agent`** — turns a judge into a tool-using **agent judge**: instead of a single stateless model call, the judge runs as an agent *through the runner abstraction*, with read-only file tools and a staged, isolated workspace, so it can Read/Grep/Glob the material and any reference docs to **ground its verdict** (e.g. verify architecture claims against the real docs) instead of guessing from prompt text. An agent judge still takes its instructions from `prompt`/`prompt_file`/`llm_rubric`, and reuses `model`, `feedback_type`, `score_range`, `samples`, `if`, and `thresholds` like any other judge. The presence of an `agent:` block is what upgrades an otherwise-LLM judge. Sub-keys (all optional):
+  - **`runner`** — a per-judge runner block, parsed exactly like the top-level `runner:` (`type`, `effort`, `command`, `env`, …). Defaults to `{type: claude-code}`. Lets the judge use a different runner/model stack than the skill-under-test.
+  - **`allowed_tools`** — tool allowlist for the judge (read-only default `[Read, Grep, Glob]`; add `Bash` for judges that must run commands, e.g. a tests-pass judge). The judge sees only its own staged workspace, never other cases or the real repo tree.
+  - **`context`** — dirs/files staged **read-only** into the judge workspace under `./.context/<name>` for the agent to consult (distinct from the top-level `context:`, which is appended to the prompt text).
+  - **`inputs`** — which collected output dirs (by `outputs[].path` name) to stage as files; default: all of `outputs["files"]`. Use `[.]` to stage everything.
+  - **`timeout`** — seconds (default: `execution.timeout` or harness default). **`max_budget_usd`** — per-judge-run cap (default `2.0`).
+
+  The judge writes its verdict to `./output/score.json` — `{"score": <number>, "rationale": "…"}` (numeric) or `{"passed": <bool>, "rationale": "…"}` (bool); `feedback_type` selects which, and `score_range` bands a numeric score. The harness appends this output contract (plus an untrusted-data guard) to the prompt automatically, so rubric authors write only the criteria. If `score.json` is absent, the harness falls back to parsing the last `{"score"|"passed", …}` JSON object from the run's stdout; if neither yields a value it records an error sample rather than silently passing. Example:
+
+  ```yaml
+  judges:
+    - name: architecture_score
+      prompt_file: eval/prompts/architecture-agent-judge.md
+      model: claude-opus-4-8
+      feedback_type: int
+      score_range: [0, 2]
+      samples: 3
+      agent:
+        runner: {type: claude-code, effort: high}   # optional; defaults to claude-code
+        allowed_tools: [Read, Grep, Glob]           # read-only default
+        context: [.context/architecture-context]    # staged read-only under ./.context/
+        inputs: [strat-tasks]                        # which output dirs to stage (default: all)
+        timeout: 420
+        max_budget_usd: 2.0
+  ```
 - **`permissions`** — tool access patterns (`allow`/`deny`) for headless execution. Generic across runners — each runner translates to its platform's mechanism.
 - **`runner`** — `type` discriminator selects the runner implementation; remaining fields (`effort`, `settings`, `plugin_dirs`, `env`, `system_prompt`) are runner-specific and ignored by other runners.
 - **`models`** — `skill`/`subagent`/`judge`/`hook` defaults, overridable per-judge or via CLI flags. `hook` is the model used for LLM-based AskUserQuestion answering.

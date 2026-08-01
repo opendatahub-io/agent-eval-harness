@@ -332,3 +332,161 @@ execution:
 """))
     assert cfg.is_prompt_mode() is True
     assert cfg.resolve_skill() is None
+
+
+# ---------------------------------------------------------------------------
+# Agent judge config parsing/validation (specs/010-agent-judge §1, §7)
+# ---------------------------------------------------------------------------
+
+from agent_eval.config import RunnerConfig  # noqa: E402
+
+
+def test_agent_judge_block_parses(tmp_path):
+    cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution:
+  skill: s
+judges:
+  - name: architecture_score
+    prompt_file: eval/prompts/arch.md
+    feedback_type: int
+    score_range: [0, 2]
+    samples: 3
+    agent:
+      allowed_tools: [Read, Grep, Glob]
+      context: [.context/architecture-context]
+      inputs: [strat-tasks]
+      timeout: 420
+      max_budget_usd: 2.0
+"""))
+    assert len(cfg.judges) == 1
+    jc = cfg.judges[0]
+    assert jc.name == "architecture_score"
+    assert isinstance(jc.agent, dict)
+    assert jc.agent["allowed_tools"] == ["Read", "Grep", "Glob"]
+    assert jc.agent["context"] == [".context/architecture-context"]
+    assert jc.agent["inputs"] == ["strat-tasks"]
+    assert jc.agent["timeout"] == 420
+    assert jc.agent["max_budget_usd"] == 2.0
+    assert jc.samples == 3
+
+
+def test_agent_block_defaults_to_empty_dict_when_absent(tmp_path):
+    """A plain LLM judge (no agent:) has agent == {} (falsy)."""
+    cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution:
+  skill: s
+judges:
+  - name: plain_llm
+    prompt: grade it
+"""))
+    assert cfg.judges[0].agent == {}
+    assert not cfg.judges[0].agent
+
+
+def test_agent_non_dict_raises(tmp_path):
+    with pytest.raises(ValueError, match="'agent' must be a mapping"):
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution:
+  skill: s
+judges:
+  - name: bad
+    prompt: grade
+    agent: "not-a-mapping"
+"""))
+
+
+def test_agent_nested_runner_parses_into_runnerconfig(tmp_path):
+    cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution:
+  skill: s
+judges:
+  - name: ow_judge
+    prompt_file: eval/prompts/arch.md
+    agent:
+      runner:
+        type: cli
+        command: "bash run-judge.sh {workspace} {output_dir} {model}"
+        effort: high
+      context: [.context/architecture-context]
+"""))
+    jc = cfg.judges[0]
+    runner = jc.agent["runner"]
+    assert isinstance(runner, RunnerConfig)
+    assert runner.type == "cli"
+    assert runner.command == "bash run-judge.sh {workspace} {output_dir} {model}"
+    assert runner.effort == "high"
+
+
+def test_agent_nested_runner_type_defaults_to_claude_code(tmp_path):
+    cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution:
+  skill: s
+judges:
+  - name: j
+    prompt: grade
+    agent:
+      runner:
+        effort: medium
+"""))
+    runner = cfg.judges[0].agent["runner"]
+    assert isinstance(runner, RunnerConfig)
+    assert runner.type == "claude-code"
+    assert runner.effort == "medium"
+
+
+def test_agent_nested_runner_non_dict_raises(tmp_path):
+    with pytest.raises(ValueError, match="agent.runner' must be a mapping"):
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution:
+  skill: s
+judges:
+  - name: bad
+    prompt: grade
+    agent:
+      runner: "claude-code"
+"""))
+
+
+def test_agent_nested_runner_invalid_command_raises(tmp_path):
+    """The nested runner is validated by the SAME logic as the top-level
+    runner (command must be str or list of str)."""
+    with pytest.raises(ValueError, match="command must be a string or list"):
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution:
+  skill: s
+judges:
+  - name: bad
+    prompt: grade
+    agent:
+      runner:
+        command: 123
+"""))
+
+
+def test_agent_raw_yaml_not_mutated(tmp_path):
+    """Parsing the nested runner shallow-copies so the raw agent dict's runner
+    is replaced on the JudgeConfig without leaving a half-parsed structure."""
+    cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution:
+  skill: s
+judges:
+  - name: j
+    prompt: grade
+    agent:
+      runner:
+        type: cli
+        command: "x.sh"
+      inputs: [a]
+"""))
+    jc = cfg.judges[0]
+    # Other agent keys survive alongside the parsed runner.
+    assert jc.agent["inputs"] == ["a"]
+    assert isinstance(jc.agent["runner"], RunnerConfig)

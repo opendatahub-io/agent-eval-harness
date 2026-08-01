@@ -22,7 +22,7 @@ Parse `$ARGUMENTS`:
 | `--run-id <id>` | no | `YYYY-MM-DD-<model>` | Identifier for this run |
 | `--cases <id> [<id> ...]` | no | all cases | Exact case IDs to run |
 | `--baseline <run-id>` | no | — | Previous run to compare against |
-| `--no-llm-judges` | no | false | Skip LLM judges (prompt, prompt_file, LLM builtins). Run deterministic judges (check, Python builtins, external code). |
+| `--no-llm-judges` | no | false | Skip LLM judges (prompt, prompt_file, LLM builtins, agent). Run deterministic judges (check, Python builtins, external code). |
 | `--gold` | no | false | Save outputs as gold references after run |
 | `--effort <level>` | no | `runner.effort` from config | Claude Code reasoning effort (Claude Code only; ignored by other runners) |
 | `--runner <type>` | no | local | `local` (default Steps 1–8) or `harbor` (containerized — skips to Harbor runner section) |
@@ -187,9 +187,9 @@ Report per-case counts. If any case has 0 artifacts, warn — the skill may not 
 
 ## Step 6: Score
 
-Run all configured judges against the collected outputs. Four judge types are supported: `builtin` (reusable from the harness library), inline `check` (Python snippets), LLM `prompt`/`prompt_file` (Jinja2 rendered), and external `module`/`function`. All support optional `arguments:` for parameterization.
+Run all configured judges against the collected outputs. Five judge types are supported: `builtin` (reusable from the harness library), inline `check` (Python snippets), LLM `prompt`/`prompt_file` (Jinja2 rendered), external `module`/`function`, and `agent` (a tool-using judge run through the runner abstraction with read-only file tools and a staged workspace — writes its verdict to `output/score.json`; see references/data-pipeline.md). All support optional `arguments:` for parameterization.
 
-If `--no-llm-judges` was specified, skip judges that make LLM API calls (prompt, prompt_file, and LLM builtins). Run deterministic judges only (check, Python builtins, external code).
+If `--no-llm-judges` was specified, skip judges that make LLM API calls (prompt, prompt_file, LLM builtins, and `agent` judges). Run deterministic judges only (check, Python builtins, external code).
 
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/score.py judges \

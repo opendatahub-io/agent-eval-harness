@@ -200,7 +200,7 @@ Use `{{ arguments.key }}` to parameterize prompts without editing the prompt tex
 
 ## 5. Scoring → Judges
 
-### Four judge types
+### Five judge types
 
 **Builtin judge** (`builtin` field in eval.yaml):
 - Resolves via `BuiltinJudgeRegistry` from `agent_eval/judges/` package
@@ -227,6 +227,13 @@ Use `{{ arguments.key }}` to parameterize prompts without editing the prompt tex
 - Imported via `importlib` from the project
 - Receives `(outputs=dict, **arguments)` when `arguments:` is set
 - Must return `(bool|number, str)` tuple
+
+**Agent judge** (`agent` field — a tool-using judge run through the runner abstraction):
+- Discriminated by an `agent:` block; still takes its instructions from `prompt`/`prompt_file`/`llm_rubric` (checked *before* the LLM branch, so `agent:` upgrades an otherwise-LLM judge). Reuses `model`, `feedback_type`, `score_range`, `samples`, `if`, `thresholds`.
+- Per invocation the harness: (1) stages an isolated, **read-only** workspace — the case's output files (filtered by `agent.inputs`, default all of `outputs["files"]`) plus each `agent.context` dir/file symlinked under `./.context/`, plus an empty `./output/`; (2) instantiates the runner from `RUNNERS[agent.runner.type]` (default `claude-code`) with `permissions={"allow": agent.allowed_tools}` (read-only default `[Read, Grep, Glob]`) — the judge gets its OWN runner + tool policy, independent of the skill-under-test, via a shallow `EvalConfig` copy carrying the judge's `RunnerConfig` and permissions; (3) runs one **prompt-mode** turn (`execute(target=None, args=<rendered instructions + output contract>, …)`); (4) reads the verdict; (5) tears down the temp workspace.
+- **Output contract**: the judge writes `./output/score.json` — `{"score": <number>, "rationale": "…"}` (numeric) or `{"passed": <bool>, "rationale": "…"}` (bool). `feedback_type` selects which; `score_range` bands a numeric score. The harness appends this contract + an untrusted-data guard to the prompt automatically. Fallback: if `score.json` is absent, parse the last `{"score"|"passed", …}` JSON object from stdout; if neither yields a value, record an error sample (never silently pass).
+- `agent.runner:` is parsed exactly like the top-level `runner:` block. `agent.timeout` (default `execution.timeout` or harness default) and `agent.max_budget_usd` (default `2.0`) bound each run.
+- Use for grading that requires **looking something up** (verify architecture/API/CRD claims against real docs, run touched tests with `allowed_tools: [..., Bash]`), where a text-only LLM judge would guess and inflate.
 
 ### How aggregation works
 

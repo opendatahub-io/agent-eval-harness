@@ -316,6 +316,39 @@ class RunnerConfig:
     effort: Optional[str] = None  # Claude Code: low | medium | high | xhigh | max
 
 
+def _parse_runner_config(runner_raw, *, context="runner"):
+    """Parse a runner block into a RunnerConfig with validation.
+
+    Shared by the top-level ``runner:`` block and a judge's nested
+    ``agent.runner:`` block so both honor identical defaults and validation
+    (command type-check, workspace_mode whitelist). ``context`` is the field
+    path used in error messages.
+    """
+    runner_raw = runner_raw or {}
+    command = runner_raw.get("command")
+    if command is not None:
+        valid_list = isinstance(command, list) and all(
+            isinstance(x, str) for x in command
+        )
+        if not (isinstance(command, str) or valid_list):
+            raise ValueError(f"{context}.command must be a string or list of strings")
+    # Validate workspace_mode (prevent typos that silently change behavior)
+    workspace_mode = runner_raw.get("workspace_mode")
+    if workspace_mode is not None and workspace_mode not in ("repo",):
+        raise ValueError(
+            f"{context}.workspace_mode must be None or 'repo', got: {workspace_mode!r}")
+    return RunnerConfig(
+        type=runner_raw.get("type", "claude-code"),
+        command=command,
+        workspace_mode=workspace_mode,
+        settings=runner_raw.get("settings", {}) or {},
+        plugin_dirs=runner_raw.get("plugin_dirs", []) or [],
+        env=runner_raw.get("env", {}) or {},
+        system_prompt=runner_raw.get("system_prompt"),
+        effort=runner_raw.get("effort"),
+    )
+
+
 @dataclass
 class MlflowConfig:
     """MLflow logging target.
@@ -456,8 +489,15 @@ class JudgeConfig:
     # Arguments passed as **kwargs to Python judges, Jinja var to LLM judges
     arguments: dict = field(default_factory=dict)
     # Sampling — run this judge N times per case and reduce (median/majority).
-    # Only meaningful for stochastic (LLM) judges; ignored for deterministic ones.
+    # Only meaningful for stochastic (LLM and agent) judges; ignored otherwise.
     samples: int = 1
+    # Agent judge — presence of this block upgrades an (otherwise LLM) judge to
+    # a tool-using agent run through the runner abstraction, with read-only file
+    # tools and a staged, isolated workspace. Permissive mapping (mirrors
+    # `arguments`); recognized keys: runner (RunnerConfig), allowed_tools,
+    # context, inputs, timeout, max_budget_usd. A nested `runner:` sub-block is
+    # parsed into a RunnerConfig by from_yaml.
+    agent: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -682,30 +722,7 @@ class EvalConfig:
         )
 
         # Runner config (block form)
-        runner_raw = raw.get("runner") or {}
-        command = runner_raw.get("command")
-        if command is not None:
-            valid_list = isinstance(command, list) and all(
-                isinstance(x, str) for x in command
-            )
-            if not (isinstance(command, str) or valid_list):
-                raise ValueError("runner.command must be a string or list of strings")
-        # Validate workspace_mode (prevent typos that silently change behavior)
-        workspace_mode = runner_raw.get("workspace_mode")
-        if workspace_mode is not None and workspace_mode not in ("repo",):
-            raise ValueError(
-                f"runner.workspace_mode must be None or 'repo', got: {workspace_mode!r}")
-
-        runner = RunnerConfig(
-            type=runner_raw.get("type", "claude-code"),
-            command=command,
-            workspace_mode=workspace_mode,
-            settings=runner_raw.get("settings", {}) or {},
-            plugin_dirs=runner_raw.get("plugin_dirs", []) or [],
-            env=runner_raw.get("env", {}) or {},
-            system_prompt=runner_raw.get("system_prompt"),
-            effort=runner_raw.get("effort"),
-        )
+        runner = _parse_runner_config(raw.get("runner"), context="runner")
 
         # Models block
         models_raw = raw.get("models", {}) or {}
@@ -869,6 +886,26 @@ class EvalConfig:
                 raise ValueError(
                     f"Judge '{j.get('name', '')}': 'arguments' must be a mapping"
                 )
+            agent_val = j.get("agent")
+            if agent_val is None:
+                agent_val = {}
+            elif not isinstance(agent_val, dict):
+                raise ValueError(
+                    f"Judge '{j.get('name', '')}': 'agent' must be a mapping"
+                )
+            elif agent_val.get("runner") is not None:
+                # Parse the nested runner: sub-block with the SAME block-parsing
+                # logic as the top-level runner, so a judge's runner is fully
+                # validated. Shallow-copy so the raw YAML isn't mutated.
+                if not isinstance(agent_val["runner"], dict):
+                    raise ValueError(
+                        f"Judge '{j.get('name', '')}': 'agent.runner' must be a mapping"
+                    )
+                agent_val = dict(agent_val)
+                agent_val["runner"] = _parse_runner_config(
+                    agent_val["runner"],
+                    context=f"Judge '{j.get('name', '')}': agent.runner",
+                )
             score_range_val = j.get("score_range")
             if score_range_val is not None:
                 jname = j.get("name", "")
@@ -903,6 +940,7 @@ class EvalConfig:
                     builtin=builtin_val,
                     arguments=args_val,
                     samples=int(j.get("samples", 1)),
+                    agent=agent_val,
                 )
             )
 
