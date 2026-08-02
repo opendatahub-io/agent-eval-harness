@@ -439,3 +439,26 @@ judges:
         os.symlink(secret, cd / "steps" / "a" / "stdout.log")  # planted symlink
         rec = sc.load_case_record(cd, cfg)
         assert "TOPSECRET" not in rec["steps"]["a"].get("conversation", "")
+
+    def test_score_skips_symlinked_step_dir(self, tmp_path):
+        """An ancestor (step-directory) symlink outside case_dir is not followed."""
+        import os
+        external = tmp_path / "external"
+        external.mkdir()
+        (external / "stdout.log").write_text(_jsonl("TOPSECRET"))
+        cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution:
+  mode: case
+  steps:
+    - {id: a, skill: s1, arguments: x}
+dataset: {path: __TMP__/cases}
+judges:
+  - {name: j, step: a, check: "return (True, '')"}
+"""))
+        cd = tmp_path / "cases" / "case-1"
+        (cd / "steps").mkdir(parents=True)
+        os.symlink(external, cd / "steps" / "a")  # symlinked step DIRECTORY
+        rec = sc.load_case_record(cd, cfg)
+        conv = (rec["steps"].get("a") or {}).get("conversation", "")
+        assert "TOPSECRET" not in conv

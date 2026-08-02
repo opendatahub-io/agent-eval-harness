@@ -464,7 +464,7 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
     # Files/annotations stay whole-case (steps share the workspace).
     record["steps"] = {}
     steps_root = case_dir / "steps"
-    if steps_root.is_dir():
+    if steps_root.is_dir() and not steps_root.is_symlink():
         from agent_eval.events import (
             extract_conversation_text, parse_stream_events)
         step_metrics = {}
@@ -480,11 +480,15 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
                     pass
         for step_dir in sorted(steps_root.iterdir()):
             # Case artifacts are agent-produced (untrusted); reject symlinked
-            # step dirs / logs and confine paths under case_dir so a planted
-            # symlink can't leak host files into a judge prompt (CWE-59).
+            # step dirs / logs and confine every resolved path under case_dir so
+            # a planted symlink (leaf or ancestor) can't leak host files into a
+            # judge prompt (CWE-59). Skip on escape rather than crash the case.
             if not step_dir.is_dir() or step_dir.is_symlink():
                 continue
-            _resolve_under(case_dir, step_dir)
+            try:
+                _resolve_under(case_dir, step_dir)
+            except ValueError:
+                continue
             sid = step_dir.name
             sub = {}
             stdout_p = step_dir / "stdout.log"
