@@ -1,41 +1,45 @@
-# Agent Eval Harness
+<p align="center">
+  <img src="website/assets/images/aeh-logo.png" alt="Agent Eval Harness" width="96"/>
+</p>
 
-Generic evaluation framework for agents and skills. Analyze, run, score, and improve skills automatically across different agent harnesses (Claude Code, OpenCode, Agent SDK).
+<p align="center">
+  <span style="display:inline-flex;align-items:center;gap:0.85rem;color:#888;font-size:12px;letter-spacing:0.1em;text-transform:uppercase;font-family:system-ui,sans-serif;">
+    Made at&nbsp;<img src="website/assets/images/redhat-logo.svg" alt="Red Hat" height="22"/>
+  </span>
+</p>
 
-**New**: Prompt-based evaluation (`execution.prompt`) for testing agent capabilities directly without skill wrappers. Extensible to any agent capability testing scenario. Initial implementation includes agentic documentation testing for evaluating documentation effectiveness, pattern understanding, and constraint compliance.
+<h1 align="center">Agent Eval Harness</h1>
 
-## Overview
+<p align="center"><em>Make agent performance measurable — and improvable</em></p>
 
-```
-                                             ┌──────────────────┐
-        ┌──────────────setup────────────────▶│  MLflow Server   │◀────────────┐
-        │                                    │ (local / remote) │             │
-        │                                    └──┬───────────────┘          sync, log
-        │                                    datasets                      feedback
-        │                                       │                             │
-┌───────┴──────┐  ┌───────────────┐  ┌──────────▼───┐  ┌──────────────┐  ┌────┴───────────┐
-│  eval-setup  │─▶│ eval-analyze  │─▶│ eval-dataset │─▶│   eval-run   │─▶│  eval-mlflow   │
-│              │  │               │  │              │  │              │  │                │
-│ dependencies │  │ analyze skill │  │ generate     │  │ execute eval │  │ sync dataset   │
-│ MLflow conf  │  │ gen eval.yaml │  │ test cases   │  │ collect      │  │ log results    │
-│ directories  │  │ suggest judges│  │ fill gaps    │  │ score        │  │ traces         │
-└──────────────┘  └───────────────┘  └──────────────┘  └──▲──┬─▲──┬───┘  └────────────────┘
-                                                          │  │ │  │
-                                            ┌─────────────┘  │ │  └────────────┐
-                                            │         ┌──────▼─┴─────┐         │
-                                            │         │ eval-review  │         │
-                                            │         │              │         │
-                                            │         │ human review │         │
-                                            │         │ feedback     │         │
-                                            │         └──────────────┘         │
-                                            │                                  │
-                                            │        ┌───────────────┐         │
-                                            └────────│ eval-optimize │◀────────┘
-                                                     │               │
-                                                     │ fix skill     │
-                                                     │ re-run        │
-                                                     └───────────────┘
-```
+<p align="center">
+  <a href="https://opendatahub-io.github.io/agent-eval-harness/"><img src="https://img.shields.io/badge/docs-live-7c5cff" alt="docs"></a>
+  <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="python">
+  <img src="https://img.shields.io/badge/license-Apache--2.0-informational" alt="license">
+  <img src="https://img.shields.io/badge/claude-plugin-7c5cff" alt="claude plugin">
+  <img src="https://img.shields.io/badge/mlflow-traces-orange" alt="mlflow">
+  <img src="https://img.shields.io/badge/harbor-containers-success" alt="harbor">
+</p>
+
+**Agent Eval Harness** evaluates skills and agent capabilities with one declarative
+`eval.yaml`: analyze → generate cases → run → judge → trace in MLflow → optimize.
+Same config on your laptop, Harbor containers, or EvalHub.
+
+<p align="center">
+  <a href="https://opendatahub-io.github.io/agent-eval-harness/">Docs</a> ·
+  <a href="https://opendatahub-io.github.io/agent-eval-harness/get-started/">Get started</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#execution-model">Execution model</a>
+</p>
+
+## Why Agent Eval Harness
+
+- **One config everywhere.** `eval.yaml` drives local runs, Harbor, and EvalHub.
+- **Skill or prompt mode.** Test packaged skills, or agent capabilities directly
+  (including agentic documentation checks).
+- **Robust scoring.** LLM + code judges, pairwise A/B, thresholds, and HTML reports.
+- **MLflow-native traces.** Opt-in experiments, datasets, and hierarchical GenAI traces.
+- **Close the loop.** `/eval-optimize` proposes skill fixes from failures and re-runs.
 
 ## Execution Model
 
@@ -81,7 +85,7 @@ pip install -e ./agent-eval-harness
 claude --plugin-dir ./agent-eval-harness
 ```
 
-This makes all eval skills available: `/eval-setup`, `/eval-analyze`, `/eval-dataset`, `/eval-run`, `/eval-review`, `/eval-mlflow`, `/eval-optimize`, and `/eval-check`.
+This makes all eval skills available: `/eval-setup`, `/eval-analyze`, `/eval-dataset`, `/eval-run`, `/eval-review`, `/eval-mlflow`, `/eval-optimize`, `/eval-compare`, `/eval-anova`, and `/eval-check`.
 
 ### 2. Set up environment
 
@@ -590,9 +594,12 @@ Analyze a target and generate `eval.yaml`. Two modes:
 /eval-analyze --skill my-skill --update                  # Update existing skill mode eval.yaml
 /eval-analyze --prompt examples/openshift-agentic-docs.md # Prompt mode: analyze agentic documentation
 /eval-analyze --prompt custom.md                         # Prompt mode: use custom analysis prompt
+/eval-analyze --assess                                   # Batch: assess which skills would benefit from evals
 ```
 
 Prompt mode is extensible. Create custom analysis prompts for other agent capability testing scenarios (code generation, API usage patterns, reasoning quality, etc.).
+
+**Batch assessment** (`--assess`): profiles every skill in the project and classifies each as RECOMMENDED / OPTIONAL / SKIP / EXISTS, so you can decide where evals are worth building before analyzing any single skill. It ignores `--skill` and writes no config.
 
 ### /eval-dataset
 
@@ -623,6 +630,31 @@ Execute the evaluation suite: prepare workspace, run the skill headlessly, colle
 /eval-run --model opus --baseline prev-run-id   # Compare against baseline
 /eval-run --model opus --no-llm-judges          # Skip LLM judges
 ```
+
+### /eval-compare
+
+Compare evaluation results across multiple models or runs. Scans a directory of eval run artifacts (`summary.yaml`, `run_result.json`, `report.html`) and produces a self-contained tabbed HTML comparison report with model cards, quality/cost tables, per-case breakdowns, embedded per-run reports, and LLM-written analysis (Bottom Line, Where Each Model Shined, Shared Weaknesses, Recommendations).
+
+```
+/eval-compare <input-dir>                          # Discover runs and generate the report
+/eval-compare <input-dir> --output <dir>           # Custom output directory
+/eval-compare <input-dir> --title "Opus vs Sonnet" # Custom report title
+/eval-compare <input-dir> --overview "<context>"   # Add a context paragraph
+```
+
+When an `/eval-anova` `anova.json` is present in the input directory, the report also gains an ANOVA/Pareto **Statistical Significance** section. eval-compare works standalone without it (it never imports the stats libraries).
+
+### /eval-anova
+
+Design-of-Experiments over a `matrix:` of agent configurations. eval-run runs one condition; `/eval-anova` reads the matrix and fans out `/eval-run` per cell (condition × replication) into standard runs, then computes repeated-measures / mixed-effects ANOVA + a cost/quality Pareto frontier over their `summary.yaml` files (`anova.json`) and renders the comparison via `/eval-compare`. Because the statistics read standard runs, it can also analyze runs produced by a CI fan-out. Requires the `anova` extra.
+
+```
+/eval-anova --config eval.yaml                # run every cell → analyze → report
+/eval-anova --config eval.yaml --dry-run      # design + cost estimate, no execution
+/eval-anova --config eval.yaml --analyze-only # re-analyze existing runs + re-render
+```
+
+See [`eval/anova-example/`](eval/anova-example/) for a self-contained worked example (committed sample runs let you reproduce the analysis + report offline).
 
 ### /eval-review
 
@@ -687,7 +719,9 @@ skills/
   eval-review/           # Interactive human review
   eval-mlflow/           # MLflow integration
   eval-optimize/         # Automated refinement loop
-  eval-check/    # Full-harness configuration health check
+  eval-compare/          # Cross-run / cross-model comparison report (+ ANOVA stats section)
+  eval-anova/            # DoE/ANOVA matrix experiments (orchestrates eval-run)
+  eval-check/            # Full-harness configuration health check
 ```
 
 ## Agent Support

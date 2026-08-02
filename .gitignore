@@ -17,6 +17,10 @@ tmp/
 mlflow.db
 mlruns/
 
+# MkDocs documentation site build output + tooling cache
+site/
+.cache/
+
 .knowledge/
 docs/superpowers/
 

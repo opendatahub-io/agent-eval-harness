@@ -1,0 +1,737 @@
+/*
+ * Self-hosted web fonts.
+ *
+ * Material's Google Fonts CDN loader is disabled via `theme.font: false` in
+ * mkdocs.yml; these @font-face rules replace it. The files are variable fonts
+ * (weight axis only) served from this repo — see fonts/LICENSE.txt for the
+ * OFL-1.1 license and provenance.
+ */
+
+@font-face {
+  font-family: "Google Sans Flex";
+  src: url("fonts/google-sans-flex.woff2") format("woff2");
+  font-weight: 1 1000;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/jetbrains-mono.woff2") format("woff2");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Material builds --md-text-font-family / --md-code-font-family from these. */
+:root {
+  --md-text-font: "Google Sans Flex";
+  --md-code-font: "JetBrains Mono";
+}
+
+/*
+ * Dark theme: higher contrast than Material's default "slate".
+ * Near-black background + brighter (near-white) text. Scoped to the slate
+ * scheme, so light mode is unaffected. Tweak the two bg/fg anchors to taste
+ * (e.g. hsl(220, 22%, 5%) for near-pure-black).
+ */
+[data-md-color-scheme="slate"] {
+  --md-hue: 220;
+
+  /* Background: darker than slate's default (~21% lightness). */
+  --md-default-bg-color:          hsl(220, 22%, 7%);
+  --md-default-bg-color--light:   hsl(220, 18%, 11%);
+  --md-default-bg-color--lighter: hsl(220, 16%, 16%);
+  --md-default-bg-color--lightest:hsl(220, 15%, 22%);
+
+  /* Foreground: brighter, near-white text for stronger contrast. */
+  --md-default-fg-color:          hsla(0, 0%, 100%, 0.96);
+  --md-default-fg-color--light:   hsla(0, 0%, 100%, 0.78);
+  --md-default-fg-color--lighter: hsla(0, 0%, 100%, 0.50);
+  --md-default-fg-color--lightest:hsla(0, 0%, 100%, 0.18);
+  --md-typeset-color:             hsla(0, 0%, 100%, 0.96);
+
+  /* Headings a touch brighter than body copy. */
+  --md-typeset-color--headings:   hsla(0, 0%, 100%, 1);
+
+  /* Code blocks: slightly lifted from the page so they stay distinct. */
+  --md-code-bg-color:             hsl(220, 18%, 12%);
+  --md-code-fg-color:             hsla(0, 0%, 100%, 0.90);
+
+  /* Links: brighter red so they read against the darker background. */
+  --md-typeset-a-color:           hsl(4, 90%, 68%);
+}
+
+/* Match the heading color override above (Material has no built-in var). */
+[data-md-color-scheme="slate"] .md-typeset h1,
+[data-md-color-scheme="slate"] .md-typeset h2,
+[data-md-color-scheme="slate"] .md-typeset h3,
+[data-md-color-scheme="slate"] .md-typeset h4,
+[data-md-color-scheme="slate"] .md-typeset h5,
+[data-md-color-scheme="slate"] .md-typeset h6 {
+  color: var(--md-typeset-color--headings);
+}
+
+/*
+ * Light theme: a calm off-white page instead of pure white, with code and
+ * cards as distinct surfaces (a "raised card on a soft page" look). Scoped to
+ * the default scheme so dark mode is unaffected.
+ */
+[data-md-color-scheme="default"] {
+  --md-default-bg-color: #f4f6fa;   /* soft off-white page */
+  --md-code-bg-color:    #e8ecf3;   /* code recessed, distinct from the page */
+}
+
+/* Grid cards read as raised white surfaces on the off-white page. */
+[data-md-color-scheme="default"] .md-typeset .grid.cards > ul > li,
+[data-md-color-scheme="default"] .md-typeset .grid.cards > ol > li {
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+[data-md-color-scheme="slate"] .md-typeset .grid.cards > ul > li,
+[data-md-color-scheme="slate"] .md-typeset .grid.cards > ol > li {
+  background: var(--md-default-bg-color--light);
+}
+
+/*
+ * Admonitions / details: flatter, calmer, denser — a thin left accent bar and
+ * no drop shadow, closer to the Fumadocs callout look. Per-type colors and
+ * icons stay Material's defaults.
+ */
+.md-typeset .admonition,
+.md-typeset details {
+  border-radius: 0.4rem;
+  border-width: 0 0 0 3px;
+  box-shadow: none;
+  font-size: 0.72rem;
+}
+.md-typeset .admonition-title,
+.md-typeset summary {
+  padding-block: 0.45rem;
+  font-weight: 700;
+  background-color: color-mix(in srgb, var(--md-default-fg-color--lightest) 40%, transparent);
+}
+
+/*
+ * Steps component: a numbered vertical walkthrough with a connecting rail.
+ * Usage in Markdown:
+ *
+ *   <div class="steps" markdown>
+ *
+ *   1. First step …
+ *   2. Second step …
+ *
+ *   </div>
+ */
+.md-typeset .steps > ol {
+  counter-reset: step;
+  list-style: none;
+  margin: 0.6rem 0;
+  padding: 0;
+}
+.md-typeset .steps > ol > li {
+  position: relative;
+  counter-increment: step;
+  /* per-item left border = a continuous connecting line through the badges */
+  margin: 0 0 0 0.85rem;
+  padding: 0 0 1.1rem 1.7rem;
+  border-left: 2px solid var(--md-default-fg-color--lightest);
+}
+.md-typeset .steps > ol > li:last-child {
+  border-left-color: transparent;   /* line ends at the last circle */
+  padding-bottom: 0;
+}
+.md-typeset .steps > ol > li::before {
+  content: counter(step);
+  position: absolute;
+  left: -1px;                        /* centered on the connecting line */
+  top: -0.05rem;
+  transform: translateX(-50%);
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 999px;
+  /* soft red tint, but OPAQUE (page bg + a little red) so it masks the
+     connecting line where it crosses, instead of the line showing through */
+  background: color-mix(in srgb, var(--md-primary-fg-color) 20%, var(--md-default-bg-color));
+  border: 1px solid color-mix(in srgb, var(--md-primary-fg-color) 45%, transparent);
+  color: var(--md-default-fg-color);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+/*
+ * Scroll-following table-of-contents rail (toc-rail.js). Adds a vertical rail
+ * down the right-hand TOC with an accent "thumb" that slides to the active
+ * section as you scroll. The .md-toc-railed class + thumb are injected by JS.
+ */
+.md-toc-railed {
+  position: relative;
+  padding-left: 18px;         /* gutter for the stepped rail */
+}
+.md-toc-railsvg {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 20px;
+  overflow: visible;
+  pointer-events: none;
+}
+.md-toc-railpath {
+  fill: none;
+  stroke: var(--md-default-fg-color--lightest);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+[data-md-color-scheme="slate"] .md-toc-railpath {
+  stroke: hsla(0, 0%, 100%, 0.22);
+}
+/* The moving highlight: a segment of the same path, revealed via stroke-dash,
+   so it rides the track continuously (through the angled jogs) as it slides. */
+.md-toc-railhl {
+  fill: none;
+  stroke: var(--md-primary-fg-color);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  opacity: 0;
+  transition: stroke-dashoffset 0.36s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
+}
+/* Drive the highlighted TOC text ourselves so EXACTLY one item is colored.
+   Neutralize Material's own active color in the secondary TOC (otherwise at the
+   scroll extremes its stale active item stays red next to the one we pick), and
+   color only the item toc-rail.js marks with .md-toc-hl. Scoped to the TOC so
+   the left nav's active item is untouched. */
+.md-sidebar--secondary .md-nav__link--active { color: var(--md-default-fg-color--light); }
+.md-sidebar--secondary .md-nav__link.md-toc-hl { color: var(--md-typeset-a-color); }
+@media (prefers-reduced-motion: reduce) {
+  .md-toc-railhl { transition: opacity 0.2s ease; }
+}
+
+/*
+ * Flatten the sticky sidebar headers. Material gives both menus' sticky headers
+ * a background-color "halo" scroll-mask — box-shadow: 0 0 .4rem .4rem
+ * var(--md-default-bg-color) — that reads as an unwanted drop shadow / bottom
+ * border, plus a hairline (inset 0 .05rem 0) on the list under a title:
+ *   - right menu: .md-nav--secondary .md-nav__title  (Table of contents)
+ *   - left menu:  .md-nav--lifted … --active > .md-nav__link  (lifted section)
+ *   - mobile drawer: .md-nav--primary .md-nav__title
+ * Drop them all. The headers keep their opaque background, so list items still
+ * don't bleed through as they scroll underneath — only the shadow/line goes.
+ * Selectors are scoped under .md-sidebar so they outrank Material's own rules by
+ * specificity (not just source order), leaving no ambiguity about which wins.
+ */
+.md-sidebar .md-nav--secondary .md-nav__title,
+.md-sidebar .md-nav--primary .md-nav__title,
+.md-sidebar .md-nav--lifted > .md-nav__list > .md-nav__item--active > .md-nav__link {
+  box-shadow: none;
+}
+.md-sidebar .md-nav--secondary .md-nav__title ~ .md-nav__list {
+  box-shadow: none;
+}
+
+/*
+ * Frosted, neutral header — a translucent blurred bar instead of a solid color
+ * one, so page content is faintly visible through it. The brand accent (red)
+ * stays on links, active states, and the TOC rail; the chrome goes neutral.
+ */
+.md-header,
+.md-tabs {
+  background-color: rgba(255, 255, 255, 0.65);
+  color: var(--md-default-fg-color);
+  -webkit-backdrop-filter: saturate(1.8) blur(16px);
+  backdrop-filter: saturate(1.8) blur(16px);
+  transition: background-color 0.25s ease, box-shadow 0.25s ease;
+}
+[data-md-color-scheme="slate"] .md-header,
+[data-md-color-scheme="slate"] .md-tabs {
+  background-color: rgba(14, 16, 21, 0.62);
+}
+.md-header {
+  /* hairline divider instead of the theme's opaque drop shadow */
+  box-shadow: 0 1px 0 var(--md-default-fg-color--lightest);
+}
+.md-header__title,
+.md-header__topic,
+.md-header__button {
+  color: var(--md-default-fg-color);
+}
+.md-header__button.md-logo :is(img, svg) { fill: currentColor; }
+
+/* Search field, tuned for the neutral header. */
+.md-search__input {
+  background-color: color-mix(in srgb, var(--md-default-fg-color) 6%, transparent);
+  color: var(--md-default-fg-color);
+}
+.md-search__input:hover {
+  background-color: color-mix(in srgb, var(--md-default-fg-color) 9%, transparent);
+}
+.md-search__input::placeholder { color: var(--md-default-fg-color--light); }
+.md-search__icon { color: var(--md-default-fg-color--light); }
+
+/* Navigation tabs (below the header). */
+.md-tabs__link {
+  color: var(--md-default-fg-color--light);
+  opacity: 1;
+}
+.md-tabs__link:hover,
+.md-tabs__link--active {
+  color: var(--md-default-fg-color);
+}
+
+/*
+ * Footer: drop the bulky full-width dark bar. Blend the footer into the page,
+ * render prev/next as modern cards aligned with the content column, and slim
+ * the copyright meta.
+ */
+.md-footer {
+  --md-footer-bg-color: transparent;
+  --md-footer-bg-color--dark: transparent;
+  --md-footer-fg-color: var(--md-default-fg-color);
+  --md-footer-fg-color--light: var(--md-default-fg-color--light);
+  --md-footer-fg-color--lighter: var(--md-default-fg-color--lighter);
+}
+
+/* prev/next as side-by-side cards */
+.md-footer__inner {
+  display: flex;
+  gap: 1rem;
+  margin: 1.5rem auto 0;   /* keep md-grid's horizontal centering */
+  /* top/bottom padding keeps the hover lift + shadow clear of the inner's
+     overflow:auto clip edge (otherwise the lifted top border gets cropped) */
+  padding: 0.6rem 1rem 0.6rem;
+}
+.md-footer__link {
+  flex: 0 1 auto;
+  width: calc(50% - 0.5rem);
+  margin: 0;
+  padding: 0.7rem 0.95rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.6rem;
+  opacity: 1;
+  transition: border-color 0.2s ease, background-color 0.2s ease, transform 0.2s ease;
+}
+.md-footer__link--next { margin-left: auto; }
+/* raised white cards on the off-white light page (like the grid cards) */
+[data-md-color-scheme="default"] .md-footer__link {
+  background-color: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+.md-footer__link:is(:hover, :focus-visible) {
+  border-color: var(--md-accent-fg-color);
+  background-color: color-mix(in srgb, var(--md-accent-fg-color) 6%, transparent);
+  transform: translateY(-1px);
+}
+/*
+ * Pointer-following glow on the footer prev/next nav buttons (card-glow.js) —
+ * same red spotlight as the grid cards, since these are card-like surfaces.
+ * Reuses the theme-scoped --card-glow-fill/--card-glow-edge.
+ */
+.md-footer__link { position: relative; overflow: hidden; }
+.md-footer__link::before,
+.md-footer__link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+}
+.md-footer__link::before {
+  background: radial-gradient(circle 10rem at var(--glow-x, 50%) var(--glow-y, 50%),
+    var(--card-glow-fill), transparent 60%);
+}
+.md-footer__link::after {
+  padding: 1px;
+  background: radial-gradient(circle 9rem at var(--glow-x, 50%) var(--glow-y, 50%),
+    var(--card-glow-edge), transparent 55%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+}
+.md-footer__link:hover::before,
+.md-footer__link:hover::after { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .md-footer__link::before,
+  .md-footer__link::after { transition: none; }
+}
+.md-footer__button {
+  padding: 0.3rem;
+  background: transparent;
+}
+.md-footer__direction {
+  opacity: 0.65;
+  font-size: 0.66rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.md-footer__title {
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+/* copyright / meta — slim, blended, with a hairline divider */
+.md-footer-meta__inner {
+  padding-top: 0.9rem;
+  padding-bottom: 1.1rem;
+  border-top: 1px solid var(--md-default-fg-color--lightest);
+}
+.md-copyright { font-size: 0.68rem; }
+
+/* Align footer content with the article column when both sidebars are shown. */
+@media screen and (min-width: 76.25em) {
+  .md-footer__inner,
+  .md-footer-meta__inner {
+    padding-left: 12.1rem;
+    padding-right: 12.1rem;
+  }
+}
+
+/*
+ * Rounded corners (cuga-style) on code blocks, tab panes, tables, and buttons.
+ */
+:root { --doc-radius: 0.55rem; }
+
+/* Code blocks */
+.md-typeset pre > code { border-radius: var(--doc-radius); }
+/* titled code blocks (```lang title="…") — round the title bar + block joint */
+.md-typeset .highlight .filename {
+  border-radius: var(--doc-radius) var(--doc-radius) 0 0;
+}
+.md-typeset .highlight .filename + pre > code {
+  border-radius: 0 0 var(--doc-radius) var(--doc-radius);
+}
+/* line-number tables */
+.md-typeset .highlighttable {
+  border-radius: var(--doc-radius);
+  overflow: hidden;
+}
+.md-typeset .highlighttable .linenos,
+.md-typeset .highlighttable pre > code { border-radius: 0; }
+/* inline code */
+.md-typeset code { border-radius: 0.3rem; }
+
+/* Content-tab panes */
+.md-typeset .tabbed-set { border-radius: var(--doc-radius); }
+.md-typeset .tabbed-content { border-bottom-left-radius: var(--doc-radius); border-bottom-right-radius: var(--doc-radius); }
+
+/* Tables — clip corners to the radius */
+.md-typeset table:not([class]) {
+  border-radius: var(--doc-radius);
+  border-spacing: 0;
+  overflow: hidden;
+}
+
+/*
+ * Keep inline-code tokens in table cells whole instead of breaking mid-word
+ * (e.g. "workspace.py" splitting between "p" and "y"). `keep-all` treats each
+ * identifier as unbreakable so the column auto-sizes to fit it; `overflow-wrap:
+ * break-word` is only an emergency fallback for a token too long for any width.
+ * Tokens with spaces (e.g. "--subagent-model <model>") still wrap at the space.
+ */
+.md-typeset table:not([class]) code {
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+/* Buttons */
+.md-typeset .md-button { border-radius: var(--doc-radius); }
+
+/*
+ * Pointer-following glow on large buttons, matching the grid cards. card-glow.js
+ * tracks the cursor into --glow-x/--glow-y; Material fills every button with the
+ * accent (red) on hover, so the spotlight is white to read on that. Interior
+ * fill (::before) + masked 1px border highlight (::after), pointer-events:none.
+ */
+.md-typeset .md-button {
+  position: relative;
+  overflow: hidden;
+  --btn-glow-fill: rgba(255, 255, 255, 0.22);
+  --btn-glow-edge: rgba(255, 255, 255, 0.6);
+}
+.md-typeset .md-button::before,
+.md-typeset .md-button::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+}
+.md-typeset .md-button::before {
+  background: radial-gradient(circle 7rem at var(--glow-x, 50%) var(--glow-y, 50%),
+    var(--btn-glow-fill), transparent 65%);
+}
+.md-typeset .md-button::after {
+  padding: 1px;
+  background: radial-gradient(circle 6rem at var(--glow-x, 50%) var(--glow-y, 50%),
+    var(--btn-glow-edge), transparent 60%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+}
+.md-typeset .md-button:hover::before,
+.md-typeset .md-button:hover::after { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .md-typeset .md-button::before,
+  .md-typeset .md-button::after { transition: none; }
+}
+.md-clipboard { border-radius: 0.35rem; }
+.md-search__form { border-radius: var(--doc-radius); }
+.md-search__output { border-radius: 0 0 var(--doc-radius) var(--doc-radius); }
+
+/* Grid cards ("slates") — round to match code blocks/tables */
+.md-typeset .grid.cards > :is(ul, ol) > li,
+.md-typeset .grid.cards > .card,
+.md-typeset .grid > .card { border-radius: var(--doc-radius); }
+
+/*
+ * Pointer-following glow on grid cards (qwen-style). card-glow.js writes the
+ * cursor position within the hovered card to --glow-x/--glow-y; two layered
+ * radial gradients — a soft interior fill (::before) and a masked 1px border
+ * highlight (::after) — fade in on hover and track the pointer. Pseudo-elements
+ * are pointer-events:none so links/behaviour are untouched.
+ */
+.md-typeset .grid.cards > :is(ul, ol) > li,
+.md-typeset .grid.cards > .card,
+.md-typeset .grid > .card {
+  position: relative;
+  overflow: hidden;
+}
+/* Whole card is clickable (card-nav.js); text stays selectable. */
+.md-typeset .grid.cards > :is(ul, ol) > li.card-clickable,
+.md-typeset .grid.cards > .card.card-clickable,
+.md-typeset .grid > .card.card-clickable { cursor: pointer; }
+.md-typeset .grid.cards > :is(ul, ol) > li::before,
+.md-typeset .grid.cards > :is(ul, ol) > li::after,
+.md-typeset .grid.cards > .card::before,
+.md-typeset .grid.cards > .card::after,
+.md-typeset .grid > .card::before,
+.md-typeset .grid > .card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+}
+/* Glow strength — stronger on the dark theme so a faint red reads as a spotlight
+   on near-black rather than a diffuse wash. */
+[data-md-color-scheme="default"] {
+  --card-glow-fill: color-mix(in srgb, var(--md-primary-fg-color) 15%, transparent);
+  --card-glow-edge: color-mix(in srgb, var(--md-primary-fg-color) 60%, transparent);
+}
+[data-md-color-scheme="slate"] {
+  --card-glow-fill: color-mix(in srgb, var(--md-primary-fg-color) 30%, transparent);
+  --card-glow-edge: color-mix(in srgb, var(--md-primary-fg-color) 85%, transparent);
+}
+/* soft interior glow */
+.md-typeset .grid.cards > :is(ul, ol) > li::before,
+.md-typeset .grid.cards > .card::before,
+.md-typeset .grid > .card::before {
+  background: radial-gradient(circle 10rem at var(--glow-x, 50%) var(--glow-y, 50%),
+    var(--card-glow-fill), transparent 60%);
+}
+/* masked border highlight (1px ring that lights up near the cursor) */
+.md-typeset .grid.cards > :is(ul, ol) > li::after,
+.md-typeset .grid.cards > .card::after,
+.md-typeset .grid > .card::after {
+  padding: 1px;
+  background: radial-gradient(circle 9rem at var(--glow-x, 50%) var(--glow-y, 50%),
+    var(--card-glow-edge), transparent 55%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+}
+.md-typeset .grid.cards > :is(ul, ol) > li:hover::before,
+.md-typeset .grid.cards > :is(ul, ol) > li:hover::after,
+.md-typeset .grid.cards > .card:hover::before,
+.md-typeset .grid.cards > .card:hover::after,
+.md-typeset .grid > .card:hover::before,
+.md-typeset .grid > .card:hover::after {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .md-typeset .grid.cards > :is(ul, ol) > li::before,
+  .md-typeset .grid.cards > :is(ul, ol) > li::after,
+  .md-typeset .grid.cards > .card::before,
+  .md-typeset .grid.cards > .card::after,
+  .md-typeset .grid > .card::before,
+  .md-typeset .grid > .card::after { transition: none; }
+}
+
+/*
+ * Keep the primary (left) sidebar full-height so a long nav isn't cut off when
+ * scrolled to the page bottom. Material shrinks it to sit above the footer; but
+ * our footer's left gutter is empty (copyright is content-aligned), so letting
+ * the sidebar span the viewport there is harmless and shows the whole menu.
+ */
+@media screen and (min-width: 76.25em) {
+  .md-sidebar--primary .md-sidebar__scrollwrap {
+    height: calc(100vh - 4.2rem) !important;
+  }
+}
+
+/* --- Presentation homepage (docs/presentation-site preview) --- */
+
+/* Header / drawer logo: square AEH mark. */
+.md-header__button.md-logo img,
+.md-nav__button.md-logo img {
+  height: 1.75rem !important;
+  width: 1.75rem !important;
+  max-width: none;
+  border-radius: 0.25rem;
+  object-fit: cover;
+}
+
+/*
+ * Centered hero (cap-evolve layout): logo → eyebrow → H1 → copy → CTAs →
+ * badges → Made at. Scoped so the rest of the docs stay left-aligned.
+ */
+.aeh-hero {
+  text-align: center;
+  padding: 0.25rem 0 1.75rem;
+}
+
+.aeh-hero > :is(h1, h2, p, .aeh-cta, .aeh-badges, .aeh-made-at, .aeh-eyebrow) {
+  text-align: center;
+}
+
+.aeh-hero > :is(h1, p):not(.aeh-cta):not(.aeh-badges):not(.aeh-made-at):not(.aeh-eyebrow):not(.aeh-hero-logo) {
+  max-width: 40rem;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.aeh-hero h1 {
+  margin: 0 0 0.85rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+}
+
+.aeh-hero-logo {
+  margin: 0 0 1.1rem !important;
+}
+
+.aeh-hero-logo img,
+.md-typeset .aeh-hero .aeh-hero-logo img {
+  display: block;
+  width: 5.5rem !important;
+  height: 5.5rem !important;
+  max-width: 5.5rem !important;
+  margin: 0 auto;
+  border-radius: 0.45rem;
+  object-fit: cover;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  box-shadow: 0 8px 28px hsla(220, 30%, 10%, 0.35);
+}
+
+.aeh-eyebrow {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0 0 1.15rem !important;
+  padding: 0.32rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--md-primary-fg-color) 34%, transparent);
+  background: color-mix(in srgb, var(--md-primary-fg-color) 12%, transparent);
+  color: var(--md-primary-fg-color);
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.aeh-eyebrow-dot {
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 50%;
+  background: #f5a623;
+  flex: 0 0 auto;
+}
+
+.aeh-cta {
+  display: flex !important;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 1.35rem 0 1.25rem !important;
+}
+
+.aeh-cta .md-button {
+  margin: 0;
+}
+
+.aeh-badges {
+  display: flex !important;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.4rem;
+  margin: 0 0 1.35rem !important;
+}
+
+.aeh-badges img {
+  height: 1.25rem;
+}
+
+/* Cap-evolve affiliation: muted label + logo, no black pill. */
+.aeh-made-at {
+  display: flex !important;
+  justify-content: center;
+  align-items: center;
+  gap: 0.85rem;
+  width: fit-content;
+  margin: 0.25rem auto 0 !important;
+  padding: 0;
+  background: transparent;
+  color: var(--md-default-fg-color--light);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.aeh-made-at__label {
+  line-height: 1;
+}
+
+.aeh-made-at__logos {
+  display: inline-flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.aeh-made-at__redhat,
+.md-typeset .aeh-made-at img {
+  display: block;
+  height: 1.5rem !important;
+  width: auto !important;
+  max-width: none;
+  margin: 0;
+}
+
+.aeh-made-at__name {
+  font-size: 0.78rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: var(--md-default-fg-color);
+}
+
+
+.md-typeset img.aeh-hero-visual {
+  display: block;
+  width: 100%;
+  max-width: 56rem;
+  margin: 0.5rem auto 0.5rem;
+  border-radius: 0.75rem;
+  box-shadow: 0 8px 28px hsla(220, 30%, 10%, 0.18);
+}

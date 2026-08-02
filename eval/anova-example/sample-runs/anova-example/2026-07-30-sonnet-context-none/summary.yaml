@@ -1,0 +1,43 @@
+run_id: 2026-07-30-sonnet-context-none
+judges:
+  tests_pass:
+    pass_rate: 0.5
+  solution_quality:
+    mean: 3.0
+per_case:
+  task-0008:
+    tests_pass:
+      value: true
+      rationale: sample
+      judge_type: boolean
+    solution_quality:
+      value: 4
+      rationale: sample
+      judge_type: numeric
+  task-0010:
+    tests_pass:
+      value: true
+      rationale: sample
+      judge_type: boolean
+    solution_quality:
+      value: 3
+      rationale: sample
+      judge_type: numeric
+  task-0031:
+    tests_pass:
+      value: false
+      rationale: sample
+      judge_type: boolean
+    solution_quality:
+      value: 3
+      rationale: sample
+      judge_type: numeric
+  task-0034:
+    tests_pass:
+      value: false
+      rationale: sample
+      judge_type: boolean
+    solution_quality:
+      value: 2
+      rationale: sample
+      judge_type: numeric

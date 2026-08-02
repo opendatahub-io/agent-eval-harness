@@ -38,14 +38,18 @@ def make_tool(name, tool_use_id, input_dict=None):
 
 
 def make_assistant(msg_id, tools=None, text=None, model="claude-sonnet-4-5",
-                   parent_tool_use_id=None, input_tokens=100, output_tokens=50):
+                   parent_tool_use_id=None, input_tokens=100, output_tokens=50,
+                   thinking=None):
     """Build an assistant event.
 
     Args:
         tools: list of (name, tool_use_id, input_dict) tuples.
         parent_tool_use_id: set this to make it a foreground subagent message.
+        thinking: optional extended-thinking text block.
     """
     content = []
+    if thinking:
+        content.append({"type": "thinking", "thinking": thinking})
     if text:
         content.append({"type": "text", "text": text})
     for name, tuid, inp in (tools or []):

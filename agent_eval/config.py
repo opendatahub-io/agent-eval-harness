@@ -224,6 +224,7 @@ class HooksConfig:
     after_each: list = field(default_factory=list)
     before_scoring: list = field(default_factory=list)
     after_all: list = field(default_factory=list)
+    before_report: list = field(default_factory=list)
 
 
 @dataclass
@@ -990,7 +991,7 @@ class EvalConfig:
         # Hooks
         hooks_raw = raw.get("hooks", {}) or {}
         phases = ["before_all", "before_each", "after_each",
-                  "before_scoring", "after_all"]
+                  "before_scoring", "after_all", "before_report"]
         for phase in phases:
             entries = []
             for h in (hooks_raw.get(phase) or []):

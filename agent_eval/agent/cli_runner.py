@@ -31,6 +31,8 @@ class CliRunner(EvalRunner):
     - {max_budget_usd} — budget cap (advisory — not enforced by harness)
     - {effort}         — reasoning effort level (from runner.effort; empty if unset)
     - {system_prompt}  — system prompt text (from runner.system_prompt; empty if unset)
+    - {config_dir}     — directory containing the eval.yaml (absolute); lets the
+                         command reference eval-relative helper files (scripts, mcp configs)
     - {args}           — resolved skill arguments string
     - {field}          — any field from the case's input.yaml
 
@@ -47,6 +49,7 @@ class CliRunner(EvalRunner):
             subagent_model=overrides.get("subagent_model"),
             effort=overrides.get("effort", config.runner.effort),
             system_prompt=config.runner.system_prompt,
+            config_dir=str(config.resolve_path(".")),
         )
 
     def __init__(
@@ -57,6 +60,7 @@ class CliRunner(EvalRunner):
         subagent_model: Optional[str] = None,
         effort: Optional[str] = None,
         system_prompt: Optional[str] = None,
+        config_dir: Optional[str] = None,
         **_kwargs,
     ):
         if not command:
@@ -72,6 +76,7 @@ class CliRunner(EvalRunner):
         self._subagent_model = subagent_model or ""
         self._effort = effort or ""
         self._system_prompt = system_prompt or ""
+        self._config_dir = config_dir or ""
 
     @property
     def name(self) -> str:
@@ -105,6 +110,7 @@ class CliRunner(EvalRunner):
             "subagent_model": self._subagent_model,
             "effort": self._effort,
             "system_prompt": system_prompt or self._system_prompt,
+            "config_dir": self._config_dir,
         }
 
         # Load input.yaml fields if present

@@ -13,6 +13,11 @@ jobs:
 
   release:
     needs: test
+    # Only run semantic-release on the canonical repo, never on forks. A fork's
+    # push-to-main (e.g. updating a PR branch) would otherwise run the release
+    # and commit a version bump onto the PR head — regressing the version and
+    # re-introducing merge conflicts against upstream.
+    if: github.repository == 'opendatahub-io/agent-eval-harness'
     runs-on: ubuntu-latest
     permissions:
       contents: write

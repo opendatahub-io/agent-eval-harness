@@ -36,6 +36,32 @@ def _resolve_under_cwd(raw, base):
     return candidate
 
 
+def _is_under_cwd(path, trusted_roots=()):
+    """Resolve path and validate it is within CWD or a trusted root.
+
+    Always resolves symlinks before checking containment — a lexical
+    prefix match on an unresolved path would let a symlink escape CWD.
+    Returns the resolved Path if valid, None otherwise.
+
+    trusted_roots: resolved Paths for skill directories discovered via
+    plugin.json or marketplace.json (already validated by _resolve_under_cwd).
+    """
+    resolved = Path(path).resolve()
+    cwd = Path.cwd().resolve()
+    try:
+        resolved.relative_to(cwd)
+        return resolved
+    except ValueError:
+        pass
+    for root in trusted_roots:
+        try:
+            resolved.relative_to(root)
+            return resolved
+        except ValueError:
+            continue
+    return None
+
+
 def _skills_from_plugin_json(plugin_json):
     """Extract skill directories from a plugin.json file.
 
@@ -127,27 +153,40 @@ def find_skill(name):
     - Directory name: "enhancer" -> skills/enhancer/SKILL.md
     - Plugin invocation: "skill:enhance" -> strip prefix, match directory or frontmatter name
 
-    Returns the Path to SKILL.md or None if not found.
+    Returns the resolved Path to SKILL.md or None if not found.
     """
     candidates = [name]
     if ":" in name:
         candidates.append(name.split(":", 1)[1])
 
-    for skills_dir in get_skill_dirs():
+    skill_dirs = get_skill_dirs()
+    trusted = frozenset(Path(d).resolve() for d in skill_dirs)
+
+    for skills_dir in skill_dirs:
         for candidate in candidates:
             skill_path = Path(skills_dir) / candidate / "SKILL.md"
-            if skill_path.exists():
-                return skill_path
+            resolved = _is_under_cwd(skill_path, trusted)
+            if resolved and resolved.is_file():
+                return resolved
 
         for path in sorted(glob(f"{skills_dir}/*/SKILL.md")):
+            resolved = _is_under_cwd(path, trusted)
+            if not resolved:
+                print(f"  WARNING: skipping '{path}': it resolves outside the "
+                      f"project (a symlink escaping the project boundary), "
+                      f"excluded for safety. If this is an intended "
+                      f"shared/monorepo skill, point a skills dir at its real "
+                      f"location instead of symlinking it in.",
+                      file=sys.stderr)
+                continue
             try:
-                with open(path) as f:
+                with open(resolved) as f:
                     content = f.read()
                 if content.startswith("---"):
                     fm = yaml.safe_load(content.split("---")[1])
                     fm_name = (fm or {}).get("name", "")
                     if fm_name == name or fm_name in candidates:
-                        return Path(path)
+                        return resolved
             except Exception as e:
                 print(f"  WARNING: failed to parse {path}: {e}", file=sys.stderr)
                 continue
@@ -158,17 +197,30 @@ def list_skills():
     """List all project skills (excluding harness skills).
 
     Returns list of dicts: [{name, path, description}, ...]
+    Path values are resolved (symlinks followed) to match the validation check.
     """
     skills = []
-    for skills_dir in get_skill_dirs():
+    skill_dirs = get_skill_dirs()
+    trusted = frozenset(Path(d).resolve() for d in skill_dirs)
+
+    for skills_dir in skill_dirs:
         for path in sorted(glob(f"{skills_dir}/*/SKILL.md")):
-            dir_name = Path(path).parent.name
+            resolved = _is_under_cwd(path, trusted)
+            if not resolved:
+                print(f"  WARNING: skipping '{path}': it resolves outside the "
+                      f"project (a symlink escaping the project boundary), "
+                      f"excluded for safety. If this is an intended "
+                      f"shared/monorepo skill, point a skills dir at its real "
+                      f"location instead of symlinking it in.",
+                      file=sys.stderr)
+                continue
+            dir_name = resolved.parent.name
             if dir_name in HARNESS_SKILLS:
                 continue
             desc = ""
             display_name = dir_name
             try:
-                with open(path) as f:
+                with open(resolved) as f:
                     content = f.read()
                 if content.startswith("---"):
                     fm = yaml.safe_load(content.split("---")[1])
@@ -179,7 +231,7 @@ def list_skills():
             except Exception as e:
                 print(f"  WARNING: failed to parse {path}: {e}", file=sys.stderr)
             skills.append({"name": display_name, "dir_name": dir_name,
-                           "path": path, "description": desc})
+                           "path": str(resolved), "description": desc})
     return skills
 
 

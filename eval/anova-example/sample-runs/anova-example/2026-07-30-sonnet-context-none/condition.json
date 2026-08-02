@@ -1,0 +1,7 @@
+{
+  "condition_id": "sonnet-none",
+  "levels": {
+    "model": "claude-sonnet-4-6",
+    "context": "none"
+  }
+}

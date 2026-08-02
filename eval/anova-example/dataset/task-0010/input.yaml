@@ -1,0 +1,29 @@
+prompt: "# fix: correct TLS_MIN_VERSION environment variable precedence\n\nRelated\
+  \ to https://redhat.atlassian.net/browse/RHOAIENG-58761\n\n## Summary\nFixes the\
+  \ TLS_MIN_VERSION environment variable precedence bug where it incorrectly overrode\
+  \ the --tls-min-version CLI flag, violating the documented behavior that \"CLI flags\
+  \ take precedence over environment variables.\"\n\n## Root Cause\nTLS_MIN_VERSION\
+  \ was read in the `validate()` function (after `flag.Parse()`), overwriting any\
+  \ CLI flag value. All other environment variables are read in `Load()` (before `flag.Parse()`),\
+  \ which allows CLI flags to override them correctly.\n\n## Changes\n- **maas-api/internal/config/tls.go**:\
+  \ Moved TLS_MIN_VERSION environment variable reading from `validate()` into `loadTLSConfig()`\n\
+  - **maas-api/internal/config/tls_test.go**: Added comprehensive unit tests (5 precedence\
+  \ scenarios, invalid value handling)\n\n## Fix\nConfiguration precedence is now\
+  \ correct:\n```\nCLI flag > environment variable > default value\n```\n\n## Testing\n\
+  \u2705 Unit tests (5 precedence scenarios) - All pass  \n\u2705 All existing tests\
+  \ pass (80.7% coverage)  \n\u2705 Live cluster validation with full MaaS stack:\n\
+  - **Test 1 (CLI override)**: `env=1.2` + `CLI=1.3` \u2192 Rejects TLS 1.2, Accepts\
+  \ TLS 1.3 \u2705\n- **Test 2 (Env only)**: `env=1.3` \u2192 Rejects TLS 1.2, Accepts\
+  \ TLS 1.3 \u2705  \n- **Test 3 (Default)**: No config \u2192 Accepts both TLS 1.2\
+  \ and 1.3 \u2705\n\n## References\n- Introduced in: commit 1864049e (feat: implements\
+  \ end-to-end TLS for external API traffic #227)\n- Identified by CodeRabbit in PR\
+  \ #763\n\n\U0001F916 Generated with [Claude Code](https://claude.com/claude-code)\n\
+  \n<!-- This is an auto-generated comment: release notes by coderabbit.ai -->\n##\
+  \ Summary by CodeRabbit\n\n* **Chores**\n  * Added support for configuring TLS minimum\
+  \ version via an environment variable while preserving CLI flag precedence and default\
+  \ fallback behavior.\n\n* **Tests**\n  * Added comprehensive TLS configuration tests\
+  \ covering env/CLI precedence, parsing/validation of TLS versions, and certificate/key\
+  \ validation scenarios.\n\n* **Documentation**\n  * Updated README to document the\
+  \ new TLS_MIN_VERSION environment variable and its allowed values.\n<!-- end of\
+  \ auto-generated comment: release notes by coderabbit.ai -->\n\n## Files involved\n\
+  - `maas-api/README.md`\n- `maas-api/internal/config/tls.go`\n- `maas-api/internal/config/tls_test.go`\n"

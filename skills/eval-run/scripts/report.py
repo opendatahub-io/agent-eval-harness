@@ -2656,7 +2656,11 @@ def generate_report(config, summary, run_result, run_dir,
     html += _wrap_section(_render_scoring_summary(summary, config, baseline_summary))
     html += _wrap_section(_render_regressions(summary, config))
     html += _wrap_section(_render_shared_outputs(run_dir, config))
-    html += _wrap_section(_render_reward_overview(summary, config, reward_cfg))
+    # Per-Case Reward Overview is an RL-training reward summary — only render it
+    # when a reward is configured. For judge-only evals the Scoring Summary
+    # (aggregate per judge) and Per-Case Details (per case) already cover the scores.
+    if (config or {}).get("reward"):
+        html += _wrap_section(_render_reward_overview(summary, config, reward_cfg))
     html += _render_per_case(summary, run_dir, config, baseline_dir, review)
     html += f"\n<script>{TOGGLE_SCRIPT}</script>\n"
     html += f"<script>{IMAGE_COMPARE_SCRIPT}</script>\n"
@@ -2723,6 +2727,30 @@ def main():
     if not run_dir.exists():
         print(f"ERROR: run directory not found: {run_dir}", file=sys.stderr)
         sys.exit(1)
+
+    # Run before_report hooks: fired after analysis.md is authored (by the eval-run
+    # agent in its analysis step) and before the HTML is assembled, so a hook may
+    # annotate analysis.md or other run artifacts and have those changes appear in
+    # the rendered report. Uses run_hooks_safe so report generation never fails
+    # because of a reporting-side hook.
+    if config_obj.hooks.before_report:
+        from agent_eval.hooks import build_hook_env, run_hooks_safe
+        # Give the hook the real run context: AGENT_EVAL_WORKSPACE = the run dir
+        # (so $AGENT_EVAL_WORKSPACE/analysis.md and other artifacts resolve), and
+        # the model from run_result.json.
+        _rr = _load_json(run_dir / "run_result.json") or {}
+        hook_env = build_hook_env(
+            workspace=str(run_dir),
+            run_id=args.run_id,
+            config_path=str(Path(args.config).resolve()),
+            project_root=str(Path.cwd()),
+            model=_rr.get("model", ""),
+        )
+        print("Running before_report hooks...", file=sys.stderr)
+        run_hooks_safe(config_obj.hooks.before_report, env=hook_env,
+                       cwd=Path.cwd(), log_dir=run_dir / "hooks",
+                       phase_name="before_report")
+
     summary = _load_yaml(run_dir / "summary.yaml")
     run_result = _load_json(run_dir / "run_result.json")
     review = _load_yaml(run_dir / "review.yaml") or None

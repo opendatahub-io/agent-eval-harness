@@ -1,3 +1,150 @@
+## [1.30.1](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.30.0...v1.30.1) (2026-07-30)
+
+
+### Bug Fixes
+
+* **website:** remove the sticky sidebar-header drop shadow ([dffc0c5](https://github.com/opendatahub-io/agent-eval-harness/commit/dffc0c57533506bbe1a6776542f2e3a17fbe6ff7))
+
+# [1.30.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.29.0...v1.30.0) (2026-07-30)
+
+
+### Bug Fixes
+
+* **eval-anova:** address CodeRabbit findings on kept code ([fb0a68c](https://github.com/opendatahub-io/agent-eval-harness/commit/fb0a68c88f969a14c87baabd5968723dfbef9f34))
+* **eval-anova:** clamp report heat colours and bar widths to range ([c76e203](https://github.com/opendatahub-io/agent-eval-harness/commit/c76e2034476cf19b883dde8c33770268254ad52c)), closes [#report](https://github.com/opendatahub-io/agent-eval-harness/issues/report)
+* **eval-anova:** derive report labels from data, not a hardcoded roster ([e3bf683](https://github.com/opendatahub-io/agent-eval-harness/commit/e3bf68374d9291de799628143095f6cffa3001c6)), closes [#11](https://github.com/opendatahub-io/agent-eval-harness/issues/11) [#18](https://github.com/opendatahub-io/agent-eval-harness/issues/18)
+* **eval-anova:** exclude cases missing from any condition and report them ([2adfa90](https://github.com/opendatahub-io/agent-eval-harness/commit/2adfa90402afd103f919b08f46681c8afba3c246))
+* **eval-anova:** HTML-escape user-controlled values in reports (XSS) ([6fab8a0](https://github.com/opendatahub-io/agent-eval-harness/commit/6fab8a006d3610b8e234baacc61ef6162157ddac))
+* **eval-anova:** ignore single-level factors when selecting the ANOVA ([b177428](https://github.com/opendatahub-io/agent-eval-harness/commit/b177428aaab5ce6b7999d7f79750f8b211f764ee))
+* **eval-anova:** report actual sample size in the non-significant callout ([906c73e](https://github.com/opendatahub-io/agent-eval-harness/commit/906c73e6e688ec94b2e48a438cfbbb13cdfd9bcc)), closes [#10](https://github.com/opendatahub-io/agent-eval-harness/issues/10)
+* **eval-anova:** stop misreporting fractional composites as failures ([09a4515](https://github.com/opendatahub-io/agent-eval-harness/commit/09a4515f10bce06a47983840f793a4a8c0d850ac))
+* **eval-anova:** treat non-finite/negative F as a degenerate design ([fd9feeb](https://github.com/opendatahub-io/agent-eval-harness/commit/fd9feebd1d0ce5301baae08a765b6ee4fb1be078))
+
+
+### Features
+
+* **eval-anova:** add eval/anova-example — real maas tasks on the generic path ([9902237](https://github.com/opendatahub-io/agent-eval-harness/commit/9902237e19288115b4e0e8802f560781a84da59f)), closes [#17](https://github.com/opendatahub-io/agent-eval-harness/issues/17)
+* **eval-anova:** analyze stats over a directory of standard eval-run runs ([e12f100](https://github.com/opendatahub-io/agent-eval-harness/commit/e12f10088053eb2947bd33108e67770d89915577))
+* **eval-anova:** DoE/ANOVA matrix testing skill with harbor-maas-v1 benchmark ([53fb1ce](https://github.com/opendatahub-io/agent-eval-harness/commit/53fb1cef5303eca4b3d34d3550fa2fe64543f9b1)), closes [#104](https://github.com/opendatahub-io/agent-eval-harness/issues/104)
+* **eval-anova:** prefer Greenhouse-Geisser corrected p in rm-ANOVA ([32ddc20](https://github.com/opendatahub-io/agent-eval-harness/commit/32ddc20ed6748f3097c1b1f78c0226b45998db2f))
+* **eval-anova:** restore tests_pass gate + match original context A/B; add Harbor docs ([33fcb42](https://github.com/opendatahub-io/agent-eval-harness/commit/33fcb4259ba5ed7c7db4cdb5bf5cb07ea8216a64))
+* **eval-anova:** runnable matrix orchestrator that fans out over eval-run ([b9ebca5](https://github.com/opendatahub-io/agent-eval-harness/commit/b9ebca52e8b32b32f5874eca2fb4b8f6432f1046)), closes [#5](https://github.com/opendatahub-io/agent-eval-harness/issues/5) [#14](https://github.com/opendatahub-io/agent-eval-harness/issues/14) [#15](https://github.com/opendatahub-io/agent-eval-harness/issues/15) [#17](https://github.com/opendatahub-io/agent-eval-harness/issues/17)
+* **eval-compare:** render eval-anova statistics section when present ([efa3306](https://github.com/opendatahub-io/agent-eval-harness/commit/efa330671d874af1b9da118ad0cabb004abead92))
+* **eval-run:** --input-override to inject run-level values into case inputs ([#17](https://github.com/opendatahub-io/agent-eval-harness/issues/17)) ([4474605](https://github.com/opendatahub-io/agent-eval-harness/commit/447460565ba928dae8106ad7e77e139f1c320098))
+* **eval-run:** add {config_dir} placeholder to the cli runner ([3e0a9f1](https://github.com/opendatahub-io/agent-eval-harness/commit/3e0a9f172e91c7b5f095b686a00eb64b4ee8537f))
+
+# [1.29.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.28.0...v1.29.0) (2026-07-30)
+
+
+### Features
+
+* **eval-run:** mirror execute console to console.log + no-redirect launch ([9c759a2](https://github.com/opendatahub-io/agent-eval-harness/commit/9c759a21822462a12f6772be028658aeca7702f0))
+* **workspace:** auto-set EVAL_RUN_HEADER from --run-id ([fb1576a](https://github.com/opendatahub-io/agent-eval-harness/commit/fb1576a638833b8cb71c391311414929331797aa))
+
+# [1.28.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.27.0...v1.28.0) (2026-07-30)
+
+
+### Bug Fixes
+
+* address CodeRabbit review feedback ([c379d0a](https://github.com/opendatahub-io/agent-eval-harness/commit/c379d0ae4225de4e60c63fa8472e461393932e27))
+* address CodeRabbit review feedback ([55a8fed](https://github.com/opendatahub-io/agent-eval-harness/commit/55a8fedada64365b3da180d1ebb03726e09a63c5))
+* **eval-compare:** address review — correctness, robustness, report accuracy ([74f5d1e](https://github.com/opendatahub-io/agent-eval-harness/commit/74f5d1e8fb1808e25ab98149c79c75b8eb449681))
+* remove Best Quality badge, strengthen Best Value criteria ([a6d26f8](https://github.com/opendatahub-io/agent-eval-harness/commit/a6d26f85858c73e07579354b27c86152d3828d77))
+* remove hardcoded judge/report names from eval-compare ([e8a61b3](https://github.com/opendatahub-io/agent-eval-harness/commit/e8a61b3299fa81264a424a2ad6acee3520e20026))
+* simplify Best Value badge — best model considering quality and cost ([b2eaeaf](https://github.com/opendatahub-io/agent-eval-harness/commit/b2eaeaf12ffcf6274e59ff60e8e68c4ce27abb3c))
+* use double quotes in f-strings for Python 3.11 compat ([e066dab](https://github.com/opendatahub-io/agent-eval-harness/commit/e066dab9345e846b6a59b2dbda9198a5fa08f06f))
+
+
+### Features
+
+* add eval-compare skill for cross-model comparison reports ([4c5568e](https://github.com/opendatahub-io/agent-eval-harness/commit/4c5568ef54f490b12ef6776dc70e4065043e4e64))
+* **eval-compare:** light/dark theme matching the per-run reports ([2e95cdd](https://github.com/opendatahub-io/agent-eval-harness/commit/2e95cdd8e438592af501910de08a0026d94c5e50))
+* **eval-compare:** make report fully generic + add LLM analysis sections ([9ea4e47](https://github.com/opendatahub-io/agent-eval-harness/commit/9ea4e47e0e44220e33dbd0b264fd743a54a489a7))
+
+# [1.27.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.26.0...v1.27.0) (2026-07-30)
+
+
+### Bug Fixes
+
+* **stream-capture:** exclude placeholder models from per-model accounting ([2378499](https://github.com/opendatahub-io/agent-eval-harness/commit/2378499cf97d189af27045246630bcccd0a74e31))
+
+
+### Features
+
+* **harbor:** per-model usage/cost breakdown ([70f79aa](https://github.com/opendatahub-io/agent-eval-harness/commit/70f79aa2955d8e2306eac8b3d46b01a8f1f3fde1))
+
+# [1.26.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.25.0...v1.26.0) (2026-07-30)
+
+
+### Bug Fixes
+
+* **hooks:** register before_report in the standalone hooks CLI --phase choices ([edd37b7](https://github.com/opendatahub-io/agent-eval-harness/commit/edd37b7e264a83916790abaea83d9c17fe75fe71))
+* **report-hooks:** address CodeRabbit [#165](https://github.com/opendatahub-io/agent-eval-harness/issues/165) review ([ad956b4](https://github.com/opendatahub-io/agent-eval-harness/commit/ad956b4ec331d4e5e2fcf29eb71957138767c8aa))
+
+
+### Features
+
+* **hooks:** add before_report lifecycle phase + gate reward section for judge-only evals ([cbbe9ad](https://github.com/opendatahub-io/agent-eval-harness/commit/cbbe9ad5a7531c9c61fdce17adcd9d6c3edd301d))
+
+# [1.25.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.24.0...v1.25.0) (2026-07-30)
+
+
+### Bug Fixes
+
+* **eval-analyze:** address review feedback on assess_skills ([6dab5d7](https://github.com/opendatahub-io/agent-eval-harness/commit/6dab5d73a7ac2bd4c24215ddce442885757e0e00))
+* **eval-analyze:** address review feedback on scoped tools, EXISTS detection, excerpt fences, and symlinks ([5793cd3](https://github.com/opendatahub-io/agent-eval-harness/commit/5793cd39085acbb42322d32bd365ffb098ed48ed))
+* **eval-analyze:** clean up stale --assess guard and Modes block placement ([9270432](https://github.com/opendatahub-io/agent-eval-harness/commit/92704329f2734201fe62db5d0837871fd723e8d8))
+* **eval-analyze:** correct EXISTS detection and tool/excerpt handling in assess ([205e4ef](https://github.com/opendatahub-io/agent-eval-harness/commit/205e4ef1f1f8cc99da1ab0842601f04d0947cdc1))
+* **eval-analyze:** guard glob results against symlink path traversal ([46b5452](https://github.com/opendatahub-io/agent-eval-harness/commit/46b545267066deedd1079e05416a86fc09cb3e69))
+* **eval-analyze:** make out-of-project skill skip actionable ([e51698f](https://github.com/opendatahub-io/agent-eval-harness/commit/e51698fea0a4d9d70356d49e91926730a52584db))
+* **eval-analyze:** treat skill_body_excerpt as untrusted data ([220b9a4](https://github.com/opendatahub-io/agent-eval-harness/commit/220b9a430168410d1f258b6f4ce76ef48bb5f6bf))
+* **eval-analyze:** trim SKILL.md below 4500 token warn limit ([1b9bd3c](https://github.com/opendatahub-io/agent-eval-harness/commit/1b9bd3c3e9c2a362e95f59cccd9e113059c661b3))
+* **eval-analyze:** use correct eval/ directory layout in _has_existing_eval ([73c99d8](https://github.com/opendatahub-io/agent-eval-harness/commit/73c99d80f588379c2b5129842103e20d0172a9ce))
+
+
+### Features
+
+* **eval-analyze:** add --assess flag to score skills for eval-worthiness ([6aa8163](https://github.com/opendatahub-io/agent-eval-harness/commit/6aa81630b57ea085ce65d7a216ec84fbbf8b3408)), closes [#144](https://github.com/opendatahub-io/agent-eval-harness/issues/144)
+
+# [1.24.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.23.0...v1.24.0) (2026-07-30)
+
+
+### Bug Fixes
+
+* **collect:** route per-case subagent traces in batch mode ([1150370](https://github.com/opendatahub-io/agent-eval-harness/commit/115037027308c0f2f362abc9bd3cea64a6b0c2e7))
+* **eval-run:** warn on silent trace-routing gaps (addresses CodeRabbit [#163](https://github.com/opendatahub-io/agent-eval-harness/issues/163)) ([efb10d6](https://github.com/opendatahub-io/agent-eval-harness/commit/efb10d67f7fc4586c37e9c2ad7dcaf7e628f9902))
+
+
+### Features
+
+* **events:** preserve extended-thinking (chain-of-thought) in parsed traces ([187f386](https://github.com/opendatahub-io/agent-eval-harness/commit/187f3865266d33dd3dc6640793dc9be536892420))
+* **score:** CoT-inclusive {{ reasoning }} judge var + warn on undefined template vars ([70d676d](https://github.com/opendatahub-io/agent-eval-harness/commit/70d676dee3d84112e3077660bd6da8580a024ee0))
+
+# [1.23.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.22.1...v1.23.0) (2026-07-28)
+
+
+### Bug Fixes
+
+* **mlflow:** attribute thinking to its own turn's step, not the next one ([6f88fd1](https://github.com/opendatahub-io/agent-eval-harness/commit/6f88fd11def7f15742002edcda56c99ad37efd20))
+* **mlflow:** clamp trajectory timestamps and backfill reasoning_content ([59a76cf](https://github.com/opendatahub-io/agent-eval-harness/commit/59a76cf6d2f007805e0615cacc0a0998307e8b0b))
+* **mlflow:** drop unused imports and use _resolve_skill for Harbor trace names ([a9add3b](https://github.com/opendatahub-io/agent-eval-harness/commit/a9add3b1037897465d272f478f43f4e2cce9dfad))
+* **mlflow:** isolate tool-only thinking steps and tighten import skips ([08f0855](https://github.com/opendatahub-io/agent-eval-harness/commit/08f0855e23d5cebb212f11cacb3031c4da3bc110))
+* **mlflow:** resolve CodeRabbit findings on trajectory-enriched traces ([be73c30](https://github.com/opendatahub-io/agent-eval-harness/commit/be73c307dbb3985c78dcd866f4d085de84602fa8))
+
+
+### Features
+
+* **mlflow:** enrich Harbor traces with tool content and step detail ([336799a](https://github.com/opendatahub-io/agent-eval-harness/commit/336799a2bd64e798ed2c12bf9a173af56a6357e1))
+* **mlflow:** richer Harbor traces with user turns and thinking ([6141895](https://github.com/opendatahub-io/agent-eval-harness/commit/6141895c4f75cb3125acb858830f22a736e84bcb))
+
+## [1.22.1](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.22.0...v1.22.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* cover interactive idle-SIGTERM in session lifecycle warning ([00e8bb9](https://github.com/opendatahub-io/agent-eval-harness/commit/00e8bb978ff298061f82e851941080ded4d334bb))
+* require polling after backgrounded execute.py to prevent false-green CI ([b4cf178](https://github.com/opendatahub-io/agent-eval-harness/commit/b4cf178d633cb2861851b3c4bd2a4520ef66b650)), closes [#155](https://github.com/opendatahub-io/agent-eval-harness/issues/155)
+
 # [1.22.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.21.0...v1.22.0) (2026-07-10)
 
 

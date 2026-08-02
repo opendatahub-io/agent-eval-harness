@@ -1,9 +1,12 @@
 """Tests for agent_eval.agent.stream_capture — turn counting and deduplication."""
 
+import json
+
 from conftest import make_assistant, make_result, to_jsonl
 
 from agent_eval.agent.stream_capture import (
-    count_subagent_turns, count_subagent_turns_by_model, extract_usage,
+    _is_real_model, count_subagent_turns, count_subagent_turns_by_model,
+    extract_usage,
 )
 
 
@@ -126,3 +129,45 @@ class TestCombinedTurnCount:
         assert total == pre_2_1_108_stream["expected_total"]  # 8
         assert stream_turns == 5
         assert new_turns == 3
+
+
+class TestPlaceholderModel:
+    """`<synthetic>` (and other <bracketed> pseudo-models) are counted for
+    dedup/totals but excluded from per-model accounting."""
+
+    def test_is_real_model(self):
+        assert _is_real_model("claude-opus-4-7") is True
+        assert _is_real_model("<synthetic>") is False
+        assert _is_real_model("") is False
+        assert _is_real_model(None) is False
+
+    def test_extract_usage_excludes_placeholder(self):
+        events = [
+            make_assistant("msg_real", model="claude-opus-4-7"),
+            make_assistant("msg_synth", model="<synthetic>"),
+            make_result(cost_usd=0.10),
+        ]
+        (_tok, _cost, num_turns, seen_ids, models_seen,
+         _per_model, by_model) = extract_usage(to_jsonl(events))
+        # Placeholder turn still counts toward totals and dedup ...
+        assert num_turns == 2
+        assert "msg_synth" in seen_ids
+        # ... but never pollutes per-model accounting: both models_seen and the
+        # per-model msg-id map exclude the pseudo-model.
+        assert models_seen == {"claude-opus-4-7"}
+        assert set(by_model) == {"claude-opus-4-7"}
+
+    def test_subagent_turns_exclude_placeholder(self, tmp_path):
+        subdir = tmp_path / "subagents"
+        subdir.mkdir()
+        lines = [
+            {"message": {"id": "s1", "role": "assistant",
+                         "model": "claude-opus-4-7"}},
+            {"message": {"id": "s2", "role": "assistant",
+                         "model": "<synthetic>"}},
+        ]
+        (subdir / "agent-x.jsonl").write_text(
+            "\n".join(json.dumps(x) for x in lines) + "\n")
+        per_model = count_subagent_turns_by_model(subdir)
+        assert per_model == {"claude-opus-4-7": 1}
+        assert "<synthetic>" not in per_model

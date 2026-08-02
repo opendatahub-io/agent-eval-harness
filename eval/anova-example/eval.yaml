@@ -1,0 +1,97 @@
+name: anova-example
+description: >
+  eval-anova over 4 real models-as-a-service bugfix PRs. A model × context
+  (cognee knowledge-graph MCP vs none) matrix: each cell checks out the repo at
+  a base commit, the agent implements the fix, and an LLM judge scores the diff
+  against the merged PR (oracle). Fully on the generic path — a cli runner doing
+  a local git checkout, no Harbor/OpenShift and no committed credentials.
+
+execution:
+  mode: case
+  arguments: "{prompt}"        # unused by solve.sh (it reads the prompt from input.yaml)
+  timeout: 1800
+
+runner:
+  type: cli
+  # solve.sh checks out models-as-a-service at the base commit, runs the agent
+  # (with the cognee MCP when context=cognee), and writes output/solution.diff.
+  # {context} is a non-model matrix factor delivered per cell via the
+  # orchestrator's --input-override (finding #17); {config_dir} locates the
+  # eval-relative helper script and MCP configs.
+  command: >-
+    bash {config_dir}/solve.sh {workspace} {output_dir} {model} {config_dir}/mcp-{context}.json
+
+models:
+  judge: claude-sonnet-4-6
+
+dataset:
+  path: dataset
+  schema: |
+    Each case dir (task-NNNN/) has input.yaml (the PR prompt), instruction.txt,
+    and oracle.diff (the merged PR), referenced by annotations.yaml for the judge.
+
+outputs:
+  - path: output
+    schema: "solution.diff — the agent's changes captured by solve.sh"
+
+judges:
+  - name: tests_pass
+    description: The touched Go module's tests pass on the agent's fix (objective gate).
+    check: |
+      import json
+      files = outputs.get("files", {})
+      for path, content in files.items():
+          if path.endswith("tests.json") and isinstance(content, str):
+              try:
+                  d = json.loads(content)
+              except json.JSONDecodeError as exc:
+                  return False, f"malformed tests.json: {exc}"
+              p = d.get("passed")
+              if p is True:
+                  return True, "module tests passed"
+              if p is False:
+                  return False, "module tests failed"
+              return False, d.get("skipped", "tests not run")
+      return False, "no tests.json in outputs"
+
+  - name: solution_quality
+    description: LLM judge — does the agent's diff solve the task vs the oracle?
+    feedback_type: int
+    score_range: [1, 5]
+    prompt: |
+      You are scoring an agent's attempt at a coding task on the
+      opendatahub-io/models-as-a-service repository.
+
+      ## Task instruction
+      {{ outputs.annotation_instruction_content }}
+
+      ## Agent's changes (collected artifacts, including output/solution.diff)
+      {{ outputs.files }}
+
+      ## Reference oracle patch (the merged PR)
+      {{ outputs.annotation_oracle_content }}
+
+      Assess: (1) does it address the core problem, (2) are the changes sound,
+      (3) would they plausibly match the oracle / pass the tests?
+      Score 1-5 (1=no meaningful attempt, 3=addresses it with gaps, 5=excellent,
+      comparable to the oracle). Respond with JSON:
+      {"score": <int 1-5>, "rationale": "<one sentence>"}
+
+thresholds:
+  tests_pass:
+    min_pass_rate: 0.5
+  solution_quality:
+    min_mean: 3.0
+
+# context A/B matrix (matches the original harbor-maas design): one model, with
+# vs without the cognee MCP. `context` is a non-model factor injected into the
+# command via --input-override, selecting {config_dir}/mcp-{context}.json. Add
+# more models to the `model` list to turn this into a model × context grid.
+matrix:
+  factors:
+    model:
+      - claude-sonnet-4-6
+    context:
+      - cognee
+      - none
+  replications: 1

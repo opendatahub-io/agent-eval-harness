@@ -20,6 +20,11 @@ The core principle: **observe, don't assume**. Every field name, file pattern, a
 | `--config <path>` | no | auto-discover | Output path for the config |
 | `--prompt <path>` | no | none | Custom analysis prompt (for non-skill evals) |
 | `--update` | no | false | Fill in missing sections only, preserve user edits |
+| `--assess` | no | false | Assess all skills and recommend which ones need evals |
+
+**If `$ARGUMENTS` contains `--assess`**: skip the rest of Step 0 and Step 1. Go directly to **Batch Assessment** (between Step 0 and Step 1). Do not run `state.py init`, do not discover configs, do not look for a single skill.
+
+Otherwise, proceed with the normal flow:
 
 ```bash
 mkdir -p tmp
@@ -37,10 +42,15 @@ If `--config` provided, use that path. Otherwise run `python3 ${CLAUDE_SKILL_DIR
 
 Set the resolved config path as `<config>` for all subsequent steps. Set `<eval_md_path>` to the same directory as `<config>`, with filename `eval.md`.
 
-**Modes**: 
-- `--skill my-skill` → skill-based eval (`execution.skill`, case/batch mode)
-- `--prompt examples/openshift-agentic-docs.md` → prompt-based eval (`execution.prompt`, case mode, tests agent capabilities)
-- See `examples/` for domain-specific analysis prompt recipes
+## Batch Assessment
+
+If `--assess` was provided (even with `--skill`, which is ignored in this mode):
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/assess_skills.py --json
+```
+
+If empty, report no skills found and stop. Otherwise, read `${CLAUDE_SKILL_DIR}/prompts/assess-skills.md` and follow its instructions to classify each skill and display the grouped report. Offer to run `/eval-analyze --skill <name>` on RECOMMENDED skills. **Stop here — do not proceed to Step 1.**
 
 ## Step 1: Determine Analysis Mode
 
@@ -58,19 +68,21 @@ Set the resolved config path as `<config>` for all subsequent steps. Set `<eval_
 
 ### Step 2: Find the Target Skill
 
-If `--skill` was provided, locate its SKILL.md:
+**If `--skill` was provided**, locate its SKILL.md:
 
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/find_skills.py --name <skill>
 ```
 
-If not provided, list all project skills:
+**If `--skill` was not provided**, list all project skills:
 
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/find_skills.py
 ```
 
-This reads `.claude-plugin/plugin.json` for custom skill paths, falls back to `.claude/skills/` and `skills/`, and excludes eval harness skills. If only one skill is found, use it automatically. If multiple, ask the user which to analyze. If none are found, tell the user — they may need to check their skill directory paths or create a skill first.
+This reads `.claude-plugin/plugin.json` for custom skill paths, falls back to `.claude/skills/` and `skills/`, and excludes eval harness skills. If only one skill is found, use it automatically. If none are found, tell the user — they may need to check their skill directory paths or create a skill first.
+
+If multiple skills are found, list them and ask the user which one to analyze via AskUserQuestion. For batch assessment, use `--assess` explicitly.
 
 **If `--update` and eval.yaml already has a `skill` field**: use that skill. If `--skill` is also provided and differs, ask the user which they mean — don't silently overwrite.
 

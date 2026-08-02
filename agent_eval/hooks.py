@@ -273,7 +273,7 @@ def main():
                         help="Path to eval.yaml")
     parser.add_argument("--phase", required=True,
                         choices=["before_all", "before_each", "after_each",
-                                 "before_scoring", "after_all"],
+                                 "before_scoring", "after_all", "before_report"],
                         help="Hook phase to run")
     parser.add_argument("--workspace", required=True,
                         help="Workspace root path")
@@ -312,7 +312,8 @@ def main():
     log_dir = Path(args.output) / "hooks"
 
     phase = args.phase
-    if phase == "after_all":
+    # before_report (like after_all) is documented as continue-on-failure.
+    if phase in ("after_all", "before_report"):
         run_hooks_safe(entries, env, cwd, log_dir, phase,
                        case_id=args.case_id)
     else:

@@ -87,6 +87,13 @@ agent_eval/              # Python package (config, runner, state)
     trace_builder.py     # Hierarchical trace builder (stream-json → MLflow trace)
   cli/
     trace_run.py         # claude-trace CLI (standalone skill tracing)
+  anova/                 # eval-anova: DoE matrix testing + ANOVA statistics
+    matrix.py            # Factorial (DoE) experiment design + cost estimation
+    composite.py         # Composite scoring helpers (bool gates + numeric; aggregate)
+    archive.py           # Git-backed results archival (ResultsArchiver)
+    stats/
+      anova.py           # Repeated-measures, mixed-effects, one-way ANOVA
+      pareto.py          # Cost/quality Pareto frontier
 
 skills/eval-setup/       # Skill: environment setup
   SKILL.md               # Dependencies, MLflow, API keys, directories
@@ -99,9 +106,11 @@ skills/eval-analyze/     # Skill: bootstrap eval config
     find_skills.py       # Skill discovery (reads plugin.json for paths)
     validate_eval.py     # Config and memory validation
     resolve_prompt.py    # Resolve prompt file paths
+    assess_skills.py     # --assess: extract per-skill facts (LLM judges eval-worthiness)
   prompts/
     analyze-skill.md     # Skill analysis prompt (skill mode)
     generate-eval-md.md  # eval.md generation prompt
+    assess-skills.md     # --assess classification (RECOMMENDED/OPTIONAL/SKIP/EXISTS)
   references/
     eval-yaml-template.md # Full eval.yaml template for generation
 
@@ -146,6 +155,22 @@ skills/eval-mlflow/      # Skill: MLflow integration
 skills/eval-optimize/    # Skill: automated refinement loop
   SKILL.md               # Composes with /eval-run via Skill tool
 
+skills/eval-compare/     # Skill: cross-model/cross-run comparison report
+  SKILL.md               # Discover runs, generate tabbed HTML, LLM analysis sections
+  scripts/
+    compare.py           # Discover runs + comparison HTML; renders anova.json stats if present
+
+skills/eval-anova/       # Skill: DoE/ANOVA matrix experiments (orchestrator over eval-run)
+  SKILL.md               # matrix: → fan out /eval-run per cell → anova.json → /eval-compare
+  QUICKSTART.md          # From-scratch setup and run steps
+  scripts/
+    orchestrate.py       # Runnable entrypoint: fan-out loop, --dry-run, --analyze-only
+    analyze.py           # analyze_runs: ANOVA + Pareto over runs' summary.yaml → anova.json
+    design.py            # Factorial design + cost estimation helpers
+    report.py            # Deep ANOVA detail report from anova.json
+  references/
+    matrix-schema.md     # Full matrix: config schema reference
+
 skills/eval-check/ # Skill: full-harness configuration health check
   SKILL.md               # Scans all skills, commands, CLAUDE.md, hooks for overlap and issues
   scripts/
@@ -184,7 +209,17 @@ The `schema` descriptions are documentation for the LLM agents and judges. Scrip
 /eval-review --run-id <id>             # Review: interactive human feedback + changes
 /eval-mlflow --run-id <id>             # MLflow: sync dataset, log results
 /eval-optimize --model opus            # Optimize: automated refinement loop
+/eval-compare <input-dir>              # Compare: tabbed HTML report across models/runs
+/eval-anova --config eval.yaml         # DoE: matrix of configs → runs → ANOVA + comparison
 ```
+
+### eval-anova / eval-compare relationship
+
+eval-run runs one condition. `/eval-anova` reads a `matrix:` block and fans out `/eval-run`
+per cell (condition × replication) → standard runs, then computes ANOVA/Pareto over their
+`summary.yaml` into `anova.json`. `/eval-compare` renders the cross-condition comparison and
+surfaces the statistics section when `anova.json` is present — but stays standalone (no stats
+dependency) for manual/CI-produced run sets.
 
 ### Prompt Mode Workflow (Agentic Documentation Testing)
 ```text

@@ -21,10 +21,34 @@ def _case_id_from_dir(trial_dir: Path) -> str:
     return name.rsplit("__", 1)[0] if "__" in name else name
 
 
+def _merge_per_model(acc: dict, pmu: dict | None) -> None:
+    """Accumulate a per-model usage dict into ``acc`` (sum per model, per key).
+
+    Used to aggregate per-model token/cost breakdowns across steps (multi-step
+    trials) and across trials (whole job). None-safe on both the source dict and
+    individual values.
+    """
+    if not pmu:
+        return
+    for model, stats in pmu.items():
+        if not isinstance(stats, dict):
+            continue
+        dst = acc.setdefault(model, {"input": 0, "output": 0,
+                                     "cache_read": 0, "cache_create": 0,
+                                     "cost_usd": None})
+        for k in ("input", "output", "cache_read", "cache_create"):
+            v = stats.get(k)
+            if isinstance(v, (int, float)):
+                dst[k] = (dst[k] or 0) + v
+        c = stats.get("cost_usd")
+        if isinstance(c, (int, float)):
+            dst["cost_usd"] = (dst["cost_usd"] or 0) + c
+
+
 def _extract_transcript_metrics(transcript_path: Path) -> dict:
     """Extract cost, tokens, turns, duration, version from a stream-json transcript."""
     result: dict = {
-        "cost_usd": None, "token_usage": None,
+        "cost_usd": None, "token_usage": None, "per_model_usage": None,
         "num_turns": None, "duration_s": None, "agent_version": None,
     }
     if not transcript_path.is_file():
@@ -57,6 +81,24 @@ def _extract_transcript_metrics(transcript_path: Path) -> dict:
                         "cache_read": usage.get("cache_read_input_tokens"),
                         "cache_create": usage.get("cache_creation_input_tokens"),
                     }
+                # Per-model breakdown from the result event's modelUsage (same
+                # source the local runner uses in stream_capture.py) — enables
+                # per-model columns in the report's Model Usage table.
+                mu = ev.get("modelUsage")
+                if isinstance(mu, dict) and mu:
+                    pmu = {}
+                    for mname, st in mu.items():
+                        if not isinstance(st, dict):
+                            continue
+                        pmu[mname] = {
+                            "input": st.get("inputTokens", 0) or 0,
+                            "output": st.get("outputTokens", 0) or 0,
+                            "cache_read": st.get("cacheReadInputTokens", 0) or 0,
+                            "cache_create": st.get("cacheCreationInputTokens", 0) or 0,
+                            "cost_usd": st.get("costUSD"),
+                        }
+                    if pmu:
+                        result["per_model_usage"] = pmu
     except OSError:
         pass
     return result
@@ -96,6 +138,7 @@ def _errored_trial_record(trial_dir: Path) -> dict:
         "trial_error": reason,
         "cost_usd": None,
         "token_usage": None,
+        "per_model_usage": None,
         "num_turns": None,
         "duration_s": None,
         "agent_version": None,
@@ -148,6 +191,7 @@ def parse_trial(trial_dir: Path) -> dict | None:
         "infra_error_steps": [],
         "cost_usd": None,
         "token_usage": None,
+        "per_model_usage": None,
     }
 
     # Agent execution metrics from Harbor's trial result.json (cost/tokens).
@@ -182,6 +226,7 @@ def parse_trial(trial_dir: Path) -> dict | None:
     record["num_turns"] = extracted.get("num_turns")
     record["duration_s"] = extracted.get("duration_s")
     record["agent_version"] = extracted.get("agent_version")
+    record["per_model_usage"] = extracted.get("per_model_usage")
 
     # Richer sidecar (values + rationales) when present.
     judges_path = trial_dir / "verifier" / "judges.json"
@@ -215,6 +260,7 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
     total_turns = 0
     total_duration = 0.0
     token_totals: dict = {}
+    per_model_totals: dict = {}
     agent_version = None
 
     for step_dir in step_dirs:
@@ -284,6 +330,7 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
         for k, v in (extracted.get("token_usage") or {}).items():
             if isinstance(v, (int, float)):
                 token_totals[k] = token_totals.get(k, 0) + v
+        _merge_per_model(per_model_totals, extracted.get("per_model_usage"))
 
     mean_reward = sum(rewards) / len(rewards) if rewards else None
 
@@ -315,6 +362,7 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
         "infra_error_steps": infra_error_steps,
         "cost_usd": total_cost if total_cost > 0 else None,
         "token_usage": token_totals or None,
+        "per_model_usage": per_model_totals or None,
         "num_turns": total_turns if total_turns > 0 else None,
         "duration_s": total_duration if total_duration > 0 else None,
         "agent_version": agent_version,
@@ -371,6 +419,9 @@ def parse_job(job_dir: Path) -> dict:
         for k, v in (t.get("token_usage") or {}).items():
             if isinstance(v, (int, float)):
                 token_usage[k] = token_usage.get(k, 0) + v
+    per_model_usage: dict = {}
+    for t in trials:
+        _merge_per_model(per_model_usage, t.get("per_model_usage"))
 
     # Aggregate turns, duration, and pick agent version from trials.
     turn_values = [t["num_turns"] for t in trials
@@ -412,6 +463,7 @@ def parse_job(job_dir: Path) -> dict:
         "aggregated": aggregated,
         "cost_usd": total_cost,
         "token_usage": token_usage or None,
+        "per_model_usage": per_model_usage or None,
         "num_turns": total_turns,
         "duration_s": wall_clock_s or total_agent_duration,
         "agent_duration_s": total_agent_duration,

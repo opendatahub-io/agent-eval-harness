@@ -122,18 +122,37 @@ def parse_stream_events(stdout_text, result_cap=DEFAULT_RESULT_CAP):
     return events
 
 
-def _parse_assistant_event(obj, result_cap):
-    message = obj.get("message", {})
-    content_blocks = message.get("content", [])
-    timestamp = obj.get("timestamp")
+def _extract_content_blocks(content_blocks, result_cap):
+    """Split an assistant message's content blocks into (text, thinking, tools).
 
+    Only string values are collected, so a null or non-string ``text`` /
+    ``thinking`` from a non-Anthropic provider is skipped rather than raising
+    and aborting the whole parse. A
+    ``redacted_thinking`` block contributes a marker so a fully-redacted turn
+    isn't mistaken for an absence of reasoning. Multiple thinking blocks are
+    joined with newlines to preserve their boundaries.
+    """
     text_parts = []
+    thinking_parts = []
     tools = []
 
+    if not isinstance(content_blocks, list):
+        return "", "", tools
+
     for block in content_blocks:
+        if not isinstance(block, dict):
+            continue
         block_type = block.get("type")
         if block_type == "text":
-            text_parts.append(block.get("text", ""))
+            value = block.get("text")
+            if isinstance(value, str) and value:
+                text_parts.append(value)
+        elif block_type == "thinking":
+            value = block.get("thinking")
+            if isinstance(value, str) and value:
+                thinking_parts.append(value)
+        elif block_type == "redacted_thinking":
+            thinking_parts.append("[redacted thinking]")
         elif block_type == "tool_use":
             tool_input = _cap_values(block.get("input", {}), result_cap)
             tools.append({
@@ -142,12 +161,24 @@ def _parse_assistant_event(obj, result_cap):
                 "input": tool_input,
             })
 
+    return "".join(text_parts), "\n".join(thinking_parts), tools
+
+
+def _parse_assistant_event(obj, result_cap):
+    message = obj.get("message", {})
+    content_blocks = message.get("content", [])
+    timestamp = obj.get("timestamp")
+
+    text, thinking, tools = _extract_content_blocks(content_blocks, result_cap)
+
     event = {
         "type": "assistant",
-        "text": "".join(text_parts),
+        "text": text,
         "tools": tools,
         "timestamp": timestamp,
     }
+    if thinking:
+        event["thinking"] = thinking
 
     msg_id = message.get("id")
     if msg_id:
@@ -300,6 +331,12 @@ def merge_subagent_transcripts(events, subagent_dir, result_cap=DEFAULT_RESULT_C
         return events
 
     seen_msg_ids = _collect_message_ids(events)
+    # Map for backfilling richer fields onto an already-seen copy: an inline
+    # stdout copy of a subagent message carries no thinking block, so when the
+    # transcript copy (which does) is deduped by _msg_id we still recover its
+    # chain-of-thought instead of dropping it under all-or-nothing dedup.
+    events_by_msg_id = {e.get("_msg_id"): e for e in events
+                        if e.get("type") == "assistant" and e.get("_msg_id")}
     new_events = []
 
     for transcript in sorted(subagent_path.iterdir()):
@@ -324,6 +361,13 @@ def merge_subagent_transcripts(events, subagent_dir, result_cap=DEFAULT_RESULT_C
             msg = obj.get("message", {})
             msg_id = msg.get("id")
             if msg_id and msg_id in seen_msg_ids:
+                existing = events_by_msg_id.get(msg_id)
+                if (existing is not None and not existing.get("thinking")
+                        and msg.get("role") == "assistant"):
+                    parsed = _parse_transcript_assistant(
+                        obj, agent_id, result_cap)
+                    if parsed and parsed.get("thinking"):
+                        existing["thinking"] = parsed["thinking"]
                 continue
             if msg_id:
                 seen_msg_ids.add(msg_id)
@@ -332,6 +376,8 @@ def merge_subagent_transcripts(events, subagent_dir, result_cap=DEFAULT_RESULT_C
                 event = _parse_transcript_assistant(obj, agent_id, result_cap)
                 if event:
                     new_events.append(event)
+                    if event.get("_msg_id"):
+                        events_by_msg_id[event["_msg_id"]] = event
 
     if new_events:
         events.extend(new_events)
@@ -357,30 +403,19 @@ def _parse_transcript_assistant(obj, agent_id, result_cap=DEFAULT_RESULT_CAP):
     content_blocks = message.get("content", [])
     timestamp = obj.get("timestamp")
 
-    text_parts = []
-    tools = []
-
-    for block in content_blocks:
-        block_type = block.get("type")
-        if block_type == "text":
-            text_parts.append(block.get("text", ""))
-        elif block_type == "tool_use":
-            tool_input = _cap_values(block.get("input", {}), result_cap)
-            tools.append({
-                "name": block.get("name", ""),
-                "id": block.get("id", ""),
-                "input": tool_input,
-            })
+    text, thinking, tools = _extract_content_blocks(content_blocks, result_cap)
 
     parent_tool_use_id = obj.get("parent_tool_use_id")
 
     event = {
         "type": "assistant",
-        "text": "".join(text_parts),
+        "text": text,
         "tools": tools,
         "timestamp": timestamp,
         "agent_id": agent_id,
     }
+    if thinking:
+        event["thinking"] = thinking
 
     msg_id = message.get("id")
     if msg_id:
@@ -484,11 +519,26 @@ def _format_tool_input(name, tool_input):
     return "(no input)"
 
 
-def extract_conversation_text(events):
-    """Extract root-level assistant text from events.
+# Judge-facing guard: cap the reasoning-inclusive conversation so an unusually
+# verbose run can't overflow a judge prompt and silently error the judge call.
+# Generous enough (~100K tokens) that normal cases never reach it.
+CONVERSATION_THINKING_CAP = 400000
 
-    Filters out subagent events (those with parent_tool_use_id) and
-    concatenates assistant text blocks.
+
+def extract_conversation_text(events, include_thinking=False):
+    """Extract root-level assistant conversation from events.
+
+    Filters out subagent events (those with parent_tool_use_id) and, for each
+    remaining assistant turn, emits its visible text.
+
+    With ``include_thinking=True`` each turn's extended-thinking
+    (chain-of-thought) is emitted, labeled ``[thinking]``, before its visible
+    text — this lets a reasoning-quality judge grade the actual thought process
+    rather than the terse inter-tool narration. The default is text-only, so the
+    plain ``{{ conversation }}`` variable (consumed by other judges, e.g. the
+    safety judge that grades visible output) keeps its original semantics. The
+    reasoning-inclusive form is capped at ``CONVERSATION_THINKING_CAP`` chars
+    with a truncation marker.
     """
     parts = []
     for event in events:
@@ -496,7 +546,15 @@ def extract_conversation_text(events):
             continue
         if event.get("parent_tool_use_id"):
             continue
+        if include_thinking:
+            thinking = event.get("thinking", "")
+            if thinking:
+                parts.append(f"[thinking]\n{thinking}")
         text = event.get("text", "")
         if text:
             parts.append(text)
-    return "\n\n".join(parts)
+    rendered = "\n\n".join(parts)
+    if include_thinking and len(rendered) > CONVERSATION_THINKING_CAP:
+        rendered = (rendered[:CONVERSATION_THINKING_CAP]
+                    + "\n\n[conversation truncated]")
+    return rendered

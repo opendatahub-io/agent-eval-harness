@@ -49,6 +49,111 @@ _HARNESS_SYSTEM_PROMPT = (
 )
 
 
+class _Tee:
+    """Mirror writes to a real stream and a log file, flushing both.
+
+    Installed on ``sys.stdout``/``sys.stderr`` so execute.py populates the
+    background-command output stream (the real stdout/stderr that Claude
+    Code's viewer displays) AND a stable ``<output_dir>/console.log`` for
+    tailing. This removes any reason to redirect with ``>`` (which would
+    divert the real stream and leave the background viewer blank).
+    """
+
+    def __init__(self, stream, logfile):
+        self._stream = stream
+        self._logfile = logfile
+
+    def write(self, data):
+        n = self._stream.write(data)
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+        try:
+            self._logfile.write(data)
+            self._logfile.flush()
+        except Exception:
+            pass  # logging is best-effort; never break the run
+        return n
+
+    def flush(self):
+        for s in (self._stream, self._logfile):
+            try:
+                s.flush()
+            except Exception:
+                pass
+
+    def isatty(self):
+        try:
+            return self._stream.isatty()
+        except Exception:
+            return False
+
+    def fileno(self):
+        return self._stream.fileno()
+
+    def __getattr__(self, name):
+        # Delegate everything else (encoding, writable, buffer, …) to the
+        # real stream so the Tee is a faithful stand-in.
+        return getattr(self._stream, name)
+
+
+def _fd_path(fd):
+    """Best-effort absolute path backing a file descriptor, or None."""
+    try:
+        if sys.platform == "darwin":
+            import fcntl
+            F_GETPATH = 50  # macOS fcntl command: resolve an fd to its path
+            raw = fcntl.fcntl(fd, F_GETPATH, b"\0" * 1024)
+            return os.fsdecode(raw.split(b"\0", 1)[0])
+        return os.readlink(f"/proc/self/fd/{fd}")
+    except (OSError, ValueError, ImportError):
+        return None
+
+
+def _setup_console_log(output_dir):
+    """Mirror console output to ``<output_dir>/console.log`` and warn on a
+    stdout redirect into the run directory.
+
+    Claude Code's background-command viewer displays the launched process's
+    own stdout/stderr stream. Redirecting that stream to a file
+    (``python3 execute.py … > run/execute.log 2>&1``) leaves the viewer
+    blank. Teeing here gives a stable, tailable log without any redirect;
+    the guard flags the specific footgun of redirecting into the run dir
+    (the harness's own capture file lives in a separate temp tasks dir, so
+    this never false-fires on a correct background launch).
+
+    Returns the console.log Path, or None if it could not be opened.
+    """
+    console_log = output_dir / "console.log"
+    try:
+        fh = open(console_log, "w", buffering=1, encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    sys.stdout = _Tee(sys.stdout, fh)
+    sys.stderr = _Tee(sys.stderr, fh)
+    import atexit
+    atexit.register(fh.flush)
+
+    fd1 = _fd_path(1)
+    if fd1:
+        try:
+            p = Path(fd1).resolve()
+            out = output_dir.resolve()
+            if out == p or out in p.parents:
+                print(
+                    f"WARNING: execute.py stdout is redirected to {p}, inside the run "
+                    f"directory. Claude Code's background-command viewer shows the "
+                    f"process's own stdout stream and will appear BLANK. Re-launch "
+                    f"WITHOUT a '>' redirect (see eval-run SKILL.md Step 4); the live "
+                    f"console is already mirrored to {console_log}.",
+                    file=sys.stderr,
+                )
+        except OSError:
+            pass
+    return console_log
+
+
 def _resolve_permissions(config):
     """Return the permission rules to pass to the runner.
 
@@ -95,6 +200,13 @@ def main():
                         help="Max parallel case executions (default: from eval.yaml or sequential)")
     parser.add_argument("--run-id", default=None,
                         help="Run identifier (for hook env vars and log paths)")
+    parser.add_argument("--input-override", action="append", default=None,
+                        metavar="KEY=VALUE",
+                        help="Merge KEY=VALUE into every case's input.yaml before "
+                             "execution (repeatable). Lets a caller inject run-level "
+                             "values — e.g. matrix factor levels — so they resolve as "
+                             "{KEY} in a cli runner command or {{ input.KEY }} in "
+                             "arguments. Case fields win only if not overridden.")
     args = parser.parse_args()
 
     from agent_eval.config import EvalConfig
@@ -127,6 +239,11 @@ def main():
 
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Mirror all console output to <output_dir>/console.log so callers never
+    # need to redirect stdout with '>' (which blanks the background-command
+    # viewer). The real stdout/stderr streams still receive everything.
+    _setup_console_log(output_dir)
 
     # Resolve skill args: CLI override > config > empty
     # Treat empty/whitespace-only strings as unset (normalize before fallback)
@@ -742,6 +859,37 @@ def _verify_repo_unchanged(repo_root, initial_state):
     return True
 
 
+def _parse_input_overrides(items):
+    """Parse repeated ``KEY=VALUE`` strings into a dict (values stay strings)."""
+    out = {}
+    for item in (items or []):
+        if "=" not in item:
+            print(f"WARNING: ignoring malformed --input-override {item!r} "
+                  "(expected KEY=VALUE)", file=sys.stderr)
+            continue
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if key:
+            out[key] = value
+    return out
+
+
+def _merge_input_overrides(input_path, overrides):
+    """Merge ``overrides`` into a case's input.yaml (overrides win). No-op when
+    the file is missing/symlinked/non-mapping."""
+    import yaml as _yaml
+    if not overrides or not input_path.exists() or input_path.is_symlink():
+        return
+    try:
+        data = _yaml.safe_load(input_path.read_text()) or {}
+    except _yaml.YAMLError:
+        return
+    if not isinstance(data, dict):
+        return
+    data.update(overrides)
+    input_path.write_text(_yaml.safe_dump(data, default_flow_style=False, sort_keys=False))
+
+
 def _execute_per_case(args, config, runner, runner_cls,
                       output_dir, max_budget, timeout_s,
                       model, mlflow_experiment, system_prompt="",
@@ -762,6 +910,15 @@ def _execute_per_case(args, config, runner, runner_cls,
 
     with open(case_order_path) as f:
         case_order = _yaml.safe_load(f) or []
+
+    # Merge any --input-override KEY=VALUE into each case's input.yaml before
+    # execution, so run-level values (e.g. matrix factor levels) resolve as
+    # {KEY} in a cli runner command or {{ input.KEY }} in arguments.
+    overrides = _parse_input_overrides(getattr(args, "input_override", None))
+    if overrides:
+        for entry in case_order:
+            cid = entry if isinstance(entry, str) else entry["case_id"]
+            _merge_input_overrides(workspace / "cases" / cid / "input.yaml", overrides)
 
     # Detect in-repo mode: check if first case has _metadata.yaml with mode: in-repo
     in_repo_mode = False

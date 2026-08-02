@@ -1,0 +1,233 @@
+# Generated scaffold — the nav block is produced from tmp/gen_docs.py.
+# Re-run that generator (or edit nav here directly once content stabilizes).
+site_name: Agent Eval Harness
+site_description: >-
+  A generic evaluation framework for skills and agent capabilities — analyze, build a
+  dataset, run, score with LLM and code judges, and improve, all from one declarative eval.yaml.
+site_url: https://opendatahub-io.github.io/agent-eval-harness/
+repo_url: https://github.com/opendatahub-io/agent-eval-harness
+repo_name: opendatahub-io/agent-eval-harness
+edit_uri: edit/main/website/
+docs_dir: website
+copyright: Copyright &copy; Red Hat, Inc. — Licensed under Apache-2.0
+
+theme:
+  name: material
+  custom_dir: website/overrides
+  logo: assets/images/aeh-logo.png
+  favicon: assets/images/favicon.png
+  # Fonts are self-hosted (see website/stylesheets/extra.css); disable the
+  # Google Fonts CDN loader.
+  font: false
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - navigation.instant
+    - navigation.instant.progress
+    - toc.follow
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+    - search.share
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: red
+      accent: red
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: red
+      accent: red
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+plugins:
+  - search
+  # Python API autodoc. Enabled in CI (which runs `pip install -e .`).
+  # Add `::: agent_eval.<module>` directives on reference/python-api.md to use it.
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: ["."]
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+            show_symbol_type_heading: true
+            separate_signature: true
+            merge_init_into_class: true
+  # LLM-friendly export: generates /llms.txt (index) and /llms-full.txt
+  # (full concatenated docs) for coding agents / LLMs.
+  - llmstxt:
+      markdown_description: >-
+        A generic evaluation framework for skills and agent capabilities, driven by a
+        single declarative eval.yaml — drive any agent harness (Claude Code, OpenCode, Pi, etc),
+        run locally or on the Harbor and EvalHub backends, export rewards for RL training,
+        and record traces, datasets, and reports in MLflow.
+      full_output: llms-full.txt
+      sections:
+        Getting started:
+          - index.md
+          - get-started/*.md
+        Guides:
+          - guides/*.md
+        Concepts:
+          - concepts/*.md
+        Reference:
+          - reference/*.md
+          - reference/config/*.md
+        Cookbook:
+          - cookbook/*.md
+
+extra_css:
+  - stylesheets/extra.css
+  - stylesheets/diagrams.css
+
+extra_javascript:
+  - assets/javascripts/harbor-diagram.js
+  - assets/javascripts/loop-diagram.js
+  - assets/javascripts/toc-rail.js
+  - assets/javascripts/table-wrap.js
+  - assets/javascripts/card-glow.js
+  - assets/javascripts/card-nav.js
+
+extra:
+  # "Was this page helpful?" widget. Ratings are recorded only if an analytics
+  # provider is configured; without one, the widget still renders and the note
+  # (with an issue link) is shown after a click.
+  analytics:
+    feedback:
+      title: Was this page helpful?
+      ratings:
+        - icon: material/thumb-up-outline
+          name: This page was helpful
+          data: 1
+          note: Thanks for the feedback!
+        - icon: material/thumb-down-outline
+          name: This page could be improved
+          data: 0
+          note: >-
+            Thanks — please
+            <a href="https://github.com/opendatahub-io/agent-eval-harness/issues/new" target="_blank" rel="noopener">open an issue</a>
+            so we can improve this page.
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/opendatahub-io/agent-eval-harness
+
+nav:
+  - "Home": index.md
+  - "Get Started":
+    - get-started/index.md
+    - "Installation & setup": get-started/installation.md
+    - "Your first eval (skill mode)": get-started/first-eval.md
+    - "Your first agentic-docs eval": get-started/agentic-docs.md
+    - "Reading the report": get-started/reading-the-report.md
+  - "Guides":
+    - guides/index.md
+    - "The eval pipeline at a glance": guides/pipeline.md
+    - "Skill mode vs prompt mode": guides/skill-vs-prompt.md
+    - "Generate a config (/eval-analyze)": guides/eval-analyze.md
+    - "Build a dataset (/eval-dataset)": guides/eval-dataset.md
+    - "Run an eval (/eval-run)": guides/eval-run.md
+    - "Compare models/runs (/eval-compare)": guides/eval-compare.md
+    - "Analyze variance (/eval-anova)": guides/eval-anova.md
+    - "Review results (/eval-review)": guides/eval-review.md
+    - "Optimize a skill (/eval-optimize)": guides/eval-optimize.md
+    - "Log to MLflow (/eval-mlflow)": guides/eval-mlflow.md
+    - "Health-check the harness (/eval-check)": guides/eval-check.md
+    - "Running headless (tool interception)": guides/headless.md
+    - "Running on Harbor (containers)": guides/harbor.md
+    - "Running on EvalHub": guides/evalhub.md
+    - "CI integration & regression gating": guides/ci.md
+  - "Concepts":
+    - concepts/index.md
+    - "Architecture overview": concepts/architecture.md
+    - "The execution model": concepts/execution-model.md
+    - "Runners (agent runtimes)": concepts/runners.md
+    - "Execution backends": concepts/backends.md
+    - "Datasets & case provenance": concepts/datasets.md
+    - "Judges & scoring": concepts/judges.md
+    - "Pairwise & judge sampling": concepts/pairwise-and-sampling.md
+    - "Analysis of variance (ANOVA)": concepts/anova.md
+    - "Regression thresholds": concepts/thresholds.md
+    - "The Reward API": concepts/reward-api.md
+    - "Tool interception": concepts/tool-interception.md
+    - "Lifecycle hooks": concepts/lifecycle-hooks.md
+    - "MLflow tracing": concepts/tracing.md
+    - "The HTML report": concepts/report.md
+  - "Reference":
+    - reference/index.md
+    - "The eval.yaml schema":
+      - reference/eval-yaml.md
+      - "execution": reference/config/execution.md
+      - "runner": reference/config/runner.md
+      - "models": reference/config/models.md
+      - "mlflow": reference/config/mlflow.md
+      - "dataset": reference/config/dataset.md
+      - "generation": reference/config/generation.md
+      - "inputs.tools": reference/config/inputs-tools.md
+      - "outputs": reference/config/outputs.md
+      - "traces": reference/config/traces.md
+      - "permissions": reference/config/permissions.md
+      - "judges": reference/config/judges.md
+      - "reward": reference/config/reward.md
+      - "thresholds": reference/config/thresholds.md
+      - "hooks": reference/config/hooks.md
+    - "Built-in judges": reference/builtin-judges.md
+    - "Built-in generation prompts": reference/builtin-prompts.md
+    - "CLI & entry points": reference/cli.md
+    - "Runs directory & artifacts": reference/runs-directory.md
+    - "Container images": reference/container-images.md
+    - "Environment variables": reference/environment-variables.md
+    - "Python API": reference/python-api.md
+    - "Glossary": reference/glossary.md
+  - "Cookbook":
+    - cookbook/index.md
+    - "Evaluate a skill (case mode)": cookbook/skill-case.md
+    - "Evaluate a skill (batch mode)": cookbook/skill-batch.md
+    - "Agentic documentation testing": cookbook/agentic-docs.md
+    - "Cross-runner: OpenCode via CLI runner": cookbook/cross-runner-opencode.md
+    - "Reward shaping for RL training": cookbook/reward-rl.md
+    - "Comparing runs with ANOVA": cookbook/anova.md
+    - "Writing your own analysis recipe": cookbook/custom-analysis-recipe.md
+    - "Writing custom judges": cookbook/custom-judges.md

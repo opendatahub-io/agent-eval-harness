@@ -16,6 +16,7 @@ import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
 import argparse
 import importlib
 import json
+import logging
 import os
 import re
 import sys
@@ -29,6 +30,14 @@ from typing import Optional
 import yaml
 
 from agent_eval.config import EvalConfig, _is_valid_eval_name, _validate_path_segment
+
+# Log (don't silently blank) any undefined variable a judge template references.
+_TEMPLATE_LOGGER = logging.getLogger("agent_eval.judge_template")
+if not _TEMPLATE_LOGGER.handlers:
+    _h = logging.StreamHandler(sys.stderr)
+    _h.setFormatter(logging.Formatter("judge-template WARNING: %(message)s"))
+    _TEMPLATE_LOGGER.addHandler(_h)
+    _TEMPLATE_LOGGER.setLevel(logging.WARNING)
 
 
 def _get_runs_dir(eval_name: str = ""):
@@ -550,11 +559,15 @@ def _render_jinja2_template(template_text, arguments, outputs):
     - {{ annotations }} - formatted text (via __str__), also supports
       {{ annotations.get('category') }} / {{ annotations.category }} access
     - {{ annotations_text }} - formatted annotation text for display
-    - {{ conversation }} - root-level assistant text from events
+    - {{ conversation }} - root-level assistant visible text from events
+    - {{ reasoning }} - conversation including extended-thinking
+      (chain-of-thought), for reasoning-quality judges
+    - {{ inputs }} - the case's input.yaml rendered as text
     - {{ tool_trace }} - chronological trace of tool calls (Read, Bash, etc.)
     """
-    from jinja2 import Environment
-    env = Environment()
+    from jinja2 import Environment, Undefined, make_logging_undefined
+    env = Environment(
+        undefined=make_logging_undefined(logger=_TEMPLATE_LOGGER, base=Undefined))
     env.filters["tojson"] = lambda v: json.dumps(v, indent=2, default=str)
 
     out = _OutputsProxy(outputs or {})
@@ -573,11 +586,26 @@ def _render_jinja2_template(template_text, arguments, outputs):
     # still supporting {{ annotations.get('category') }} structured access.
     ann = _AnnotationsProxy(ann_data, ann_text)
 
-    # Pre-render conversation text for {{ conversation }}
+    # Pre-render conversation text for {{ conversation }} (visible text only)
     conversation = out.get("conversation", "")
     if not conversation and out.get("events"):
         from agent_eval.events import extract_conversation_text
         conversation = extract_conversation_text(out["events"])
+
+    # Pre-render reasoning-inclusive conversation for {{ reasoning }}
+    # (chain-of-thought + text). Kept separate from {{ conversation }} so judges
+    # that grade visible output (e.g. safety) aren't fed the model's private CoT.
+    reasoning = out.get("reasoning", "")
+    if not reasoning and out.get("events"):
+        from agent_eval.events import extract_conversation_text
+        reasoning = extract_conversation_text(
+            out["events"], include_thinking=True)
+    # Loud-not-silent: a judge referencing {{ reasoning }} with no event trace
+    # would silently score visible text only. Warn (reasoning needs traces.events).
+    if not out.get("events") and re.search(r"\{\{\s*reasoning\s*\}\}", template_text):
+        _TEMPLATE_LOGGER.warning(
+            "template references {{ reasoning }} but no event trace is available; "
+            "set traces.events: true — reasoning will be empty")
 
     # Pre-render case inputs for {{ inputs }}
     inputs_text = out.get("inputs", "")
@@ -603,6 +631,7 @@ def _render_jinja2_template(template_text, arguments, outputs):
         annotations=ann,  # Formatted text via __str__, .get() for structured access
         annotations_text=ann_text,  # Formatted text for display
         conversation=conversation,
+        reasoning=reasoning,
         inputs=inputs_text,
         evidence=evidence_text,
         tool_trace=tool_trace,

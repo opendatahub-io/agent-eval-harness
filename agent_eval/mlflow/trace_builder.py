@@ -5,7 +5,6 @@ and the standalone claude-trace wrapper.
 """
 
 import json
-import os
 import re
 import sys
 import uuid
@@ -19,6 +18,17 @@ def iso_to_ns(ts_str):
     """Convert ISO 8601 timestamp string to nanoseconds since epoch."""
     from dateutil.parser import parse as _dt_parse
     return int(_dt_parse(ts_str).timestamp() * 1e9)
+
+
+def _clamp_ns(ns, lo, hi):
+    """Clamp a timestamp into [lo, hi].
+
+    Trajectory.json timestamps come from a different clock/source than the
+    stream-json events that define the trace window; without clamping, a
+    clock offset can push a child span (CHAIN/thinking) before the trace
+    start or after the trace end, rendering outside its own parent span.
+    """
+    return max(lo, min(ns, hi))
 
 
 def make_span(trace_id, parent_id, name, span_type, start_ns, end_ns,
@@ -48,21 +58,141 @@ def make_span(trace_id, parent_id, name, span_type, start_ns, end_ns,
     }
 
 
+def _user_text_from_content(content):
+    """Extract plain user text from a stream-json message content field."""
+    if isinstance(content, str) and content.strip():
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for b in content:
+            if isinstance(b, dict) and b.get("type") == "text":
+                text = (b.get("text") or "").strip()
+                if text:
+                    parts.append(text)
+        if parts:
+            return "\n\n".join(parts)
+    return ""
+
+
+_MAX_TOOL_OUTPUT = 4000  # chars per tool result (stream or ATIF-enriched)
+_MAX_WRITE_CONTENT = 4000
+_MAX_EDIT_FRAGMENT = 2000
+_MAX_THINKING = 4000
+
+
+def _load_trajectory_json(trajectory_path):
+    """Load ATIF trajectory.json as a dict, or None."""
+    if trajectory_path is None:
+        return None
+    path = Path(trajectory_path)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _load_trajectory_user_steps(trajectory_path):
+    """Load user steps from a Harbor ATIF trajectory.json (if present).
+
+    Returns a list of ``{"message": str, "timestamp": str|None}``.
+    """
+    data = _load_trajectory_json(trajectory_path)
+    if not data:
+        return []
+    steps = data.get("steps") or []
+    out = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        if step.get("source") != "user":
+            continue
+        msg = step.get("message")
+        if not isinstance(msg, str) or not msg.strip():
+            continue
+        out.append({
+            "message": msg.strip(),
+            "timestamp": step.get("timestamp"),
+        })
+    return out
+
+
+def _load_trajectory_tool_data(trajectory_path):
+    """Index ATIF agent tool_calls and observations by tool id.
+
+    Returns ``(tool_args, tool_results)`` where:
+      - tool_args: tool_call_id -> arguments dict
+      - tool_results: source_call_id -> richer result string
+    """
+    data = _load_trajectory_json(trajectory_path)
+    if not data:
+        return {}, {}
+    tool_args = {}
+    tool_results = {}
+    for step in data.get("steps") or []:
+        if not isinstance(step, dict) or step.get("source") != "agent":
+            continue
+        for call in step.get("tool_calls") or []:
+            if not isinstance(call, dict):
+                continue
+            tuid = call.get("tool_call_id") or ""
+            args = call.get("arguments")
+            if tuid and isinstance(args, dict):
+                tool_args[tuid] = args
+        obs = step.get("observation") or {}
+        if not isinstance(obs, dict):
+            continue
+        for result in obs.get("results") or []:
+            if not isinstance(result, dict):
+                continue
+            tuid = result.get("source_call_id") or ""
+            if not tuid:
+                continue
+            content = result.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            # Prefer observation content (often includes [metadata] JSON
+            # with Write file body) over the short stream-json success line.
+            tool_results[tuid] = content.strip()[:_MAX_TOOL_OUTPUT]
+    return tool_args, tool_results
+
+
+def _load_trajectory_reasoning(trajectory_path):
+    """Ordered list of non-empty ``reasoning_content`` from ATIF agent steps.
+
+    Returns ``[(text, timestamp|None), ...]`` in trajectory step order.
+    """
+    data = _load_trajectory_json(trajectory_path)
+    if not data:
+        return []
+    out = []
+    for step in data.get("steps") or []:
+        if not isinstance(step, dict) or step.get("source") != "agent":
+            continue
+        reasoning = step.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning.strip():
+            out.append((reasoning.strip(), step.get("timestamp")))
+    return out
+
+
 def build_trace(stdout_path, run_result, run_id, experiment_id,
                 trace_name="", subagent_dir=None,
-                subagent_model=None):
+                subagent_model=None, trajectory_path=None):
     """Build a hierarchical MLflow Trace from the stream-json stdout log.
 
     Structure:
       root AGENT
-        ├── LLM (text response)
-        ├── TOOL (single sequential tool call)
-        ├── TASK "N parallel agents" (group of parallel calls)
-        │   ├── AGENT (subagent 1)
-        │   ├── AGENT (subagent 2)
-        │   └── ...
-        ├── LLM (text response)
+        ├── CHAIN user (skill invoke / instructions; from trajectory or stream)
+        ├── AGENT step
+        │   ├── LLM thinking
+        │   ├── TOOL ...
+        │   └── LLM response
         └── ...
+
+    Harbor runs often omit user text from stream-json; pass ``trajectory_path``
+    (ATIF ``trajectory.json``) to restore user turns and the root prompt.
 
     Returns a dict suitable for Trace.from_dict(), or None.
     """
@@ -86,29 +216,37 @@ def build_trace(stdout_path, run_result, run_id, experiment_id,
     session_id = None
     prompt = ""
     final_response = ""
+    stream_user_turns = []
 
     for e in events:
         if not session_id:
             session_id = e.get("session_id")
 
     # Prompt: prefer first user text message (the skill invocation).
-    # Fall back to first assistant text if no user text is found
-    # (older runs without the synthetic prompt event).
+    # Harbor stream-json often has only tool_result user events — then fall
+    # back to trajectory.json user steps, then first assistant text.
     for e in events:
-        if e.get("type") == "user":
-            content = e.get("message", {}).get("content", "")
-            if isinstance(content, str) and content.strip():
-                prompt = content.strip()
-                break
-            elif isinstance(content, list):
-                for b in content:
-                    if isinstance(b, dict) and b.get("type") == "text":
-                        text = b.get("text", "").strip()
-                        if text:
-                            prompt = text
-                            break
-                if prompt:
-                    break
+        if e.get("type") != "user":
+            continue
+        text = _user_text_from_content(e.get("message", {}).get("content", ""))
+        if text:
+            stream_user_turns.append({
+                "message": text,
+                "timestamp": e.get("timestamp"),
+            })
+            if not prompt:
+                prompt = text
+
+    traj_user_turns = _load_trajectory_user_steps(trajectory_path)
+    if traj_user_turns:
+        # Trajectory is the richer Harbor source of truth for user turns.
+        # Always derive prompt from it here too, so the root span's prompt
+        # attribute and the "user:" CHAIN spans agree on the same source.
+        prompt = "\n\n".join(t["message"] for t in traj_user_turns)
+        user_turns_for_spans = traj_user_turns
+    else:
+        user_turns_for_spans = stream_user_turns
+
     if not prompt:
         for e in events:
             if e.get("type") == "assistant":
@@ -133,10 +271,13 @@ def build_trace(stdout_path, run_result, run_id, experiment_id,
             if final_response:
                 break
 
+    # ATIF trajectory tool args / richer observations (Harbor).
+    traj_tool_args, traj_tool_results = _load_trajectory_tool_data(
+        trajectory_path)
+
     # ── Build tool_result timestamp and content lookups ─────────
     tool_result_ns = {}  # tool_use_id -> timestamp_ns
     tool_result_content = {}  # tool_use_id -> truncated output string
-    _MAX_TOOL_OUTPUT = 500  # chars per tool result
     for e in events:
         if e.get("type") != "user":
             continue
@@ -165,6 +306,12 @@ def build_trace(stdout_path, run_result, run_id, experiment_id,
                         if text:
                             tool_result_content[tuid] = (
                                 text[:_MAX_TOOL_OUTPUT])
+
+    # Prefer richer ATIF observation text when available.
+    for tuid, text in traj_tool_results.items():
+        existing = tool_result_content.get(tuid, "")
+        if len(text) > len(existing):
+            tool_result_content[tuid] = text
 
     # ── Override timestamps for background agents ───────────────
     # Background agents return an immediate "async launched" tool_result,
@@ -395,7 +542,11 @@ def build_trace(stdout_path, run_result, run_id, experiment_id,
             for b in content:
                 if not isinstance(b, dict):
                     continue
-                if b.get("type") == "text" and b.get("text", "").strip():
+                if b.get("type") == "thinking" and (b.get("thinking") or "").strip():
+                    _flush_batch()
+                    segments.append(("thinking", b["thinking"].strip(),
+                                     e.get("timestamp"), None))
+                elif b.get("type") == "text" and b.get("text", "").strip():
                     _flush_batch()
                     context = "; ".join(_recent_tools) if _recent_tools else ""
                     segments.append(("llm", b["text"].strip(),
@@ -414,6 +565,27 @@ def build_trace(stdout_path, run_result, run_id, experiment_id,
                         b.get("input", {}),
                     ))
     _flush_batch()
+
+    # Backfill thinking from ATIF reasoning_content when the stream has none
+    # at all (e.g. Harbor runs where extended thinking wasn't captured in
+    # stream-json). Only applies when the stream is fully silent on thinking,
+    # so it never second-guesses/conflicts with real per-turn stream data.
+    if not any(seg_type == "thinking" for seg_type, *_ in segments):
+        traj_reasoning = _load_trajectory_reasoning(trajectory_path)
+        if traj_reasoning:
+            reasoning_iter = iter(traj_reasoning)
+            backfilled = []
+            for seg in segments:
+                if seg[0] == "llm":
+                    reasoning = next(reasoning_iter, None)
+                    if reasoning:
+                        text, _ts = reasoning
+                        # Use the llm segment's own timestamp so the
+                        # synthetic thinking lands right before its turn,
+                        # matching natural stream ordering.
+                        backfilled.append(("thinking", text, seg[2], None))
+                backfilled.append(seg)
+            segments = backfilled
 
     # ── Derive timing from event timestamps ─────────────────────
     all_event_ts = [iso_to_ns(e["timestamp"])
@@ -477,8 +649,28 @@ def build_trace(stdout_path, run_result, run_id, experiment_id,
         "attributes": root_attrs,
     }]
 
+    # User turns as CHAIN spans under root (visible in the MLflow graph).
+    user_cursor = trace_start
+    for idx, turn in enumerate(user_turns_for_spans):
+        ts = turn.get("timestamp")
+        start_ns = iso_to_ns(ts) if ts else user_cursor
+        start_ns = _clamp_ns(start_ns, trace_start, trace_end)
+        end_ns = _clamp_ns(start_ns + int(0.1e9), trace_start, trace_end)
+        user_cursor = end_ns
+        msg = turn["message"]
+        first_line = msg.split("\n")[0].strip()[:80] or f"user-{idx + 1}"
+        spans.append(make_span(
+            trace_id, root_span_id,
+            name=f"user: {first_line}",
+            span_type="CHAIN",
+            start_ns=start_ns,
+            end_ns=end_ns,
+            inputs={"role": "user", "turn": idx + 1},
+            outputs={"message": msg},
+        ))
+
     # ── Group segments into agent steps ───────────────────────────
-    # Each step = one LLM reasoning output + the tool actions it triggered.
+    # Each step = optional thinking + one LLM text output + tool actions.
     # Steps are direct children of root; tools are nested inside steps.
     #
     # Segments before the first LLM text (e.g. initial tool calls from
@@ -498,11 +690,20 @@ def build_trace(stdout_path, run_result, run_id, experiment_id,
         re.IGNORECASE,
     )
 
-    steps = []  # list of (llm_text, llm_ts, llm_context, [batch_segments])
+    # list of (llm_text, llm_ts, llm_context, [batch_segments], [thinkings])
+    # thinkings: list of (text, timestamp)
+    steps = []
     current_llm = None
     current_ts = None
     current_context = []
     current_batches = []
+    current_thinkings = []
+    # Thinking precedes its own turn's "llm" text segment in stream order, so
+    # it can't be appended to current_thinkings directly: _flush_step() fires
+    # on the *next* llm segment, which would close out the *previous* step
+    # bundled with thinking that actually belongs to the incoming turn. Stash
+    # it here until the matching llm segment arrives and claims it.
+    pending_thinkings = []
     # Track whether the current step launched background agents
     _has_bg_agents = False
 
@@ -511,36 +712,67 @@ def build_trace(stdout_path, run_result, run_id, experiment_id,
         first_line = text.split("\n")[0].strip()
         return bool(_STATUS_RE.match(first_line) or _WAITING_RE.search(first_line))
 
+    def _flush_step():
+        nonlocal current_llm, current_ts, current_context, current_batches
+        nonlocal current_thinkings, _has_bg_agents
+        if current_llm is not None or current_batches or current_thinkings:
+            steps.append((current_llm, current_ts, current_context,
+                          current_batches, current_thinkings))
+            # Reset all step fields so a subsequent thinking→tool (no text)
+            # turn cannot reuse the previous step's llm text.
+            current_llm = None
+            current_ts = None
+            current_context = []
+            current_batches = []
+            current_thinkings = []
+            _has_bg_agents = False
+
     for seg_type, seg_data, *rest in segments:
-        if seg_type == "llm":
+        if seg_type == "thinking":
+            pending_thinkings.append((seg_data, rest[0] if rest else None))
+        elif seg_type == "llm":
             if _has_bg_agents and _is_status_update(seg_data):
-                # Merge status update into the current dispatch step
+                # Merge status update (and any thinking ahead of it) into the
+                # current dispatch step rather than starting a new one.
+                current_thinkings.extend(pending_thinkings)
+                pending_thinkings = []
                 continue
             # Save previous step
-            if current_llm is not None or current_batches:
-                steps.append((current_llm, current_ts, current_context,
-                              current_batches))
-                current_batches = []
-                _has_bg_agents = False
+            _flush_step()
             current_llm = seg_data
             current_ts = rest[0] if rest else None
             current_context = rest[1] if len(rest) > 1 else []
+            # Pending thinking belongs to *this* turn's step, not the one
+            # just flushed.
+            current_thinkings = pending_thinkings
+            pending_thinkings = []
         elif seg_type == "batch":
+            if pending_thinkings:
+                # If we have pending thinking but no llm segment arrived before
+                # the batch (e.g. a tool-only turn), flush the previous step
+                # and attach the thinking to the new step that will own this batch.
+                _flush_step()
+                current_thinkings = pending_thinkings
+                pending_thinkings = []
             current_batches.append(seg_data)
             # Detect if this batch contains Agent calls (potential bg agents)
             if any(name == "Agent" for _, _, name, _ in seg_data):
                 _has_bg_agents = True
-    # Flush final step
-    if current_llm is not None or current_batches:
-        steps.append((current_llm, current_ts, current_context,
-                      current_batches))
+    # Any trailing thinking with no following turn belongs to the last step.
+    current_thinkings.extend(pending_thinkings)
+    _flush_step()
 
     # ── Build spans from steps ──────────────────────────────────
     cursor_ns = trace_start
 
-    for step_idx, (llm_text, llm_ts, llm_context, batches) in enumerate(steps):
+    for step_idx, (llm_text, llm_ts, llm_context, batches, thinkings) in enumerate(steps):
         # Compute step timing from its children
-        step_start = iso_to_ns(llm_ts) if llm_ts else cursor_ns
+        if llm_ts:
+            step_start = iso_to_ns(llm_ts)
+        elif thinkings and thinkings[0][1]:
+            step_start = iso_to_ns(thinkings[0][1])
+        else:
+            step_start = cursor_ns
         step_end = step_start
 
         # Pre-compute batch timing to find step_end
@@ -567,24 +799,65 @@ def build_trace(stdout_path, run_result, run_id, experiment_id,
         if step_end <= step_start:
             step_end = step_start + int(1e9)
 
-        # Step label from first line of LLM text
+        # Include thinking timestamps in step window
+        for think_text, think_ts in thinkings:
+            if think_ts:
+                t_ns = iso_to_ns(think_ts)
+                step_start = min(step_start, t_ns) if step_start else t_ns
+                step_end = max(step_end, t_ns + int(0.5e9))
+
+        # Step label from first line of LLM text (or thinking / Setup)
         if llm_text:
             first_line = llm_text.split("\n")[0].strip()
             # Strip markdown headers
             step_name = first_line.lstrip("#").strip()[:80]
+        elif thinkings:
+            step_name = thinkings[0][0].split("\n")[0].strip()[:80] or "thinking"
         else:
             step_name = "Setup"
 
+        step_tool_names = []
+        for _, _, batch, _ in batch_timings:
+            for _, _, name, _ in batch:
+                step_tool_names.append(name)
+        step_inputs = {"step": step_idx + 1}
+        if step_tool_names:
+            step_inputs["tools"] = step_tool_names
+        step_outputs = {}
+        if llm_text:
+            step_outputs["text"] = llm_text
+        if thinkings:
+            step_outputs["thinking"] = thinkings[0][0][:_MAX_THINKING]
         step_span = make_span(
             trace_id, root_span_id,
             name=step_name,
             span_type="AGENT",
             start_ns=step_start,
             end_ns=step_end,
-            inputs={"step": step_idx + 1},
+            inputs=step_inputs,
+            outputs=step_outputs or None,
         )
         step_span_id = step_span["span_id"]
         spans.append(step_span)
+
+        # Thinking spans (extended thinking / reasoning_content)
+        think_cursor = step_start
+        for think_text, think_ts in thinkings:
+            t_start = iso_to_ns(think_ts) if think_ts else think_cursor
+            t_start = _clamp_ns(t_start, trace_start, trace_end)
+            t_end = _clamp_ns(t_start + int(0.5e9), trace_start, trace_end)
+            think_cursor = t_end
+            spans.append(make_span(
+                trace_id, step_span_id,
+                name="thinking",
+                span_type="LLM",
+                start_ns=t_start,
+                end_ns=t_end,
+                inputs={"model": model, "kind": "thinking"},
+                outputs={"thinking": think_text[:_MAX_THINKING]},
+                extra_attrs=({"mlflow.llm.model": json.dumps(model)}
+                             if model else None),
+            ))
 
         # LLM span inside the step
         if llm_text:
@@ -633,6 +906,20 @@ def build_trace(stdout_path, run_result, run_id, experiment_id,
             for (_, tuid, name, inp), end_ns in zip(batch, batch_ends):
                 child_end = end_ns if end_ns else b_end
                 span_type = "AGENT" if name == "Agent" else "TOOL"
+                # Merge richer ATIF tool arguments when stream input is thin.
+                merged_inp = inp if isinstance(inp, dict) else {}
+                traj_args = traj_tool_args.get(tuid)
+                if isinstance(traj_args, dict):
+                    merged_inp = {**traj_args, **merged_inp}
+                    # Prefer traj values that stream omitted or left empty.
+                    for k, v in traj_args.items():
+                        if k not in merged_inp or merged_inp.get(k) in (
+                                None, "", {}, []):
+                            merged_inp[k] = v
+                        elif (isinstance(v, str) and isinstance(
+                                merged_inp.get(k), str)
+                              and len(v) > len(merged_inp[k])):
+                            merged_inp[k] = v
                 # Include tool result content as span output
                 tool_output = None
                 if tuid in tool_result_content:
@@ -643,7 +930,7 @@ def build_trace(stdout_path, run_result, run_id, experiment_id,
                     span_type=span_type,
                     start_ns=b_start,
                     end_ns=child_end,
-                    inputs=summarize_tool_input(name, inp),
+                    inputs=summarize_tool_input(name, merged_inp),
                     outputs=tool_output,
                 )
                 spans.append(tool_span)
@@ -834,11 +1121,32 @@ def build_trace(stdout_path, run_result, run_id, experiment_id,
 
 
 def summarize_tool_input(tool_name, tool_input):
-    """One-line summary of a tool call for span display."""
+    """Compact tool-call payload for span display (keeps file bodies)."""
+    tool_input = tool_input if isinstance(tool_input, dict) else {}
     if tool_name == "Bash":
         return {"command": tool_input.get("command", "")[:200]}
-    elif tool_name in ("Write", "Edit", "Read"):
-        return {"file_path": tool_input.get("file_path", "")}
+    elif tool_name == "Write":
+        out = {"file_path": tool_input.get("file_path", "")}
+        content = tool_input.get("content")
+        if isinstance(content, str) and content:
+            out["content"] = content[:_MAX_WRITE_CONTENT]
+        return out
+    elif tool_name == "Edit":
+        out = {"file_path": tool_input.get("file_path", "")}
+        old = tool_input.get("old_string")
+        new = tool_input.get("new_string")
+        if isinstance(old, str) and old:
+            out["old_string"] = old[:_MAX_EDIT_FRAGMENT]
+        if isinstance(new, str) and new:
+            out["new_string"] = new[:_MAX_EDIT_FRAGMENT]
+        return out
+    elif tool_name == "Read":
+        out = {"file_path": tool_input.get("file_path", "")}
+        if tool_input.get("offset") is not None:
+            out["offset"] = tool_input.get("offset")
+        if tool_input.get("limit") is not None:
+            out["limit"] = tool_input.get("limit")
+        return out
     elif tool_name == "Agent":
         return {"description": tool_input.get("description", "")}
     elif tool_name == "Skill":
@@ -861,7 +1169,6 @@ def log_trace(trace_dict):
     becomes available, this should be updated.
     """
     try:
-        import mlflow
         from mlflow import MlflowClient
         from mlflow.entities.trace import Trace
 

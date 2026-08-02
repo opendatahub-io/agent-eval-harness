@@ -1,0 +1,7 @@
+{
+  "condition_id": "sonnet-cognee",
+  "levels": {
+    "model": "claude-sonnet-4-6",
+    "context": "cognee"
+  }
+}

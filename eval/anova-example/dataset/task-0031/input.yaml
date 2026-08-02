@@ -1,0 +1,21 @@
+prompt: "# fix(maas-api): use ExternalModel name as model ID in GET /v1/models [RHOAIENG-63297]\n\
+  \nWhen a MaaSModelRef references an ExternalModel, the GET /v1/models\ncatalog endpoint\
+  \ was returning the MaaSModelRef resource name as the\nmodel ID. Inference endpoints\
+  \ (/v1/chat/completions) require the\nExternalModel CR name in the request body,\
+  \ so clients copying the ID\nfrom the catalog would get mismatched or failed requests.\n\
+  \nThe root cause is that ExternalModel-backed refs skip the backend\n/v1/models\
+  \ probe (since external providers need the provider API key,\nnot the user's MaaS\
+  \ token), so unlike LLMInferenceService models, their\nID was never corrected by\
+  \ discoveredToModels.\n\nThe fix reads spec.modelRef.name from the MaaSModelRef\
+  \ and uses it as\nthe model ID when spec.modelRef.kind is ExternalModel. OwnedBy\
+  \ still\nuses the MaaSModelRef name for dashboard display and deduplication.\n\n\
+  Closes [RHOAIENG-63297](https://redhat.atlassian.net/browse/RHOAIENG-63297)\n\n\
+  Co-Authored-By: Claude <noreply@anthropic.com>\nSigned-off-by: Jamie Land <jland@redhat.com>\n\
+  \n<!-- This is an auto-generated comment: release notes by coderabbit.ai -->\n\n\
+  ## Summary by CodeRabbit\n\n## Release Notes\n\n* **Bug Fixes**\n  * External models\
+  \ in API responses now use their reference identifiers instead of resource names,\
+  \ ensuring consistency with inference endpoint expectations.\n\n* **Tests**\n  *\
+  \ Added comprehensive test coverage for external model identifier resolution, validating\
+  \ correct API response structure and values.\n\n<!-- end of auto-generated comment:\
+  \ release notes by coderabbit.ai -->\n\n## Files involved\n- `maas-api/internal/handlers/models_test.go`\n\
+  - `maas-api/internal/models/maasmodelref.go`\n"
