@@ -458,7 +458,72 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
         except (yaml.YAMLError, OSError):
             record["hook_outputs"] = {}
 
+    # --- Per-step sub-records (multi-step execution) ---
+    # For a step-scoped judge (JudgeConfig.step), expose each step's own
+    # conversation/events/metrics parsed from cases/<id>/steps/<step-id>/.
+    # Files/annotations stay whole-case (steps share the workspace).
+    record["steps"] = {}
+    steps_root = case_dir / "steps"
+    if steps_root.is_dir():
+        from agent_eval.events import (
+            extract_conversation_text, parse_stream_events)
+        step_metrics = {}
+        if run_id and config.traces.metrics:
+            rr = runs_dir / run_id / "run_result.json"
+            if rr.exists():
+                try:
+                    with open(rr) as f:
+                        meta = json.load(f)
+                    step_metrics = ((meta.get("per_case", {}).get(case_id, {})
+                                     or {}).get("steps", {}) or {})
+                except (json.JSONDecodeError, OSError):
+                    pass
+        for step_dir in sorted(steps_root.iterdir()):
+            if not step_dir.is_dir():
+                continue
+            sid = step_dir.name
+            sub = {}
+            stdout_p = step_dir / "stdout.log"
+            events = []
+            raw = ""
+            if stdout_p.exists():
+                try:
+                    raw = stdout_p.read_text(encoding="utf-8", errors="replace")
+                    events = parse_stream_events(raw)
+                except (OSError, ValueError):
+                    events = []
+            sub["events"] = events
+            sub["conversation"] = (extract_conversation_text(events)
+                                   if events else raw)
+            for k, v in (step_metrics.get(sid, {}) or {}).items():
+                if k in ("exit_code", "duration_s", "cost_usd",
+                         "num_turns", "token_usage"):
+                    sub[k] = v
+            record["steps"][sid] = sub
+
     return record
+
+
+def _step_scoped_record(record, step_id):
+    """A view of the case record scoped to one execution step.
+
+    Overrides the trace/metric keys with the step's own values — so
+    ``{{ conversation }}``, ``{{ tool_trace }}``, ``{{ reasoning }}``,
+    ``exit_code``, ``cost_usd`` resolve to that step — while keeping the shared
+    ``files``/``annotations``/``inputs``.  Falls back to the whole-case record
+    if the step has no sub-record.
+    """
+    sub = (record.get("steps") or {}).get(step_id)
+    if not sub:
+        return record
+    scoped = dict(record)
+    for k in ("events", "conversation", "exit_code", "duration_s",
+              "cost_usd", "num_turns", "token_usage"):
+        if k in sub:
+            scoped[k] = sub[k]
+    scoped.pop("evidence", None)  # re-derive from the step's events
+    scoped["_scoped_step"] = step_id
+    return scoped
 
 
 def _extract_tool_calls_from_events(events, tool_outputs):
@@ -1038,17 +1103,23 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
     lock = threading.Lock()
     completed = 0
 
+    # Judges may scope to a single execution step (JudgeConfig.step).
+    judge_steps = {jc.name: jc.step for jc in config.judges if jc.step}
+
     def _score_case(case_dir):
         case_id = case_dir.name
         record = load_case_record(case_dir, config, run_id=run_id)
         case_results = {}
         for name, scorer, condition, judge_type, judge_samples in judges:
+            # Step-scoped judges see that step's trace; others the whole case.
+            rec = (_step_scoped_record(record, judge_steps[name])
+                   if name in judge_steps else record)
             # Check condition — skip if it evaluates to False
             if condition:
                 try:
-                    annotations = record.get("annotations", {})
+                    annotations = rec.get("annotations", {})
                     if not eval(condition, {"__builtins__": {}},
-                                {"annotations": annotations, "outputs": record}):
+                                {"annotations": annotations, "outputs": rec}):
                         case_results[name] = {
                             "value": None,
                             "rationale": f"Skipped: condition '{condition}' is false",
@@ -1075,18 +1146,22 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
                     runs = []
                     for _ in range(n):
                         try:
-                            v, rat = _normalize_result(scorer(outputs=record))
+                            v, rat = _normalize_result(scorer(outputs=rec))
                             runs.append({"value": v, "rationale": rat})
                         except Exception as e:
                             runs.append({"value": None, "error": str(e)})
                     case_results[name] = _aggregate_samples(runs, judge_type)
                 else:
-                    v, rat = _normalize_result(scorer(outputs=record))
+                    v, rat = _normalize_result(scorer(outputs=rec))
                     case_results[name] = {"value": v, "rationale": rat,
                                           "judge_type": judge_type}
             except Exception as e:
                 case_results[name] = {"value": None, "error": str(e),
                                       "judge_type": judge_type}
+        # Annotate step-scoped judges so the summary/report shows the step.
+        for jn, sid in judge_steps.items():
+            if isinstance(case_results.get(jn), dict):
+                case_results[jn].setdefault("step", sid)
         return case_id, case_results
 
     with ThreadPoolExecutor(max_workers=parallelism) as pool:
