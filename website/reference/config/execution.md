@@ -29,6 +29,7 @@ execution:
 | `max_budget_usd` | float \| null | `null` → **100.0** | Per-invocation cost cap. |
 | `parallelism` | int \| null | `null` → **1** | Max concurrent case executions (case mode only). |
 | `env` | map | `{}` | Env vars injected into each workspace's `.claude/settings.json`. See [env](#injecting-environment-variables). |
+| `steps` | list | `[]` | Multi-step pipeline — sequential agent invocations sharing the case workspace. Replaces `skill`/`prompt`. See [Multi-step pipelines](#multi-step-pipelines). |
 
 !!! note "Nulls become harness defaults"
     `timeout`, `max_budget_usd`, and `parallelism` are optional in the config (`None`).
@@ -126,6 +127,73 @@ placeholder styles. The style is **auto-detected**: if the template contains `{{
 !!! warning "Don't mix the two styles"
     A template with any `{{ … }}` is treated as Jinja2 in full — bare `{field}` braces in
     the same string are **not** substituted. Pick one style per template.
+
+## Multi-step pipelines
+
+Some skills form a **pipeline** — e.g. `create → refine → review`. Set `execution.steps`
+to run several agent invocations per case, sequentially, in the **same workspace**.
+`steps` replaces `skill`/`prompt` and is **case-mode only**.
+
+```yaml
+execution:
+  mode: case
+  steps:
+    - id: refine                # required: unique; identifies the step
+      skill: strategy-refine    # skill xor prompt, per step
+      arguments: "STRAT-{{ input.id }}"
+      env: { JIRA_TOKEN: $JIRA_TOKEN }   # merged over execution.env (step wins)
+      timeout: 1800             # optional; falls back to execution.timeout
+      max_budget_usd: 5.0       # optional; falls back to execution.max_budget_usd
+      runner: { type: claude-code, effort: high }   # optional per-step override
+    - id: review
+      skill: strategy-review
+      arguments: "{{ steps.refine.output }}"   # ← reference an earlier step
+```
+
+| Step field | Notes |
+| --- | --- |
+| `id` | Required, unique. Names the step for `{{ steps.<id> }}`, judge `step:`, and the Harbor step. |
+| `skill` / `prompt` | One per step (mutually exclusive), same meaning as the top-level fields. |
+| `arguments` | Resolved per step (see below). |
+| `env` | Merged over `execution.env` (step wins); `$VAR` resolved from the caller. |
+| `timeout`, `max_budget_usd`, `runner` | Optional per-step overrides; fall back to the `execution`/top-level defaults. |
+| `on_failure` | `fail` (default — abort the remaining steps) or `continue`. |
+
+**State passes through the shared workspace.** Every step runs in the same per-case
+working directory, so files written by one step are visible to the next — the same model
+[Harbor](../../guides/harbor.md) uses. Steps start a **fresh agent conversation** (no
+carried context).
+
+**Referencing an earlier step.** A step's `arguments`/`prompt` may use a `{{ steps.<id> }}`
+namespace in addition to `{{ input }}`:
+
+- `{{ steps.<id>.output }}` — that step's final assistant message,
+- `{{ steps.<id>.exit_code }}`, `{{ steps.<id>.files }}`.
+
+**Shell work around steps** uses [hooks](hooks.md), not a step type: `before_each`/
+`after_each` wrap the whole case; the `before_step`/`after_step` phases wrap each step
+(with `STEP_ID`/`STEP_INDEX` in the hook env, so a global hook can target one step via
+its `condition`).
+
+**Scoring.** By default judges score the whole case (the final step's workspace). Add
+`step: <id>` to a judge to scope it to that step's own trace
+(`{{ conversation }}`/`{{ tool_trace }}`), while shared files stay whole-case:
+
+```yaml
+judges:
+  - name: refine_grounding
+    step: refine              # scored against the refine step's trace
+    prompt_file: eval/prompts/grounding.md
+  - name: feasibility        # whole case (final workspace)
+    prompt_file: eval/prompts/feasibility.md
+```
+
+!!! note "Harbor round-trip"
+    `execution.steps` generates a schema 1.4 `[[steps]]` Harbor task (one verifier per
+    step; whole-case judges run on the final step). Two things are **local-only**:
+    `after_step` hooks, and `{{ steps.<id> }}` argument references — on Harbor, steps share
+    state through the filesystem, so pass data between them via files rather than
+    `{{ steps.output }}` (a `{{ steps.* }}` reference fails Harbor task generation).
 
 ## Injecting environment variables
 
