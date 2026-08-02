@@ -31,6 +31,7 @@ at a known path and staged into the workspace by the image's entrypoint or
 ``[environment].workdir`` setup — not by the agent.
 """
 
+import json
 import shutil
 from pathlib import Path
 
@@ -47,6 +48,11 @@ def _render(template_name: str, mapping: dict) -> str:
     for key, value in mapping.items():
         text = text.replace(f"@@{key}@@", str(value))
     return text
+
+
+def _toml_string(value: object) -> str:
+    """Serialize a value as a TOML-compatible basic string."""
+    return json.dumps(str(value), ensure_ascii=False)
 
 
 def _find_input_file(case_dir: Path):
@@ -146,7 +152,9 @@ def generate_tasks(
         # task.toml
         (task_dir / "task.toml").write_text(_render("task.toml.tmpl", {
             "TASK_NAME": f"{config.name or 'eval'}/{case_id}",
-            "TASK_DESC": (config.description or config.name or "agent-eval task")[:120],
+            "TASK_DESC": _toml_string(
+                (config.description or config.name or "agent-eval task")[:120]
+            ),
             "EVAL_NAME": config.name,
             "CASE_ID": case_id,
             "IMAGE": image,

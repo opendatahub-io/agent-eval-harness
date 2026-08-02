@@ -4,6 +4,8 @@ Verifies that dataset cases become self-contained Harbor task packages with a
 resolved per-case command, the verifier wiring, and a sanitized bundled config.
 """
 
+import tomllib
+
 import yaml
 
 from agent_eval.config import EvalConfig
@@ -17,7 +19,7 @@ def test_resolve_arguments_required_and_optional():
         '--headless --dry-run "do X" --p Critical'
 
 
-def _make_eval(tmp_path):
+def _make_eval(tmp_path, *, description=None):
     cases = tmp_path / "cases"
     (cases / "case-001").mkdir(parents=True)
     (cases / "case-001" / "input.yaml").write_text(
@@ -34,6 +36,8 @@ def _make_eval(tmp_path):
         "judges": [{"name": "files_exist", "check": "return (True, 'ok')\n"}],
         "models": {"judge": "claude-opus-4-6"},
     }
+    if description is not None:
+        raw["description"] = description
     cfg_path = tmp_path / "eval.yaml"
     cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
     return cfg_path, EvalConfig.from_yaml(cfg_path)
@@ -87,3 +91,14 @@ def test_generate_tasks_case_subset(tmp_path):
     assert len(tasks) == 1
     assert tasks[0].name == "case-002"
     assert not (out / "case-001").exists()
+
+
+def test_generate_tasks_escapes_multiline_description_for_toml(tmp_path):
+    description = 'Line one\nLine "two" uses \\ a path'
+    cfg_path, config = _make_eval(tmp_path, description=description)
+    out = tmp_path / "harbor-tasks"
+
+    gen.generate_tasks(config, cfg_path, out, image="img:latest")
+
+    task = tomllib.loads((out / "case-001" / "task.toml").read_text())
+    assert task["task"]["description"] == description
