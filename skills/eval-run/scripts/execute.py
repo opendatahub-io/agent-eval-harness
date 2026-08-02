@@ -21,6 +21,7 @@ Usage:
 import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
 
 import argparse
+import copy
 import json
 import os
 import shutil
@@ -214,13 +215,16 @@ def main():
 
     # Determine if prompt mode (execution.prompt is set)
     is_prompt_mode = config.is_prompt_mode()
+    # Multi-step: execution.steps drives per-step targets; no single skill.
+    is_multi_step = bool(config.execution.steps)
 
-    # Resolve target (skill name or None for prompt mode)
+    # Resolve target (skill name or None for prompt/multi-step mode)
     # Priority: CLI --skill > config (execution.skill → top-level skill)
     target = args.skill or config.resolve_skill()
 
-    # For prompt mode, force target=None (direct prompt execution, no skill wrapper)
-    if is_prompt_mode:
+    # For prompt or multi-step mode, force target=None (the executor resolves
+    # per-step targets); otherwise a skill is required.
+    if is_prompt_mode or is_multi_step:
         target = None
     elif not target:
         # Not prompt mode and no skill specified
@@ -248,7 +252,9 @@ def main():
     # Resolve skill args: CLI override > config > empty
     # Treat empty/whitespace-only strings as unset (normalize before fallback)
     # For prompt mode, use execution.prompt; for skill mode, use execution.arguments
-    if is_prompt_mode:
+    if is_multi_step:
+        skill_args = ""  # per-step arguments are resolved in the step loop
+    elif is_prompt_mode:
         skill_args = (args.skill_args or "").strip() or config.execution.prompt
     else:
         skill_args = (args.skill_args or "").strip() or config.execution.arguments
@@ -394,8 +400,12 @@ def main():
                            phase_name="after_all")
 
 
-def _resolve_arguments(template, case_data):
+def _resolve_arguments(template, case_data, steps=None):
     """Resolve {field} or {{ field }} placeholders from case input data.
+
+    ``steps`` (optional) binds the ``{{ steps.<id>.* }}`` namespace for
+    multi-step execution — the accumulated results of earlier steps in the
+    same case (Jinja2 syntax only).
 
     Supports two template syntaxes:
     - Simple: {field} or {field?} for optional fields
@@ -433,8 +443,8 @@ def _resolve_arguments(template, case_data):
             # Genuinely optional fields should use {{ input.get('x', '') }}
             # or the `| default('')` filter.
             jinja_template = Template(template, undefined=StrictUndefined)
-            # Render with input.* namespace for Jinja2 templates
-            result = jinja_template.render(input=case_data)
+            # Render with input.* (and steps.* for multi-step) namespaces.
+            result = jinja_template.render(input=case_data, steps=steps or {})
             return result.strip()
         except UndefinedError as e:
             raise ValueError(
@@ -496,6 +506,105 @@ def _build_eval_params(args, config, skill_args, max_budget, timeout_s, effort=N
     if getattr(args, "mlflow_experiment", None):
         params["mlflow_experiment"] = args.mlflow_experiment
     return params
+
+
+def _resolve_step_env(env):
+    """Resolve a step's env dict, expanding ``$VAR`` from the caller's
+    environment (mirrors ExecutionConfig.env semantics). Missing vars omitted."""
+    out = {}
+    for k, v in (env or {}).items():
+        if isinstance(v, str) and v.startswith("$"):
+            val = os.environ.get(v[1:])
+            if val is not None:
+                out[k] = val
+        elif v is not None:
+            out[k] = str(v)
+    return out
+
+
+def _extract_last_assistant_text(stdout, limit=4000):
+    """Best-effort final assistant message from a run's stdout, for the
+    ``{{ steps.<id>.output }}`` template var. Parses claude-code stream-json;
+    falls back to the raw stdout tail for other runners."""
+    if not stdout:
+        return ""
+    texts = []
+    saw_json = False
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not (line.startswith("{") and line.endswith("}")):
+            continue
+        try:
+            obj = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        saw_json = True
+        if obj.get("type") == "result" and isinstance(obj.get("result"), str):
+            texts.append(obj["result"])
+        elif obj.get("type") == "assistant" and not obj.get("parent_tool_use_id"):
+            msg = obj.get("message") or {}
+            for block in (msg.get("content") or []):
+                if isinstance(block, dict) and block.get("type") == "text":
+                    if (block.get("text") or "").strip():
+                        texts.append(block["text"])
+    text = (texts[-1] if texts else ("" if saw_json else stdout)).strip()
+    return text[:limit]
+
+
+def _list_step_output_files(case_ws, config):
+    """Relative paths of files under the configured output dirs after a step
+    (best-effort, for ``{{ steps.<id>.files }}``)."""
+    paths = []
+    for o in (getattr(config, "outputs", None) or []):
+        p = o.get("path") if isinstance(o, dict) else getattr(o, "path", None)
+        if p:
+            paths.append(p)
+    if not paths:
+        paths = ["output"]
+    files = []
+    for rel in paths:
+        base = case_ws / rel
+        if base.is_dir():
+            for f in sorted(base.rglob("*")):
+                if f.is_file() and not f.is_symlink():
+                    try:
+                        files.append(str(f.relative_to(case_ws)))
+                    except ValueError:
+                        pass
+    return files
+
+
+def _aggregate_step_metrics(step_metrics):
+    """Roll per-step RunResult dicts up into one case-level result dict."""
+    results = list(step_metrics.values())
+    agg_tokens = {}
+    for r in results:
+        for k, v in (r.get("token_usage") or {}).items():
+            if isinstance(v, (int, float)):
+                agg_tokens[k] = agg_tokens.get(k, 0) + v
+    agg_pm = {}
+    for r in results:
+        for m, stats in (r.get("per_model_usage") or {}).items():
+            agg_pm.setdefault(m, {})
+            for k, v in (stats or {}).items():
+                if isinstance(v, (int, float)):
+                    agg_pm[m][k] = agg_pm[m].get(k, 0) + v
+    agg_pmt = {}
+    for r in results:
+        for m, t in (r.get("per_model_turns") or {}).items():
+            if isinstance(t, (int, float)):
+                agg_pmt[m] = agg_pmt.get(m, 0) + t
+    has_cost = any(r.get("cost_usd") is not None for r in results)
+    return {
+        "exit_code": max((r.get("exit_code", 0) for r in results), default=0),
+        "duration_s": round(sum(r.get("duration_s") or 0 for r in results), 1),
+        "token_usage": agg_tokens or None,
+        "cost_usd": (round(sum(r.get("cost_usd") or 0 for r in results), 4)
+                     if has_cost else None),
+        "num_turns": sum(r.get("num_turns") or 0 for r in results) or None,
+        "per_model_usage": agg_pm or None,
+        "per_model_turns": agg_pmt or None,
+    }
 
 
 def _run_single_case_in_repo(runner, skill_name, case_ws, output_dir,
@@ -668,6 +777,15 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
               file=sys.stderr)
         return case_id, None
 
+    # Multi-step pipeline: delegate to the step loop. The single-step path
+    # below is unchanged.
+    if config is not None and getattr(config.execution, "steps", None):
+        return _run_multi_step_case(
+            runner, case_id, case_ws, output_dir, model, mlflow_experiment,
+            mlflow_tracking_uri, system_prompt, max_budget, timeout_s,
+            total_cases, index, config, hook_env=hook_env,
+            global_hook_outputs=global_hook_outputs)
+
     case_args = skill_args_template
     input_path = case_ws / "input.yaml"
     if input_path.exists() and case_args:
@@ -820,6 +938,240 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
     return case_id, case_result
 
 
+def _run_multi_step_case(runner, case_id, case_ws, output_dir, model,
+                         mlflow_experiment, mlflow_tracking_uri, system_prompt,
+                         max_budget, timeout_s, total_cases, index, config,
+                         hook_env=None, global_hook_outputs=None):
+    """Execute a multi-step pipeline for one case.
+
+    Steps run sequentially in the shared case workspace, so files written by
+    step N are visible to N+1.  Each step is one ``runner.execute()``; per-step
+    stdout/metrics are saved (for step-scoped judges) and the case metrics are
+    the roll-up.  before_each/after_each wrap the whole case; before_step/
+    after_step wrap each step.  Thread-safe: all I/O is case-specific.
+    """
+    import yaml as _yaml
+
+    steps = config.execution.steps
+    case_data = {}
+    input_path = case_ws / "input.yaml"
+    if input_path.exists():
+        loaded = _yaml.safe_load(input_path.read_text()) or {}
+        if isinstance(loaded, dict):
+            case_data = loaded
+
+    if mlflow_experiment:
+        from agent_eval.mlflow.experiment import inject_tracing_env
+        inject_tracing_env(str(case_ws), project_root=Path.cwd(),
+                           tracking_uri=mlflow_tracking_uri,
+                           experiment_name=mlflow_experiment)
+
+    case_settings = case_ws / ".claude" / "settings.json"
+    settings_path = case_settings if case_settings.exists() else None
+
+    log_dir = output_dir / "hooks"
+    case_output = output_dir / "cases" / case_id
+    case_output.mkdir(parents=True, exist_ok=True)
+
+    has_hooks = bool(config.hooks and hook_env)
+    case_hook_env = None
+    base_env = {}
+    merged_hook_data = {}
+    steps_ctx = {}
+    step_metrics = {}
+    last_result = None
+    error_msg = ""
+    aborted_at = None
+
+    try:
+        if has_hooks:
+            dataset_path = config.dataset.path
+            case_source_dir = (str(config.resolve_path(dataset_path) / case_id)
+                               if dataset_path else "")
+            case_hook_env = {
+                **hook_env,
+                "CASE_ID": case_id,
+                "CASE_WORKSPACE": str(case_ws.resolve()),
+                "CASE_SOURCE_DIR": case_source_dir,
+                "CASE_INPUT": str((case_ws / "input.yaml").resolve()),
+            }
+            if config.hooks.before_each:
+                run_hooks(config.hooks.before_each, env=case_hook_env,
+                          cwd=case_ws, log_dir=log_dir,
+                          phase_name="before_each", case_id=case_id)
+            case_outputs = collect_hook_outputs(case_ws)
+            base_env = {**(global_hook_outputs or {}).get("env", {}),
+                        **case_outputs.get("env", {})}
+            if base_env:
+                case_hook_env.update({k: str(v) for k, v in base_env.items()})
+            merged_hook_data = {**(global_hook_outputs or {}).get("data", {}),
+                                **case_outputs.get("data", {})}
+
+        for si, step in enumerate(steps, 1):
+            step_id = step.id or f"step-{si}"
+            is_skill = bool(step.skill and step.skill.strip())
+            template = step.arguments if is_skill else step.prompt
+            step_target = step.skill if is_skill else None
+            resolved = (_resolve_arguments(template, case_data, steps=steps_ctx)
+                        if template else "")
+
+            step_env = dict(base_env)
+            step_env.update(_resolve_step_env(step.env))
+
+            step_runner = runner
+            if getattr(step, "runner", None):
+                rtype = step.runner.type
+                if rtype not in RUNNERS:
+                    raise ValueError(
+                        f"step '{step_id}': unknown runner '{rtype}'. "
+                        f"Available: {list(RUNNERS)}")
+                step_cfg = copy.copy(config)
+                step_cfg.runner = step.runner
+                step_runner = RUNNERS[rtype].from_config(
+                    step_cfg, log_prefix=f"eval:{case_id}",
+                    permissions=_resolve_permissions(config),
+                    effort=step.runner.effort)
+
+            step_timeout = (step.timeout if step.timeout is not None
+                            else timeout_s)
+            step_budget = (step.max_budget_usd if step.max_budget_usd is not None
+                           else max_budget)
+
+            step_hook_env = None
+            if case_hook_env is not None:
+                step_hook_env = {**case_hook_env, "STEP_ID": step_id,
+                                 "STEP_INDEX": str(si)}
+                step_hook_env.update(
+                    {k: str(v) for k, v in step_env.items() if v is not None})
+
+            label = f"/{step_target} {resolved}" if step_target else resolved
+            print(f"  [{index}/{total_cases}] {case_id} · step {si}/{len(steps)} "
+                  f"({step_id}): {label}", file=sys.stderr)
+
+            step_result = None
+            try:
+                if step_hook_env is not None and config.hooks.before_step:
+                    run_hooks(config.hooks.before_step, env=step_hook_env,
+                              cwd=case_ws, log_dir=log_dir,
+                              phase_name=f"before_step:{step_id}",
+                              case_id=case_id)
+                    hout = collect_hook_outputs(case_ws)
+                    if hout.get("env"):
+                        step_env.update(
+                            {k: str(v) for k, v in hout["env"].items()})
+                step_result = step_runner.execute(
+                    target=step_target,
+                    args=resolved,
+                    workspace=case_ws,
+                    model=model,
+                    settings_path=settings_path,
+                    system_prompt=system_prompt,
+                    max_budget_usd=step_budget,
+                    timeout_s=step_timeout,
+                    extra_env=step_env or None,
+                )
+            finally:
+                if step_hook_env is not None and config.hooks.after_step:
+                    ec = (str(step_result.exit_code)
+                          if step_result is not None else "1")
+                    run_hooks_safe(
+                        config.hooks.after_step,
+                        env={**step_hook_env, "STEP_EXIT_CODE": ec},
+                        cwd=case_ws, log_dir=log_dir,
+                        phase_name=f"after_step:{step_id}", case_id=case_id)
+
+            last_result = step_result
+            step_dir = case_output / "steps" / step_id
+            step_dir.mkdir(parents=True, exist_ok=True)
+            if step_result.stdout:
+                (step_dir / "stdout.log").write_text(step_result.stdout)
+            if step_result.stderr:
+                (step_dir / "stderr.log").write_text(step_result.stderr)
+
+            step_metrics[step_id] = {
+                "exit_code": step_result.exit_code,
+                "duration_s": round(step_result.duration_s, 1),
+                "token_usage": step_result.token_usage,
+                "cost_usd": step_result.cost_usd,
+                "num_turns": step_result.num_turns,
+                "per_model_usage": step_result.per_model_usage,
+                "per_model_turns": step_result.per_model_turns,
+            }
+            steps_ctx[step_id] = {
+                "output": _extract_last_assistant_text(step_result.stdout),
+                "exit_code": step_result.exit_code,
+                "files": _list_step_output_files(case_ws, config),
+            }
+            status = ("OK" if step_result.exit_code == 0
+                      else f"FAIL (exit {step_result.exit_code})")
+            print(f"    → {case_id} step {step_id}: {status} | "
+                  f"{step_result.duration_s:.0f}s | "
+                  f"${step_result.cost_usd or 0:.2f}", file=sys.stderr)
+
+            if step_result.exit_code != 0 and step.on_failure == "fail":
+                aborted_at = step_id
+                break
+
+    except Exception as exc:
+        print(f"    → {case_id}: ERROR ({exc})", file=sys.stderr)
+        error_msg = str(exc)
+    finally:
+        if has_hooks and config.hooks.after_each and case_hook_env is not None:
+            run_hooks_safe(config.hooks.after_each, env=case_hook_env,
+                           cwd=case_ws, log_dir=log_dir,
+                           phase_name="after_each", case_id=case_id)
+
+    if last_result is None:
+        failed = {
+            "exit_code": 1, "duration_s": 0, "token_usage": None,
+            "cost_usd": None, "num_turns": None, "per_model_usage": None,
+            "per_model_turns": None, "error": error_msg,
+            "steps": step_metrics or None,
+        }
+        with open(case_output / "run_result.json", "w") as f:
+            json.dump(failed, f, indent=2)
+            f.write("\n")
+        return case_id, failed
+
+    # Whole-case stdout/stderr = the final step (for collect.py + default judges).
+    ws_output = case_ws / "output"
+    ws_output.mkdir(parents=True, exist_ok=True)
+    if last_result.stdout:
+        (ws_output / "stdout.log").write_text(last_result.stdout)
+        (case_output / "stdout.log").write_text(last_result.stdout)
+    if last_result.stderr:
+        (ws_output / "stderr.log").write_text(last_result.stderr)
+        (case_output / "stderr.log").write_text(last_result.stderr)
+
+    save_hook_data(case_output, merged_hook_data)
+    if input_path.exists() and not input_path.is_symlink():
+        shutil.copy2(input_path, case_output / "input.yaml")
+
+    ws_subagents = case_ws / "subagents"
+    if ws_subagents.exists() and ws_subagents.is_dir():
+        out_subagents = case_output / "subagents"
+        out_subagents.mkdir(exist_ok=True)
+        for f in ws_subagents.iterdir():
+            if f.is_file() and not f.is_symlink() and f.suffix == ".jsonl":
+                shutil.copy2(f, out_subagents / f.name)
+
+    case_result = _aggregate_step_metrics(step_metrics)
+    case_result["steps"] = step_metrics
+    if error_msg:
+        case_result["error"] = error_msg
+        case_result["exit_code"] = max(case_result.get("exit_code", 0), 1)
+    if aborted_at:
+        case_result["aborted_at_step"] = aborted_at
+    with open(case_output / "run_result.json", "w") as f:
+        json.dump(case_result, f, indent=2)
+        f.write("\n")
+
+    print(f"    → {case_id}: {len(step_metrics)} step(s) | "
+          f"{case_result['duration_s']:.0f}s | "
+          f"${case_result.get('cost_usd') or 0:.2f}", file=sys.stderr)
+    return case_id, case_result
+
+
 def _resolve_git():
     """Lazily resolve git executable path.
 
@@ -939,6 +1291,13 @@ def _execute_per_case(args, config, runner, runner_cls,
                     initial_repo_state = _snapshot_repo_state(repo_root)
                     print(f"In-repo mode detected | Repo: {repo_root}", file=sys.stderr)
 
+    # Multi-step pipelines run in isolated per-case workspaces; in-repo mode
+    # (shared repo cwd) is not supported for them in v1.
+    if in_repo_mode and config.execution.steps:
+        print("ERROR: execution.steps is not supported in in-repo mode "
+              "(steps run in an isolated per-case workspace).", file=sys.stderr)
+        sys.exit(1)
+
     # Force sequential execution for in-repo mode to prevent cross-case contamination
     # (all agents share the same repo root, so parallel writes would corrupt state)
     if in_repo_mode:
@@ -948,7 +1307,8 @@ def _execute_per_case(args, config, runner, runner_cls,
     else:
         effective_parallelism = min(parallelism, len(case_order)) if parallelism and parallelism > 1 else 1
     parallel_label = f", parallelism={effective_parallelism}" if effective_parallelism > 1 else ""
-    skill_label = f"/{target}" if target else "prompt"
+    skill_label = (f"/{target}" if target
+                   else ("steps" if config.execution.steps else "prompt"))
     print(f"Executing: {skill_label} (per-case, {len(case_order)} cases{parallel_label})",
           file=sys.stderr)
     print(f"Agent: {runner.name} | Model: {model}", file=sys.stderr)
