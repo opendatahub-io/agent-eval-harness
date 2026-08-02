@@ -88,7 +88,7 @@ Read each handler in `tool_handlers.yaml` and resolve the `prompt` into concrete
    - `env_checks`: which env vars to validate and what values indicate test instances
    - `input_filters`: regex patterns to match relevant Bash commands
 
-3. **For blocking**: If the prompt says "block" or "deny", the default deny behavior is sufficient — just ensure the patterns match correctly.
+3. **For blocking**: If the prompt says "block" or "deny", the default deny behavior is sufficient — just ensure the patterns match the commands you intend to block.
 
 ### Example Resolution
 

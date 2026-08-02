@@ -52,16 +52,7 @@ Check if the resolved config file exists:
 test -f <config> && echo "CONFIG_EXISTS" || echo "NO_CONFIG"
 ```
 
-**If config is missing**: detect what's available and invoke `/eval-analyze`:
-
-1. Check for skills in `skills/`
-2. If skills exist: suggest `/eval-analyze --skill <name>`
-3. Otherwise: suggest `/eval-analyze --prompt <path>` (prompt mode, see examples/)
-4. Invoke `/eval-analyze` via Skill tool
-
-```text
-Use the Skill tool to invoke /eval-analyze with the chosen mode
-```
+**If config is missing**: bootstrap via `/eval-analyze` (invoked through the Skill tool) — if `skills/` contains skills, suggest `/eval-analyze --skill <name>`; otherwise `/eval-analyze --prompt <path>` (prompt mode).
 
 Once config exists, read it to understand the eval setup — the skill under test, runner, dataset, outputs, judges, models, and any tool interception. The downstream scripts read the same config; you don't need to pass these fields through, just confirm they're present and warn the user about anything missing or surprising.
 
@@ -104,12 +95,9 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/preflight.py \
 
 The script checks `tmp/` state files, whether `$AGENT_EVAL_RUNS_DIR/<eval-name>/<id>` already has results from a previous run, and (if `--baseline` is given) that the baseline run-id exists under the same eval-name directory.
 
-- **If `CLEAN`**: proceed to workspace setup.
-- **If `DIRTY`**: report the findings to the user and ask what to do:
-  - **Force clean**: run `preflight.py --clean --force` to delete all stale artifacts, then proceed.
-  - **Change run-id**: append a version suffix (e.g., `2026-04-11-opus-v2`) and re-check. This avoids overwriting previous run results but still requires cleaning project artifacts — re-run preflight with `--clean` and the new run-id.
-  - **Abort**: let the user handle cleanup manually.
-- **If `MISSING_BASELINE` (exit 2)**: the baseline run-id wasn't found at `$AGENT_EVAL_RUNS_DIR/<eval-name>/<baseline>`. The script lists nearby run-ids — confirm the correct one with the user (typo, or did they mean a different date/variant?) before retrying.
+- **`CLEAN`**: proceed to workspace setup.
+- **`DIRTY`**: report the findings and ask the user to choose — *force clean* (`preflight.py --clean --force`, then proceed), *change run-id* (append a suffix like `-opus-v2`, then re-run preflight with `--clean` on the new id to avoid overwriting prior results), or *abort* for manual cleanup.
+- **`MISSING_BASELINE` (exit 2)**: the `--baseline` run-id wasn't found under `$AGENT_EVAL_RUNS_DIR/<eval-name>/`. The script lists nearby run-ids — confirm the correct one with the user before retrying.
 
 ## Step 3: Prepare Workspace
 
@@ -162,9 +150,9 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/execute.py \
   [--parallelism <n>]
 ```
 
-**Launch with `run_in_background: true` and do NOT redirect its output — no `>`, `|`, `tee`, or `2>&1`.** Claude Code's background-command viewer (and the output-file path the Bash tool returns) shows the process's *own* stdout/stderr stream; a redirect diverts that stream and leaves the viewer blank. You don't need a redirect for a stable log path: `execute.py` already mirrors its live console to `<output_dir>/console.log`.
+**Launch with `run_in_background: true` and do NOT redirect its output** (no `>`, `|`, `tee`, `2>&1`) — a redirect diverts the stream Claude Code's background viewer reads and leaves it blank. You don't need one: `execute.py` mirrors its live console to `<output_dir>/console.log`.
 
-**You must poll until the task completes** — do not end your turn while execute.py is running. Background tasks are killed when the session becomes idle: in `-p` mode, an `end_turn` exits the session immediately; in interactive mode, Claude Code SIGTERMs background tasks after ~55 minutes of inactivity. **Monitor** every 2–3 minutes via the output-file path the Bash tool returns, or `tail -20 <output_dir>/console.log` (never a self-created redirect) — this tracks progress and keeps the session active. `execute.py` also emits a `WARNING:` if it detects its stdout was redirected into the run directory. After completion, check `run_result.json` — if `exit_code` is non-zero, report the failure and stop. See `${CLAUDE_SKILL_DIR}/references/execution-monitoring.md` for polling patterns, problem detection, and CLI flag fallbacks.
+**Poll until the task completes — do not end your turn while execute.py is running**, or the idle session kills the background task and CI reports the empty result as green. Check progress every 2–3 minutes via the Bash output-file path or `tail -20 <output_dir>/console.log` (never a self-created redirect); this also keeps the session active. When it finishes, read `run_result.json` — if `exit_code` is non-zero, report the failure and stop. For session-lifecycle details, polling patterns, problem detection, and CLI fallbacks, see [`references/execution-monitoring.md`](references/execution-monitoring.md).
 
 ## Step 5: Collect Artifacts
 
@@ -187,7 +175,7 @@ Report per-case counts. If any case has 0 artifacts, warn — the skill may not 
 
 ## Step 6: Score
 
-Run all configured judges against the collected outputs. Five judge types: `builtin`, inline `check`, LLM (`prompt`/`prompt_file`/`llm_rubric`), external `module`/`function`, and `agent` (a tool-using judge run through the runner; writes `output/score.json`). All take optional `arguments:`. See `references/data-pipeline.md`.
+Run all configured judges against the collected outputs. Five judge types: `builtin`, inline `check`, LLM (`prompt`/`prompt_file`/`llm_rubric`), external `module`/`function`, and `agent` (a tool-using judge run through the runner; writes `output/score.json`). All take optional `arguments:`. See [`references/data-pipeline.md`](references/data-pipeline.md).
 
 If `--no-llm-judges` was specified, skip judges that make LLM API calls (prompt, prompt_file, LLM builtins, and `agent` judges). Run deterministic judges only (check, Python builtins, external code).
 
@@ -202,7 +190,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/score.py judges \
 
 If `hooks.before_scoring` is configured in eval.yaml, score.py runs those hooks before judge execution. Pass `--workspace` and `--model` so hook environment variables are populated.
 
-Judges receive the case `outputs` record — file contents (`outputs["files"]`, `<dir>_content`), execution metadata, `tool_calls`, logs, and `annotations` (parsed `annotations.yaml`, for outcome-aware scoring). Full field reference: `references/data-pipeline.md`.
+Judges receive the case `outputs` record — file contents (`outputs["files"]`, `<dir>_content`), execution metadata, `tool_calls`, logs, and `annotations` (parsed `annotations.yaml`, for outcome-aware scoring). Full field reference: [`references/data-pipeline.md`](references/data-pipeline.md).
 
 If `--baseline` was specified, also run pairwise comparison:
 

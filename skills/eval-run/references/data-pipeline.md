@@ -202,14 +202,16 @@ Use `{{ arguments.key }}` to parameterize prompts without editing the prompt tex
 
 ### Five judge types
 
-**Builtin judge** (`builtin` field in eval.yaml):
+The harness supports five judge kinds, each discriminated by which field is set in eval.yaml. Each is its own subsection below.
+
+#### Builtin judge (`builtin` field)
 - Resolves via `BuiltinJudgeRegistry` from `agent_eval/judges/` package
 - Python builtins (`.py`): receive `(outputs, **arguments)`, return `(bool|number, str)`
 - LLM builtins (`.md`): Jinja2 prompt templates, rendered with `arguments` and `outputs`
 - Auto-discovered from `agent_eval/judges/{category}/` directories
 - Parameterized via `arguments:` field in eval.yaml
 
-**Inline check** (`check` field in eval.yaml):
+#### Inline check (`check` field)
 - Python snippet wrapped in a function by `score.py`
 - Receives `(outputs, arguments)` — full record dict + arguments from eval.yaml
 - Must return `(bool|number, str)` — pass/fail + rationale, or score + rationale
@@ -217,18 +219,19 @@ Use `{{ arguments.key }}` to parameterize prompts without editing the prompt tex
 - Example accessing traces: `outputs.get("cost_usd", 0)`
 - Example with arguments: `limit = arguments.get("max_chars", 10000)`
 
-**LLM judge** (`prompt` or `prompt_file` field):
+#### LLM judge (`prompt` or `prompt_file` field)
 - All prompts are Jinja2 rendered with variables: `{{ outputs }}`, `{{ conversation }}`, `{{ reasoning }}`, `{{ inputs }}`, `{{ evidence }}`, `{{ tool_trace }}`, `{{ annotations }}`, `{{ arguments }}`
 - `context` files are appended to the prompt
 - `arguments:` field makes prompts parameterizable without editing the prompt text
 - Returns `{"score": N, "rationale": "..."}` or `{"passed": bool, "rationale": "..."}`
 
-**External code judge** (`module` + `function` field):
+#### External code judge (`module` + `function` field)
 - Imported via `importlib` from the project
 - Receives `(outputs=dict, **arguments)` when `arguments:` is set
 - Must return `(bool|number, str)` tuple
 
-**Agent judge** (`agent` field — a tool-using judge run through the runner abstraction):
+#### Agent judge (`agent` field)
+A tool-using judge run through the runner abstraction.
 - Discriminated by an `agent:` block; still takes its instructions from `prompt`/`prompt_file`/`llm_rubric` (checked *before* the LLM branch, so `agent:` upgrades an otherwise-LLM judge). Reuses `model`, `feedback_type`, `score_range`, `samples`, `if`, `thresholds`.
 - Per invocation the harness: (1) stages an isolated workspace — the case's output files (filtered by `agent.inputs`, default all of `outputs["files"]`) plus each `agent.context` dir/file symlinked under `./.context/` are **read-only staged inputs**, and `./output/` is **writable** for the verdict file. Untrusted case-file relpaths are containment-checked so a `..`-bearing key cannot escape the workspace (CWE-22); (2) instantiates the runner from `RUNNERS[agent.runner.type]` (default `claude-code`) with `permissions={"allow": agent.allowed_tools}` (read-only default `[Read, Grep, Glob]`) — the judge gets its OWN runner + tool policy, independent of the skill-under-test, via a shallow `EvalConfig` copy carrying the judge's `RunnerConfig` and permissions; (3) runs one **prompt-mode** turn (`execute(target=None, args=<rendered instructions + output contract>, …)`); (4) reads the verdict; (5) tears down the temp workspace.
 - **Output contract**: the judge writes `./output/score.json` — `{"score": <number>, "rationale": "…"}` (numeric) or `{"passed": <bool>, "rationale": "…"}` (bool). `feedback_type` selects which; `score_range` bands a numeric score. The harness appends this contract + an untrusted-data guard to the prompt automatically. Fallback: if `score.json` is absent, parse the last `{"score"|"passed", …}` JSON object from stdout; if neither yields a value, record an error sample (never silently pass).

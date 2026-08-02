@@ -16,7 +16,7 @@ execution:
 **What happens**:
 - Claude Code invokes: `/rfe.create {prompt}` (after template resolution)
 - The skill reads its SKILL.md and executes its logic
-- Useful for testing if a skill's implementation works correctly
+- Useful for testing whether a skill's implementation produces the expected output files and a zero exit code
 
 ## Prompt Mode (execution.prompt)
 
