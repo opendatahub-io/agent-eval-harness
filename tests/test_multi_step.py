@@ -317,3 +317,125 @@ dataset: {path: __TMP__/cases}
         cfg = EvalConfig.from_yaml(cfgf)
         with pytest.raises(ValueError, match="do not round-trip to Harbor"):
             generate_tasks(cfg, cfgf, tmp_path / "tasks", "img")
+
+
+# ---------------------------------------------------------------------------
+# Hardening (CodeRabbit PR #172)
+# ---------------------------------------------------------------------------
+
+class TestHardening:
+
+    @pytest.mark.parametrize("sid,msg", [
+        ("../evil", "path separators"),
+        ("a/b", "path separators"),
+        ("..", "relative directory reference"),
+    ])
+    def test_step_id_path_traversal_rejected(self, tmp_path, sid, msg):
+        with pytest.raises(ValueError, match=msg):
+            EvalConfig.from_yaml(_write(
+                tmp_path,
+                "name: t\nexecution:\n  steps:\n"
+                f'    - {{id: "{sid}", skill: y}}\n'))
+
+    def test_step_env_must_be_mapping(self, tmp_path):
+        with pytest.raises(ValueError, match="env must be a mapping"):
+            EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution:
+  steps:
+    - {id: a, skill: y, env: "K=v"}
+"""))
+
+    def test_step_timeout_must_be_positive_int(self, tmp_path):
+        with pytest.raises(ValueError, match="timeout must be a positive integer"):
+            EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution:
+  steps:
+    - {id: a, skill: y, timeout: -5}
+"""))
+
+    def test_step_budget_must_be_non_negative(self, tmp_path):
+        with pytest.raises(ValueError, match="max_budget_usd must be a non-negative"):
+            EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution:
+  steps:
+    - {id: a, skill: y, max_budget_usd: -1}
+"""))
+
+    def test_harbor_per_step_timeout_honored(self, tmp_path):
+        from agent_eval.harbor.tasks import generate_tasks
+        (tmp_path / "cases" / "case-1").mkdir(parents=True)
+        (tmp_path / "cases" / "case-1" / "input.yaml").write_text("id: '1'\n")
+        cfgf = _write(tmp_path, """
+name: t
+execution:
+  mode: case
+  steps:
+    - {id: a, skill: s1, arguments: x, timeout: 42}
+    - {id: b, skill: s2, arguments: y}
+dataset: {path: __TMP__/cases}
+""")
+        cfg = EvalConfig.from_yaml(cfgf)
+        generate_tasks(cfg, cfgf, tmp_path / "tasks", "img", agent_timeout=1800.0)
+        toml = (tmp_path / "tasks" / "case-1" / "task.toml").read_text()
+        assert "timeout_sec = 42" in toml       # step a honored step.timeout
+        assert "timeout_sec = 1800.0" in toml    # step b fell back to default
+
+    def test_harbor_toml_escapes_quotes(self, tmp_path):
+        tomllib = pytest.importorskip("tomllib")
+        from agent_eval.harbor.tasks import generate_tasks
+        (tmp_path / "cases" / "case-1").mkdir(parents=True)
+        (tmp_path / "cases" / "case-1" / "input.yaml").write_text("id: '1'\n")
+        cfgf = _write(tmp_path, """
+name: 'weird "quoted" name'
+execution:
+  mode: case
+  steps:
+    - {id: a, skill: s1, arguments: x}
+dataset: {path: __TMP__/cases}
+""")
+        cfg = EvalConfig.from_yaml(cfgf)
+        generate_tasks(cfg, cfgf, tmp_path / "tasks", "img")
+        toml = (tmp_path / "tasks" / "case-1" / "task.toml").read_text()
+        parsed = tomllib.loads(toml)  # must be valid TOML despite the quotes
+        assert '"quoted"' in parsed["task"]["name"]
+
+    def test_harbor_missing_input_error_omits_steps_hint(self, tmp_path):
+        from agent_eval.harbor.tasks import generate_tasks
+        (tmp_path / "cases" / "case-1").mkdir(parents=True)
+        (tmp_path / "cases" / "case-1" / "input.yaml").write_text("id: '1'\n")
+        cfgf = _write(tmp_path, """
+name: t
+execution:
+  mode: case
+  steps:
+    - {id: a, skill: s1, arguments: "{{ input.missing }}"}
+dataset: {path: __TMP__/cases}
+""")
+        cfg = EvalConfig.from_yaml(cfgf)
+        with pytest.raises(ValueError) as ei:
+            generate_tasks(cfg, cfgf, tmp_path / "tasks", "img")
+        assert "cannot be resolved" in str(ei.value)
+        assert "round-trip to Harbor" not in str(ei.value)  # not a steps.* failure
+
+    def test_score_skips_symlinked_step_stdout(self, tmp_path):
+        import os
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOPSECRET")
+        cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution:
+  mode: case
+  steps:
+    - {id: a, skill: s1, arguments: x}
+dataset: {path: __TMP__/cases}
+judges:
+  - {name: j, step: a, check: "return (True, '')"}
+"""))
+        cd = tmp_path / "cases" / "case-1"
+        (cd / "steps" / "a").mkdir(parents=True)
+        os.symlink(secret, cd / "steps" / "a" / "stdout.log")  # planted symlink
+        rec = sc.load_case_record(cd, cfg)
+        assert "TOPSECRET" not in rec["steps"]["a"].get("conversation", "")

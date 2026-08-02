@@ -319,6 +319,10 @@ class ExecutionConfig:
                 raise ValueError(
                     "execution.steps: every step needs a non-empty 'id'."
                 )
+            # ids become filesystem path components (workspace, run output,
+            # Harbor task) — reject separators / '.'/'..' / control chars (CWE-22).
+            for i in ids:
+                _validate_path_segment(str(i), "execution.steps[].id")
             if len(set(ids)) != len(ids):
                 raise ValueError(
                     f"execution.steps: step ids must be unique, got {ids}."
@@ -811,15 +815,34 @@ class EvalConfig:
             if s.get("runner"):
                 step_runner = _parse_runner_config(
                     s.get("runner"), context=f"execution.steps[{i}].runner")
+            step_env = s.get("env") or {}
+            if not isinstance(step_env, dict):
+                raise ValueError(
+                    f"execution.steps[{i}].env must be a mapping")
+            step_timeout = s.get("timeout")
+            if step_timeout is not None and (
+                    not isinstance(step_timeout, int)
+                    or isinstance(step_timeout, bool)
+                    or step_timeout <= 0):
+                raise ValueError(
+                    f"execution.steps[{i}].timeout must be a positive integer")
+            step_budget = s.get("max_budget_usd")
+            if step_budget is not None and (
+                    not isinstance(step_budget, (int, float))
+                    or isinstance(step_budget, bool)
+                    or step_budget < 0):
+                raise ValueError(
+                    f"execution.steps[{i}].max_budget_usd must be a "
+                    "non-negative number")
             step = StepConfig(
                 id=s.get("id", "") or "",
                 name=s.get("name", "") or "",
                 skill=s.get("skill", "") or "",
                 prompt=s.get("prompt", "") or "",
                 arguments=s.get("arguments", "") or "",
-                env=s.get("env") or {},
-                timeout=s.get("timeout"),
-                max_budget_usd=s.get("max_budget_usd"),
+                env=step_env,
+                timeout=step_timeout,
+                max_budget_usd=step_budget,
                 runner=step_runner,
                 on_failure=s.get("on_failure", "fail"),
             )

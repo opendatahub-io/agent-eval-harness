@@ -764,7 +764,7 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
                      skill_args_template, model, mlflow_experiment,
                      mlflow_tracking_uri, system_prompt, max_budget, timeout_s,
                      total_cases, index, config=None, hook_env=None,
-                     global_hook_outputs=None):
+                     global_hook_outputs=None, subagent_model=None):
     """Execute and collect results for a single test case.
 
     Thread-safe: all I/O is to case-specific directories.
@@ -784,7 +784,8 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
             runner, case_id, case_ws, output_dir, model, mlflow_experiment,
             mlflow_tracking_uri, system_prompt, max_budget, timeout_s,
             total_cases, index, config, hook_env=hook_env,
-            global_hook_outputs=global_hook_outputs)
+            global_hook_outputs=global_hook_outputs,
+            subagent_model=subagent_model)
 
     case_args = skill_args_template
     input_path = case_ws / "input.yaml"
@@ -941,7 +942,8 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
 def _run_multi_step_case(runner, case_id, case_ws, output_dir, model,
                          mlflow_experiment, mlflow_tracking_uri, system_prompt,
                          max_budget, timeout_s, total_cases, index, config,
-                         hook_env=None, global_hook_outputs=None):
+                         hook_env=None, global_hook_outputs=None,
+                         subagent_model=None):
     """Execute a multi-step pipeline for one case.
 
     Steps run sequentially in the shared case workspace, so files written by
@@ -1029,6 +1031,9 @@ def _run_multi_step_case(runner, case_id, case_ws, output_dir, model,
                 step_cfg.runner = step.runner
                 step_runner = RUNNERS[rtype].from_config(
                     step_cfg, log_prefix=f"eval:{case_id}",
+                    subagent_model=subagent_model,
+                    mlflow_experiment=mlflow_experiment,
+                    mlflow_tracking_uri=mlflow_tracking_uri,
                     permissions=_resolve_permissions(config),
                     effort=step.runner.effort)
 
@@ -1044,9 +1049,11 @@ def _run_multi_step_case(runner, case_id, case_ws, output_dir, model,
                 step_hook_env.update(
                     {k: str(v) for k, v in step_env.items() if v is not None})
 
-            label = f"/{step_target} {resolved}" if step_target else resolved
+            # Log the step target/id only — the resolved args may embed
+            # $VAR-expanded secrets or prior-step model output (CWE-532).
             print(f"  [{index}/{total_cases}] {case_id} · step {si}/{len(steps)} "
-                  f"({step_id}): {label}", file=sys.stderr)
+                  f"({step_id}): {'/' + step_target if step_target else 'prompt'}",
+                  file=sys.stderr)
 
             step_result = None
             try:
@@ -1375,7 +1382,8 @@ def _execute_per_case(args, config, runner, runner_cls,
                             system_prompt, max_budget, timeout_s,
                             len(case_order), i,
                             config=config, hook_env=hook_env,
-                            global_hook_outputs=global_hook_outputs)
+                            global_hook_outputs=global_hook_outputs,
+                            subagent_model=subagent_model)
                     futures[fut] = case_id
 
                 for fut in as_completed(futures):
@@ -1424,7 +1432,8 @@ def _execute_per_case(args, config, runner, runner_cls,
                         config.mlflow.tracking_uri, system_prompt,
                         max_budget, timeout_s, len(case_order), i,
                         config=config, hook_env=hook_env,
-                        global_hook_outputs=global_hook_outputs)
+                        global_hook_outputs=global_hook_outputs,
+                        subagent_model=subagent_model)
                 if result is not None:
                     case_results[case_id] = result
     finally:

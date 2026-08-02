@@ -479,15 +479,20 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
                 except (json.JSONDecodeError, OSError):
                     pass
         for step_dir in sorted(steps_root.iterdir()):
-            if not step_dir.is_dir():
+            # Case artifacts are agent-produced (untrusted); reject symlinked
+            # step dirs / logs and confine paths under case_dir so a planted
+            # symlink can't leak host files into a judge prompt (CWE-59).
+            if not step_dir.is_dir() or step_dir.is_symlink():
                 continue
+            _resolve_under(case_dir, step_dir)
             sid = step_dir.name
             sub = {}
             stdout_p = step_dir / "stdout.log"
             events = []
             raw = ""
-            if stdout_p.exists():
+            if stdout_p.is_file() and not stdout_p.is_symlink():
                 try:
+                    _resolve_under(case_dir, stdout_p)
                     raw = stdout_p.read_text(encoding="utf-8", errors="replace")
                     events = parse_stream_events(raw)
                 except (OSError, ValueError):
