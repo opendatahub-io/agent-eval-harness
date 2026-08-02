@@ -88,7 +88,7 @@ Read each handler in `tool_handlers.yaml` and resolve the `prompt` into concrete
    - `env_checks`: which env vars to validate and what values indicate test instances
    - `input_filters`: regex patterns to match relevant Bash commands
 
-3. **For blocking**: If the prompt says "block" or "deny", the default deny behavior is sufficient — just ensure the patterns match the commands you intend to block.
+3. **For blocking**: configure an explicit matcher — don't rely on default-deny for Bash. For Bash, add `input_filters` matching the commands to block; a handler with `Bash` in `patterns` but no `input_filters` is treated as misconfigured and skipped (pass-through, stderr warning only, per Line 75), so the intended block silently fails. For MCP/other tools, a matching pattern (exact or glob) with no `env_checks` is denied by default — the pattern alone suffices (Line 67). Verify the intended call is actually denied.
 
 ### Example Resolution
 

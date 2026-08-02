@@ -1281,13 +1281,31 @@ def _interpret_agent_verdict(obj, is_bool, jc):
     return value, rationale or "agent judge verdict"
 
 
-def _stage_agent_workspace(workspace, record, stage_inputs, context_dirs, root):
-    """Stage an isolated, read-only judge workspace.
+# File-writing tools. When any is in a judge's allowed_tools, context is COPIED
+# rather than symlinked so the judge cannot write THROUGH ./.context/ to real
+# project files and escape the isolated workspace (CWE-59/829).
+_WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"}
+
+
+def _copy_path(src, dest):
+    """Copy a file or directory tree into the staged workspace, dereferencing
+    nested symlinks so no link remains through which a write could escape."""
+    if src.is_dir():
+        shutil.copytree(src, dest, ignore_dangling_symlinks=True)
+    else:
+        shutil.copy2(src, dest)
+
+
+def _stage_agent_workspace(workspace, record, stage_inputs, context_dirs, root,
+                           writable=False):
+    """Stage an isolated judge workspace.
 
     - The case's output files (record["files"], relpath -> content), filtered
       by ``stage_inputs`` (a list of output-dir names; "." or empty = all).
-    - Each ``context_dirs`` entry symlinked (copied on fallback) read-only under
-      ./.context/<name>.
+    - Each ``context_dirs`` entry staged under ./.context/<name>: symlinked (a
+      live, read-only-by-tool-policy pointer) for the default read-only toolset,
+      or COPIED when ``writable`` (the judge holds a write-capable tool) so a
+      judge write cannot follow the link to real project files (CWE-59/829).
     - A pre-created ./output/ dir for the verdict file.
     """
     # 1. Output files from the case record.
@@ -1319,7 +1337,9 @@ def _stage_agent_workspace(workspace, record, stage_inputs, context_dirs, root):
             dest.write_text(content)
         except OSError:
             pass
-    # 2. Context dirs/files staged read-only under ./.context/.
+    # 2. Context dirs/files staged under ./.context/ — symlinked (read-only by
+    #    tool policy) by default, or copied when the judge can write, so writes
+    #    cannot escape through the link to real project files (CWE-59/829).
     if context_dirs:
         ctx_root = workspace / ".context"
         ctx_root.mkdir(parents=True, exist_ok=True)
@@ -1332,13 +1352,13 @@ def _stage_agent_workspace(workspace, record, stage_inputs, context_dirs, root):
                 continue
             dest = ctx_root / src.name
             try:
-                os.symlink(src, dest)
+                if writable:
+                    _copy_path(src, dest)
+                else:
+                    os.symlink(src, dest)
             except (OSError, NotImplementedError):
                 try:
-                    if src.is_dir():
-                        shutil.copytree(src, dest)
-                    else:
-                        shutil.copy2(src, dest)
+                    _copy_path(src, dest)
                 except OSError:
                     pass
     # 3. Verdict output dir.
@@ -1388,6 +1408,9 @@ def _load_agent_judge(jc, config, project_root=None):
     allowed_tools = agent.get("allowed_tools") or ["Read", "Grep", "Glob"]
     stage_inputs = agent.get("inputs")  # None/[] => all files
     context_dirs = agent.get("context") or []
+    # Copy (not symlink) context when the judge can write, so a prompt-injected
+    # judge cannot write THROUGH ./.context/ to real project files (CWE-59/829).
+    context_writable = bool(_WRITE_TOOLS & set(allowed_tools))
     is_bool = (jc.feedback_type == "bool")
     timeout_s = int(agent.get("timeout") or config.execution.timeout or 600)
     max_budget = float(agent.get("max_budget_usd") or 2.0)
@@ -1421,7 +1444,8 @@ def _load_agent_judge(jc, config, project_root=None):
         workspace = Path(tempfile.mkdtemp(prefix="agent-judge-"))
         try:
             _stage_agent_workspace(workspace, record, stage_inputs,
-                                   context_dirs, root)
+                                   context_dirs, root,
+                                   writable=context_writable)
             rendered = _render_jinja2_template(prompt, arguments, record)
             full_prompt = rendered + "\n" + contract
 

@@ -558,6 +558,39 @@ class TestAgentJudgeHardening:
         assert (ws / "real.txt").read_text() == "ok"        # normal file still staged
         assert (ws / "output").is_dir()                     # empty verdict dir created
 
+    def test_context_symlinked_when_read_only(self, tmp_path):
+        """A read-only judge gets a symlinked (live) ./.context pointer — the fast path."""
+        from score import _stage_agent_workspace
+        ctx = tmp_path / "ctxdir"
+        ctx.mkdir()
+        (ctx / "doc.md").write_text("reference")
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        _stage_agent_workspace(ws, {"files": {}}, None, ["ctxdir"], tmp_path,
+                               writable=False)
+        staged = ws / ".context" / "ctxdir"
+        assert staged.is_symlink()                       # live pointer, not a copy
+        assert (staged / "doc.md").read_text() == "reference"
+
+    def test_context_copied_when_writable_blocks_write_through(self, tmp_path):
+        """A write-capable judge gets a COPY, so a write can't escape ./.context/
+        to real project files (CWE-59/829)."""
+        from score import _stage_agent_workspace
+        ctx = tmp_path / "ctxdir"
+        ctx.mkdir()
+        src_file = ctx / "doc.md"
+        src_file.write_text("original")
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        _stage_agent_workspace(ws, {"files": {}}, None, ["ctxdir"], tmp_path,
+                               writable=True)
+        staged = ws / ".context" / "ctxdir"
+        assert not staged.is_symlink()                   # real copy, not a live link
+        assert staged.is_dir()
+        # A write to the staged copy must NOT reach the real source file.
+        (staged / "doc.md").write_text("mutated")
+        assert src_file.read_text() == "original"        # source untouched
+
     def test_no_llm_judges_fail_closed_on_unclassifiable_builtin(self):
         """An unclassifiable builtin is dropped (fail closed), not retained (CWE-754)."""
         from unittest.mock import MagicMock, patch
