@@ -9,8 +9,14 @@ import sys
 import yaml
 
 
-def resolve_arguments(template: str, input_data: dict) -> str:
+def resolve_arguments(
+    template: str, input_data: dict, steps: Optional[dict] = None
+) -> str:
     """Resolve a skill/prompt argument template against input.yaml data.
+
+    ``steps`` (optional) binds the ``{{ steps.<id>.* }}`` namespace for
+    multi-step execution — the accumulated results of earlier steps in the same
+    case (Jinja2 style only; the brace style resolves ``input`` fields only).
 
     Two mutually-exclusive placeholder styles are auto-detected:
 
@@ -31,7 +37,7 @@ def resolve_arguments(template: str, input_data: dict) -> str:
 
         try:
             result = Template(template, undefined=StrictUndefined).render(
-                input=input_data
+                input=input_data, steps=steps or {}
             )
         except UndefinedError as e:
             raise ValueError(
@@ -222,6 +228,8 @@ class HooksConfig:
     before_all: list = field(default_factory=list)
     before_each: list = field(default_factory=list)
     after_each: list = field(default_factory=list)
+    before_step: list = field(default_factory=list)
+    after_step: list = field(default_factory=list)
     before_scoring: list = field(default_factory=list)
     after_all: list = field(default_factory=list)
     before_report: list = field(default_factory=list)
@@ -270,6 +278,11 @@ class ExecutionConfig:
     max_budget_usd: Optional[float] = None
     parallelism: Optional[int] = None
     env: dict = field(default_factory=dict)
+    # Multi-step pipeline. When non-empty, REPLACES skill/prompt/arguments —
+    # each entry is one agent invocation run sequentially in the shared per-case
+    # workspace (see StepConfig). Mutually exclusive with skill/prompt; case
+    # mode only.
+    steps: list = field(default_factory=list)
 
     def __post_init__(self):
         # Validate mode
@@ -288,6 +301,46 @@ class ExecutionConfig:
                 "execution.skill and execution.prompt are mutually exclusive. "
                 "Use skill for '/skill-name' invocations or prompt for direct prompts."
             )
+
+        # Multi-step: steps replaces skill/prompt and is case-mode only.
+        if self.steps:
+            if has_skill or has_prompt:
+                raise ValueError(
+                    "execution.steps is mutually exclusive with execution.skill/"
+                    "execution.prompt — put each invocation in its own step."
+                )
+            if self.mode != "case":
+                raise ValueError(
+                    "execution.steps is only supported in mode: case "
+                    f"(got mode: {self.mode})."
+                )
+            ids = [getattr(s, "id", "") for s in self.steps]
+            if any(not (i and str(i).strip()) for i in ids):
+                raise ValueError(
+                    "execution.steps: every step needs a non-empty 'id'."
+                )
+            if len(set(ids)) != len(ids):
+                raise ValueError(
+                    f"execution.steps: step ids must be unique, got {ids}."
+                )
+
+    def resolved_steps(self) -> list:
+        """The pipeline as an explicit step list — one code path for the executor.
+
+        Multi-step configs return ``steps`` verbatim.  A single skill/prompt
+        config is normalized to a one-element list so the executor always loops.
+        """
+        if self.steps:
+            return self.steps
+        return [StepConfig(
+            id=(self.skill or "step-1"),
+            skill=self.skill,
+            prompt=self.prompt,
+            arguments=self.arguments,
+            env=dict(self.env),
+            timeout=self.timeout,
+            max_budget_usd=self.max_budget_usd,
+        )]
 
 
 
@@ -319,10 +372,11 @@ class RunnerConfig:
 def _parse_runner_config(runner_raw, *, context="runner"):
     """Parse a runner block into a RunnerConfig with validation.
 
-    Shared by the top-level ``runner:`` block and a judge's nested
-    ``agent.runner:`` block so both honor identical defaults and validation
-    (command type-check, workspace_mode whitelist). ``context`` is the field
-    path used in error messages.
+    Shared by the top-level ``runner:`` block, a judge's nested
+    ``agent.runner:`` block, and per-step ``execution.steps[].runner:`` so all
+    honor identical defaults and validation (command type-check,
+    workspace_mode whitelist). ``context`` is the field path used in error
+    messages.
     """
     runner_raw = runner_raw or {}
     command = runner_raw.get("command")
@@ -347,6 +401,42 @@ def _parse_runner_config(runner_raw, *, context="runner"):
         system_prompt=runner_raw.get("system_prompt"),
         effort=runner_raw.get("effort"),
     )
+
+
+@dataclass
+class StepConfig:
+    """One step in a multi-step execution pipeline (``execution.steps[]``).
+
+    A step is a single agent invocation (``skill`` xor ``prompt``) run in the
+    shared per-case workspace.  Steps run sequentially; later steps see earlier
+    steps' files on disk and can reference their results via the
+    ``{{ steps.<id>.* }}`` template namespace.  Per-step ``timeout`` /
+    ``max_budget_usd`` / ``runner`` fall back to the ``execution`` / top-level
+    defaults when unset.
+    """
+
+    id: str = ""
+    name: str = ""
+    skill: str = ""       # skill xor prompt (validated per step)
+    prompt: str = ""
+    arguments: str = ""
+    env: dict = field(default_factory=dict)
+    timeout: Optional[int] = None
+    max_budget_usd: Optional[float] = None
+    runner: Optional[RunnerConfig] = None
+    on_failure: str = "fail"  # "fail" (abort remaining steps) | "continue"
+
+    def __post_init__(self):
+        if self.on_failure not in ("fail", "continue"):
+            raise ValueError(
+                f"execution.steps: step '{self.id}': on_failure must be 'fail' "
+                f"or 'continue', got '{self.on_failure}'")
+        has_skill = bool(self.skill and self.skill.strip())
+        has_prompt = bool(self.prompt and self.prompt.strip())
+        if has_skill and has_prompt:
+            raise ValueError(
+                f"execution.steps: step '{self.id}': skill and prompt are "
+                "mutually exclusive.")
 
 
 @dataclass
@@ -488,6 +578,9 @@ class JudgeConfig:
     builtin: str = ""
     # Arguments passed as **kwargs to Python judges, Jinja var to LLM judges
     arguments: dict = field(default_factory=dict)
+    # Multi-step: scope this judge to one execution step's sub-record. Empty =
+    # whole case (final workspace), the default. Must match an execution.steps id.
+    step: str = ""
     # Sampling — run this judge N times per case and reduce (median/majority).
     # Only meaningful for stochastic (LLM and agent) judges; ignored otherwise.
     samples: int = 1
@@ -709,7 +802,34 @@ class EvalConfig:
         # Dataset
         dataset = raw.get("dataset", {})
 
-        # Execution config
+        # Execution config — including an optional multi-step pipeline.
+        steps = []
+        for i, s in enumerate(exec_raw.get("steps") or []):
+            if not isinstance(s, dict):
+                raise ValueError(f"execution.steps[{i}] must be a mapping")
+            step_runner = None
+            if s.get("runner"):
+                step_runner = _parse_runner_config(
+                    s.get("runner"), context=f"execution.steps[{i}].runner")
+            step = StepConfig(
+                id=s.get("id", "") or "",
+                name=s.get("name", "") or "",
+                skill=s.get("skill", "") or "",
+                prompt=s.get("prompt", "") or "",
+                arguments=s.get("arguments", "") or "",
+                env=s.get("env") or {},
+                timeout=s.get("timeout"),
+                max_budget_usd=s.get("max_budget_usd"),
+                runner=step_runner,
+                on_failure=s.get("on_failure", "fail"),
+            )
+            if not ((step.skill and step.skill.strip())
+                    or (step.prompt and step.prompt.strip())):
+                raise ValueError(
+                    f"execution.steps[{i}] ('{step.id}') must set either "
+                    "skill or prompt")
+            steps.append(step)
+
         execution = ExecutionConfig(
             mode=exec_raw.get("mode", "case"),
             skill=exec_raw.get("skill", "") or raw.get("skill", ""),
@@ -719,6 +839,7 @@ class EvalConfig:
             max_budget_usd=exec_raw.get("max_budget_usd"),
             parallelism=exec_raw.get("parallelism"),
             env=exec_raw.get("env") or {},
+            steps=steps,
         )
 
         # Runner config (block form)
@@ -939,10 +1060,26 @@ class EvalConfig:
                     function=j.get("function", ""),
                     builtin=builtin_val,
                     arguments=args_val,
+                    step=j.get("step", "") or "",
                     samples=int(j.get("samples", 1)),
                     agent=agent_val,
                 )
             )
+
+        # Per-step judge scoping: a judge's `step:` must name a defined
+        # execution step (fail loud on typos, like reward.judge validation).
+        step_ids = {s.id for s in execution.steps}
+        for jc in config.judges:
+            if not jc.step:
+                continue
+            if not execution.steps:
+                raise ValueError(
+                    f"Judge '{jc.name}': 'step: {jc.step}' requires an "
+                    "execution.steps pipeline")
+            if jc.step not in step_ids:
+                raise ValueError(
+                    f"Judge '{jc.name}': 'step: {jc.step}' does not match any "
+                    f"execution step id ({sorted(step_ids)})")
 
         # Reward composition
         if "reward" in raw:
@@ -1028,8 +1165,8 @@ class EvalConfig:
 
         # Hooks
         hooks_raw = raw.get("hooks", {}) or {}
-        phases = ["before_all", "before_each", "after_each",
-                  "before_scoring", "after_all", "before_report"]
+        phases = ["before_all", "before_each", "after_each", "before_step",
+                  "after_step", "before_scoring", "after_all", "before_report"]
         for phase in phases:
             entries = []
             for h in (hooks_raw.get(phase) or []):
@@ -1058,6 +1195,10 @@ class EvalConfig:
                 per_case.append("before_each")
             if config.hooks.after_each:
                 per_case.append("after_each")
+            if config.hooks.before_step:
+                per_case.append("before_step")
+            if config.hooks.after_step:
+                per_case.append("after_step")
             if per_case:
                 import warnings
                 warnings.warn(
