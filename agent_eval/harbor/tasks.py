@@ -32,6 +32,7 @@ at a known path and staged into the workspace by the image's entrypoint or
 """
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -45,9 +46,11 @@ _TEMPLATES = Path(__file__).resolve().parent / "templates"
 
 def _render(template_name: str, mapping: dict) -> str:
     text = (_TEMPLATES / template_name).read_text()
-    for key, value in mapping.items():
-        text = text.replace(f"@@{key}@@", str(value))
-    return text
+    return re.sub(
+        r"@@([A-Za-z_][A-Za-z0-9_]*)@@",
+        lambda match: str(mapping.get(match.group(1), match.group(0))),
+        text,
+    )
 
 
 def _toml_string(value: object) -> str:

@@ -102,3 +102,15 @@ def test_generate_tasks_escapes_multiline_description_for_toml(tmp_path):
 
     task = tomllib.loads((out / "case-001" / "task.toml").read_text())
     assert task["task"]["description"] == description
+
+
+def test_generate_tasks_preserves_placeholder_text_in_description(tmp_path):
+    description = "Use @@IMAGE@@ when documenting the Harbor image"
+    cfg_path, config = _make_eval(tmp_path, description=description)
+    out = tmp_path / "harbor-tasks"
+
+    gen.generate_tasks(config, cfg_path, out, image="img:latest")
+
+    task = tomllib.loads((out / "case-001" / "task.toml").read_text())
+    assert task["task"]["description"] == description
+    assert task["environment"]["docker_image"] == "img:latest"
