@@ -63,3 +63,41 @@ def test_paragraph_stops_at_fenced_code():
     assert "<p>Some prose that wraps.</p>" in html
     assert "code line" in html
     assert html.count("<p>") == 1
+
+
+def test_untrusted_html_and_harmful_links_are_not_rendered():
+    html = _md_to_html('<script>alert(1)</script>\n\n[bad](javascript:evil)')
+    assert "<script>" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+    assert "javascript:" not in html
+    assert "bad" in html
+
+
+def test_safe_links_are_escaped_and_hardened():
+    html = _md_to_html("[docs](https://example.com/a?x=1&y=2)")
+    assert 'href="https://example.com/a?x=1&amp;y=2"' in html
+    assert 'rel="noopener noreferrer"' in html
+
+
+def test_code_blocks_keep_output_style_and_escape_html():
+    html = _md_to_html("```html\n<script>x</script>\n```")
+    assert html == (
+        '<pre class="output">&lt;script&gt;x&lt;/script&gt;</pre>'
+    )
+
+
+def test_table_statuses_keep_report_pill_classes():
+    html = _md_to_html(
+        "| Result | Detail |\n"
+        "|---|---|\n"
+        "| **PASS** | all good |\n"
+        "| REGRESSION details | bad |\n"
+    )
+    assert '<span class="pass">PASS</span>' in html
+    assert '<span class="fail">REGRESSION</span> details' in html
+
+
+def test_nested_lists_use_commonmark_structure():
+    html = _md_to_html("- parent\n  - child\n")
+    assert html.count("<ul>") == 2
+    assert "<li>child</li>" in html

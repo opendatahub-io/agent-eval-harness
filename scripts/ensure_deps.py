@@ -6,6 +6,7 @@ Prefers uv for speed, falls back to stdlib venv + pip.
 
 Checks eval.yaml (if it exists) to decide which optional deps to install:
 - pyyaml: always required
+- mistune: always required for HTML report rendering
 - mlflow[genai]: if a mlflow block is present in eval.yaml
 - anthropic[vertex]: if LLM judges or pairwise comparison are configured
 
@@ -49,7 +50,7 @@ def main():
 
 def _resolve_deps(plugin_root):
     """Determine which deps are needed based on eval.yaml."""
-    deps = [("pyyaml>=6.0", "yaml")]
+    deps = [("pyyaml>=6.0", "yaml"), ("mistune>=3.0,<4.0", "mistune")]
 
     eval_yaml = _find_eval_yaml(plugin_root)
     if not eval_yaml or not eval_yaml.exists():
