@@ -1642,15 +1642,21 @@ def _render_table_cell(renderer, text, align=None, head=False):
     if not head:
         status = None
         rest = ""
-        for keyword, css_class in _STATUS_CLS.items():
+        for keyword in sorted(_STATUS_CLS, key=len, reverse=True):
+            css_class = _STATUS_CLS[keyword]
             plain = keyword
             strong = f"<strong>{keyword}</strong>"
             emphasis = f"<em>{keyword}</em>"
             for prefix in (plain, strong, emphasis):
                 if text.startswith(prefix):
-                    status = (keyword, css_class)
-                    rest = text[len(prefix):].strip()
-                    break
+                    candidate_rest = text[len(prefix):]
+                    if (
+                        not candidate_rest
+                        or not (candidate_rest[0].isalnum() or candidate_rest[0] == "_")
+                    ):
+                        status = (keyword, css_class)
+                        rest = candidate_rest.strip()
+                        break
             if status:
                 break
         if status:
@@ -1672,12 +1678,24 @@ def _normalize_report_markdown(md_text: str) -> str:
     """Preserve the legacy renderer's top-level list termination behavior."""
     lines = md_text.splitlines()
     normalized = []
-    in_fence = False
+    active_fence = None
     list_item = re.compile(r"^(?:[-+*]|\d+[.)])\s+")
     for line in lines:
+        fence = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        closes_fence = False
+        if active_fence:
+            char, length = active_fence
+            closes_fence = bool(re.match(
+                rf"^ {{0,3}}{re.escape(char)}{{{length},}}\s*$", line
+            ))
+            in_fence = True
+        elif fence:
+            delimiter = fence.group(1)
+            active_fence = (delimiter[0], len(delimiter))
+            in_fence = True
+        else:
+            in_fence = False
         stripped = line.strip()
-        if stripped.startswith("```"):
-            in_fence = not in_fence
         if (
             not in_fence
             and normalized
@@ -1688,6 +1706,8 @@ def _normalize_report_markdown(md_text: str) -> str:
         ):
             normalized.append("")
         normalized.append(line)
+        if closes_fence:
+            active_fence = None
     return "\n".join(normalized)
 
 

@@ -92,12 +92,27 @@ def test_table_statuses_keep_report_pill_classes():
         "|---|---|\n"
         "| **PASS** | all good |\n"
         "| REGRESSION details | bad |\n"
+        "| SKIPPED | not run |\n"
+        "| PASSING | ordinary text |\n"
     )
     assert '<span class="pass">PASS</span>' in html
     assert '<span class="fail">REGRESSION</span> details' in html
+    assert '<span class="skip">SKIPPED</span>' in html
+    assert '<span class="pass">PASS</span>ING' not in html
+    assert "<td>PASSING</td>" in html
 
 
 def test_nested_lists_use_commonmark_structure():
     html = _md_to_html("- parent\n  - child\n")
     assert html.count("<ul>") == 2
     assert "<li>child</li>" in html
+
+
+def test_tilde_fenced_code_is_not_normalized():
+    html = _md_to_html("~~~\n- literal\nplain\n~~~")
+    assert html == '<pre class="output">- literal\nplain</pre>'
+
+
+def test_extended_backtick_fence_is_not_normalized():
+    html = _md_to_html("````\n- literal\nplain\n````")
+    assert html == '<pre class="output">- literal\nplain</pre>'
