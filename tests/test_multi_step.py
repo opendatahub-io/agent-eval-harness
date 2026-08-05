@@ -402,6 +402,30 @@ dataset: {path: __TMP__/cases}
         parsed = tomllib.loads(toml)  # must be valid TOML despite the quotes
         assert '"quoted"' in parsed["task"]["name"]
 
+    def test_harbor_multistep_reward_strategy_is_root_level(self, tmp_path):
+        # multi_step_reward_strategy is a top-level TaskConfig field in Harbor's
+        # schema; if it nests under [environment] (i.e. emitted after a table
+        # header) Harbor ignores it and falls back to the "mean" default.
+        tomllib = pytest.importorskip("tomllib")
+        from agent_eval.harbor.tasks import generate_tasks
+        (tmp_path / "cases" / "case-1").mkdir(parents=True)
+        (tmp_path / "cases" / "case-1" / "input.yaml").write_text("id: '1'\n")
+        cfgf = _write(tmp_path, """
+name: strat
+execution:
+  mode: case
+  steps:
+    - {id: a, skill: s1, arguments: x}
+    - {id: b, skill: s2, arguments: y}
+dataset: {path: __TMP__/cases}
+""")
+        cfg = EvalConfig.from_yaml(cfgf)
+        generate_tasks(cfg, cfgf, tmp_path / "tasks", "img")
+        parsed = tomllib.loads(
+            (tmp_path / "tasks" / "case-1" / "task.toml").read_text())
+        assert parsed["multi_step_reward_strategy"] == "final"
+        assert "multi_step_reward_strategy" not in parsed.get("environment", {})
+
     def test_harbor_multistep_toml_roundtrips_special_description(self, tmp_path):
         # The multi-step task.toml shares the single-step serializer, so a
         # description with newlines, quotes, and backslashes must round-trip.
