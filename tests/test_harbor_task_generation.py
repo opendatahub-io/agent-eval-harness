@@ -149,6 +149,26 @@ def test_generate_tasks_escapes_del_control_char_in_description(tmp_path):
     assert task["task"]["description"] == description
 
 
+def test_generate_tasks_truncates_long_description_with_ellipsis(tmp_path):
+    # task.description is a one-line label: long text is capped to 120 chars and
+    # marked with an ellipsis rather than silently dropped. The full text is
+    # still preserved in the bundled eval.yaml for judges.
+    description = "x" * 200
+    cfg_path, config = _make_eval(tmp_path, description=description)
+    out = tmp_path / "harbor-tasks"
+
+    gen.generate_tasks(config, cfg_path, out, image="img:latest")
+
+    task = tomllib.loads((out / "case-001" / "task.toml").read_text())
+    label = task["task"]["description"]
+    assert len(label) == 120
+    assert label == "x" * 119 + "…"
+
+    bundled = yaml.safe_load(
+        (out / "case-001" / "tests" / "eval.yaml").read_text())
+    assert bundled["description"] == description
+
+
 def test_generate_tasks_writes_non_ascii_description_as_utf8(tmp_path):
     # _toml_string keeps non-ASCII text raw (ensure_ascii=False), so the file
     # must be written as UTF-8 to survive an ASCII/C-locale environment.

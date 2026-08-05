@@ -159,14 +159,20 @@ def generate_tasks(
         env_dir = task_dir / "environment"
         env_dir.mkdir(parents=True, exist_ok=True)
 
+        # task.description is a display-only label — Harbor shows the agent
+        # instruction.md and the full text stays in the bundled eval.yaml — so
+        # keep it to a single ~120-char line, marking truncation with an
+        # ellipsis instead of silently dropping characters.
+        label = config.description or config.name or "agent-eval task"
+        if len(label) > 120:
+            label = label[:119] + "…"
+
         # task.toml — every string-valued field is TOML-serialized so names,
         # descriptions, and paths containing quotes, newlines, or backslashes
         # round-trip through the parser; the numeric timeouts stay bare.
         (task_dir / "task.toml").write_text(_render("task.toml.tmpl", {
             "TASK_NAME": _toml_string(f"{config.name or 'eval'}/{case_id}"),
-            "TASK_DESC": _toml_string(
-                (config.description or config.name or "agent-eval task")[:120]
-            ),
+            "TASK_DESC": _toml_string(label),
             "EVAL_NAME": _toml_string(config.name),
             "CASE_ID": _toml_string(case_id),
             "IMAGE": _toml_string(image),
