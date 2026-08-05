@@ -402,6 +402,32 @@ dataset: {path: __TMP__/cases}
         parsed = tomllib.loads(toml)  # must be valid TOML despite the quotes
         assert '"quoted"' in parsed["task"]["name"]
 
+    def test_harbor_multistep_toml_roundtrips_special_description(self, tmp_path):
+        # The multi-step task.toml shares the single-step serializer, so a
+        # description with newlines, quotes, and backslashes must round-trip.
+        # (The old _toml_str emitted a bare newline and produced invalid TOML —
+        # issue #148 — for multi-step packages.)
+        tomllib = pytest.importorskip("tomllib")
+        from agent_eval.harbor.tasks import generate_tasks
+        (tmp_path / "cases" / "case-1").mkdir(parents=True)
+        (tmp_path / "cases" / "case-1" / "input.yaml").write_text("id: '1'\n")
+        description = 'Line one\nLine "two" uses \\ a path'
+        cfgf = _write(tmp_path, f"""
+name: strat
+description: {json.dumps(description)}
+execution:
+  mode: case
+  steps:
+    - {{id: a, skill: s1, arguments: x}}
+dataset: {{path: __TMP__/cases}}
+""")
+        cfg = EvalConfig.from_yaml(cfgf)
+        generate_tasks(cfg, cfgf, tmp_path / "tasks", "img")
+        toml = (tmp_path / "tasks" / "case-1" / "task.toml").read_text(
+            encoding="utf-8")
+        assert 'schema_version = "1.4"' in toml  # exercised the multi-step path
+        assert tomllib.loads(toml)["task"]["description"] == description
+
     def test_harbor_missing_input_error_omits_steps_hint(self, tmp_path):
         from agent_eval.harbor.tasks import generate_tasks
         (tmp_path / "cases" / "case-1").mkdir(parents=True)
