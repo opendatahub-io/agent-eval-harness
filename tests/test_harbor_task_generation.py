@@ -131,6 +131,9 @@ def test_generate_tasks_escapes_special_chars_in_name(tmp_path):
     assert task["task"]["name"] == f"{name}/case-001"
     assert task["metadata"]["eval_name"] == name
     assert task["metadata"]["case_id"] == "case-001"
+    # Numeric fields must stay bare (not quoted) so they parse as numbers.
+    assert isinstance(task["verifier"]["timeout_sec"], (int, float))
+    assert isinstance(task["agent"]["timeout_sec"], (int, float))
 
 
 def test_generate_tasks_escapes_del_control_char_in_description(tmp_path):
@@ -144,3 +147,16 @@ def test_generate_tasks_escapes_del_control_char_in_description(tmp_path):
 
     task = tomllib.loads((out / "case-001" / "task.toml").read_text())
     assert task["task"]["description"] == description
+
+
+def test_generate_tasks_writes_non_ascii_description_as_utf8(tmp_path):
+    # _toml_string keeps non-ASCII text raw (ensure_ascii=False), so the file
+    # must be written as UTF-8 to survive an ASCII/C-locale environment.
+    description = "deploy 🚀 café résumé"
+    cfg_path, config = _make_eval(tmp_path, description=description)
+    out = tmp_path / "harbor-tasks"
+
+    gen.generate_tasks(config, cfg_path, out, image="img:latest")
+
+    text = (out / "case-001" / "task.toml").read_text(encoding="utf-8")
+    assert tomllib.loads(text)["task"]["description"] == description

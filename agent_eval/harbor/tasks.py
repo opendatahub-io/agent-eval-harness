@@ -173,12 +173,12 @@ def generate_tasks(
             "WORKDIR": _toml_string(workdir),
             "VERIFIER_TIMEOUT": verifier_timeout,
             "AGENT_TIMEOUT": agent_timeout,
-        }))
+        }), encoding="utf-8")
 
         # instruction.md
         (task_dir / "instruction.md").write_text(_render("instruction.md.tmpl", {
             "COMMAND": command,
-        }))
+        }), encoding="utf-8")
 
         # tests/test.sh + bundled eval.yaml (verifier)
         copy_lines = []
@@ -193,10 +193,11 @@ def generate_tasks(
         (task_dir / "tests" / "test.sh").write_text(_render("test.sh.tmpl", {
             "WORKDIR": workdir,
             "COPY_OUTPUTS": copy_outputs,
-        }))
+        }), encoding="utf-8")
         (task_dir / "tests" / "test.sh").chmod(0o755)
         (task_dir / "tests" / "eval.yaml").write_text(
-            yaml.safe_dump(bundled_cfg, sort_keys=False, allow_unicode=True))
+            yaml.safe_dump(bundled_cfg, sort_keys=False, allow_unicode=True),
+            encoding="utf-8")
 
         # environment/ — auto-uploaded to the workspace by Harbor
         if input_file:
@@ -210,7 +211,8 @@ def generate_tasks(
         if config.execution.mode == "batch" and input_data:
             entries = input_data if isinstance(input_data, list) else [input_data]
             (env_dir / "batch.yaml").write_text(
-                yaml.safe_dump(entries, sort_keys=False, allow_unicode=True))
+                yaml.safe_dump(entries, sort_keys=False, allow_unicode=True),
+                encoding="utf-8")
 
         # Tool interception (hooks + .claude/settings.json)
         _generate_tool_interception(env_dir, config, Path(config_path), workdir)
