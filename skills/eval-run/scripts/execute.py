@@ -595,8 +595,13 @@ def _aggregate_step_metrics(step_metrics):
             if isinstance(t, (int, float)):
                 agg_pmt[m] = agg_pmt.get(m, 0) + t
     has_cost = any(r.get("cost_usd") is not None for r in results)
+    # A case fails if any step did. max() would mask a negative failure code
+    # (e.g. a runner timeout of -1) behind a later 0, so surface the first
+    # non-zero exit code instead.
+    exit_codes = [r.get("exit_code") or 0 for r in results]
+    worst_exit = next((ec for ec in exit_codes if ec != 0), 0)
     return {
-        "exit_code": max((r.get("exit_code", 0) for r in results), default=0),
+        "exit_code": worst_exit,
         "duration_s": round(sum(r.get("duration_s") or 0 for r in results), 1),
         "token_usage": agg_tokens or None,
         "cost_usd": (round(sum(r.get("cost_usd") or 0 for r in results), 4)

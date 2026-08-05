@@ -364,6 +364,17 @@ execution:
     - {id: a, skill: y, max_budget_usd: -1}
 """))
 
+    def test_aggregate_negative_exit_not_masked(self):
+        """A runner failure code (-1) followed by a 0 must not report success."""
+        agg = ex._aggregate_step_metrics(
+            {"a": {"exit_code": -1}, "b": {"exit_code": 0}})
+        assert agg["exit_code"] != 0
+        # all-zero stays zero; a positive failure still surfaces
+        assert ex._aggregate_step_metrics(
+            {"a": {"exit_code": 0}, "b": {"exit_code": 0}})["exit_code"] == 0
+        assert ex._aggregate_step_metrics(
+            {"a": {"exit_code": 0}, "b": {"exit_code": 2}})["exit_code"] == 2
+
     def test_harbor_per_step_timeout_honored(self, tmp_path):
         from agent_eval.harbor.tasks import generate_tasks
         (tmp_path / "cases" / "case-1").mkdir(parents=True)
@@ -473,7 +484,10 @@ dataset: {path: __TMP__/cases}
     def test_score_skips_symlinked_step_stdout(self, tmp_path):
         import os
         secret = tmp_path / "secret.txt"
-        secret.write_text("TOPSECRET")
+        # Parseable JSONL so that *following* the symlink WOULD surface
+        # TOPSECRET in the conversation — otherwise the assertion passes even
+        # if the guard regresses (the leaf just fails to parse).
+        secret.write_text(_jsonl("TOPSECRET"))
         cfg = EvalConfig.from_yaml(_write(tmp_path, """
 name: t
 execution:
