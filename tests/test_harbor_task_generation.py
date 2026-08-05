@@ -19,7 +19,7 @@ def test_resolve_arguments_required_and_optional():
         '--headless --dry-run "do X" --p Critical'
 
 
-def _make_eval(tmp_path, *, description=None):
+def _make_eval(tmp_path, *, name=None, description=None):
     cases = tmp_path / "cases"
     (cases / "case-001").mkdir(parents=True)
     (cases / "case-001" / "input.yaml").write_text(
@@ -36,6 +36,8 @@ def _make_eval(tmp_path, *, description=None):
         "judges": [{"name": "files_exist", "check": "return (True, 'ok')\n"}],
         "models": {"judge": "claude-opus-4-6"},
     }
+    if name is not None:
+        raw["name"] = name
     if description is not None:
         raw["description"] = description
     cfg_path = tmp_path / "eval.yaml"
@@ -114,3 +116,31 @@ def test_generate_tasks_preserves_placeholder_text_in_description(tmp_path):
     task = tomllib.loads((out / "case-001" / "task.toml").read_text())
     assert task["task"]["description"] == description
     assert task["environment"]["docker_image"] == "img:latest"
+
+
+def test_generate_tasks_escapes_special_chars_in_name(tmp_path):
+    # The name/eval_name fields share the description's quoting hazard: a name
+    # with quotes or newlines must not break the generated TOML either.
+    name = 'Acme "Pro"\nrelease'
+    cfg_path, config = _make_eval(tmp_path, name=name)
+    out = tmp_path / "harbor-tasks"
+
+    gen.generate_tasks(config, cfg_path, out, image="img:latest")
+
+    task = tomllib.loads((out / "case-001" / "task.toml").read_text())
+    assert task["task"]["name"] == f"{name}/case-001"
+    assert task["metadata"]["eval_name"] == name
+    assert task["metadata"]["case_id"] == "case-001"
+
+
+def test_generate_tasks_escapes_del_control_char_in_description(tmp_path):
+    # U+007F (DEL) is emitted raw by json.dumps but rejected by TOML parsers;
+    # _toml_string must escape it so the description still round-trips.
+    description = "before\x7fafter"
+    cfg_path, config = _make_eval(tmp_path, description=description)
+    out = tmp_path / "harbor-tasks"
+
+    gen.generate_tasks(config, cfg_path, out, image="img:latest")
+
+    task = tomllib.loads((out / "case-001" / "task.toml").read_text())
+    assert task["task"]["description"] == description

@@ -4,17 +4,17 @@
 schema_version = "1.3"
 
 [task]
-name = "@@TASK_NAME@@"
+name = @@TASK_NAME@@
 description = @@TASK_DESC@@
 
 [metadata]
 generated_by = "agent-eval-harness/eval-dataset"
-eval_name = "@@EVAL_NAME@@"
-case_id = "@@CASE_ID@@"
+eval_name = @@EVAL_NAME@@
+case_id = @@CASE_ID@@
 
 [environment]
-docker_image = "@@IMAGE@@"
-workdir = "@@WORKDIR@@"
+docker_image = @@IMAGE@@
+workdir = @@WORKDIR@@
 
 [verifier]
 timeout_sec = @@VERIFIER_TIMEOUT@@

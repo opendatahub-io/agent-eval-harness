@@ -54,8 +54,15 @@ def _render(template_name: str, mapping: dict) -> str:
 
 
 def _toml_string(value: object) -> str:
-    """Serialize a value as a TOML-compatible basic string."""
-    return json.dumps(str(value), ensure_ascii=False)
+    """Serialize a value as a TOML basic string.
+
+    ``json.dumps`` produces a quoted string whose escape set (``\\"``, ``\\\\``,
+    ``\\b``, ``\\f``, ``\\n``, ``\\r``, ``\\t``, ``\\uXXXX``) is a subset of
+    TOML's, so the result parses as a TOML basic string. The lone exception is
+    U+007F (DEL): JSON emits it raw but TOML requires control characters to be
+    escaped, so escape it explicitly.
+    """
+    return json.dumps(str(value), ensure_ascii=False).replace("\x7f", "\\u007f")
 
 
 def _find_input_file(case_dir: Path):
@@ -152,16 +159,18 @@ def generate_tasks(
         env_dir = task_dir / "environment"
         env_dir.mkdir(parents=True, exist_ok=True)
 
-        # task.toml
+        # task.toml — every string-valued field is TOML-serialized so names,
+        # descriptions, and paths containing quotes, newlines, or backslashes
+        # round-trip through the parser; the numeric timeouts stay bare.
         (task_dir / "task.toml").write_text(_render("task.toml.tmpl", {
-            "TASK_NAME": f"{config.name or 'eval'}/{case_id}",
+            "TASK_NAME": _toml_string(f"{config.name or 'eval'}/{case_id}"),
             "TASK_DESC": _toml_string(
                 (config.description or config.name or "agent-eval task")[:120]
             ),
-            "EVAL_NAME": config.name,
-            "CASE_ID": case_id,
-            "IMAGE": image,
-            "WORKDIR": workdir,
+            "EVAL_NAME": _toml_string(config.name),
+            "CASE_ID": _toml_string(case_id),
+            "IMAGE": _toml_string(image),
+            "WORKDIR": _toml_string(workdir),
             "VERIFIER_TIMEOUT": verifier_timeout,
             "AGENT_TIMEOUT": agent_timeout,
         }))
