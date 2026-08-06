@@ -86,7 +86,10 @@ class ClaudeCodeRunner(EvalRunner):
                 f"Invalid effort '{effort}'. "
                 f"Must be one of: {sorted(self._VALID_EFFORTS)}")
         self._effort = effort
-        if permission_mode and permission_mode not in self._VALID_PERMISSION_MODES:
+        if permission_mode is not None and (
+            not isinstance(permission_mode, str)
+            or permission_mode not in self._VALID_PERMISSION_MODES
+        ):
             raise ValueError(
                 f"Invalid permission_mode '{permission_mode}'. "
                 f"Must be one of: {sorted(self._VALID_PERMISSION_MODES)}")
