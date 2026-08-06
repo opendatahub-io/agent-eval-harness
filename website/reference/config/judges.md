@@ -82,7 +82,7 @@ flowchart TD
 | `feedback_type` | string | LLM, agent | `bool` selects a `passed` verdict; any other value selects a numeric `score` (bounds from `score_range`). Inferred if omitted. |
 | `model` | string | LLM, agent | Per-judge model override (highest precedence). |
 | `samples` | int | LLM, agent | Run N times per case and reduce (median/majority). Default `1`. |
-| `score_range` | `[min, max]` | numeric (LLM, agent) | Numeric bounds + report-color scale. Default `[1, 5]` for LLM/agent, `[0, 1]` for other numeric judges; agent judges use it in the `score.json` contract. |
+| `score_range` | `[min, max]` | numeric | Numeric bounds + report-color scale. LLM/agent default `[1, 5]`; agent judges use it in the `score.json` contract. Also honored on numeric `check`/`builtin` judges to band their per-case report cells (e.g. `score_range: [0, 8]` for a 0-8 total). A numeric judge with no `score_range` renders neutral (uncolored) in per-case cells. |
 
 !!! note "Boolean vs numeric aggregation"
     A judge whose values are all booleans aggregates into a **pass rate**; all-numeric

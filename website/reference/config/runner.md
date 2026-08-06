@@ -35,6 +35,7 @@ Not every runner reads every field. The matrix below shows where each field land
 | --- | --- | :---: | :---: | :---: |
 | `type` | `str` | discriminator | discriminator | discriminator |
 | `effort` | `str` (enum) | `--effort` flag | `{effort}` placeholder | — |
+| `permission_mode` | `str` (enum) | `--permission-mode` flag | — | — |
 | `settings` | `dict` | merged into workspace `.claude/settings.json` | — | connection settings (see below) |
 | `plugin_dirs` | `list[str]` | one `--plugin-dir` per entry | — | — |
 | `env` | `dict` | injected on the safe allowlist | — (uses `execution.env`) | — |
@@ -69,6 +70,30 @@ overrides this field. For the `cli` runner it is exposed as the `{effort}` place
 runner:
   type: claude-code
   effort: high        # low | medium | high | xhigh | max
+```
+
+### `permission_mode`
+
+Claude Code permission mode, passed as the `--permission-mode` CLI flag. Because
+it is a CLI flag (not a settings-file key), it applies even in the untrusted,
+isolated per-case workspaces where `.claude/settings.json` `permissions.allow` /
+`additionalDirectories` are trust-gated and the trust dialog can't appear in
+headless mode. One of:
+
+| Value | `default` | `acceptEdits` | `plan` | `auto` | `dontAsk` | `bypassPermissions` |
+| --- | --- | --- | --- | --- | --- | --- |
+
+An invalid value raises at construction time for `claude-code`; `cli` and
+`responses-api` ignore the field. For a prompt-free, deny-by-default headless
+run, pair `dontAsk` (allows only what's pre-approved) with a complete
+[`permissions.allow`](permissions.md) list (fed to `--allowed-tools`, also
+trust-independent). `bypassPermissions` skips all prompts — isolated
+environments (containers/VMs) only.
+
+```yaml
+runner:
+  type: claude-code
+  permission_mode: dontAsk   # default | acceptEdits | plan | auto | dontAsk | bypassPermissions
 ```
 
 ### `settings`

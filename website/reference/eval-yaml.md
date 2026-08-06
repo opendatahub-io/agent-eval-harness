@@ -348,7 +348,7 @@ thresholds:
 <div class="grid cards" markdown>
 
 - [**execution**](config/execution.md) — mode, skill/prompt, arguments, timeout, budget, parallelism, env
-- [**runner**](config/runner.md) — type, effort, settings, plugin_dirs, env, system_prompt, command, workspace_mode
+- [**runner**](config/runner.md) — type, effort, permission_mode, settings, plugin_dirs, env, system_prompt, command, workspace_mode
 - [**models**](config/models.md) — skill, subagent, judge, hook roles and precedence
 - [**permissions**](config/permissions.md) — allow/deny patterns and the path-based compiler
 - [**mlflow**](config/mlflow.md) — experiment, tracking_uri, tags
