@@ -371,6 +371,10 @@ class RunnerConfig:
     env: dict = field(default_factory=dict)
     system_prompt: Optional[str] = None
     effort: Optional[str] = None  # Claude Code: low | medium | high | xhigh | max
+    # Claude Code: default | acceptEdits | plan | auto | dontAsk | bypassPermissions.
+    # Passed as --permission-mode (a CLI flag), so it applies even in untrusted
+    # isolated workspaces where settings-file permissions are trust-gated.
+    permission_mode: Optional[str] = None
 
 
 def _parse_runner_config(runner_raw, *, context="runner"):
@@ -404,6 +408,7 @@ def _parse_runner_config(runner_raw, *, context="runner"):
         env=runner_raw.get("env", {}) or {},
         system_prompt=runner_raw.get("system_prompt"),
         effort=runner_raw.get("effort"),
+        permission_mode=runner_raw.get("permission_mode"),
     )
 
 

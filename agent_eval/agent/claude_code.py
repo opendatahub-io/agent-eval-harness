@@ -37,6 +37,9 @@ class ClaudeCodeRunner(EvalRunner):
     """Runs skills using the Claude Code CLI in non-interactive mode."""
 
     _VALID_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+    _VALID_PERMISSION_MODES = {
+        "default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions",
+    }
 
     @classmethod
     def from_config(cls, config, *, log_prefix=None, **overrides):
@@ -52,6 +55,8 @@ class ClaudeCodeRunner(EvalRunner):
             mlflow_experiment=overrides.get("mlflow_experiment"),
             mlflow_tracking_uri=overrides.get("mlflow_tracking_uri"),
             effort=overrides.get("effort", config.runner.effort),
+            permission_mode=overrides.get(
+                "permission_mode", config.runner.permission_mode),
             log_prefix=log_prefix,
         )
 
@@ -66,6 +71,7 @@ class ClaudeCodeRunner(EvalRunner):
         mlflow_tracking_uri: Optional[str] = None,
         log_prefix: Optional[str] = None,
         effort: Optional[str] = None,
+        permission_mode: Optional[str] = None,
     ):
         self._permissions = permissions or {}
         self._subagent_model = subagent_model
@@ -80,6 +86,11 @@ class ClaudeCodeRunner(EvalRunner):
                 f"Invalid effort '{effort}'. "
                 f"Must be one of: {sorted(self._VALID_EFFORTS)}")
         self._effort = effort
+        if permission_mode and permission_mode not in self._VALID_PERMISSION_MODES:
+            raise ValueError(
+                f"Invalid permission_mode '{permission_mode}'. "
+                f"Must be one of: {sorted(self._VALID_PERMISSION_MODES)}")
+        self._permission_mode = permission_mode
 
     @property
     def name(self) -> str:
@@ -122,6 +133,9 @@ class ClaudeCodeRunner(EvalRunner):
 
         if self._effort:
             cmd.extend(["--effort", self._effort])
+
+        if self._permission_mode:
+            cmd.extend(["--permission-mode", self._permission_mode])
 
         for plugin_dir in self._plugin_dirs:
             cmd.extend(["--plugin-dir", str(plugin_dir)])
