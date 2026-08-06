@@ -418,31 +418,48 @@ def _try_render_diagram(path: Path, sibling_names: set) -> str:
 def _resolve_dataset_case_dir(dataset_path: str, case_id: str):
     """Resolve a dataset case directory, tolerating a slugged suffix on the
     directory name (e.g. case_id 'RHAIRFE-1056' -> 'RHAIRFE-1056-some-slug').
+    Rejects symlinks and paths escaping the dataset root (CWE-22/59).
     Returns the Path, or None if it can't be found."""
-    case_dir = Path(dataset_path) / case_id
-    if not case_dir.exists():
-        ds = Path(dataset_path)
-        if ds.is_dir():
-            matches = [d for d in ds.iterdir() if d.is_dir() and d.name.startswith(case_id)]
-            if len(matches) == 1:
-                case_dir = matches[0]
-    return case_dir if case_dir.exists() else None
+    ds = Path(dataset_path)
+    if not ds.is_dir():
+        return None
+    ds_root = ds.resolve()
+
+    def _ok(p):
+        return (p.is_dir() and not p.is_symlink()
+                and p.resolve().is_relative_to(ds_root))
+
+    case_dir = ds / case_id
+    if not _ok(case_dir):
+        matches = [d for d in ds.iterdir()
+                   if d.name.startswith(case_id) and _ok(d)]
+        if len(matches) != 1:
+            return None
+        case_dir = matches[0]
+    return case_dir
 
 
 def _case_input_files(case_dir: Path, config) -> list:
     """Input files to show for a case: the input.{yaml,yml,json} record plus the
     files staged into the workspace (``dataset.workspace.files``). Ground-truth
-    (reference/, annotations.yaml) is intentionally excluded."""
+    (reference/, annotations.yaml) is intentionally excluded. Rejects symlinks
+    and paths escaping the case directory (CWE-22/59)."""
     files = []
+    case_root = case_dir.resolve()
+
+    def _ok(p):
+        return (p.is_file() and not p.is_symlink()
+                and p.resolve().is_relative_to(case_root))
+
     for suffix in (".yaml", ".yml", ".json"):
         cand = case_dir / f"input{suffix}"
-        if cand.is_file():
+        if _ok(cand):
             files.append(cand)
             break
     ws_files = ((config.get("dataset") or {}).get("workspace") or {}).get("files") or []
     for name in ws_files:
         cand = case_dir / name
-        if cand.is_file() and cand not in files:
+        if _ok(cand) and cand not in files:
             files.append(cand)
     return files
 
