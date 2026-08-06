@@ -2058,14 +2058,14 @@ def _render_reward_overview(summary, config, reward_cfg=None):
             return '<span class="fail">FAIL</span>'
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             s = f"{v:.2f}" if isinstance(v, float) else str(v)
-            lo, hi = judge_score_range.get(judge_name, (1, 5) if judge_name in llm_set else (0, 1))
-            span = hi - lo
-            frac = (v - lo) / span if span else 0.5
-            if frac >= 0.75:
-                return f'<span class="pass">{s}</span>'
-            elif frac >= 0.375:
-                return f'<span class="warn">{s}</span>'
-            return f'<span class="fail">{s}</span>'
+            # Band by the judge's declared score_range (same helper as the
+            # per-case detail table). Without a declared range we can't know the
+            # scale, so render neutral rather than guessing (a (0,1) guess made
+            # any value >= 1, e.g. a pipeline total of 3.0, render green).
+            rng = judge_score_range.get(judge_name)
+            if not rng:
+                return s
+            return f'<span class="{_score_band_class(v, rng[0], rng[1])}">{s}</span>'
         return f'<span class="skip">{_esc(str(v)[:20])}</span>'
 
     def _reward_cell(val):
@@ -2082,7 +2082,6 @@ def _render_reward_overview(summary, config, reward_cfg=None):
         except (ValueError, TypeError):
             return f'<span class="skip">{_esc(str(val)[:20])}</span>'
 
-    llm_set = set(llm_judges)
     all_judges = gate_judges + llm_judges + other_judges
 
     html = '<h2 class="section-heading">Per-Case Reward Overview</h2>\n'
