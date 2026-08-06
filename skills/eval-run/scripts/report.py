@@ -901,8 +901,8 @@ SAMPLE_TABS_SCRIPT = """
 
 
 def _render_header(config, run_id, run_result, baseline_id=None, title=None):
-    # Precedence: explicit --title > config report_title > default.
-    title = title or config.get("report_title") or "Agent Eval Report"
+    # Precedence: explicit --title > config `title` (sibling to name/description) > default.
+    title = title or config.get("title") or "Agent Eval Report"
     skill = config.get("skill", "")
     date = run_result.get("date", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"))
 
@@ -2897,7 +2897,7 @@ def main():
     parser.add_argument("--open", action="store_true",
                         help="Open report in browser")
     parser.add_argument("--title", default=None,
-                        help="Report title (default: config 'report_title' or "
+                        help="Report title (default: config 'title' or "
                              "'Agent Eval Report')")
     args = parser.parse_args()
 
