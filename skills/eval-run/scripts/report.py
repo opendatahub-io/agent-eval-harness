@@ -883,8 +883,9 @@ SAMPLE_TABS_SCRIPT = """
 """
 
 
-def _render_header(config, run_id, run_result, baseline_id=None):
-    title = "Skill Eval Report"
+def _render_header(config, run_id, run_result, baseline_id=None, title=None):
+    # Precedence: explicit --title > config report_title > default.
+    title = title or config.get("report_title") or "Agent Eval Report"
     skill = config.get("skill", "")
     date = run_result.get("date", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"))
 
@@ -2823,7 +2824,7 @@ def _wrap_section(content: str) -> str:
 def generate_report(config, summary, run_result, run_dir,
                     review=None, baseline_dir=None,
                     baseline_summary=None, baseline_result=None,
-                    reward_cfg=None):
+                    reward_cfg=None, report_title=None):
     global _img_compare_counter
     _img_compare_counter = 0
     name = config.get("name", "Eval")
@@ -2846,7 +2847,7 @@ def generate_report(config, summary, run_result, run_dir,
         baseline_id = baseline_summary.get("run_id")
     if not baseline_id and baseline_dir:
         baseline_id = baseline_dir.name
-    html += _render_header(config, run_id, run_result, baseline_id)
+    html += _render_header(config, run_id, run_result, baseline_id, title=report_title)
     html += _wrap_section(_render_run_config(run_result, baseline_result))
     html += _render_analysis(run_dir, summary, run_result, baseline_summary)
     html += _wrap_section(_render_scoring_summary(summary, config, baseline_summary))
@@ -2878,6 +2879,9 @@ def main():
                         help="Baseline run ID for comparison")
     parser.add_argument("--open", action="store_true",
                         help="Open report in browser")
+    parser.add_argument("--title", default=None,
+                        help="Report title (default: config 'report_title' or "
+                             "'Agent Eval Report')")
     args = parser.parse_args()
 
     # Load config as EvalConfig object to access eval_name() method
@@ -2964,6 +2968,7 @@ def main():
         baseline_summary=baseline_summary,
         reward_cfg=load_reward_cfg(args.config),
         baseline_result=baseline_result,
+        report_title=args.title,
     )
 
     output_path = run_dir / "report.html"
