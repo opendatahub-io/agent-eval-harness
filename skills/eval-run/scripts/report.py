@@ -415,8 +415,10 @@ def _try_render_diagram(path: Path, sibling_names: set) -> str:
     return ""
 
 
-def _read_case_input(dataset_path: str, case_id: str) -> str:
-    """Read the input file from a dataset case directory."""
+def _resolve_dataset_case_dir(dataset_path: str, case_id: str):
+    """Resolve a dataset case directory, tolerating a slugged suffix on the
+    directory name (e.g. case_id 'RHAIRFE-1056' -> 'RHAIRFE-1056-some-slug').
+    Returns the Path, or None if it can't be found."""
     case_dir = Path(dataset_path) / case_id
     if not case_dir.exists():
         ds = Path(dataset_path)
@@ -424,17 +426,25 @@ def _read_case_input(dataset_path: str, case_id: str) -> str:
             matches = [d for d in ds.iterdir() if d.is_dir() and d.name.startswith(case_id)]
             if len(matches) == 1:
                 case_dir = matches[0]
-    if not case_dir.exists():
-        return ""
+    return case_dir if case_dir.exists() else None
+
+
+def _case_input_files(case_dir: Path, config) -> list:
+    """Input files to show for a case: the input.{yaml,yml,json} record plus the
+    files staged into the workspace (``dataset.workspace.files``). Ground-truth
+    (reference/, annotations.yaml) is intentionally excluded."""
+    files = []
     for suffix in (".yaml", ".yml", ".json"):
-        candidate = case_dir / f"input{suffix}"
-        if candidate.is_file():
-            return _read_text(candidate, max_lines=100)
-    # Fallback: first parseable file
-    for f in sorted(case_dir.iterdir()):
-        if f.is_file() and f.suffix in (".yaml", ".yml", ".json"):
-            return _read_text(f, max_lines=100)
-    return ""
+        cand = case_dir / f"input{suffix}"
+        if cand.is_file():
+            files.append(cand)
+            break
+    ws_files = ((config.get("dataset") or {}).get("workspace") or {}).get("files") or []
+    for name in ws_files:
+        cand = case_dir / name
+        if cand.is_file() and cand not in files:
+            files.append(cand)
+    return files
 
 
 # ---------------------------------------------------------------------------
@@ -604,6 +614,36 @@ details.case > summary:hover { color: var(--accent); }
 .info-box { background: var(--accent-soft); border: 1px solid var(--border); border-radius: 6px; padding: 0.8em 1em; margin: 0.6em 0; font-size: 0.9em; }
 .feedback-box { background: var(--warning-soft); border: 1px solid var(--warning-border); border-radius: 6px; padding: 0.8em 1em; margin: 0.6em 0; font-size: 0.9em; color: var(--text); }
 .file-badge { display: inline-block; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.82em; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 5px; padding: 3px 10px; margin: 1em 0 0.5em 0; color: var(--text-soft); }
+details.file-entry { margin: 1em 0 0.5em 0; }
+details.file-entry > summary { cursor: pointer; list-style: none; user-select: none; }
+details.file-entry > summary::-webkit-details-marker { display: none; }
+details.file-entry > summary::before { content: "\\25B8"; margin-right: 0.4em; color: var(--text-muted); }
+details.file-entry[open] > summary::before { content: "\\25BE"; }
+details.file-entry > summary .file-name { display: inline-block; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.82em; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 5px; padding: 3px 10px; color: var(--text-soft); }
+details.file-entry[open] > summary { margin-bottom: 0.5em; }
+details.file-entry > summary .file-meta { color: var(--text-muted); font-size: 0.9em; margin-left: 0.6em; }
+details.file-entry > summary .fm-chip, .file-badge .fm-chip { display: inline-block; font-size: 0.82em; padding: 1px 7px; margin-left: 0.4em; border-radius: 999px; background: var(--accent-soft); color: var(--accent-strong); border: 1px solid var(--border); vertical-align: middle; }
+.file-badge .file-meta { color: var(--text-muted); font-weight: 400; margin-left: 0.4em; }
+/* Input vs Output group accents */
+details.io-group { border-left: 3px solid var(--border-strong); padding-left: 0.8em; margin: 0.8em 0; }
+details.io-group > summary { cursor: pointer; font-weight: 600; list-style: none; }
+details.io-group > summary::-webkit-details-marker { display: none; }
+details.io-group > summary::before { content: "▸"; color: var(--text-muted); display: inline-block; margin-right: 0.4em; }
+details.io-group[open] > summary::before { content: "▾"; }
+details.io-input { border-left-color: var(--text-muted); }
+details.io-output { border-left-color: var(--accent); }
+details.io-diff { border-left-color: var(--warning); }
+/* the raw/rendered toggle flips [hidden]; keep it authoritative over display rules */
+[hidden] { display: none !important; }
+/* Line-number gutter (copy-safe: the number column is not selectable). The
+   WRAPPER is the single scroll box, so the gutter and content scroll together
+   and stay aligned - the gutter can't run past the content's scroll viewport. */
+.numwrap { display: flex; align-items: stretch; max-height: 480px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); }
+.numwrap .lncol { flex: 0 0 auto; margin: 0; padding: 0.9em 0.6em; border: none; border-right: 1px solid var(--border); border-radius: 0; background: var(--surface-3); color: var(--text-muted); text-align: right; user-select: none; font-size: 0.88em; line-height: 1.5; font-family: ui-monospace, "SF Mono", Menlo, monospace; white-space: pre; }
+.numwrap pre.output { margin: 0; padding: 0.9em 1em; border: none; border-radius: 0; background: transparent; flex: 1 0 auto; line-height: 1.5; white-space: pre; overflow: visible; max-height: none; }
+.md-toggle { font-size: 0.78em; padding: 2px 9px; margin-bottom: 0.5em; border-radius: 5px; border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text-soft); cursor: pointer; }
+.md-rendered { border: 1px solid var(--border); border-radius: 6px; padding: 0.6em 1em; background: var(--surface); max-height: 520px; overflow-y: auto; }
+.diff-stat { font-size: 0.82em; font-weight: 600; color: var(--text-muted); margin-left: 0.4em; }
 .pw-badge { display: inline-block; font-size: 0.78em; font-weight: 700; padding: 2px 9px; border-radius: 999px; margin-left: 8px; border: 1px solid transparent; letter-spacing: 0.04em; }
 .pw-win { background: var(--success-soft); color: var(--success); border-color: var(--success-border); }
 .pw-loss { background: var(--danger-soft); color: var(--danger); border-color: var(--danger-border); }
@@ -2191,6 +2231,199 @@ def _score_band_class(val, lo, hi):
     return "fail"
 
 
+def _render_artifact_body(f, rel, config, gold_image_uri, gold_diagram_uri):
+    """Render one output file's body HTML (no filename header; the caller adds it).
+
+    Returns ``(kind, body)``:
+    - ``kind="rendered"``: a visual artifact (image, diagram, HTML preview,
+      metrics table) shown inline; the caller keeps it expanded.
+    - ``kind="raw"``: a plain-text dump (``<pre>``) the caller collapses by
+      default so large files don't force scrolling.
+    - ``body=""``: nothing to show (e.g. a diagram whose rendered sibling is
+      displayed as its own file).
+    """
+    if f.suffix == ".html":
+        try:
+            html_content = f.read_text()
+            srcdoc = html_content.replace("&", "&amp;").replace('"', "&quot;")
+            return ("rendered",
+                    f'<iframe class="html-preview" srcdoc="{srcdoc}" '
+                    f'sandbox="allow-same-origin" '
+                    f'onload="this.style.height=this.contentDocument.documentElement.scrollHeight+20+\'px\'"'
+                    f'></iframe>\n')
+        except (UnicodeDecodeError, OSError):
+            return ("rendered", '<span class="skip">(could not read)</span>\n')
+    if _is_image_file(f):
+        data_uri = _image_to_data_uri(f)
+        if data_uri:
+            if gold_image_uri:
+                return ("rendered", _render_image_compare(
+                    data_uri, gold_image_uri, gen_label="Generated",
+                    ref_label="Gold Standard", ref_class="img-label-ref"))
+            return ("rendered", _render_standalone_image(data_uri, str(rel)))
+        size = f.stat().st_size
+        return ("rendered", f'<span class="skip">({size} bytes, unreadable)</span>\n')
+    if f.suffix in _DIAGRAM_SUFFIXES:
+        sibling_names = {s.name for s in f.parent.iterdir()}
+        has_rendered_sibling = (
+            f"{f.name}.png" in sibling_names or f"{f.name}.svg" in sibling_names)
+        svg_uri = _try_render_diagram(f, sibling_names)
+        if svg_uri:
+            if gold_diagram_uri:
+                body = _render_image_compare(
+                    svg_uri, gold_diagram_uri, gen_label="Generated",
+                    ref_label="Gold Standard", ref_class="img-label-ref")
+            else:
+                body = _render_standalone_image(svg_uri, str(rel))
+            source = _read_text(f, max_lines=200)
+            if source:
+                body += (f'<details class="diagram-source"><summary>Source</summary>\n'
+                         f'<pre class="output">{_esc(source)}</pre></details>\n')
+            return ("rendered", body)
+        if not has_rendered_sibling:
+            content = _read_text(f, max_lines=200)
+            if content:
+                return ("raw", f'<pre class="output">{_esc(content)}</pre>\n')
+        return ("", "")
+    if _resolve_artifact_type(f.name, config) == "graph":
+        svg = _render_graph_spec_to_svg(f)
+        if svg:
+            body = _render_standalone_image(_svg_to_data_uri(svg), str(rel))
+            content = _read_text(f, max_lines=200)
+            if content:
+                body += (f'<details class="diagram-source"><summary>Source</summary>\n'
+                         f'<pre class="output">{_esc(content)}</pre></details>\n')
+            return ("rendered", body)
+        content = _read_text(f, max_lines=200)
+        return ("raw", f'<pre class="output">{_esc(content)}</pre>\n') if content else ("", "")
+    if _resolve_artifact_type(f.name, config) == "metrics":
+        try:
+            metrics = json.loads(f.read_text())
+            if isinstance(metrics, dict) and metrics:
+                body = '<table class="metrics-table"><tr><th>Metric</th><th>Value</th></tr>\n'
+                for k, v in metrics.items():
+                    body += f'<tr><td>{_esc(str(k))}</td><td>{_esc(str(v))}</td></tr>\n'
+                return ("rendered", body + '</table>\n')
+            return ("raw", f'<pre class="output">{_esc(f.read_text())}</pre>\n')
+        except (json.JSONDecodeError, OSError):
+            content = _read_text(f, max_lines=200)
+            return ("raw", f'<pre class="output">{_esc(content)}</pre>\n') if content else ("", "")
+    content = _read_text(f, max_lines=200)
+    if content:
+        return ("raw", f'<pre class="output">{_esc(content)}</pre>\n')
+    size = f.stat().st_size
+    return ("rendered", f'<span class="skip">({size} bytes, binary)</span>\n')
+
+
+_FM_CHIP_KEYS = ("status", "recommendation", "priority", "size", "needs_attention")
+
+
+def _file_meta(f):
+    """Compact 'N lines, 12 KB' meta for a file summary (size-only for binaries)."""
+    try:
+        size = f.stat().st_size
+    except OSError:
+        return ""
+    if size >= 1024 * 1024:
+        human = f"{size / 1048576:.1f} MB"
+    elif size >= 1024:
+        human = f"{size / 1024:.1f} KB"
+    else:
+        human = f"{size} B"
+    if f.suffix.lower() not in _IMAGE_SUFFIXES:
+        try:
+            return f"{len(f.read_text().splitlines())} lines · {human}"
+        except (UnicodeDecodeError, OSError):
+            pass
+    return human
+
+
+def _frontmatter_chips(f):
+    """Small badges from a markdown file's YAML frontmatter (status, recommendation,
+    scores.total, ...) so the output list is scannable without expanding."""
+    if f.suffix.lower() not in (".md", ".markdown"):
+        return ""
+    try:
+        meta, _ = _parse_analysis_frontmatter(f.read_text())
+    except (UnicodeDecodeError, OSError):
+        return ""
+    if not isinstance(meta, dict) or not meta:
+        return ""
+    chips = []
+    for k in _FM_CHIP_KEYS:
+        v = meta.get(k)
+        label = k.replace("_", " ")
+        if isinstance(v, bool):
+            # show the key with the flag only when set (a bare value is cryptic)
+            if v:
+                chips.append(f'<span class="fm-chip">{_esc(label)}: true</span>')
+            continue
+        if isinstance(v, (str, int, float)) and str(v).strip():
+            chips.append(f'<span class="fm-chip">{_esc(label)}: {_esc(str(v))}</span>')
+    scores = meta.get("scores")
+    if isinstance(scores, dict) and isinstance(scores.get("total"), (int, float)):
+        chips.append(f'<span class="fm-chip">total: {_esc(str(scores["total"]))}</span>')
+    return "".join(chips)
+
+
+def _numbered_pre(text, cls="output"):
+    """A <pre> with a copy-safe line-number gutter (the number column is not
+    selectable, so copying the content excludes line numbers)."""
+    lines = text.splitlines() or [""]
+    gutter = "\n".join(str(i + 1) for i in range(len(lines)))
+    return (f'<div class="numwrap"><pre class="lncol" aria-hidden="true">{gutter}</pre>'
+            f'<pre class="{cls}">{_esc(chr(10).join(lines))}</pre></div>')
+
+
+def _diff_stats(old_text, new_text):
+    """(added, deleted) line counts between two texts."""
+    sm = difflib.SequenceMatcher(None, old_text.splitlines(), new_text.splitlines())
+    adds = dels = 0
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op in ("replace", "delete"):
+            dels += i2 - i1
+        if op in ("replace", "insert"):
+            adds += j2 - j1
+    return adds, dels
+
+
+def _render_file_entries(files, base_dir, config, gold_image_uri="", gold_diagram_uri=""):
+    """Render files as report entries. Returns ``(html, count)``.
+
+    Raw text is collapsed by default with a line-numbered, no-wrap (diff-safe)
+    body, a size/line-count meta, frontmatter chips, and a raw/rendered toggle
+    for markdown. Rendered artifacts (images/diagrams/tables) stay inline.
+    Shared by the Input and Output groups so both look identical."""
+    out = ""
+    count = 0
+    for f in files:
+        rel = f.relative_to(base_dir)
+        kind, body = _render_artifact_body(f, rel, config, gold_image_uri, gold_diagram_uri)
+        if not body:
+            continue
+        count += 1
+        meta = _file_meta(f)
+        if kind == "raw":
+            text = _read_text(f, max_lines=200)
+            content = _numbered_pre(text)
+            toggle = rendered = ""
+            if f.suffix.lower() in (".md", ".markdown"):
+                rendered = f'<div class="md-rendered" hidden>{_md_to_html(text)}</div>'
+                toggle = (
+                    '<button type="button" class="md-toggle" onclick="'
+                    "var d=this.closest('details'),n=d.querySelector('.numwrap'),"
+                    "r=d.querySelector('.md-rendered');n.hidden=!n.hidden;r.hidden=!r.hidden;"
+                    "this.textContent=n.hidden?'raw':'rendered';\">rendered</button>")
+            out += (f'<details class="file-entry"><summary>'
+                    f'<span class="file-name">{_esc(str(rel))}</span>{_frontmatter_chips(f)}'
+                    f'<span class="file-meta">{_esc(meta)}</span></summary>\n'
+                    f'{toggle}{content}{rendered}</details>\n')
+        else:
+            meta_html = f' <span class="file-meta">{_esc(meta)}</span>' if meta else ""
+            out += f'<div class="file-badge">{_esc(str(rel))}{meta_html}</div>\n{body}'
+    return out, count
+
+
 def _render_per_case(summary, run_dir, config, baseline_dir, review):
     per_case = summary.get("per_case", {})
     if not per_case:
@@ -2394,12 +2627,16 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
             html += (f'<div class="feedback-box"><strong>Human feedback:</strong> '
                      f'{_esc(str(case_feedback))}</div>\n')
 
-        # Input data
+        # Input files: the case input record plus the files staged into the
+        # workspace, rendered like Output files (a group, each file collapsible).
         if dataset_path:
-            input_text = _read_case_input(dataset_path, case_id)
-            if input_text:
-                html += (f'<details open><summary>Input</summary>'
-                         f'<pre class="output">{_esc(input_text)}</pre></details>\n')
+            in_dir = _resolve_dataset_case_dir(dataset_path, case_id)
+            input_files = _case_input_files(in_dir, config) if in_dir else []
+            if input_files:
+                in_body, in_n = _render_file_entries(input_files, in_dir, config)
+                if in_n:
+                    html += (f'<details open class="io-group io-input">'
+                             f'<summary>Input ({in_n})</summary>\n{in_body}</details>\n')
 
         # Output files — when baseline is provided, skip files under output_paths
         # since those will appear in the baseline diff section below.
@@ -2435,115 +2672,17 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
                          if not any(str(f.relative_to(case_dir)).startswith(op)
                                     for op in output_paths)]
             if files:
-                html += "<details open><summary>Output files</summary>\n"
-                for f in files:
-                    rel = f.relative_to(case_dir)
-                    if f.suffix == ".html":
-                        # Render HTML files inline in a sandboxed iframe
-                        try:
-                            html_content = f.read_text()
-                            # Escape for srcdoc attribute (double-escape quotes)
-                            srcdoc = (html_content
-                                      .replace("&", "&amp;")
-                                      .replace('"', "&quot;"))
-                            html += (f'<div class="file-badge">{_esc(str(rel))}</div>\n'
-                                     f'<iframe class="html-preview" srcdoc="{srcdoc}" '
-                                     f'sandbox="allow-same-origin" '
-                                     f'onload="this.style.height=this.contentDocument.documentElement.scrollHeight+20+\'px\'"'
-                                     f'></iframe>\n')
-                        except (UnicodeDecodeError, OSError):
-                            html += (f'<div class="file-badge">{_esc(str(rel))} '
-                                     f'<span class="skip">(could not read)</span></div>\n')
-                    elif _is_image_file(f):
-                        data_uri = _image_to_data_uri(f)
-                        if data_uri:
-                            html += f'<div class="file-badge">{_esc(str(rel))}</div>\n'
-                            if gold_image_uri:
-                                html += _render_image_compare(
-                                    data_uri, gold_image_uri,
-                                    gen_label="Generated",
-                                    ref_label="Gold Standard",
-                                    ref_class="img-label-ref")
-                            else:
-                                html += _render_standalone_image(data_uri, str(rel))
-                        else:
-                            size = f.stat().st_size
-                            html += (f'<div class="file-badge">{_esc(str(rel))} '
-                                     f'<span class="skip">({size} bytes, unreadable)</span></div>\n')
-                    elif f.suffix in _DIAGRAM_SUFFIXES:
-                        sibling_names = {s.name for s in f.parent.iterdir()}
-                        # Skip if a rendered sibling (e.g. .drawio.png) is already displayed
-                        has_rendered_sibling = (
-                            f"{f.name}.png" in sibling_names
-                            or f"{f.name}.svg" in sibling_names
-                        )
-                        svg_uri = _try_render_diagram(f, sibling_names)
-                        if svg_uri:
-                            html += f'<div class="file-badge">{_esc(str(rel))}</div>\n'
-                            if gold_diagram_uri:
-                                html += _render_image_compare(
-                                    svg_uri, gold_diagram_uri,
-                                    gen_label="Generated",
-                                    ref_label="Gold Standard",
-                                    ref_class="img-label-ref")
-                            else:
-                                html += _render_standalone_image(svg_uri, str(rel))
-                            source = _read_text(f, max_lines=200)
-                            if source:
-                                html += (f'<details class="diagram-source"><summary>Source</summary>\n'
-                                         f'<pre class="output">{_esc(source)}</pre></details>\n')
-                        elif not has_rendered_sibling:
-                            content = _read_text(f, max_lines=200)
-                            if content:
-                                html += (f'<div class="file-badge">{_esc(str(rel))}</div>\n'
-                                         f'<pre class="output">{_esc(content)}</pre>\n')
-                    elif _resolve_artifact_type(f.name, config) == "graph":
-                        svg = _render_graph_spec_to_svg(f)
-                        if svg:
-                            svg_uri = _svg_to_data_uri(svg)
-                            html += f'<div class="file-badge">{_esc(str(rel))}</div>\n'
-                            html += _render_standalone_image(svg_uri, str(rel))
-                            content = _read_text(f, max_lines=200)
-                            if content:
-                                html += (f'<details class="diagram-source"><summary>Source</summary>\n'
-                                         f'<pre class="output">{_esc(content)}</pre></details>\n')
-                        else:
-                            content = _read_text(f, max_lines=200)
-                            if content:
-                                html += (f'<div class="file-badge">{_esc(str(rel))}</div>\n'
-                                         f'<pre class="output">{_esc(content)}</pre>\n')
-                    elif _resolve_artifact_type(f.name, config) == "metrics":
-                        try:
-                            metrics = json.loads(f.read_text())
-                            if isinstance(metrics, dict) and metrics:
-                                html += f'<div class="file-badge">{_esc(str(rel))}</div>\n'
-                                html += '<table class="metrics-table"><tr><th>Metric</th><th>Value</th></tr>\n'
-                                for k, v in metrics.items():
-                                    html += f'<tr><td>{_esc(str(k))}</td><td>{_esc(str(v))}</td></tr>\n'
-                                html += '</table>\n'
-                            else:
-                                html += (f'<div class="file-badge">{_esc(str(rel))}</div>\n'
-                                         f'<pre class="output">{_esc(f.read_text())}</pre>\n')
-                        except (json.JSONDecodeError, OSError):
-                            content = _read_text(f, max_lines=200)
-                            if content:
-                                html += (f'<div class="file-badge">{_esc(str(rel))}</div>\n'
-                                         f'<pre class="output">{_esc(content)}</pre>\n')
-                    else:
-                        content = _read_text(f, max_lines=200)
-                        if content:
-                            html += (f'<div class="file-badge">{_esc(str(rel))}</div>\n'
-                                     f'<pre class="output">{_esc(content)}</pre>\n')
-                        else:
-                            size = f.stat().st_size
-                            html += (f'<div class="file-badge">{_esc(str(rel))} '
-                                     f'<span class="skip">({size} bytes, binary)</span></div>\n')
-                html += "</details>\n"
+                out_body, out_n = _render_file_entries(
+                    files, case_dir, config, gold_image_uri, gold_diagram_uri)
+                if out_n:
+                    html += (f'<details open class="io-group io-output">'
+                             f'<summary>Output ({out_n})</summary>\n{out_body}</details>\n')
 
         # Baseline diff
         if has_baseline:
             bl_case_dir = bl_cases_dir / case_id
             diffs = []
+            diff_stats = {}
             for out_path in output_paths:
                 curr_dir = case_dir / out_path if out_path != "." else case_dir
                 base_dir = bl_case_dir / out_path if out_path != "." else bl_case_dir
@@ -2652,12 +2791,17 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
                             bt, ct,
                             left_label=f"baseline/{out_path}/{name}",
                             right_label=f"current/{out_path}/{name}")
+                        adds, dels = _diff_stats(bt, ct)
+                        diff_stats[f"{out_path}/{name}"] = (
+                            f' <span class="diff-stat">+{adds} -{dels}</span>')
                         diffs.append((f"{out_path}/{name}", diff_html))
 
             if diffs:
-                html += "<details open><summary>Baseline diff</summary>\n"
+                html += (f'<details open class="io-group io-diff">'
+                         f'<summary>Baseline diff ({len(diffs)})</summary>\n')
                 for fname, diff_html in diffs:
-                    html += f'<div class="file-badge">{_esc(fname)}</div>\n{diff_html}\n'
+                    html += (f'<div class="file-badge">{_esc(fname)}'
+                             f'{diff_stats.get(fname, "")}</div>\n{diff_html}\n')
                 html += "</details>\n"
 
         html += "</details>\n"
