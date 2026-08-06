@@ -1927,8 +1927,9 @@ def _ascii_hist(items, lo_label, hi_label, mark_key):
     (height = count, tallest = █), empty categories stay ░, and the bar for
     `mark_key` is wrapped in markers (\\x01..\\x02) for colourising in HTML.
     A stable judge — all samples in one bucket — is a single bar (e.g.
-    ``1 ░░░░█ 5``), so the column reads "agree" vs "wobble" at a glance.
-    Used for numeric judges (1 … 5), bool judges (F … P) and pairwise (A … B).
+    ``0 ░░█ 2``), so the column reads "agree" vs "wobble" at a glance.
+    Used for numeric judges (over each judge's own score range), bool judges
+    (F … P) and pairwise (A … B).
     """
     blocks = "▁▂▃▄▅▆▇█"
     maxc = max((c for _, c in items), default=1) or 1
@@ -2162,6 +2163,16 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
     cases_dir = run_dir / "cases"
     bl_cases_dir = baseline_dir / "cases" if baseline_dir else None
 
+    # Resolve score_range per judge from config so each sampling histogram uses
+    # its own axis (e.g. rubric judges are 0–2, not a hardcoded 1–5). Judges
+    # without a configured score_range fall back to the observed min/max.
+    judge_score_range = {}
+    for j in config.get("judges", []):
+        name = j.get("name", "")
+        sr = j.get("score_range")
+        if isinstance(sr, list) and len(sr) >= 2:
+            judge_score_range[name] = (sr[0], sr[1])
+
     # Build pairwise lookup per case (full entry: winner + reasoning)
     pw_by_case = {}
     pw = summary.get("pairwise", {})
@@ -2263,15 +2274,17 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
             if err:
                 rat = f"ERROR: {err}"
             # Per-case sampling distribution (from --samples): an ASCII glyph
-            # (monospace, aligns cleanly) showing the spread on the 1–5 scale.
-            # Shown for every sampled judge — a stable judge is a single bar,
-            # which reads at a glance as "all samples agree". Raw samples on hover.
+            # (monospace, aligns cleanly) showing the spread on the judge's own
+            # score scale. Shown for every sampled judge — a stable judge is a
+            # single bar, which reads at a glance as "all samples agree". Raw
+            # samples on hover.
             jst = jresult.get("stability")
             if (isinstance(jst, dict) and jst.get("samples", 1) > 1
                     and "min" in jst):
                 vals = jst.get("values", [])
                 samples = ", ".join(str(v) for v in vals)
-                glyph = _colorise_hist(_ascii_score_hist(val, vals, 1, 5))
+                smin, smax = judge_score_range.get(jname, (None, None))
+                glyph = _colorise_hist(_ascii_score_hist(val, vals, smin, smax))
                 val_html += (f' <span class="ascii-range" '
                              f'title="samples: {_esc(samples)}">{glyph}</span>')
             elif (isinstance(jst, dict) and jst.get("samples", 1) > 1
