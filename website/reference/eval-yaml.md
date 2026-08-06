@@ -12,7 +12,7 @@ one `judge`.
 
 <div class="schema-diagram" role="region" aria-label="eval.yaml schema map">
   <p class="sd-meta">
-    Every top-level key is optional. <code>name</code> and <code>description</code> are the only non-deprecated top-level scalars.
+    Every top-level key is optional. <code>name</code>, <code>description</code>, and <code>title</code> are the only non-deprecated top-level scalars.
     <span class="sd-badge llm">LLM</span> marks natural-language fields interpreted by agents &amp; judges,
     <span class="sd-badge py">PY</span> marks Python code or expressions, and <code>[]</code> marks a list.
   </p>
@@ -207,6 +207,7 @@ one `judge`.
 | --- | --- | --- |
 | `name` | Experiment / run name (defaults to the file stem) | *(inline)* |
 | `description` | Human-readable description | *(inline)* |
+| `title` | HTML report heading (default: `Agent Eval Report`; `--title` overrides) | *(inline)* |
 | `execution` | What to run and how cases are processed | [execution](config/execution.md) |
 | `runner` | Agent runtime + runtime-specific knobs | [runner](config/runner.md) |
 | `models` | Model per role: skill, subagent, judge, hook | [models](config/models.md) |
@@ -282,6 +283,7 @@ and thresholds. It's the best single file to copy from.
 ```yaml title="eval.yaml (excerpt)"
 name: my-skill-eval
 description: Evaluate the main skill pipeline
+title: My Skill Eval Report   # HTML report heading (default: Agent Eval Report)
 
 execution:
   mode: case              # per-case (default) or batch
