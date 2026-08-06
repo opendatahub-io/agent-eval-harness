@@ -2150,6 +2150,24 @@ def _render_reward_overview(summary, config, reward_cfg=None):
     return html
 
 
+def _score_band_class(val, lo, hi):
+    """CSS class for a numeric score by its position in its own [lo, hi] range:
+    green (top quartile) / amber (mid) / red (bottom third).
+
+    Per-case cells are coloured by where the score sits on the judge's own
+    scale — NOT against the aggregate `min_mean` threshold, which is a floor on
+    the mean ACROSS cases and mis-flags valid per-case scores (e.g. a 1 on a
+    0-2 judge with min_mean 1.5 would render red even though the judge passes).
+    """
+    span = hi - lo
+    frac = (val - lo) / span if span else 0.5
+    if frac >= 0.75:
+        return "pass"
+    if frac >= 0.375:
+        return "warn"
+    return "fail"
+
+
 def _render_per_case(summary, run_dir, config, baseline_dir, review):
     per_case = summary.get("per_case", {})
     if not per_case:
@@ -2215,15 +2233,15 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
             elif val is False:
                 failed += 1
             elif isinstance(val, (int, float)):
-                thresh = thresholds.get(jname, {})
-                min_mean = thresh.get("min_mean") if isinstance(thresh, dict) else None
-                if min_mean is not None:
-                    if val >= min_mean:
-                        passed += 1
-                    else:
-                        failed += 1
+                # A numeric cell drags its case red only on a genuine low (a
+                # bottom-band score on the judge's own scale), not for being
+                # below the aggregate min_mean floor. Judges without a declared
+                # score_range (e.g. pipeline_total) are neutral -> count as pass.
+                lo, hi = judge_score_range.get(jname, (None, None))
+                if lo is not None and hi is not None and _score_band_class(val, lo, hi) == "fail":
+                    failed += 1
                 else:
-                    passed += 1  # no threshold defined, count as pass
+                    passed += 1
         status = "pass" if failed == 0 else "fail"
 
         # Pairwise badge or pass/fail accent — applied as a left-border class
@@ -2262,12 +2280,13 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
             elif val is False:
                 val_html = '<span class="fail">FAIL</span>'
             elif isinstance(val, (int, float)):
-                thresh = thresholds.get(jname, {})
-                min_mean = thresh.get("min_mean") if isinstance(thresh, dict) else None
-                if min_mean is not None and val < min_mean:
-                    val_html = f'<span class="fail">{val}</span>'
+                # Colour by the score's position on the judge's own scale
+                # (green/amber/red), not against the aggregate min_mean floor.
+                lo, hi = judge_score_range.get(jname, (None, None))
+                if lo is not None and hi is not None:
+                    val_html = f'<span class="{_score_band_class(val, lo, hi)}">{val}</span>'
                 else:
-                    val_html = f'<span class="pass">{val}</span>'
+                    val_html = str(val)  # unknown scale: neutral, no verdict colour
             else:
                 val_html = _esc(str(val)[:100])
 
