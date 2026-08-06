@@ -1950,6 +1950,8 @@ def _ascii_score_hist(med, values, smin=None, smax=None):
         return ""
     lo = smin if smin is not None else min(numeric)
     hi = smax if smax is not None else max(numeric)
+    if hi - lo > _MAX_HIST_BINS:   # pathological declared range -> use observed span
+        lo, hi = min(numeric), max(numeric)
     counts = Counter(numeric)
     med = max(lo, min(hi, int(med)))
     items = [(s, counts.get(s, 0)) for s in range(lo, hi + 1)]
@@ -1961,6 +1963,33 @@ def _colorise_hist(glyph):
     return (_esc(glyph)
             .replace("\x01", '<span class="med">')
             .replace("\x02", "</span>"))
+
+
+_MAX_HIST_BINS = 40  # safety cap: fall back to observed span for pathological ranges
+
+
+def _judge_score_ranges(config):
+    """Map judge name -> validated integer (lo, hi) from its `score_range`.
+
+    report.py reads eval.yaml as raw dicts (bypassing EvalConfig validation),
+    so guard here: keep only well-formed ranges (exactly two int-coercible,
+    strictly increasing endpoints). Malformed ranges (non-numeric, reversed,
+    wrong length) are dropped so downstream histograms/coloring fall back to a
+    safe default instead of raising on range()/arithmetic.
+    """
+    ranges = {}
+    for j in config.get("judges", []):
+        name = j.get("name", "")
+        sr = j.get("score_range")
+        if not isinstance(sr, list) or len(sr) != 2:
+            continue
+        try:
+            lo, hi = int(sr[0]), int(sr[1])
+        except (TypeError, ValueError):
+            continue
+        if lo < hi:
+            ranges[name] = (lo, hi)
+    return ranges
 
 
 def _render_reward_overview(summary, config, reward_cfg=None):
@@ -2038,12 +2067,7 @@ def _render_reward_overview(summary, config, reward_cfg=None):
     other_judges.sort()
 
     # Resolve score_range per judge from config for color bands
-    judge_score_range = {}
-    for j in config.get("judges", []):
-        name = j.get("name", "")
-        sr = j.get("score_range")
-        if isinstance(sr, list) and len(sr) >= 2:
-            judge_score_range[name] = (sr[0], sr[1])
+    judge_score_range = _judge_score_ranges(config)
 
     def _label(name):
         return _esc(name.replace("_", " ").title())
@@ -2181,14 +2205,9 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
     bl_cases_dir = baseline_dir / "cases" if baseline_dir else None
 
     # Resolve score_range per judge from config so each sampling histogram uses
-    # its own axis (e.g. rubric judges are 0–2, not a hardcoded 1–5). Judges
+    # its own axis (e.g. rubric judges are 0-2, not a hardcoded 1-5). Judges
     # without a configured score_range fall back to the observed min/max.
-    judge_score_range = {}
-    for j in config.get("judges", []):
-        name = j.get("name", "")
-        sr = j.get("score_range")
-        if isinstance(sr, list) and len(sr) >= 2:
-            judge_score_range[name] = (sr[0], sr[1])
+    judge_score_range = _judge_score_ranges(config)
 
     # Build pairwise lookup per case (full entry: winner + reasoning)
     pw_by_case = {}
