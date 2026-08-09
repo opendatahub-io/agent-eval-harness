@@ -576,15 +576,21 @@ def validate_config(path="eval.yaml"):
                 warnings.append(f"judges.{name}.context '{ctx_file}' not found")
         module = j.get("module", "")
         if module:
+            mod = None
             try:
                 import importlib
                 mod = importlib.import_module(module)
             except ImportError:
                 errors.append(f"judges.{name}.module '{module}' not importable")
-                mod = None
+            except Exception as e:
+                errors.append(f"judges.{name}.module '{module}' failed to import: {type(e).__name__}: {e}")
             func_name = j.get("function", "")
             if mod and func_name:
-                fn = getattr(mod, func_name, None)
+                try:
+                    fn = getattr(mod, func_name, None)
+                except Exception as e:
+                    errors.append(f"judges.{name}.function '{func_name}' lookup failed: {type(e).__name__}: {e}")
+                    fn = None
                 if fn is None:
                     errors.append(f"judges.{name}.function '{func_name}' not found in module '{module}'")
                 elif not callable(fn):

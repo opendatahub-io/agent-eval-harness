@@ -139,12 +139,16 @@ def find_commands(root: Path) -> list[dict]:
 def find_eval_configs(root: Path) -> list[dict]:
     configs = []
     seen: set[Path] = set()
+    root_resolved = root.resolve()
     for yaml_file in root.rglob("eval.yaml"):
         if ".git" in yaml_file.parts or "__pycache__" in yaml_file.parts:
             continue
-        if yaml_file.resolve() in seen:
+        resolved = yaml_file.resolve()
+        if not resolved.is_relative_to(root_resolved):
             continue
-        seen.add(yaml_file.resolve())
+        if resolved in seen:
+            continue
+        seen.add(resolved)
         content = _read_text_safe(yaml_file)
         if not content:
             continue
@@ -157,7 +161,7 @@ def find_eval_configs(root: Path) -> list[dict]:
                 (parsed.get("execution") or {}).get("skill")
                 or parsed.get("skill")
             )
-            if skill:
+            if isinstance(skill, str) and skill:
                 configs.append({
                     "path": str(yaml_file.relative_to(root)),
                     "name": parsed.get("name", yaml_file.parent.name),
@@ -338,7 +342,7 @@ def format_text(report: ReferenceReport) -> str:
         lines.append("")
         lines.append("Missing scripts:")
         for ref in report.missing_scripts:
-            lines.append(f"  {ref.source_name}/scripts/{ref.target_name} (NOT FOUND)")
+            lines.append(f"  {ref.source_name}/{ref.target_name} (NOT FOUND)")
 
     if report.orphan_skills:
         lines.append("")

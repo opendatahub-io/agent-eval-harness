@@ -167,10 +167,13 @@ def find_eval_configs(root: Path) -> list[dict]:
     """Find eval.yaml configuration files."""
     configs = []
     seen = set()
+    root_resolved = root.resolve()
     for yaml_file in root.rglob("eval.yaml"):
         if ".git" in yaml_file.parts or "__pycache__" in yaml_file.parts:
             continue
         resolved = yaml_file.resolve()
+        if not resolved.is_relative_to(root_resolved):
+            continue
         if resolved in seen:
             continue
         seen.add(resolved)
@@ -186,7 +189,7 @@ def find_eval_configs(root: Path) -> list[dict]:
                 (parsed.get("execution") or {}).get("skill")
                 or parsed.get("skill")
             )
-            if skill:
+            if isinstance(skill, str) and skill:
                 configs.append({
                     "path": str(yaml_file.relative_to(root)),
                     "name": parsed.get("name", yaml_file.parent.name),
