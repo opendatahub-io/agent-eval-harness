@@ -541,7 +541,11 @@ def validate_config(path="eval.yaml"):
         # Check for common mistakes in inline check judges
         check_code = j.get("check", "")
         if check_code:
-            import re
+            import ast as _ast, re
+            try:
+                _ast.parse(check_code, mode="exec")
+            except SyntaxError as e:
+                errors.append(f"judges.{name}.check has invalid Python syntax: {e.msg}")
             # Flag bare usage of annotations/conversation (should be outputs.get("annotations"/"conversation"))
             # Exclude occurrences inside string literals — e.g., outputs.get("annotations") is correct
             bare_annotations = re.search(r'(?<!["\'])\bannotations\s*\.', check_code)
