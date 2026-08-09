@@ -720,6 +720,15 @@ Scan the full configuration (skills, commands, CLAUDE.md, hooks) as a system. Fi
 /eval-check --output my-report.md  # Custom output path
 ```
 
+### /eval-security
+
+Deterministic security scanning of all harness components (skills, commands, hooks, CLAUDE.md). Uses 9 regex and AST-based rules to detect prompt injection, credential access, data exfiltration, reverse shells, obfuscation, taint flows, and MCP tool poisoning. No LLM required for the scan; the skill then uses Claude for semantic review of flagged components.
+
+```bash
+/eval-security                     # Scan and report
+/eval-security --fail-on-error     # CI gate mode (exit 1 on errors)
+```
+
 ## Architecture
 
 ```

@@ -175,6 +175,11 @@ skills/eval-check/ # Skill: full-harness configuration health check
   SKILL.md               # Scans all skills, commands, CLAUDE.md, hooks for overlap and issues
   scripts/
     harness_inventory.py # Project artifact discovery and word counting
+
+skills/eval-security/    # Skill: deterministic security scanning
+  SKILL.md               # Scan, semantic review, report
+  scripts/
+    security_scanner.py  # Standalone scanner (9 rules, stdlib only)
 ```
 
 ## How It Works

@@ -4,7 +4,7 @@
 Scans skills, commands, hooks, and CLAUDE.md for security issues using
 deterministic regex and AST-based rules. No LLM required.
 
-Ported from harness-eval-lab (https://github.com/Benkapner/harness-eval-lab).
+Ported from harness-eval (https://github.com/redhat-community-ai-tools/harness-eval).
 """
 
 import argparse
@@ -36,7 +36,7 @@ _INJECTION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("repeat after me", re.compile(r"repeat\s+after\s+me", re.I)),
     ("bypass safety", re.compile(r"(?:ignore\s+safety|bypass\s+(?:filter|safety|restriction))", re.I)),
     ("output control", re.compile(r"output\s+the\s+following\s+exactly", re.I)),
-    ("markdown image exfiltration", re.compile(r"!\[.*?\]\(https?://", re.I)),
+    ("markdown image with external URL", re.compile(r"!\[.*?\]\(https?://.*\{\{", re.I)),
     ("translate evasion", re.compile(r"translate\s+(?:this|the\s+following)\s+(?:to|into)\s+", re.I)),
 ]
 
@@ -124,7 +124,7 @@ _OBFUSCATION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 _HIDDEN_INSTRUCTION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("HTML comment with instruction", re.compile(r"<!--\s*(?:system|instruction|ignore|override|you\s+are)", re.I)),
     ("markdown comment", re.compile(r"\[//\]:\s*#\s*\(.*(?:ignore|override|instruction)", re.I)),
-    ("base64 blob in text", re.compile(r"(?:data:text/[^;]+;base64,|[A-Za-z0-9+/]{40,}={0,2})")),
+    ("base64 blob in text", re.compile(r"(?:data:text/[^;]+;base64,|[A-Za-z0-9+/]{40,}={1,2})")),
     ("data URI with script", re.compile(r"data:\s*(?:text/javascript|application/javascript|text/html)", re.I)),
 ]
 
@@ -329,11 +329,14 @@ def find_skills(root: Path) -> list[dict]:
         except (json.JSONDecodeError, KeyError, AttributeError):
             pass
 
+    root_resolved = root.resolve()
     seen: set[Path] = set()
     for search_dir in search_dirs:
         if not search_dir.exists():
             continue
         for skill_md in search_dir.rglob("SKILL.md"):
+            if not skill_md.resolve().is_relative_to(root_resolved):
+                continue
             skill_dir = skill_md.parent
             if skill_dir in seen:
                 continue
@@ -354,11 +357,14 @@ def find_skills(root: Path) -> list[dict]:
 def find_commands(root: Path) -> list[dict]:
     commands = []
     search_dirs = [root / ".claude" / "commands", root / "commands"]
+    root_resolved = root.resolve()
     seen: set[str] = set()
     for search_dir in search_dirs:
         if not search_dir.exists():
             continue
         for md_file in search_dir.rglob("*.md"):
+            if not md_file.resolve().is_relative_to(root_resolved):
+                continue
             name = md_file.stem
             if name in seen:
                 continue
@@ -401,6 +407,7 @@ def find_hooks(root: Path) -> list[dict]:
                                 "type": hook_type,
                                 "matcher": matcher.get("matcher", ""),
                                 "command": cmd,
+                                "source": str(source_path.relative_to(root)),
                             })
         except (json.JSONDecodeError, KeyError, AttributeError):
             pass
@@ -436,14 +443,15 @@ def _scan_patterns(
 
     for i, line in enumerate(lines):
         stripped = line.strip()
+        is_fence_line = False
         if track_code_fence and stripped.startswith("```"):
             in_code_fence = not in_code_fence
-            continue
+            is_fence_line = True
 
         for label, pattern in patterns:
             m = pattern.search(line)
             if m:
-                if in_code_fence:
+                if in_code_fence or is_fence_line:
                     severity = "warning"
                 else:
                     is_quoted = stripped.startswith(">") or stripped.startswith('"')
@@ -480,12 +488,18 @@ def scan_obfuscation(content: str, file_path: str) -> list[Finding]:
 def scan_credential_access(content: str, file_path: str) -> list[Finding]:
     findings: list[Finding] = []
     lines = content.split("\n")
+    in_code_fence = False
     for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code_fence = not in_code_fence
+
         for pattern in _SENSITIVE_PATHS:
             m = pattern.search(line)
             if m:
+                severity = "warning" if in_code_fence else "error"
                 findings.append(Finding(
-                    rule="no-credential-access", severity="error", file=file_path,
+                    rule="no-credential-access", severity=severity, file=file_path,
                     line=i + 1, label="sensitive path", matched=m.group(0),
                 ))
                 break
@@ -513,13 +527,19 @@ def scan_credential_access(content: str, file_path: str) -> list[Finding]:
 def scan_tool_poisoning(content: str, file_path: str) -> list[Finding]:
     findings: list[Finding] = []
     lines = content.split("\n")
+    in_code_fence = False
 
     for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code_fence = not in_code_fence
+
         for label, pattern in _HIDDEN_INSTRUCTION_PATTERNS:
             m = pattern.search(line)
             if m:
+                severity = "warning" if in_code_fence else "error"
                 findings.append(Finding(
-                    rule="tool-poisoning", severity="error", file=file_path,
+                    rule="tool-poisoning", severity=severity, file=file_path,
                     line=i + 1, label=label, matched=m.group(0),
                 ))
                 break
@@ -676,7 +696,7 @@ def scan_taint_tracking(skill_dir: Path, base_path: str) -> list[Finding]:
             if isinstance(node, ast.Assign) and len(node.targets) == 1:
                 target = node.targets[0]
                 if isinstance(target, ast.Name) and isinstance(node.value, ast.Call):
-                    call_name = _ast_get_call_name(node.value)
+                    call_name = _ast_resolve_dotted(node.value.func)
                     if call_name:
                         source_type = _classify_taint_source(call_name)
                         if source_type:
@@ -704,7 +724,7 @@ def scan_taint_tracking(skill_dir: Path, base_path: str) -> list[Finding]:
                             break
 
             if isinstance(node, ast.Call):
-                call_name_full = _ast_resolve_dotted(node.func) if not _ast_get_call_name(node) else _ast_get_call_name(node)
+                call_name_full = _ast_resolve_dotted(node.func)
                 if not call_name_full:
                     continue
                 sink_type = _classify_taint_sink(call_name_full)
@@ -895,6 +915,7 @@ def format_text(results: list[ComponentResult], total_rules: int) -> str:
 def format_yaml(results: list[ComponentResult], total_rules: int) -> str:
     total_errors = sum(1 for r in results for f in r.findings if f.severity == "error")
     total_warnings = sum(1 for r in results for f in r.findings if f.severity == "warning")
+    total_info = sum(1 for r in results for f in r.findings if f.severity == "info")
 
     worst = "SAFE"
     if any(r.verdict == "UNSAFE" for r in results):
@@ -909,6 +930,7 @@ def format_yaml(results: list[ComponentResult], total_rules: int) -> str:
         "rules_checked": total_rules,
         "total_errors": total_errors,
         "total_warnings": total_warnings,
+        "total_info": total_info,
         "components": [],
     }
 
@@ -981,14 +1003,18 @@ def main() -> int:
         results.append(result)
 
     if hooks:
-        hook_content = "\n".join(h["command"] for h in hooks)
-        result = scan_component(
-            name="hooks",
-            component_type="hook",
-            content=hook_content,
-            file_path=".claude/settings.json",
-        )
-        results.append(result)
+        by_source: dict[str, list[dict]] = {}
+        for h in hooks:
+            by_source.setdefault(h.get("source", ".claude/settings.json"), []).append(h)
+        for source_file, source_hooks in by_source.items():
+            hook_content = "\n".join(h["command"] for h in source_hooks)
+            result = scan_component(
+                name=f"hooks ({source_file})",
+                component_type="hook",
+                content=hook_content,
+                file_path=source_file,
+            )
+            results.append(result)
 
     if claude_md:
         result = scan_component(
