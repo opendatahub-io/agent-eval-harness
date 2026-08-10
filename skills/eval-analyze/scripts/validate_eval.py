@@ -542,10 +542,14 @@ def validate_config(path="eval.yaml"):
         check_code = j.get("check", "")
         if check_code:
             import ast as _ast, re
-            try:
-                _ast.parse(check_code, mode="exec")
-            except SyntaxError as e:
-                errors.append(f"judges.{name}.check has invalid Python syntax: {e.msg}")
+            if not isinstance(check_code, str):
+                errors.append(f"judges.{name}.check must be a string, got {type(check_code).__name__}")
+                check_code = ""
+            if check_code:
+                try:
+                    _ast.parse(check_code, mode="exec")
+                except SyntaxError as e:
+                    errors.append(f"judges.{name}.check has invalid Python syntax: {e.msg}")
             # Flag bare usage of annotations/conversation (should be outputs.get("annotations"/"conversation"))
             # Exclude occurrences inside string literals — e.g., outputs.get("annotations") is correct
             bare_annotations = re.search(r'(?<!["\'])\bannotations\s*\.', check_code)
@@ -577,7 +581,7 @@ def validate_config(path="eval.yaml"):
         module = j.get("module", "")
         if module:
             mod = None
-            project_root = str(config_dir)
+            project_root = str(Path.cwd())
             if project_root not in sys.path:
                 sys.path.insert(0, project_root)
             try:
@@ -658,9 +662,14 @@ def validate_config(path="eval.yaml"):
         if not sp.exists():
             errors.append(f"runner.settings '{settings}' not found")
 
-    plugin_dirs = runner.get("plugin_dirs") or []
-    if isinstance(plugin_dirs, str):
+    plugin_dirs = runner.get("plugin_dirs")
+    if plugin_dirs is None:
+        plugin_dirs = []
+    elif isinstance(plugin_dirs, str):
         plugin_dirs = [plugin_dirs]
+    elif not isinstance(plugin_dirs, list):
+        errors.append(f"runner.plugin_dirs must be a list, got {type(plugin_dirs).__name__}")
+        plugin_dirs = []
     for i, pd in enumerate(plugin_dirs):
         if not isinstance(pd, str) or not pd:
             errors.append(f"runner.plugin_dirs[{i}] must be a non-empty string")

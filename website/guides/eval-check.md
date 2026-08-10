@@ -125,6 +125,7 @@ Generated: <date>
 ### CLAUDE.md Duplication
 ### Type Misclassification
 ### Structural Issues
+### Reference Validation
 
 ## Suggestions
 1. What to do (merge / move / rename / narrow / remove), which components, and why.
