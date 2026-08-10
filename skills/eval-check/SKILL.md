@@ -99,11 +99,11 @@ Run the reference checker to find broken cross-component references:
 python3 ${CLAUDE_SKILL_DIR}/scripts/reference_checker.py --root . --format yaml
 ```
 
-This checks:
-- **Cross-skill references**: when a SKILL.md mentions `/eval-run` or `skills/eval-analyze`, verify the target skill exists
-- **Script references**: when a SKILL.md references `${CLAUDE_SKILL_DIR}/scripts/foo.py` or `${CLAUDE_SKILL_DIR}/../../scripts/bar.py`, verify the script file exists
-- **Eval config references**: when an eval.yaml names an `execution.skill` (or deprecated top-level `skill:`), verify that skill exists
-- **Orphan skills**: skills that are not referenced by any other skill, command, or eval.yaml (only flagged when >3 skills exist)
+The script exits 0 when all references resolve, or 1 if any are broken. This checks:
+- **Cross-component references**: when a SKILL.md mentions backticked `/name` or `skills/name/`, verify the target skill or command exists. Unresolved names are reported as broken.
+- **Script references**: when a SKILL.md references `${CLAUDE_SKILL_DIR}/scripts/foo.py` or cross-skill paths via `${CLAUDE_PLUGIN_ROOT}`, verify the script file exists
+- **Eval config references**: when an eval.yaml with `runner.type: claude-code` names an `execution.skill`, verify that skill exists. Non-claude-code runners are skipped. Plugin-namespaced names (e.g., `plugin.skill`) are matched by their local segment.
+- **Orphan skills**: skills not referenced by any other component (only flagged when >3 skills exist; skills with `user-invocable: true` in frontmatter are exempt)
 
 ## Step 5: Generate Report
 

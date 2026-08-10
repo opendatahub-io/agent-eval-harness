@@ -26,10 +26,10 @@ _SKILL_REF_PATTERNS = [
 _BACKTICK_SLASH_PATTERN = re.compile(r"`/(\w[\w-]*)`")
 
 _SCRIPT_REF_SAME_SKILL = re.compile(
-    r"\$\{CLAUDE_SKILL_DIR\}/((?:\.\./)*(?:[\w-]+/)*scripts/\S+\.py)"
+    r"\$\{CLAUDE_SKILL_DIR\}/((?:\.\./)*(?:[\w-]+/)*scripts/[\w./-]+\.py)"
 )
 _SCRIPT_REF_CROSS_SKILL = re.compile(
-    r"(?:\$\{CLAUDE_PLUGIN_ROOT\}/)?skills/([\w-]+/scripts/\S+\.py)"
+    r"\$\{CLAUDE_PLUGIN_ROOT\}/skills/([\w-]+/scripts/[\w./-]+\.py)"
 )
 
 _PLACEHOLDER_NAMES = {
@@ -37,12 +37,19 @@ _PLACEHOLDER_NAMES = {
     "example", "your-skill", "target-skill",
 }
 
-_BUILTIN_COMMANDS = {
-    "help", "clear", "config", "compact", "cost", "doctor", "init",
-    "login", "logout", "listen", "memory-recall", "memory",
-    "permissions", "review", "status", "terminal-setup", "vim",
-    "bug", "workflows", "fast", "focus",
-}
+_FRONTMATTER_RE = re.compile(r"\A---\n(.*?\n)---\n", re.DOTALL)
+
+
+def _parse_frontmatter(content: str) -> dict:
+    m = _FRONTMATTER_RE.match(content)
+    if not m:
+        return {}
+    try:
+        import yaml
+        parsed = yaml.safe_load(m.group(1))
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
 
 
 @dataclass
@@ -93,11 +100,14 @@ def find_skills(root: Path) -> list[dict]:
         except (json.JSONDecodeError, KeyError, AttributeError):
             pass
 
+    root_resolved = root.resolve()
     seen: set[Path] = set()
     for search_dir in search_dirs:
         if not search_dir.exists():
             continue
         for skill_md in search_dir.rglob("SKILL.md"):
+            if not skill_md.resolve().is_relative_to(root_resolved):
+                continue
             skill_dir = skill_md.parent
             if skill_dir in seen:
                 continue
@@ -110,6 +120,7 @@ def find_skills(root: Path) -> list[dict]:
                 "path": str(skill_md.relative_to(root)),
                 "content": content,
                 "dir": skill_dir,
+                "frontmatter": _parse_frontmatter(content),
             })
     return skills
 
@@ -117,11 +128,14 @@ def find_skills(root: Path) -> list[dict]:
 def find_commands(root: Path) -> list[dict]:
     commands = []
     search_dirs = [root / ".claude" / "commands", root / "commands"]
+    root_resolved = root.resolve()
     seen: set[str] = set()
     for search_dir in search_dirs:
         if not search_dir.exists():
             continue
         for md_file in search_dir.rglob("*.md"):
+            if not md_file.resolve().is_relative_to(root_resolved):
+                continue
             name = md_file.stem
             if name in seen:
                 continue
@@ -157,15 +171,16 @@ def find_eval_configs(root: Path) -> list[dict]:
             parsed = yaml.safe_load(content)
             if not isinstance(parsed, dict):
                 continue
-            skill = (
-                (parsed.get("execution") or {}).get("skill")
-                or parsed.get("skill")
-            )
+            execution = parsed.get("execution") or {}
+            runner = parsed.get("runner") or {}
+            runner_type = runner.get("type", "claude-code")
+            skill = execution.get("skill") or parsed.get("skill")
             if isinstance(skill, str) and skill:
                 configs.append({
                     "path": str(yaml_file.relative_to(root)),
                     "name": parsed.get("name", yaml_file.parent.name),
                     "skill": skill,
+                    "runner_type": runner_type if isinstance(runner_type, str) else "claude-code",
                 })
         except Exception:
             continue
@@ -175,7 +190,7 @@ def find_eval_configs(root: Path) -> list[dict]:
 def check_skill_references(
     skills: list[dict],
     commands: list[dict],
-    known_skill_names: set[str],
+    known_names: set[str],
 ) -> list[Reference]:
     refs: list[Reference] = []
     seen: set[tuple[str, str, str, str]] = set()
@@ -196,8 +211,7 @@ def check_skill_references(
 
         for match in _BACKTICK_SLASH_PATTERN.finditer(content):
             name = match.group(1)
-            if name not in _BUILTIN_COMMANDS:
-                found_names.add(name)
+            found_names.add(name)
 
         for ref_name in found_names:
             if ref_name == comp["name"] or ref_name in _PLACEHOLDER_NAMES:
@@ -206,7 +220,7 @@ def check_skill_references(
             if key in seen:
                 continue
             seen.add(key)
-            exists = ref_name in known_skill_names
+            exists = ref_name in known_names
             refs.append(Reference(
                 source_type=comp_type,
                 source_name=comp["name"],
@@ -224,6 +238,7 @@ def check_script_references(
     refs: list[Reference] = []
     seen: set[tuple[str, str]] = set()
     root_resolved = root.resolve()
+    skills_bases = [root / "skills", root / ".claude" / "skills"]
     for skill in skills:
         skill_dir = skill["dir"]
         content = skill["content"]
@@ -234,7 +249,11 @@ def check_script_references(
             matches.append((rel, (skill_dir / rel).resolve()))
         for match in _SCRIPT_REF_CROSS_SKILL.finditer(content):
             rel = match.group(1)
-            matches.append((f"skills/{rel}", (root / "skills" / rel).resolve()))
+            for base in skills_bases:
+                candidate = (base / rel).resolve()
+                if candidate.is_relative_to(root_resolved):
+                    matches.append((f"skills/{rel}", candidate))
+                    break
 
         for display_path, resolved in matches:
             base_name = resolved.name
@@ -245,6 +264,13 @@ def check_script_references(
                 continue
             seen.add(key)
             if not resolved.is_relative_to(root_resolved):
+                refs.append(Reference(
+                    source_type="skill",
+                    source_name=skill["name"],
+                    target_type="script",
+                    target_name=f"{display_path} (outside project root)",
+                    exists=False,
+                ))
                 continue
             refs.append(Reference(
                 source_type="skill",
@@ -261,16 +287,24 @@ def check_eval_config_references(
     known_skill_names: set[str],
 ) -> list[Reference]:
     refs: list[Reference] = []
+    seen: set[tuple[str, str]] = set()
     for cfg in configs:
         skill_name = cfg["skill"]
         if skill_name in _PLACEHOLDER_NAMES:
             continue
+        key = (cfg["path"], skill_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        if cfg["runner_type"] != "claude-code":
+            continue
+        local_name = skill_name.rsplit(".", 1)[-1] if "." in skill_name else skill_name
         refs.append(Reference(
             source_type="eval_config",
             source_name=cfg["name"],
             target_type="skill",
             target_name=skill_name,
-            exists=skill_name in known_skill_names,
+            exists=local_name in known_skill_names,
         ))
     return refs
 
@@ -287,12 +321,18 @@ def find_orphan_skills(
     for ref in all_refs:
         referenced_names.add(ref.target_name)
     for cfg in configs:
-        referenced_names.add(cfg["skill"])
+        if cfg["runner_type"] == "claude-code":
+            local = cfg["skill"].rsplit(".", 1)[-1] if "." in cfg["skill"] else cfg["skill"]
+            referenced_names.add(local)
 
     orphans = []
     for skill in skills:
-        if skill["name"] not in referenced_names:
-            orphans.append(skill["name"])
+        if skill["name"] in referenced_names:
+            continue
+        fm = skill.get("frontmatter") or {}
+        if str(fm.get("user-invocable", "")).lower() == "true":
+            continue
+        orphans.append(skill["name"])
     return orphans
 
 
@@ -302,8 +342,10 @@ def analyze(root: Path) -> ReferenceReport:
     configs = find_eval_configs(root)
 
     known_skill_names = {s["name"] for s in skills}
+    known_command_names = {c["name"] for c in commands}
+    known_names = known_skill_names | known_command_names
 
-    skill_refs = check_skill_references(skills, commands, known_skill_names)
+    skill_refs = check_skill_references(skills, commands, known_names)
     script_refs = check_script_references(skills, root)
     config_refs = check_eval_config_references(configs, known_skill_names)
 

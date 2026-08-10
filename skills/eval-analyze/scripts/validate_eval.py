@@ -577,6 +577,9 @@ def validate_config(path="eval.yaml"):
         module = j.get("module", "")
         if module:
             mod = None
+            project_root = str(config_dir)
+            if project_root not in sys.path:
+                sys.path.insert(0, project_root)
             try:
                 import importlib
                 mod = importlib.import_module(module)
@@ -656,7 +659,12 @@ def validate_config(path="eval.yaml"):
             errors.append(f"runner.settings '{settings}' not found")
 
     plugin_dirs = runner.get("plugin_dirs") or []
+    if isinstance(plugin_dirs, str):
+        plugin_dirs = [plugin_dirs]
     for i, pd in enumerate(plugin_dirs):
+        if not isinstance(pd, str) or not pd:
+            errors.append(f"runner.plugin_dirs[{i}] must be a non-empty string")
+            continue
         pp = Path(pd) if Path(pd).is_absolute() else config_dir / pd
         if not pp.exists():
             warnings.append(f"runner.plugin_dirs[{i}] '{pd}' not found")

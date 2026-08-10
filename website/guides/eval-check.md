@@ -86,7 +86,7 @@ skills. It then reads the project `CLAUDE.md` files (and `~/.claude/CLAUDE.md` o
 
 ### Step 4 — Cross-component analysis
 
-Findings are grouped into five categories:
+Findings are grouped into six categories:
 
 | Category | Flags when… |
 | --- | --- |
@@ -95,6 +95,7 @@ Findings are grouped into five categories:
 | **CLAUDE.md duplication** | A skill's rule already lives in `CLAUDE.md` (so it loads every session anyway), or a skill contradicts a `CLAUDE.md` rule. |
 | **Type misclassification** | A component is on the wrong mechanism — e.g. an always-on skill that belongs in `CLAUDE.md`/a hook, a workflow that should be a command, or a deterministic blocking check that should be a hook. |
 | **Structural issues** | Missing frontmatter `description`, overly broad triggers, or custom commands that shadow built-in Claude Code commands. |
+| **Reference validation** | Broken cross-skill references, missing script files, broken eval config skill references, and orphan skills. |
 
 ### Steps 5–6 — Report and summary
 
