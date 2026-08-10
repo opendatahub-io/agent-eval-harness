@@ -42,7 +42,7 @@ flowchart TD
     A[Step 1: Inventory<br/>harness_inventory.py] --> B{Only one skill?}
     B -- yes --> F[Step 6: Present summary<br/>skip cross-analysis]
     B -- no --> C[Step 2-3: Read every SKILL.md<br/>+ project CLAUDE.md files]
-    C --> D[Step 4: Cross-component analysis]
+    C --> D[Step 4: Cross-component analysis<br/>+ reference_checker.py]
     D --> E[Step 5: Write harness-report.md]
     E --> F
 ```
@@ -64,6 +64,7 @@ component (whitespace-split — a proxy for size, *not* a precise token count):
 | Commands | `.claude/commands/`, `commands/` |
 | `CLAUDE.md` | `./CLAUDE.md` or `./.claude/CLAUDE.md` (project-level) |
 | Hooks | `hooks` entries in `.claude/settings.json` and `.claude-plugin/plugin.json` |
+| Eval configs | `eval.yaml` files anywhere under the root that name a skill, excluding copies bundled inside generated Harbor task packages |
 
 The scanner also emits structural warnings — e.g. no `CLAUDE.md` found, or a skill
 missing a `description` in its frontmatter (which hurts trigger precision).
@@ -125,6 +126,7 @@ Generated: <date>
 - Skills: N (total ~X words)
 - Commands: N
 - Hooks: N
+- Eval configs: N
 - CLAUDE.md: Yes/No
 
 ### Skills by size

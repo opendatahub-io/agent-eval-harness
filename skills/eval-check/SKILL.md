@@ -26,6 +26,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/harness_inventory.py --root .
 
 This reports:
 - Number of skills, commands, hooks
+- Number of eval configs (`eval.yaml` files naming a skill; generated Harbor task packages are excluded)
 - Approximate word count per skill (note: this is a word count, not a precise token count)
 - Structural warnings (missing CLAUDE.md, skills without frontmatter descriptions)
 
@@ -121,6 +122,7 @@ Generated: <date>
 - Skills: N (total ~X words)
 - Commands: N
 - Hooks: N
+- Eval configs: N
 - CLAUDE.md: Yes/No
 
 ### Skills by size
