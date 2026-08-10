@@ -34,6 +34,11 @@ _SKILL_REF_PATTERNS = [
 # are reported as "unresolved" rather than broken and never affect the exit code.
 _BACKTICK_SLASH_PATTERN = re.compile(r"`/" + _NAME + r"`")
 
+# URLs routinely contain a "skills/<name>/" segment (a GitHub tree/blob link to
+# someone else's repo). Those are not references to a local component, so matches
+# landing inside a URL are ignored.
+_URL_PATTERN = re.compile(r"\w+://\S+")
+
 _SCRIPT_REF_SAME_SKILL = re.compile(
     r"\$\{CLAUDE_SKILL_DIR\}/((?:\.\./)*(?:[\w-]+/)*scripts/[\w./-]+\.py)"
 )
@@ -249,14 +254,23 @@ def check_skill_references(
 
     for comp, comp_type in all_components:
         content = comp["content"]
+        url_spans = [m.span() for m in _URL_PATTERN.finditer(content)]
+
+        def _in_url(pos: int) -> bool:
+            return any(start <= pos < end for start, end in url_spans)
+
         strong_names: set[str] = set()
         weak_names: set[str] = set()
 
         for pattern in _SKILL_REF_PATTERNS:
             for match in pattern.finditer(content):
+                if _in_url(match.start()):
+                    continue
                 strong_names.add(match.group(1))
 
         for match in _BACKTICK_SLASH_PATTERN.finditer(content):
+            if _in_url(match.start()):
+                continue
             weak_names.add(match.group(1))
         weak_names -= strong_names
 
@@ -320,12 +334,16 @@ def check_script_references(
                 continue
             seen.add(key)
             if not resolved.is_relative_to(root_resolved):
+                # A path pointing outside the project (shared plugin dir, monorepo
+                # sibling) is unverifiable from here, not proven missing — surface
+                # it, but never fail the run on it.
                 refs.append(Reference(
                     source_type="skill",
                     source_name=skill["name"],
                     target_type="script",
                     target_name=f"{display_path} (outside project root)",
                     exists=False,
+                    confidence="weak",
                 ))
                 continue
             refs.append(Reference(
@@ -413,9 +431,11 @@ def analyze(root: Path) -> ReferenceReport:
     config_refs = check_eval_config_references(configs, known_skill_names)
 
     all_refs = skill_refs + config_refs
+    unresolvable = all_refs + script_refs
     broken = [r for r in all_refs if not r.exists and r.confidence == "strong"]
-    unresolved = [r for r in all_refs if not r.exists and r.confidence == "weak"]
-    missing_scripts = [r for r in script_refs if not r.exists]
+    unresolved = [r for r in unresolvable if not r.exists and r.confidence == "weak"]
+    missing_scripts = [
+        r for r in script_refs if not r.exists and r.confidence == "strong"]
     orphans = find_orphan_skills(skills, all_refs, configs)
 
     return ReferenceReport(
@@ -448,10 +468,12 @@ def format_text(report: ReferenceReport) -> str:
 
     if report.unresolved_refs:
         lines.append("")
-        lines.append("Unresolved references (informational — may be built-in or "
-                     "external commands):")
+        lines.append("Unresolved references (informational — may be built-in "
+                     "commands, other plugins, or paths outside this project):")
         for ref in report.unresolved_refs:
-            lines.append(f"  {ref.source_type}/{ref.source_name} -> /{ref.target_name}")
+            target = (f"/{ref.target_name}" if ref.target_type == "skill"
+                      else ref.target_name)
+            lines.append(f"  {ref.source_type}/{ref.source_name} -> {target}")
 
     if report.missing_scripts:
         lines.append("")

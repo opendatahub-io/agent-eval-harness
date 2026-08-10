@@ -103,10 +103,10 @@ Reference validation runs a dedicated script:
 python3 skills/eval-check/scripts/reference_checker.py --root . --format yaml
 ```
 
-It exits `1` when a reference is broken or a script is missing, and `0` otherwise.
+It exits `1` when a reference is broken or an in-project script is missing, and `0` otherwise.
 Two findings are informational and never fail the run: **unresolved references** (a bare
-backticked `/name` that may be a Claude Code built-in or another plugin's command) and
-**orphan skills**.
+backticked `/name` that may be a Claude Code built-in or another plugin's command, or a script
+path resolving outside the project) and **orphan skills**.
 
 ### Steps 5–6 — Report and summary
 
