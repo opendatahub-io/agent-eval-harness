@@ -18,12 +18,21 @@ from pathlib import Path
 
 MAX_FILE_SIZE = 1_000_000
 
+# Skill names may be plugin-namespaced (`rfe.create`, `diagram-skills:skill-diagram`),
+# so allow "." and ":" inside a name but never as the final character.
+_NAME = r"(\w(?:[\w.:-]*\w)?)"
+
+# High-confidence: an explicit skill path or the documented Skill-tool phrasing.
+# An unresolved match here is a genuine broken reference.
 _SKILL_REF_PATTERNS = [
-    re.compile(r"Skill\s+tool\s+to\s+invoke\s+/(\w[\w-]*)"),
-    re.compile(r"skills/(\w[\w-]*)/"),
+    re.compile(r"Skill\s+tool\s+to\s+invoke\s+/" + _NAME),
+    re.compile(r"skills/" + _NAME + r"/"),
 ]
 
-_BACKTICK_SLASH_PATTERN = re.compile(r"`/(\w[\w-]*)`")
+# Low-confidence: a bare `/name` in prose is indistinguishable from a Claude Code
+# built-in (/help, /model), another plugin's command, or a filesystem path. These
+# are reported as "unresolved" rather than broken and never affect the exit code.
+_BACKTICK_SLASH_PATTERN = re.compile(r"`/" + _NAME + r"`")
 
 _SCRIPT_REF_SAME_SKILL = re.compile(
     r"\$\{CLAUDE_SKILL_DIR\}/((?:\.\./)*(?:[\w-]+/)*scripts/[\w./-]+\.py)"
@@ -59,6 +68,9 @@ class Reference:
     target_type: str
     target_name: str
     exists: bool
+    # "strong" — an unresolved target is a broken reference.
+    # "weak"   — an unresolved target is merely unresolved (see _BACKTICK_SLASH_PATTERN).
+    confidence: str = "strong"
 
     def to_dict(self) -> dict:
         return {
@@ -72,9 +84,25 @@ class Reference:
 class ReferenceReport:
     references: list[Reference] = field(default_factory=list)
     broken_refs: list[Reference] = field(default_factory=list)
+    unresolved_refs: list[Reference] = field(default_factory=list)
     missing_scripts: list[Reference] = field(default_factory=list)
     orphan_skills: list[str] = field(default_factory=list)
     eval_configs: list[dict] = field(default_factory=list)
+
+
+def _resolves(name: str, known_names: set[str]) -> bool:
+    """A reference resolves by exact name, or by its local segment.
+
+    Plugin-namespaced references (`rfe.create`, `plugin:skill`) may point at a
+    skill whose directory is named either way round: the directory itself can be
+    literally `rfe.create`, or it can be `create` inside a plugin named `rfe`.
+    """
+    if name in known_names:
+        return True
+    return any(
+        sep in name and name.rsplit(sep, 1)[-1] in known_names
+        for sep in (".", ":")
+    )
 
 
 def _read_text_safe(path: Path) -> str:
@@ -150,12 +178,30 @@ def find_commands(root: Path) -> list[dict]:
     return commands
 
 
+def _is_generated_task_bundle(yaml_file: Path) -> bool:
+    """True for the verifier eval.yaml bundled inside a Harbor task package.
+
+    /eval-dataset writes one package per case, each carrying a copy of the
+    project's eval.yaml under ``<task>/[steps/<id>/]tests/``. They are generated
+    artifacts, not configs to validate — counting them multiplies a single
+    logical reference by the number of cases.
+    """
+    if yaml_file.parent.name != "tests":
+        return False
+    return any(
+        (ancestor / "task.toml").exists()
+        for ancestor in list(yaml_file.parents)[1:5]
+    )
+
+
 def find_eval_configs(root: Path) -> list[dict]:
     configs = []
     seen: set[Path] = set()
     root_resolved = root.resolve()
     for yaml_file in root.rglob("eval.yaml"):
         if ".git" in yaml_file.parts or "__pycache__" in yaml_file.parts:
+            continue
+        if _is_generated_task_bundle(yaml_file):
             continue
         resolved = yaml_file.resolve()
         if not resolved.is_relative_to(root_resolved):
@@ -203,30 +249,34 @@ def check_skill_references(
 
     for comp, comp_type in all_components:
         content = comp["content"]
-        found_names: set[str] = set()
+        strong_names: set[str] = set()
+        weak_names: set[str] = set()
 
         for pattern in _SKILL_REF_PATTERNS:
             for match in pattern.finditer(content):
-                found_names.add(match.group(1))
+                strong_names.add(match.group(1))
 
         for match in _BACKTICK_SLASH_PATTERN.finditer(content):
-            name = match.group(1)
-            found_names.add(name)
+            weak_names.add(match.group(1))
+        weak_names -= strong_names
 
-        for ref_name in found_names:
+        found_names = {n: "strong" for n in strong_names}
+        found_names.update({n: "weak" for n in weak_names})
+
+        for ref_name, confidence in found_names.items():
             if ref_name == comp["name"] or ref_name in _PLACEHOLDER_NAMES:
                 continue
             key = (comp_type, comp["name"], "skill", ref_name)
             if key in seen:
                 continue
             seen.add(key)
-            exists = ref_name in known_names
             refs.append(Reference(
                 source_type=comp_type,
                 source_name=comp["name"],
                 target_type="skill",
                 target_name=ref_name,
-                exists=exists,
+                exists=_resolves(ref_name, known_names),
+                confidence=confidence,
             ))
     return refs
 
@@ -249,11 +299,17 @@ def check_script_references(
             matches.append((rel, (skill_dir / rel).resolve()))
         for match in _SCRIPT_REF_CROSS_SKILL.finditer(content):
             rel = match.group(1)
-            for base in skills_bases:
-                candidate = (base / rel).resolve()
-                if candidate.is_relative_to(root_resolved):
-                    matches.append((f"skills/{rel}", candidate))
-                    break
+            candidates = [(base / rel).resolve() for base in skills_bases]
+            # Prefer a base where the script actually exists: `root/skills/<rel>`
+            # is always inside the root whether or not it is there, so selecting
+            # on containment alone would make the `.claude/skills` base dead code.
+            # Always append something so an escaping path still gets reported.
+            resolved = next(
+                (c for c in candidates if c.exists()),
+                next((c for c in candidates if c.is_relative_to(root_resolved)),
+                     candidates[0]),
+            )
+            matches.append((f"skills/{rel}", resolved))
 
         for display_path, resolved in matches:
             base_name = resolved.name
@@ -292,19 +348,22 @@ def check_eval_config_references(
         skill_name = cfg["skill"]
         if skill_name in _PLACEHOLDER_NAMES:
             continue
-        key = (cfg["path"], skill_name)
+        if cfg["runner_type"] != "claude-code":
+            # For opaque runners (cli, opencode, ...) execution.skill is just a
+            # label substituted into the command template, not a skill to resolve.
+            continue
+        # Dedup on the reference itself, not the file, so sibling configs that
+        # target the same skill collapse into one finding.
+        key = (cfg["name"], skill_name)
         if key in seen:
             continue
         seen.add(key)
-        if cfg["runner_type"] != "claude-code":
-            continue
-        local_name = skill_name.rsplit(".", 1)[-1] if "." in skill_name else skill_name
         refs.append(Reference(
             source_type="eval_config",
             source_name=cfg["name"],
             target_type="skill",
             target_name=skill_name,
-            exists=local_name in known_skill_names,
+            exists=_resolves(skill_name, known_skill_names),
         ))
     return refs
 
@@ -322,8 +381,12 @@ def find_orphan_skills(
         referenced_names.add(ref.target_name)
     for cfg in configs:
         if cfg["runner_type"] == "claude-code":
-            local = cfg["skill"].rsplit(".", 1)[-1] if "." in cfg["skill"] else cfg["skill"]
-            referenced_names.add(local)
+            # Credit both spellings — the skill dir may be `rfe.create` itself
+            # or `create` inside plugin `rfe`.
+            referenced_names.add(cfg["skill"])
+            for sep in (".", ":"):
+                if sep in cfg["skill"]:
+                    referenced_names.add(cfg["skill"].rsplit(sep, 1)[-1])
 
     orphans = []
     for skill in skills:
@@ -350,13 +413,15 @@ def analyze(root: Path) -> ReferenceReport:
     config_refs = check_eval_config_references(configs, known_skill_names)
 
     all_refs = skill_refs + config_refs
-    broken = [r for r in all_refs if not r.exists]
+    broken = [r for r in all_refs if not r.exists and r.confidence == "strong"]
+    unresolved = [r for r in all_refs if not r.exists and r.confidence == "weak"]
     missing_scripts = [r for r in script_refs if not r.exists]
     orphans = find_orphan_skills(skills, all_refs, configs)
 
     return ReferenceReport(
         references=all_refs + script_refs,
         broken_refs=broken,
+        unresolved_refs=unresolved,
         missing_scripts=missing_scripts,
         orphan_skills=orphans,
         eval_configs=[{"name": c["name"], "path": c["path"], "skill": c["skill"]} for c in configs],
@@ -369,6 +434,7 @@ def format_text(report: ReferenceReport) -> str:
         "",
         f"References found: {len(report.references)}",
         f"Broken references: {len(report.broken_refs)}",
+        f"Unresolved references: {len(report.unresolved_refs)}",
         f"Missing scripts: {len(report.missing_scripts)}",
         f"Orphan skills: {len(report.orphan_skills)}",
         f"Eval configs: {len(report.eval_configs)}",
@@ -379,6 +445,13 @@ def format_text(report: ReferenceReport) -> str:
         lines.append("Broken references:")
         for ref in report.broken_refs:
             lines.append(f"  {ref.source_type}/{ref.source_name} -> {ref.target_type}/{ref.target_name} (NOT FOUND)")
+
+    if report.unresolved_refs:
+        lines.append("")
+        lines.append("Unresolved references (informational — may be built-in or "
+                     "external commands):")
+        for ref in report.unresolved_refs:
+            lines.append(f"  {ref.source_type}/{ref.source_name} -> /{ref.target_name}")
 
     if report.missing_scripts:
         lines.append("")
@@ -398,9 +471,13 @@ def format_text(report: ReferenceReport) -> str:
         for cfg in report.eval_configs:
             lines.append(f"  {cfg['path']} (skill={cfg['skill']})")
 
-    if not report.broken_refs and not report.missing_scripts and not report.orphan_skills:
+    if not report.broken_refs and not report.missing_scripts:
         lines.append("")
-        lines.append("All references resolve. No issues found.")
+        if report.unresolved_refs or report.orphan_skills:
+            lines.append("No broken references or missing scripts. "
+                         "See the informational findings above.")
+        else:
+            lines.append("All references resolve. No issues found.")
 
     return "\n".join(lines)
 
@@ -410,6 +487,7 @@ def format_yaml(report: ReferenceReport) -> str:
         "reference_check": True,
         "total_references": len(report.references),
         "broken_references": [r.to_dict() for r in report.broken_refs],
+        "unresolved_references": [r.to_dict() for r in report.unresolved_refs],
         "missing_scripts": [r.to_dict() for r in report.missing_scripts],
         "orphan_skills": report.orphan_skills,
         "eval_configs": report.eval_configs,

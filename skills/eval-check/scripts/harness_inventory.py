@@ -163,6 +163,21 @@ def find_hooks(root: Path) -> list[dict]:
     return hooks
 
 
+def _is_generated_task_bundle(yaml_file: Path) -> bool:
+    """True for the verifier eval.yaml bundled inside a Harbor task package.
+
+    One package is generated per case, each carrying a copy of the project's
+    eval.yaml under ``<task>/[steps/<id>/]tests/`` — generated artifacts that
+    would otherwise inflate the count by the number of cases.
+    """
+    if yaml_file.parent.name != "tests":
+        return False
+    return any(
+        (ancestor / "task.toml").exists()
+        for ancestor in list(yaml_file.parents)[1:5]
+    )
+
+
 def find_eval_configs(root: Path) -> list[dict]:
     """Find eval.yaml configuration files."""
     configs = []
@@ -170,6 +185,8 @@ def find_eval_configs(root: Path) -> list[dict]:
     root_resolved = root.resolve()
     for yaml_file in root.rglob("eval.yaml"):
         if ".git" in yaml_file.parts or "__pycache__" in yaml_file.parts:
+            continue
+        if _is_generated_task_bundle(yaml_file):
             continue
         resolved = yaml_file.resolve()
         if not resolved.is_relative_to(root_resolved):

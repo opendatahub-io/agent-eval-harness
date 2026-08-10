@@ -99,10 +99,10 @@ Run the reference checker to find broken cross-component references:
 python3 ${CLAUDE_SKILL_DIR}/scripts/reference_checker.py --root . --format yaml
 ```
 
-The script exits 0 when all references resolve, or 1 if any are broken. This checks:
-- **Cross-component references**: when a SKILL.md mentions backticked `/name` or `skills/name/`, verify the target skill or command exists. Unresolved names are reported as broken.
-- **Script references**: when a SKILL.md references `${CLAUDE_SKILL_DIR}/scripts/foo.py` or cross-skill paths via `${CLAUDE_PLUGIN_ROOT}`, verify the script file exists
-- **Eval config references**: when an eval.yaml with `runner.type: claude-code` names an `execution.skill`, verify that skill exists. Non-claude-code runners are skipped. Plugin-namespaced names (e.g., `plugin.skill`) are matched by their local segment.
+The script exits 0 when all references resolve, or 1 if any are broken or any script is missing. Unresolved and orphan findings are informational and never affect the exit code. This checks:
+- **Cross-component references**: an explicit `skills/name/` path, or the phrase "Skill tool to invoke /name", must resolve to a known skill or command — otherwise it is **broken**. A bare backticked `` `/name` `` is lower confidence, since it is indistinguishable from a Claude Code built-in (the `help` or `model` command), another plugin's command, or a filesystem path; an unresolved one is listed under **unresolved references** instead.
+- **Script references**: when a SKILL.md references `${CLAUDE_SKILL_DIR}/scripts/foo.py` or a cross-skill path via `${CLAUDE_PLUGIN_ROOT}`, verify the script exists. Paths that escape the project root are reported as unverifiable rather than silently dropped.
+- **Eval config references**: when an eval.yaml with `runner.type: claude-code` names an `execution.skill`, verify that skill exists. Non-claude-code runners are skipped (there `skill` is only a label for the command template), as are eval.yaml copies bundled inside generated Harbor task packages. Plugin-namespaced names (`plugin.skill`, `plugin:skill`) resolve against either the full name or the local segment.
 - **Orphan skills**: skills not referenced by any other component (only flagged when >3 skills exist; skills with `user-invocable: true` in frontmatter are exempt)
 
 ## Step 5: Generate Report
@@ -146,7 +146,9 @@ Generated: <date>
 (list findings, or "No structural issues detected.")
 
 ### Reference Validation
-(list broken references, missing scripts, and orphan skills, or "All references resolve.")
+(list broken references and missing scripts, or "All references resolve." Then list unresolved
+references and orphan skills separately, noting they are informational — an unresolved `/name` is
+often a Claude Code built-in or a command from another plugin.)
 
 ## Suggestions
 
