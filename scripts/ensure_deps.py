@@ -48,12 +48,29 @@ def main():
 
 
 def _resolve_deps(plugin_root):
-    """Determine which deps are needed based on eval.yaml."""
-    deps = [("pyyaml>=6.0", "yaml")]
+    """Determine which deps are needed, as the union over every eval.yaml.
 
-    eval_yaml = _find_eval_yaml(plugin_root)
-    if not eval_yaml or not eval_yaml.exists():
-        return deps
+    A project can hold several evals (``eval/<name>/eval.yaml`` is a supported
+    layout), and they don't need the same packages — one may log to MLflow while
+    another uses LLM judges. Resolving against a single config left the others
+    importing packages that were never installed, with the outcome depending on
+    discovery order.
+    """
+    deps = [("pyyaml>=6.0", "yaml")]
+    seen = {spec for spec, _ in deps}
+
+    for eval_yaml in _find_eval_yamls(plugin_root):
+        for spec, module in _deps_for_config(eval_yaml):
+            if spec not in seen:
+                seen.add(spec)
+                deps.append((spec, module))
+    return deps
+
+
+def _deps_for_config(eval_yaml):
+    """Optional deps implied by one eval.yaml. Never raises — an unparseable or
+    unreadable config contributes nothing rather than sinking the whole scan."""
+    deps = []
 
     try:
         import yaml
@@ -178,20 +195,28 @@ def _all_importable(venv_python, deps):
     return result.returncode == 0
 
 
-def _find_eval_yaml(plugin_root):
+def _find_eval_yamls(plugin_root):
+    """Every eval.yaml in the project, in discovery order.
+
+    Deliberately *all* of them, not ``configs[0]``: deps are the union across the
+    project, so which config happens to sort first must not decide what gets
+    installed. The fallback stays first-match — it only runs when discovery itself
+    failed, and cwd/eval.yaml vs plugin_root/eval.yaml are alternatives rather
+    than siblings.
+    """
     cwd = Path.cwd()
     try:
         sys.path.insert(0, str(Path(__file__).parent.parent))
         from agent_eval.config import discover_configs
         configs = discover_configs(cwd)
         if configs:
-            return configs[0].path
+            return [c.path for c in configs]
     except Exception:
         pass
     for candidate in [cwd / "eval.yaml", plugin_root / "eval.yaml"]:
         if candidate.exists():
-            return candidate
-    return None
+            return [candidate]
+    return []
 
 
 def _compute_stamp(deps):
