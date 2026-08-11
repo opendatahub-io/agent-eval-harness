@@ -22,12 +22,15 @@ import hashlib
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
+import mistune
 import yaml
 
 
@@ -1639,10 +1642,15 @@ def _normalize_escapes(text: str) -> str:
                 .replace("\\t", "\t"))
 
 
-import re as _re
-from urllib.parse import urlsplit as _urlsplit
-
 _SAFE_LINK_SCHEMES = {"http", "https", "mailto"}
+_STATUS_CLS = {
+    "PASS": "pass",
+    "FIXED": "pass",
+    "FAIL": "fail",
+    "REGRESSION": "fail",
+    "SKIP": "skip",
+    "SKIPPED": "skip",
+}
 
 
 def _safe_href(raw: str) -> str | None:
@@ -1652,13 +1660,13 @@ def _safe_href(raw: str) -> str | None:
     `[click](javascript:alert(1))` or attribute-injection via stray quotes.
     Allows http/https/mailto URLs and relative paths/anchors only.
 
-    `raw` is expected to already be HTML-escaped (since `_md_inline` escapes
-    the full text before running the link regex), so we do not re-escape.
+    The caller must HTML-escape the returned value before using it in an
+    attribute.
     """
     href = raw.strip()
     if not href:
         return None
-    parsed = _urlsplit(href)
+    parsed = urlsplit(href)
     if parsed.scheme:
         if parsed.scheme.lower() not in _SAFE_LINK_SCHEMES:
             return None
@@ -1667,203 +1675,103 @@ def _safe_href(raw: str) -> str | None:
     return href
 
 
-def _md_inline(text: str) -> str:
-    """Apply inline markdown formatting (bold, italic, code, links) to text.
-    Always HTML-escapes first."""
-    text = _esc(text)
-    text = _re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
-    text = _re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'<em>\1</em>', text)
-    text = _re.sub(r'`(.+?)`', r'<code>\1</code>', text)
+class _ReportHTMLRenderer(mistune.HTMLRenderer):
+    """HTML renderer preserving the report's styling and safety contracts."""
 
-    def _link_sub(match):
-        label = match.group(1)
-        href = _safe_href(match.group(2))
+    def block_code(self, code: str, info: str | None = None) -> str:
+        return f'<pre class="output">{_esc(code.rstrip(chr(10)))}</pre>\n'
+
+    def link(self, text: str, url: str, title: str | None = None) -> str:
+        href = _safe_href(url)
         if href is None:
-            return label
-        return f'<a href="{href}" rel="noopener noreferrer">{label}</a>'
+            return text
+        return (
+            f'<a href="{mistune.escape(href, quote=True)}" '
+            f'rel="noopener noreferrer">{text}</a>'
+        )
 
-    text = _re.sub(r'\[([^\]]+)\]\(([^)]+)\)', _link_sub, text)
-    return text
+    def softbreak(self) -> str:
+        return " "
+
+
+def _render_table_cell(renderer, text, align=None, head=False):
+    tag = "th" if head else "td"
+    style = f' style="text-align:{align}"' if align else ""
+    if not head:
+        status = None
+        rest = ""
+        for keyword in sorted(_STATUS_CLS, key=len, reverse=True):
+            css_class = _STATUS_CLS[keyword]
+            plain = keyword
+            strong = f"<strong>{keyword}</strong>"
+            emphasis = f"<em>{keyword}</em>"
+            for prefix in (plain, strong, emphasis):
+                if text.startswith(prefix):
+                    candidate_rest = text[len(prefix):]
+                    if (
+                        not candidate_rest
+                        or not (candidate_rest[0].isalnum() or candidate_rest[0] == "_")
+                    ):
+                        status = (keyword, css_class)
+                        rest = candidate_rest.strip()
+                        break
+            if status:
+                break
+        if status:
+            keyword, css_class = status
+            pill = f'<span class="{css_class}">{keyword}</span>'
+            text = f"{pill} {rest}" if rest else pill
+    return f"  <{tag}{style}>{text}</{tag}>\n"
+
+
+_report_renderer = _ReportHTMLRenderer(escape=True)
+_markdown = mistune.create_markdown(
+    renderer=_report_renderer,
+    plugins=["table"],
+)
+_report_renderer.register("table_cell", _render_table_cell)
+
+
+def _normalize_report_markdown(md_text: str) -> str:
+    """Preserve the legacy renderer's top-level list termination behavior."""
+    lines = md_text.splitlines()
+    normalized = []
+    active_fence = None
+    list_item = re.compile(r"^(?:[-+*]|\d+[.)])\s+")
+    for line in lines:
+        fence = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        closes_fence = False
+        if active_fence:
+            char, length = active_fence
+            closes_fence = bool(re.match(
+                rf"^ {{0,3}}{re.escape(char)}{{{length},}}\s*$", line
+            ))
+            in_fence = True
+        elif fence:
+            delimiter = fence.group(1)
+            active_fence = (delimiter[0], len(delimiter))
+            in_fence = True
+        else:
+            in_fence = False
+        stripped = line.strip()
+        if (
+            not in_fence
+            and normalized
+            and list_item.match(normalized[-1])
+            and stripped
+            and line == line.lstrip()
+            and not list_item.match(line)
+        ):
+            normalized.append("")
+        normalized.append(line)
+        if closes_fence:
+            active_fence = None
+    return "\n".join(normalized)
 
 
 def _md_to_html(md_text):
-    """Convert markdown to HTML. Handles headers, lists, tables, code blocks,
-    bold, italic, inline code, and links."""
-    import re
-
-    lines = md_text.splitlines()
-    out = []
-    i = 0
-    list_stack = []  # stack of "ul" or "ol"
-
-    def _close_lists():
-        while list_stack:
-            out.append(f"</{list_stack.pop()}>")
-
-    _inline = _md_inline
-
-    while i < len(lines):
-        line = lines[i]
-        stripped = line.strip()
-
-        # Fenced code block
-        if stripped.startswith("```"):
-            _close_lists()
-            lang = stripped[3:].strip()
-            code_lines = []
-            i += 1
-            while i < len(lines) and not lines[i].strip().startswith("```"):
-                code_lines.append(lines[i])
-                i += 1
-            out.append(f'<pre class="output">{_esc(chr(10).join(code_lines))}</pre>')
-            i += 1
-            continue
-
-        # Table (line starts with |)
-        if stripped.startswith("|") and "|" in stripped[1:]:
-            _close_lists()
-            table_lines = []
-            while i < len(lines) and lines[i].strip().startswith("|"):
-                table_lines.append(lines[i].strip())
-                i += 1
-            out.append(_md_table_to_html(table_lines))
-            continue
-
-        # Headers — # maps to h1, ## to h2, ### to h3
-        if stripped.startswith("### "):
-            _close_lists()
-            out.append(f"<h3>{_inline(stripped[4:])}</h3>")
-            i += 1
-            continue
-        if stripped.startswith("## "):
-            _close_lists()
-            out.append(f"<h2>{_inline(stripped[3:])}</h2>")
-            i += 1
-            continue
-        if stripped.startswith("# "):
-            _close_lists()
-            out.append(f"<h1>{_inline(stripped[2:])}</h1>")
-            i += 1
-            continue
-
-        # Unordered list
-        if stripped.startswith("- "):
-            if not list_stack or list_stack[-1] != "ul":
-                if list_stack and list_stack[-1] == "ol":
-                    out.append(f"</{list_stack.pop()}>")
-                list_stack.append("ul")
-                out.append("<ul>")
-            out.append(f"<li>{_inline(stripped[2:])}</li>")
-            i += 1
-            continue
-
-        # Ordered list
-        m = re.match(r'^(\d+)\.\s(.+)', stripped)
-        if m:
-            if not list_stack or list_stack[-1] != "ol":
-                if list_stack and list_stack[-1] == "ul":
-                    out.append(f"</{list_stack.pop()}>")
-                list_stack.append("ol")
-                out.append("<ol>")
-            out.append(f"<li>{_inline(m.group(2))}</li>")
-            i += 1
-            continue
-
-        # Horizontal rule
-        if stripped in ("---", "***", "___"):
-            _close_lists()
-            out.append("<hr>")
-            i += 1
-            continue
-
-        # Blank line — only close lists if the next content line isn't a
-        # continuation of the same list type (LLM rationales commonly use
-        # paragraph-spaced list items like "1. ...\n\n2. ...").
-        if not stripped:
-            if list_stack:
-                j = i + 1
-                while j < len(lines) and not lines[j].strip():
-                    j += 1
-                next_stripped = lines[j].strip() if j < len(lines) else ""
-                continues_ol = list_stack[-1] == "ol" and re.match(r'^\d+\.\s', next_stripped)
-                continues_ul = list_stack[-1] == "ul" and next_stripped.startswith("- ")
-                if not (continues_ol or continues_ul):
-                    _close_lists()
-            i += 1
-            continue
-
-        # Paragraph — accumulate consecutive non-blank lines into a single
-        # <p> so that soft-wrapped source lines reflow to the container width
-        # instead of each becoming its own (artificially narrow) paragraph.
-        _close_lists()
-        para_lines = [stripped]
-        i += 1
-        while i < len(lines):
-            nxt = lines[i].strip()
-            if not nxt:
-                break
-            # Stop at anything that begins a different block-level construct.
-            if (nxt.startswith("```")
-                    or (nxt.startswith("|") and "|" in nxt[1:])
-                    or nxt.startswith(("### ", "## ", "# ", "- "))
-                    or re.match(r'^(\d+)\.\s(.+)', nxt)
-                    or nxt in ("---", "***", "___")):
-                break
-            para_lines.append(nxt)
-            i += 1
-        out.append(f"<p>{_inline(' '.join(para_lines))}</p>")
-
-    _close_lists()
-    return "\n".join(out)
-
-
-def _md_table_to_html(table_lines):
-    """Convert markdown table lines to an HTML table."""
-    if len(table_lines) < 2:
-        return ""
-
-    def _parse_row(line):
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        return cells
-
-    headers = _parse_row(table_lines[0])
-
-    # Skip separator row (line with dashes/colons)
-    data_start = 1
-    if len(table_lines) > 1 and all(
-            c.strip().replace("-", "").replace(":", "").replace(" ", "") == ""
-            for c in table_lines[1].strip().strip("|").split("|")):
-        data_start = 2
-
-    html = "<table>\n<tr>"
-    for h in headers:
-        html += f"<th>{_md_inline(h)}</th>"
-    html += "</tr>\n"
-
-    for row_line in table_lines[data_start:]:
-        cells = _parse_row(row_line)
-        html += "<tr>"
-        for c in cells:
-            # Color-code PASS/FAIL keywords as pills, leaving the rest
-            # of the cell as plain text.
-            import re as _re
-            stripped = c.strip()
-            bare = stripped.strip("*_")
-            _STATUS_CLS = {"PASS": "pass", "FIXED": "pass", "FAIL": "fail",
-                           "REGRESSION": "fail", "SKIP": "skip", "SKIPPED": "skip"}
-            match = _re.match(r'^(\*{0,2}_?)(PASS|FIXED|FAIL|REGRESSION|SKIP|SKIPPED)(_?\*{0,2})(.*)', bare)
-            if match:
-                kw = match.group(2)
-                rest = match.group(4).strip()
-                pill = f'<span class="{_STATUS_CLS[kw]}">{kw}</span>'
-                rest_html = f" {_md_inline(rest)}" if rest else ""
-                html += f"<td>{pill}{rest_html}</td>"
-            else:
-                html += f"<td>{_md_inline(c)}</td>"
-        html += "</tr>\n"
-
-    html += "</table>"
-    return html
+    """Convert untrusted Markdown to escaped, report-styled HTML."""
+    return _markdown(_normalize_report_markdown(md_text)).rstrip("\n")
 
 
 _img_compare_counter = 0
