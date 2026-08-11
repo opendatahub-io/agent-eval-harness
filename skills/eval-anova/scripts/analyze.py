@@ -23,13 +23,21 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
+from agent_eval.anova.stats import ANOVA_AVAILABLE, missing_deps_message
+
+# pandas is module-level (DataFrames are this module's currency), so a missing
+# anova extra fails here — long before the ANOVA_AVAILABLE check below could
+# explain it. Raise the actionable message from the point that actually breaks.
+try:
+    import pandas as pd
+except ImportError as exc:
+    raise ImportError(missing_deps_message(exc)) from exc
+
 import yaml
 
 from agent_eval.anova.archive import ResultsArchiver
 from agent_eval.anova.composite import aggregate_replications
 from agent_eval.harbor.reward import compose_reward
-from agent_eval.anova.stats import ANOVA_AVAILABLE
 
 logger = logging.getLogger(__name__)
 
@@ -118,10 +126,7 @@ def _analyze_df(
     column per factor. ``replication`` is optional.
     """
     if not ANOVA_AVAILABLE:
-        raise ImportError(
-            "ANOVA dependencies not installed. "
-            "Install with: pip install agent-eval-harness[anova]"
-        )
+        raise ImportError(missing_deps_message())
 
     from agent_eval.anova.stats.anova import mixed_effects_anova, repeated_measures_anova
     from agent_eval.anova.stats.pareto import pareto_frontier

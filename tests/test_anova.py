@@ -1,8 +1,14 @@
 """Tests for agent_eval.anova.stats — repeated-measures ANOVA, mixed-effects, Pareto frontier."""
 
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
+
+import agent_eval.anova.stats
+from agent_eval.anova.stats import missing_deps_message
 
 from agent_eval.anova.stats.anova import (
     mixed_effects_anova,
@@ -267,3 +273,34 @@ class TestParetoFrontier:
         conditions = [{"name": "x", "cost": 1.0, "quality": 0.5, "extra": "kept"}]
         frontier = pareto_frontier(conditions, cost_key="cost", quality_key="quality")
         assert frontier[0]["extra"] == "kept"
+
+
+class TestMissingDepsMessage:
+    """The `anova` extra has to land in the interpreter the harness runs under.
+
+    `.eval-venv` is provisioned by ensure_deps.py with pyyaml/mlflow/anthropic/
+    jinja2 only, so a plain `pip install -e ".[anova]"` — which targets whatever
+    environment is active — routinely installs into the wrong python. The message
+    must therefore name the interpreter, not just the extra.
+    """
+
+    def test_names_the_running_interpreter_and_a_runnable_command(self):
+        msg = missing_deps_message()
+        assert sys.executable in msg
+        # Copy-pasteable: the command targets that same interpreter, and installs
+        # the extra from the plugin root rather than from PyPI.
+        assert f'{sys.executable} -m pip install -e "' in msg
+        plugin_root = Path(agent_eval.anova.stats.__file__).resolve().parents[3]
+        assert f'{plugin_root}[anova]"' in msg
+
+    def test_reports_which_module_was_missing(self):
+        msg = missing_deps_message(ImportError("No module named 'pandas'", name="pandas"))
+        assert "missing:     pandas" in msg
+
+    def test_degrades_without_an_exception(self):
+        assert "missing:     one or more of them" in missing_deps_message()
+
+    def test_does_not_suggest_the_bare_pypi_install(self):
+        # The old message said `pip install agent-eval-harness[anova]`, which both
+        # targets the wrong interpreter and pulls from PyPI instead of the checkout.
+        assert "pip install agent-eval-harness[anova]" not in missing_deps_message()
