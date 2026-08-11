@@ -233,19 +233,25 @@ def test_bootstrap_symlink_realpath(tmp_path):
     symlink_path = skills_dir / "agent_eval"
     os.symlink(root / "agent_eval", symlink_path, target_is_directory=True)
     
-    code = textwrap.dedent("""
+    site = str(root / ".eval-venv" / "lib" / f"python{_RUNNING}" / "site-packages")
+    code = textwrap.dedent(f"""
         import sys
         import os
         # Insert scripts dir at front so we import the symlink, not the real package
         sys.path.insert(0, os.path.dirname(__file__))
         import agent_eval._bootstrap as b
-        
-        # Verify it was loaded via the symlink
-        assert 'skills' in b.__file__ or 'eval-analyze' in b.__file__
-        
-        # _bootstrap already ran on import, check if it successfully found .eval-venv
-        # by verifying that the venv's site-packages was appended to sys.path
-        print("VENV_ON_PATH=" + str(any('.eval-venv' in p for p in sys.path)))
+
+        # Loaded through the symlink, not the real package dir.
+        assert os.path.join("skills", "eval-analyze", "scripts") in b.__file__, b.__file__
+
+        # Only realpath resolution reaches <root>/.eval-venv from the symlinked
+        # package dir, so its site-packages landing on sys.path is the whole
+        # discriminator. Compare the EXACT path: a substring test for
+        # '.eval-venv' also matches the *runner's* own venv when the suite is run
+        # with .eval-venv/bin/python3, and would pass under abspath too.
+        want = {site!r}
+        print("VENV_ON_PATH=" + str(any(
+            os.path.realpath(p) == os.path.realpath(want) for p in sys.path)))
     """)
     script = skills_dir / "test_symlink.py"
     script.write_text(code)
@@ -258,4 +264,6 @@ def test_bootstrap_symlink_realpath(tmp_path):
                           capture_output=True, text=True, timeout=120)
     
     assert proc.returncode == 0, f"child failed:\n{proc.stdout}\n{proc.stderr}"
-    assert "VENV_ON_PATH=True" in proc.stdout, f"Venv was not activated (.eval-venv not in sys.path)\\nstdout: {proc.stdout}"
+    assert "VENV_ON_PATH=True" in proc.stdout, (
+        f"venv site-packages not on the child's sys.path — plugin_root was resolved "
+        f"through the symlink instead of to the real tree\nstdout: {proc.stdout}")
