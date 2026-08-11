@@ -284,14 +284,35 @@ class TestMissingDepsMessage:
     must therefore name the interpreter, not just the extra.
     """
 
-    def test_names_the_running_interpreter_and_a_runnable_command(self):
+    def test_command_targets_the_interpreter_the_harness_imports_from(self):
+        """Not necessarily sys.executable: on the common ABI-*match* path bootstrap
+        only patches sys.path, so the launcher is NOT where the extra must land."""
         msg = missing_deps_message()
-        assert sys.executable in msg
-        # Copy-pasteable: the command targets that same interpreter, and installs
-        # the extra from the plugin root rather than from PyPI.
-        assert f'{sys.executable} -m pip install -e "' in msg
+        target = agent_eval.anova.stats._installer_python()
+        assert f'{target} -m pip install -e "' in msg
         plugin_root = Path(agent_eval.anova.stats.__file__).resolve().parents[3]
-        assert f'{plugin_root}[anova]"' in msg
+        assert f'{plugin_root}[anova]"' in msg  # local checkout, not PyPI
+        assert sys.executable in msg            # still reports what is running
+
+    def test_installer_target_is_the_venv_when_one_exists(self, tmp_path, monkeypatch):
+        root = tmp_path / "plugin"
+        (root / ".eval-venv" / "bin").mkdir(parents=True)
+        (root / ".eval-venv" / "bin" / "python3").write_text("")
+        monkeypatch.setattr(agent_eval.anova.stats, "_plugin_root", lambda: root)
+        assert agent_eval.anova.stats._installer_python() == str(
+            root / ".eval-venv" / "bin" / "python3")
+
+    def test_installer_falls_back_to_sys_executable_without_a_venv(self, tmp_path, monkeypatch):
+        """No .eval-venv: harbor verifier / evalhub pod run straight off site-packages."""
+        monkeypatch.setattr(agent_eval.anova.stats, "_plugin_root", lambda: tmp_path)
+        assert agent_eval.anova.stats._installer_python() == sys.executable
+
+    def test_uses_the_recorded_import_error_when_given_none(self, monkeypatch):
+        """The ANOVA_AVAILABLE gate has no exception to hand over, so the module
+        keeps the one it swallowed — otherwise a missing scipy reports nothing."""
+        monkeypatch.setattr(agent_eval.anova.stats, "_IMPORT_ERROR",
+                            ImportError("No module named 'scipy'", name="scipy"))
+        assert "missing:     scipy" in missing_deps_message()
 
     def test_reports_which_module_was_missing(self):
         msg = missing_deps_message(ImportError("No module named 'pandas'", name="pandas"))
