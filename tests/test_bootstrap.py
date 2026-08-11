@@ -244,8 +244,8 @@ def test_bootstrap_symlink_realpath(tmp_path):
         assert 'skills' in b.__file__ or 'eval-analyze' in b.__file__
         
         # _bootstrap already ran on import, check if it successfully found .eval-venv
-        # by verifying the sentinel was set
-        print("DONE=" + str(os.environ.get('_AGENT_EVAL_BOOTSTRAP_DONE')))
+        # by verifying that the venv's site-packages was appended to sys.path
+        print("VENV_ON_PATH=" + str(any('.eval-venv' in p for p in sys.path)))
     """)
     script = skills_dir / "test_symlink.py"
     script.write_text(code)
@@ -258,4 +258,4 @@ def test_bootstrap_symlink_realpath(tmp_path):
                           capture_output=True, text=True, timeout=120)
     
     assert proc.returncode == 0, f"child failed:\n{proc.stdout}\n{proc.stderr}"
-    assert "DONE=1" in proc.stdout, "Venv was not activated (SENTINEL not set)"
+    assert "VENV_ON_PATH=True" in proc.stdout, f"Venv was not activated (.eval-venv not in sys.path)\\nstdout: {proc.stdout}"
