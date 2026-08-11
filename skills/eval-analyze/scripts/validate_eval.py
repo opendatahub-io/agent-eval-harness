@@ -51,7 +51,7 @@ def _validate_template_variables(judges, outputs, dataset_schema, errors, warnin
     # Standard variables the scoring renderer (score._render_jinja2_template)
     # always injects. Keep in sync with that render() call.
     standard_vars = {
-        "input",            # Loaded from dataset input.yaml
+        "inputs",           # Loaded from dataset input.yaml
         "annotations",      # dataset annotations (dict + formatted __str__)
         "annotations_text", # formatted annotation text for display
         "conversation",     # root-level assistant text from events
@@ -59,6 +59,8 @@ def _validate_template_variables(judges, outputs, dataset_schema, errors, warnin
         "events",           # tool call log
         "outputs",          # collected output files/events proxy
         "arguments",        # judge arguments from eval.yaml
+        "reasoning",        # model reasoning content
+        "evidence",         # extracted judge evidence
     }
 
     had_undefined_vars = False
@@ -96,11 +98,11 @@ def _validate_template_variables(judges, outputs, dataset_schema, errors, warnin
             )
 
         # Check for common mistakes with input/annotations
-        if "input" in vars_used:
+        if "inputs" in vars_used:
             # Warn if input.yaml expected fields aren't documented
             if not dataset_schema or "input.yaml" not in dataset_schema:
                 warnings.append(
-                    f"judges.{name} uses {{{{ input }}}} but dataset.schema doesn't document input.yaml structure. "
+                    f"judges.{name} uses {{{{ inputs }}}} but dataset.schema doesn't document input.yaml structure. "
                     f"Document expected fields (prompt, expected_api, expected_documentation, etc.)"
                 )
 
@@ -117,8 +119,8 @@ def _validate_template_variables(judges, outputs, dataset_schema, errors, warnin
         errors.append(
             "\n💡 Template variable errors detected. Common fixes:\n"
             "   • Ensure all {{ variable }} references match output names or standard variables\n"
-            "   • Standard variables (always available): input, annotations, annotations_text, "
-            "conversation, tool_trace, events, outputs, arguments\n"
+            "   • Standard variables (always available): inputs, annotations, annotations_text, "
+            "conversation, tool_trace, events, outputs, arguments, reasoning, evidence\n"
             "   • For custom variables, add them to outputs section in eval.yaml\n"
             "   • Check dataset.schema documents expected structure of input.yaml and annotations.yaml"
         )
@@ -142,11 +144,14 @@ def _test_render_judge_templates(judges, outputs, errors, warnings):
     mock_data = {
         "conversation": "Mock conversation",
         "events": [],
-        "input": {"prompt": "Mock prompt", "expected_documentation": []},
+        "inputs": "**prompt**: Mock prompt",
         "annotations": {"category": "test", "expected_files": []},
         "annotations_text": "- **category**: test",
         "arguments": {},
         "outputs": {"files": {}, "events": [], "conversation": ""},
+        "reasoning": "Mock reasoning",
+        "evidence": "Mock evidence",
+        "tool_trace": "",
     }
     # Add all declared outputs
     for name in output_names:
@@ -190,8 +195,8 @@ def _test_render_judge_templates(judges, outputs, errors, warnings):
             "  1. Ensure all {{ variable }} references match output names\n"
             "  2. For dataset files (input.yaml, annotations.yaml), verify they're loaded by scoring\n"
             "  3. Check dataset.schema documents the expected structure\n"
-            "  4. Standard variables: input, annotations, annotations_text, "
-            "conversation, events, outputs, arguments"
+            "  4. Standard variables: inputs, annotations, annotations_text, "
+            "conversation, events, outputs, arguments, reasoning, evidence, tool_trace"
         )
 
 

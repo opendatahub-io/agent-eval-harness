@@ -89,7 +89,7 @@ def _activate():
     if os.environ.get(_SENTINEL):
         return
 
-    pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    pkg_dir = os.path.dirname(os.path.realpath(__file__))
     plugin_root = os.path.dirname(pkg_dir)
     venv_python, site_dirs = _venv_python_and_site(plugin_root)
 

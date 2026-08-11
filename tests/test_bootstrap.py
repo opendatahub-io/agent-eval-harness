@@ -223,3 +223,39 @@ def test_true_script_under_abi_mismatch_execs(tmp_path):
     code = _EXECV_SPY + "import agent_eval._bootstrap\nprint('NO EXEC')\n"
     proc, execd = _run_child(root, code)  # plain `python child_script.py`
     assert execd, f"expected execv on true-script ABI mismatch:\n{proc.stdout}\n{proc.stderr}"
+
+
+def test_bootstrap_symlink_realpath(tmp_path):
+    # Setup designed layout where agent_eval is imported via a symlink
+    root = _make_fake_plugin(tmp_path, _RUNNING)
+    skills_dir = root / "skills" / "eval-analyze" / "scripts"
+    skills_dir.mkdir(parents=True)
+    symlink_path = skills_dir / "agent_eval"
+    os.symlink(root / "agent_eval", symlink_path, target_is_directory=True)
+    
+    code = textwrap.dedent("""
+        import sys
+        import os
+        # Insert scripts dir at front so we import the symlink, not the real package
+        sys.path.insert(0, os.path.dirname(__file__))
+        import agent_eval._bootstrap as b
+        
+        # Verify it was loaded via the symlink
+        assert 'skills' in b.__file__ or 'eval-analyze' in b.__file__
+        
+        # _bootstrap already ran on import, check if it successfully found .eval-venv
+        # by verifying the sentinel was set
+        print("DONE=" + str(os.environ.get('_AGENT_EVAL_BOOTSTRAP_DONE')))
+    """)
+    script = skills_dir / "test_symlink.py"
+    script.write_text(code)
+    
+    env = dict(os.environ)
+    env.pop("_AGENT_EVAL_BOOTSTRAP_DONE", None)
+    env.pop("PYTHONPATH", None)  # Ensure it doesn't bypass the symlink
+    
+    proc = subprocess.run([sys.executable, str(script)], cwd=str(skills_dir), env=env,
+                          capture_output=True, text=True, timeout=120)
+    
+    assert proc.returncode == 0, f"child failed:\n{proc.stdout}\n{proc.stderr}"
+    assert "DONE=1" in proc.stdout, "Venv was not activated (SENTINEL not set)"
