@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Scan a Claude Code project for configuration artifacts and report a harness inventory."""
 
+import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
+
 import argparse
 import json
 import sys

@@ -17,7 +17,17 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-import yaml
+# Invoked both as the ``agent_eval.state`` module and directly as
+# ``python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py`` (eval-analyze,
+# eval-review, eval-optimize). In the direct case sys.path[0] is *inside* the
+# package, so ``import agent_eval`` cannot resolve until the plugin root is on
+# the path. resolve() follows the per-skill scripts/agent_eval symlink.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import agent_eval._bootstrap  # noqa: F401,E402 — auto-activate venv before 3p imports
+
+import yaml  # noqa: E402
 
 
 def _parse_value(v):

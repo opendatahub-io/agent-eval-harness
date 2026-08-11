@@ -27,6 +27,8 @@ Environment:
     MLFLOW_EXPERIMENT_NAME — experiment name (overridden by --experiment)
 """
 
+import agent_eval._bootstrap  # noqa: F401 — auto-activate venv before 3p imports
+
 import json
 import os
 import subprocess

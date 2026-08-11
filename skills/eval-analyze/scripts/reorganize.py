@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
+import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
 from agent_eval.reorganize import reorganize_root_config
 
 

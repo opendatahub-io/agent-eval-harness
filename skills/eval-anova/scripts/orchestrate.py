@@ -19,6 +19,8 @@ Usage:
 
 from __future__ import annotations
 
+import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
+
 import argparse
 import datetime
 import json
@@ -55,6 +57,22 @@ class RunResult:
 # Factors with real runner semantics; everything else is recorded as a
 # condition dimension but cannot be applied through eval-run's execute.py.
 _RUNNER_FACTORS = ("model", "effort", "subagent", "subagent_model")
+
+
+def _child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for a spawned python child.
+
+    Each child is a fresh ``python3 script.py`` entry that has to activate
+    ``.eval-venv`` itself. The bootstrap sentinel is designed to survive
+    ``os.execv`` *within* one process; letting it cross into a child would make
+    the child short-circuit activation and run without the venv's site-packages.
+    """
+    env = dict(os.environ)
+    if extra:
+        env.update(extra)
+    # After the overrides, so `extra` cannot put the sentinel back.
+    env.pop(agent_eval._bootstrap._SENTINEL, None)
+    return env
 
 
 def _repo_root() -> Path:
@@ -126,9 +144,7 @@ def _run_eval_for_condition(
     """Drive the eval-run pipeline once for a single condition (one run)."""
     scripts = _eval_run_scripts()
     py = sys.executable
-    env = dict(os.environ)
-    if extra_env:
-        env.update(extra_env)
+    env = _child_env(extra_env)
 
     def _run(step: str, argv: list[str], capture: bool = False) -> str:
         res = subprocess.run(
@@ -249,7 +265,7 @@ def _invoke_compare(runs_dir: Path, output: str | None) -> None:
     argv = [sys.executable, str(compare), "generate", str(runs_dir)]
     if output:
         argv += ["--output", output]
-    res = subprocess.run(argv, check=False)
+    res = subprocess.run(argv, check=False, env=_child_env())
     if res.returncode != 0:
         logger.warning("eval-compare exited %s", res.returncode)
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
+
 from pathlib import Path
 from typing import Any
 

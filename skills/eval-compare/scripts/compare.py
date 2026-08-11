@@ -6,6 +6,8 @@ Usage:
     compare.py generate <input-dir> --output <dir> [--title TEXT] [--overview TEXT]
 """
 
+import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
+
 import argparse
 import json
 import re

@@ -178,6 +178,31 @@ skills/eval-check/ # Skill: full-harness configuration health check
     reference_checker.py # Cross-component reference validation (broken refs, missing scripts, orphans)
 ```
 
+### Adding a skill (or a script to an existing one)
+
+Skill scripts run as `python3 ${CLAUDE_SKILL_DIR}/scripts/foo.py`, so `sys.path[0]`
+is the script's own directory — not the plugin root. Two things are therefore
+required, and both have been forgotten before:
+
+1. **Symlink** `scripts/agent_eval -> ../../../agent_eval` in the new
+   `skills/<skill>/scripts/` dir. Without it `import agent_eval` raises
+   ModuleNotFoundError.
+2. **`import agent_eval._bootstrap  # noqa: F401 — auto-activate venv` as the first
+   import** in any script that uses a third-party package (`yaml`, `mlflow`,
+   `anthropic`, `jinja2`, `pandas`, …) or imports `agent_eval`. It puts
+   `.eval-venv`'s site-packages on `sys.path`, or re-execs into the venv
+   interpreter on an ABI mismatch. It must precede the third-party imports —
+   including ones deferred inside functions, which still need the venv when they run.
+
+Stdlib-only scripts need neither. `scripts/ensure_deps.py` is exempt: it *creates*
+the venv. Modules under `agent_eval/` that SKILL.md invokes directly by path count
+as entry points too (see `agent_eval/state.py` for the `__package__` guard that case
+needs). Spawning a python child? Strip `_AGENT_EVAL_BOOTSTRAP_DONE` from its env —
+the sentinel is for surviving `os.execv` within one process, and a child has to
+activate the venv itself (`orchestrate.py::_child_env`).
+
+`tests/test_venv_activation.py` enforces all of this, so CI catches a miss.
+
 ## How It Works
 
 Projects create an `eval.yaml` config file with:

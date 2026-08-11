@@ -6,6 +6,8 @@ generation prompt (builtin / prompt_file / inline), and uses the Claude API to
 generate test cases following the prompt instructions.
 """
 
+import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
+
 import json
 import os
 import re
@@ -15,8 +17,6 @@ from typing import Optional
 
 import yaml
 
-# Activate venv before third-party imports
-import agent_eval._bootstrap
 from agent_eval.config import EvalConfig, GenerationSeed
 from agent_eval.prompts import resolve_seed_prompt
 

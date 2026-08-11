@@ -9,6 +9,8 @@ Inspired by the dependency analysis in harness-eval
 (https://github.com/redhat-community-ai-tools/harness-eval).
 """
 
+import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
+
 import argparse
 import json
 import re

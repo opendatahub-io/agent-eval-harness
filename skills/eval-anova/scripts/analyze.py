@@ -14,6 +14,8 @@ Two entry points:
 
 from __future__ import annotations
 
+import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
+
 import datetime
 import hashlib
 import json
