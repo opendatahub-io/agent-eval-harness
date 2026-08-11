@@ -211,8 +211,13 @@ def _find_eval_yamls(plugin_root):
         configs = discover_configs(cwd)
         if configs:
             return [c.path for c in configs]
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - SessionStart must never hard-fail
+        # Broad on purpose: a discovery bug must not block the session. But the
+        # fallback below sees one config at most, so staying silent here is the
+        # very under-installation this function exists to prevent — say so.
+        print(f"Warning: eval.yaml discovery failed ({exc}); falling back to a "
+              f"single config. .eval-venv may be missing deps required by other "
+              f"evals in this project.", file=sys.stderr)
     for candidate in [cwd / "eval.yaml", plugin_root / "eval.yaml"]:
         if candidate.exists():
             return [candidate]

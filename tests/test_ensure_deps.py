@@ -173,3 +173,22 @@ class TestFallbackWhenDiscoveryFails:
         monkeypatch.undo()
         monkeypatch.chdir(tmp_path)
         assert len(ensure_deps._find_eval_yamls(plugin_root)) == 2
+
+    def test_discovery_failure_is_reported(self, tmp_path, monkeypatch, capsys):
+        """Degrading to one config is the exact under-installation this function
+        exists to prevent, so it must not happen silently."""
+        monkeypatch.setitem(sys.modules, "agent_eval.config", None)
+        monkeypatch.chdir(tmp_path)
+        _write(tmp_path / "eval.yaml", MLFLOW_EVAL)
+
+        ensure_deps._find_eval_yamls(tmp_path)
+
+        err = capsys.readouterr().err
+        assert "discovery failed" in err
+        assert "missing deps" in err
+
+    def test_no_warning_when_discovery_works(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        _write(tmp_path / "eval" / "one" / "eval.yaml", MLFLOW_EVAL)
+        ensure_deps._find_eval_yamls(tmp_path)
+        assert "discovery failed" not in capsys.readouterr().err
