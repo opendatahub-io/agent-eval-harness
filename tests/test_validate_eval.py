@@ -112,7 +112,7 @@ class TestPluginDirResolution:
         config_dir.mkdir(parents=True)
         outside.mkdir()
         monkeypatch.chdir(repo)
-        with pytest.raises(ValueError, match="escapes project root"):
+        with pytest.raises(ValueError, match="must stay beneath"):
             validate_eval._resolve_plugin_dir("../../outside", config_dir, repo)
 
     def test_rejects_relative_symlink_escape(self, tmp_path, monkeypatch):
@@ -122,7 +122,7 @@ class TestPluginDirResolution:
         outside.mkdir()
         (repo / "plugin-link").symlink_to(outside, target_is_directory=True)
         monkeypatch.chdir(repo)
-        with pytest.raises(ValueError, match="escapes project root"):
+        with pytest.raises(ValueError, match="must stay beneath"):
             validate_eval._resolve_plugin_dir("plugin-link", repo, repo)
 
     def test_does_not_prefer_existing_path_from_unrelated_cwd(

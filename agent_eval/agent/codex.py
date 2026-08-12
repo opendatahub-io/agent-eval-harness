@@ -185,7 +185,7 @@ class CodexRunner(EvalRunner):
         if model:
             cmd.extend(["--model", model])
         for key, value in self._config_overrides.items():
-            cmd.extend(["-c", f"{key}={json.dumps(value)}"])
+            cmd.extend(["-c", f"{key}={_toml_value(value)}"])
         # Omitting PROMPT makes Codex read it from our dedicated stdin pipe.
         # This keeps prompts out of process listings and prevents inherited
         # parent stdin from hanging a run or being appended as a <stdin> block.
@@ -459,6 +459,21 @@ def _prefer_complete(final, partial) -> str:
     final_text = _as_text(final)
     partial_text = _as_text(partial)
     return final_text if len(final_text) >= len(partial_text) else partial_text
+
+
+def _toml_value(value) -> str:
+    """Serialize a ``-c`` override value as TOML, which codex-cli parses.
+
+    JSON is TOML-compatible for scalars and plain arrays, but TOML inline
+    tables use ``key = value`` syntax — a JSON object would fall back to a
+    plain string on the Codex side.
+    """
+    if isinstance(value, dict):
+        inner = ", ".join(f"{k} = {_toml_value(v)}" for k, v in value.items())
+        return "{" + inner + "}"
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    return json.dumps(value)
 
 
 def _usage_count(usage: dict, key: str) -> int:

@@ -130,30 +130,43 @@ def _validate_path_segment(value: str, name: str) -> str:
     return value
 
 
-def resolve_plugin_dir(config, configured: str) -> Path:
-    """Resolve one runner plugin directory with an explicit trust boundary.
+def resolve_plugin_path(configured: str, project_root, config_dir=None) -> Path:
+    """Trust-boundary resolution for plugin dirs, shared by every consumer.
 
-    Relative paths may use the project root or the eval.yaml directory, but
-    their canonical target must remain beneath the project root (including
-    after symlink resolution). An absolute path is an explicit operator opt-in
-    to an external plugin and is therefore allowed, but still validated before
-    the first case runs.
+    This is the single implementation of the plugin-path security rules —
+    the runtime runners and the eval.yaml validator must agree on them, so
+    neither may carry its own copy. Relative paths may use the project root
+    or the eval.yaml directory, but their canonical target (after symlink
+    resolution) must remain beneath the project root. An absolute path is an
+    explicit operator opt-in to an external plugin. Existence is not checked
+    here; callers decide how a missing directory is reported.
     """
     path = Path(configured).expanduser()
-    project_root = config.project_root.resolve()
     if path.is_absolute():
-        resolved = path.resolve()
-    else:
-        project_candidate = project_root / path
-        config_candidate = config.resolve_path(path)
-        candidate = (project_candidate if project_candidate.exists()
-                     else config_candidate if config_candidate.exists()
-                     else project_candidate)
-        resolved = candidate.resolve()
-        if not resolved.is_relative_to(project_root):
-            raise ValueError(
-                "Relative runner.plugin_dirs entries must stay beneath the "
-                f"project root: {configured!r} resolved to {resolved}")
+        return path.resolve()
+    root = Path(project_root).resolve()
+    project_candidate = root / path
+    config_candidate = (Path(config_dir) / path if config_dir is not None
+                        else project_candidate)
+    candidate = (project_candidate if project_candidate.exists()
+                 else config_candidate if config_candidate.exists()
+                 else project_candidate)
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError(
+            "Relative plugin_dirs entries must stay beneath the "
+            f"project root {root}: {configured!r} resolved to {resolved}")
+    return resolved
+
+
+def resolve_plugin_dir(config, configured: str) -> Path:
+    """Resolve one runner plugin directory, requiring it to exist.
+
+    Validation happens before the first case runs so a misconfigured plugin
+    fails fast rather than mid-suite.
+    """
+    resolved = resolve_plugin_path(configured, config.project_root,
+                                   config.config_dir)
     if not resolved.is_dir():
         raise FileNotFoundError(f"Runner plugin directory not found: {resolved}")
     return resolved

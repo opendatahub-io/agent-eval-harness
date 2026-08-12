@@ -39,26 +39,13 @@ STANDARD_TEMPLATE_VARS = {
 
 
 def _resolve_plugin_dir(raw, config_dir, project_root=None):
-    """Resolve a plugin dir beneath an explicit project trust boundary.
+    """Delegate to the shared trust-boundary resolver in agent_eval.config.
 
-    Absolute paths are an explicit opt-in to an external plugin. Relative
-    paths may be project-root- or config-relative, but canonicalized symlinks
-    and ``..`` segments may not escape the project root.
+    The validator and the runtime runners must enforce identical plugin-path
+    rules, so this must never grow its own copy of them.
     """
-    path = Path(raw).expanduser()
-    if path.is_absolute():
-        return path.resolve()
-    root = Path(project_root or Path.cwd()).resolve()
-    project_candidate = root / path
-    config_candidate = Path(config_dir) / path
-    candidate = (project_candidate if project_candidate.exists()
-                 else config_candidate if config_candidate.exists()
-                 else project_candidate)
-    resolved = candidate.resolve()
-    if not resolved.is_relative_to(root):
-        raise ValueError(
-            f"relative plugin path escapes project root {root}: {raw!r} -> {resolved}")
-    return resolved
+    from agent_eval.config import resolve_plugin_path
+    return resolve_plugin_path(raw, project_root or Path.cwd(), config_dir)
 
 
 def _extract_template_variables(template_text):

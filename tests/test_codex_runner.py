@@ -9,8 +9,11 @@ import pytest
 import yaml
 
 from agent_eval.agent import RUNNERS
-from agent_eval.agent.codex import CodexRunner, _extract_usage
+from agent_eval.agent.codex import CodexRunner, _extract_usage, _toml_value
 from agent_eval.config import EvalConfig
+
+requires_git = pytest.mark.skipif(
+    shutil.which("git") is None, reason="git not on PATH")
 
 
 def _plugin(tmp_path, *names):
@@ -194,6 +197,7 @@ def test_codex_validates_plugin_root_before_execution(tmp_path):
         CodexRunner(plugin_dirs=[str(commands_only)])
 
 
+@requires_git
 def test_repo_staging_does_not_dirty_git_status(tmp_path):
     plugin = _plugin(tmp_path, "parent")
     repo = tmp_path / "repo"
@@ -201,6 +205,7 @@ def test_repo_staging_does_not_dirty_git_status(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     subprocess.run([
         "git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "-c", "commit.gpgsign=false",
         "commit", "-q", "--allow-empty", "-m", "init",
     ], cwd=repo, check=True)
     runner = CodexRunner(plugin_dirs=[str(plugin)])
@@ -217,6 +222,7 @@ def test_repo_staging_does_not_dirty_git_status(tmp_path):
     assert status == ""
 
 
+@requires_git
 def test_nested_workspace_staging_does_not_dirty_git_status(tmp_path):
     # Workspaces commonly live in nested repo paths (eval/runs/<case>/workspace);
     # the exclude rule must be anchored to the workspace, not the repo root.
@@ -227,6 +233,7 @@ def test_nested_workspace_staging_does_not_dirty_git_status(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     subprocess.run([
         "git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "-c", "commit.gpgsign=false",
         "commit", "-q", "--allow-empty", "-m", "init",
     ], cwd=repo, check=True)
     runner = CodexRunner(plugin_dirs=[str(plugin)])
@@ -270,6 +277,17 @@ def test_partial_copytree_failure_is_cleaned_up_and_restaged(
     manifest = runner._stage_skills(workspace)
     assert (workspace / ".agents" / "skills" / "parent" / "extra.py").is_file()
     runner._cleanup_staged_skills(workspace, manifest)
+
+
+def test_toml_value_serializes_mappings_codex_can_parse():
+    # codex-cli parses -c values as TOML; JSON objects would fall back to a
+    # plain string.
+    assert _toml_value("concise") == '"concise"'
+    assert _toml_value(4) == "4"
+    assert _toml_value(True) == "true"
+    assert _toml_value(["a", 1]) == '["a", 1]'
+    assert _toml_value({"network_access": True, "writable_roots": ["/tmp"]}) \
+        == '{network_access = true, writable_roots = ["/tmp"]}'
 
 
 def test_codex_malformed_events_degrade_gracefully():
