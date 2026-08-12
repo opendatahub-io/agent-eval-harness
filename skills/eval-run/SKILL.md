@@ -27,7 +27,7 @@ Parse `$ARGUMENTS`:
 | `--effort <level>` | no | `runner.effort` from config | Agent reasoning effort (`claude-code` or `codex`) |
 | `--runner <type>` | no | local | `local` (default Steps 1–8) or `harbor` (containerized — skips to Harbor runner section) |
 | `--env <name>` | no | `kubernetes` | Harbor execution environment: `podman`, `kubernetes`, `openshift` (only with `--runner harbor`) |
-| `--mount <source:target[:ro|rw]>` | no | — | Repeatable Podman bind mount; defaults to read-only (only with `--runner harbor`) |
+| `--mount <source:target[:ro or rw]>` | no | — | Repeatable Podman bind mount; defaults to read-only (only with `--runner harbor`) |
 | `--cpus <n>` / `--memory-mb <MiB>` | no | Harbor defaults | Hard resource limits per Harbor environment |
 
 If `--runner harbor`: after config discovery, **skip to the Harbor runner section** below. Steps 2–6 are replaced by one `run.py` call.

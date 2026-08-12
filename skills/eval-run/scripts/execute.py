@@ -195,8 +195,9 @@ def main():
     parser.add_argument("--timeout", type=int, default=None)
     parser.add_argument("--mlflow-experiment", default=None)
     parser.add_argument("--effort", default=None,
-                        choices=["low", "medium", "high", "xhigh", "max"],
-                        help="Claude Code reasoning effort (default: from eval.yaml runner.effort)")
+                        choices=["minimal", "low", "medium", "high", "xhigh", "max"],
+                        help="Agent reasoning effort (validated for the selected runner; "
+                             "default: eval.yaml runner.effort)")
     parser.add_argument("--parallelism", type=int, default=None,
                         help="Max parallel case executions (default: from eval.yaml or sequential)")
     parser.add_argument("--run-id", default=None,

@@ -1,6 +1,19 @@
 """Tests for the Harbor Podman environment adapter."""
 
-from agent_eval.harbor.podman import _environment_args, _external_bind_args
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+
+# The Harbor framework is an optional dependency. Probe the exact submodule:
+# an unrelated top-level ``harbor`` module must not make collection fail.
+pytest.importorskip("harbor.environments.base")
+
+from agent_eval.harbor.podman import (
+    PodmanEnvironment,
+    _environment_args,
+    _external_bind_args,
+)
 
 
 def test_external_bind_args_ignores_harbor_log_mounts(tmp_path):
@@ -15,8 +28,42 @@ def test_external_bind_args_ignores_harbor_log_mounts(tmp_path):
 
 def test_external_bind_args_supports_writable_mount(tmp_path):
     assert _external_bind_args([
-        {"type": "bind", "source": str(tmp_path), "target": "/data"},
+        {"type": "bind", "source": str(tmp_path), "target": "/data",
+         "read_only": False},
     ]) == ["-v", f"{tmp_path.resolve()}:/data:rw"]
+
+
+def test_external_bind_args_defaults_to_read_only(tmp_path):
+    assert _external_bind_args([
+        {"type": "bind", "source": str(tmp_path), "target": "/data"},
+    ]) == ["-v", f"{tmp_path.resolve()}:/data:ro"]
+
+
+@pytest.mark.parametrize("mount,error", [
+    ({"type": "volume", "source": "/x", "target": "/data"},
+     "bind mounts only"),
+    ({"type": "bind", "source": "", "target": "/data"},
+     "source is required"),
+    ({"type": "bind", "source": "/tmp", "target": ""},
+     "target is required"),
+    ({"type": "bind", "source": "/tmp", "target": "relative"},
+     "target must be absolute"),
+    ({"type": "bind", "source": "/", "target": "/data"},
+     "host filesystem root"),
+    ({"type": "bind", "source": "/tmp", "target": "/"},
+     "container filesystem root"),
+])
+def test_external_bind_args_rejects_invalid_mounts(mount, error):
+    with pytest.raises(ValueError, match=error):
+        _external_bind_args([mount])
+
+
+def test_external_bind_args_rejects_missing_source(tmp_path):
+    with pytest.raises(FileNotFoundError, match="source not found"):
+        _external_bind_args([{
+            "type": "bind", "source": str(tmp_path / "missing"),
+            "target": "/data",
+        }])
 
 
 def test_environment_args_do_not_expose_values():
@@ -27,3 +74,81 @@ def test_environment_args_do_not_expose_values():
 
     assert args == ["-e", "OPENAI_API_KEY", "-e", "EVAL_SNAPSHOT_DIR"]
     assert "secret-value" not in args
+
+
+def _startable_environment(tmp_path, mounts):
+    return SimpleNamespace(
+        os=None,
+        task_env_config=SimpleNamespace(docker_image="example/eval:latest"),
+        environment_dir=tmp_path,
+        _container="aeh-test",
+        _effective_cpus=2,
+        _effective_memory_mb=512,
+        _network_disabled=True,
+        _mounts=mounts,
+        _persistent_env={"TASK_FLAG": "enabled"},
+        _started=False,
+    )
+
+
+def test_start_wires_mount_resources_and_value_free_env(
+        tmp_path, monkeypatch):
+    env = _startable_environment(tmp_path, [{
+        "type": "bind", "source": str(tmp_path), "target": "/data",
+        "read_only": True,
+    }])
+    calls = []
+    uploaded = []
+
+    async def fake_podman(args, timeout_sec=None, input_bytes=None,
+                          environment=None):
+        calls.append((args, timeout_sec, environment))
+        return SimpleNamespace(return_code=0, stderr="")
+
+    async def fake_upload():
+        uploaded.append(True)
+
+    env._podman = fake_podman
+    env._upload_environment_dir_after_start = fake_upload
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-value")
+
+    asyncio.run(PodmanEnvironment.start(env, force_build=False))
+
+    run_args, timeout, child_env = calls[-1]
+    assert timeout == 300
+    assert ["--cpus", "2"] == run_args[
+        run_args.index("--cpus"):run_args.index("--cpus") + 2]
+    assert ["--memory", "512m"] == run_args[
+        run_args.index("--memory"):run_args.index("--memory") + 2]
+    assert ["--network", "none"] == run_args[
+        run_args.index("--network"):run_args.index("--network") + 2]
+    assert ["--security-opt", "label=disable"] == run_args[
+        run_args.index("--security-opt"):run_args.index("--security-opt") + 2]
+    assert f"{tmp_path.resolve()}:/data:ro" in run_args
+    assert ["-e", "OPENAI_API_KEY"] == run_args[
+        run_args.index("OPENAI_API_KEY") - 1:run_args.index("OPENAI_API_KEY") + 1]
+    assert "secret-value" not in run_args
+    assert child_env["OPENAI_API_KEY"] == "secret-value"
+    assert child_env["TASK_FLAG"] == "enabled"
+    assert uploaded == [True]
+    assert env._started is True
+
+
+def test_start_does_not_disable_labels_for_internal_log_mounts(tmp_path):
+    env = _startable_environment(tmp_path, [{
+        "type": "bind", "source": str(tmp_path), "target": "/logs/agent",
+    }])
+    calls = []
+
+    async def fake_podman(args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(return_code=0, stderr="")
+
+    async def fake_upload():
+        return None
+
+    env._podman = fake_podman
+    env._upload_environment_dir_after_start = fake_upload
+    asyncio.run(PodmanEnvironment.start(env, force_build=False))
+
+    assert "--security-opt" not in calls[-1]

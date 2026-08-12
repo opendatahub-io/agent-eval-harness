@@ -130,6 +130,78 @@ def test_generate_tasks_can_drop_model_calling_judges(tmp_path):
     assert [judge["name"] for judge in bundled["judges"]] == ["files_exist"]
 
 
+def test_single_step_with_all_llm_judges_is_marked_unjudged(tmp_path):
+    cfg_path, _ = _make_eval(tmp_path)
+    raw = yaml.safe_load(cfg_path.read_text())
+    raw["judges"] = [{"name": "quality", "prompt": "score it"}]
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    config = EvalConfig.from_yaml(cfg_path)
+
+    out = tmp_path / "tasks"
+    gen.generate_tasks(
+        config, cfg_path, out, image="img:latest", cases=["case-001"],
+        no_llm_judges=True)
+
+    test_sh = (out / "case-001" / "tests" / "test.sh").read_text()
+    assert '"agent_eval_unjudged": 1' in test_sh
+    assert '"reward": 1.0' not in test_sh
+    assert not (out / "case-001" / "tests" / "eval.yaml").exists()
+
+
+def test_no_llm_bundle_rewrites_reward_thresholds_and_keeps_python_builtin(
+        tmp_path):
+    cfg_path, _ = _make_eval(tmp_path)
+    raw = yaml.safe_load(cfg_path.read_text())
+    raw["judges"] = [
+        {"name": "quality", "prompt": "Rate it"},
+        {"name": "det", "check": "true"},
+        {"name": "budget", "builtin": "cost_budget"},
+    ]
+    raw["reward"] = {"judge": "quality"}
+    raw["thresholds"] = {
+        "quality": {"min_mean": 4}, "det": {"min_pass_rate": 1}}
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+
+    bundled = gen._bundle_eval_config(cfg_path, no_llm_judges=True)
+    assert [judge["name"] for judge in bundled["judges"]] == ["det", "budget"]
+    assert "reward" not in bundled
+    assert bundled["thresholds"] == {"det": {"min_pass_rate": 1}}
+
+    bundled_path = tmp_path / "bundled.yaml"
+    bundled_path.write_text(yaml.safe_dump(bundled, sort_keys=False))
+    EvalConfig.from_yaml(bundled_path)  # no dangling reward reference
+
+
+def test_no_llm_bundle_prunes_weighted_reward_references(tmp_path):
+    cfg_path, _ = _make_eval(tmp_path)
+    raw = yaml.safe_load(cfg_path.read_text())
+    raw["judges"] = [
+        {"name": "quality", "prompt": "Rate it"},
+        {"name": "det", "check": "true"},
+    ]
+    raw["reward"] = {
+        "formula": "weighted", "weights": {"quality": 0.7, "det": 0.3},
+        "raw": ["quality", "det"],
+    }
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    bundled = gen._bundle_eval_config(cfg_path, no_llm_judges=True)
+    assert bundled["reward"]["weights"] == {"det": 0.3}
+    assert bundled["reward"]["raw"] == ["det"]
+
+
+def test_no_llm_bundle_drops_expression_reward_using_removed_judge(tmp_path):
+    cfg_path, _ = _make_eval(tmp_path)
+    raw = yaml.safe_load(cfg_path.read_text())
+    raw["judges"] = [
+        {"name": "quality", "prompt": "Rate it"},
+        {"name": "det", "check": "true"},
+    ]
+    raw["reward"] = {"formula": "0.8 * quality + 0.2 * det"}
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    assert "reward" not in gen._bundle_eval_config(
+        cfg_path, no_llm_judges=True)
+
+
 def test_generate_tasks_escapes_multiline_description_for_toml(tmp_path):
     description = 'Line one\nLine "two" uses \\ a path'
     cfg_path, config = _make_eval(tmp_path, description=description)

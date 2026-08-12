@@ -112,12 +112,18 @@ the equivalent data in a PVC, image, or other cluster-visible volume; a laptop
 host path cannot be mounted into an OpenShift pod. When external Podman mounts
 are present, the adapter disables SELinux container labeling instead of
 recursively relabeling the host dataset; the requested read-only mode remains
-enforced by Podman.
+enforced by Podman. Disabling labels removes SELinux separation for the entire
+trial container, so task code can read host content accessible to the mapped
+UID; `:ro` prevents writes only. Prefer a dedicated, pre-labeled data directory
+and never expose a broad home or checkout directory to an untrusted task.
 
 Provider environment variables, including API keys, are forwarded by name:
 their values are supplied through Podman's process environment rather than
 embedded in `podman run` or `podman exec` arguments. This prevents ordinary
-process listings from printing credentials.
+process listings from printing credentials. The Harbor wrapper likewise passes
+agent env values indirectly through its child environment, not `harbor run`
+argv. Same-UID host processes can still inspect environment values; this is not
+a credential-isolation boundary.
 
 The `--env` flag selects the execution environment (`kubernetes` by
 default, also accepts `podman`, `openshift`, `k8s`). The `-n` flag

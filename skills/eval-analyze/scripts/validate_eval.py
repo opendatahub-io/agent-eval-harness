@@ -38,13 +38,27 @@ STANDARD_TEMPLATE_VARS = {
 }
 
 
-def _resolve_plugin_dir(raw, config_dir):
-    """Resolve plugin dirs with the same precedence as agent runners."""
+def _resolve_plugin_dir(raw, config_dir, project_root=None):
+    """Resolve a plugin dir beneath an explicit project trust boundary.
+
+    Absolute paths are an explicit opt-in to an external plugin. Relative
+    paths may be project-root- or config-relative, but canonicalized symlinks
+    and ``..`` segments may not escape the project root.
+    """
     path = Path(raw).expanduser()
     if path.is_absolute():
-        return path
-    cwd_path = path.resolve()
-    return cwd_path if cwd_path.exists() else config_dir / path
+        return path.resolve()
+    root = Path(project_root or Path.cwd()).resolve()
+    project_candidate = root / path
+    config_candidate = Path(config_dir) / path
+    candidate = (project_candidate if project_candidate.exists()
+                 else config_candidate if config_candidate.exists()
+                 else project_candidate)
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError(
+            f"relative plugin path escapes project root {root}: {raw!r} -> {resolved}")
+    return resolved
 
 
 def _extract_template_variables(template_text):
@@ -695,11 +709,15 @@ def validate_config(path="eval.yaml"):
         if not isinstance(pd, str) or not pd:
             errors.append(f"runner.plugin_dirs[{i}] must be a non-empty string")
             continue
-        pp = _resolve_plugin_dir(pd, config_dir)
+        try:
+            pp = _resolve_plugin_dir(pd, config_dir, Path.cwd())
+        except ValueError as exc:
+            errors.append(f"runner.plugin_dirs[{i}] {exc}")
+            continue
         if not pp.exists():
-            warnings.append(f"runner.plugin_dirs[{i}] '{pd}' not found")
+            errors.append(f"runner.plugin_dirs[{i}] '{pd}' not found")
         elif not pp.is_dir():
-            warnings.append(f"runner.plugin_dirs[{i}] '{pd}' is not a directory")
+            errors.append(f"runner.plugin_dirs[{i}] '{pd}' is not a directory")
 
     # --- Models ---
     models = config.get("models") or {}

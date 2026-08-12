@@ -7,29 +7,70 @@ import signal
 import subprocess
 import threading
 import time
+import warnings
 from pathlib import Path
 from typing import Optional
+
+from agent_eval.config import resolve_plugin_dir
 
 from .base import EvalRunner, RunResult
 
 _print_lock = threading.Lock()
+CODEX_EFFORTS = frozenset({"minimal", "low", "medium", "high", "xhigh"})
 
 
 class CodexRunner(EvalRunner):
     """Run a skill or prompt with ``codex exec --json``."""
 
-    _VALID_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+    # codex-cli 0.147.0 accepts these values.  In particular, ``minimal`` is
+    # valid and ``max`` is not (older code accepted max, which the CLI silently
+    # ignored and therefore mislabeled in run metadata).
+    _VALID_EFFORTS = CODEX_EFFORTS
+    _VALID_PERMISSION_MODES = {
+        "default", "acceptEdits", "plan", "auto", "dontAsk",
+        "bypassPermissions",
+    }
+
+    # Environment keys safe to forward to an evaluated Codex process.  Keep
+    # the same operating/provider baseline as ClaudeCodeRunner, plus Codex and
+    # OpenAI configuration.  Eval-authored env is added explicitly below.
+    _SAFE_ENV_KEYS = {
+        "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TERM",
+        "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORG_ID",
+        "OPENAI_ORGANIZATION", "OPENAI_PROJECT", "OPENAI_MODEL",
+        "CODEX_HOME", "CODEX_API_KEY",
+        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL", "ANTHROPIC_VERTEX_PROJECT_ID",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "CLOUD_ML_REGION", "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_CODE_SUBAGENT_MODEL",
+        "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT",
+        "CLOUDSDK_CONFIG", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
+        "MLFLOW_TRACKING_URI", "MLFLOW_EXPERIMENT_NAME",
+        "AGENT_EVAL_RUNS_DIR",
+    }
 
     @classmethod
     def from_config(cls, config, *, log_prefix=None, **overrides):
-        plugin_dirs = [str(Path(d).resolve()) for d in config.runner.plugin_dirs]
+        plugin_dirs = [
+            str(resolve_plugin_dir(config, configured))
+            for configured in config.runner.plugin_dirs
+        ]
+
+        # execution.env is runtime env for every substrate; runner.env wins on
+        # collisions because it is the more specific Codex configuration.
+        env = {**config.execution.env, **config.runner.env}
         return cls(
-            env=config.runner.env,
+            env=env,
             log_prefix=log_prefix,
             config_overrides=config.runner.settings,
             plugin_dirs=plugin_dirs,
             system_prompt=config.runner.system_prompt,
             effort=overrides.get("effort", config.runner.effort),
+            permissions=overrides.get("permissions", config.permissions),
+            permission_mode=overrides.get(
+                "permission_mode", config.runner.permission_mode),
         )
 
     def __init__(
@@ -40,12 +81,30 @@ class CodexRunner(EvalRunner):
         plugin_dirs: Optional[list] = None,
         system_prompt: Optional[str] = None,
         effort: Optional[str] = None,
+        permissions: Optional[dict] = None,
+        permission_mode: Optional[str] = None,
     ):
         self._env = env or {}
         self._log_prefix = log_prefix
         self._config_overrides = dict(config_overrides or {})
-        self._plugin_dirs = [Path(p) for p in (plugin_dirs or [])]
+        self._plugin_dirs: list[Path] = []
+        for configured in plugin_dirs or []:
+            plugin_dir = Path(configured).expanduser().resolve()
+            if not plugin_dir.is_dir():
+                raise FileNotFoundError(
+                    f"Codex plugin directory not found: {plugin_dir}")
+            skills_root = plugin_dir / "skills"
+            if not skills_root.is_dir():
+                raise FileNotFoundError(
+                    f"Codex plugin skill directory not found: {skills_root}")
+            self._plugin_dirs.append(plugin_dir)
         self._system_prompt = system_prompt
+        self._permissions = permissions or {}
+        if permission_mode is not None and permission_mode not in self._VALID_PERMISSION_MODES:
+            raise ValueError(
+                f"Invalid permission_mode '{permission_mode}'. "
+                f"Must be one of: {sorted(self._VALID_PERMISSION_MODES)}")
+        self._permission_mode = permission_mode
 
         # Keep compatibility with early Codex configs that put the effort in
         # runner.settings while making runner.effort the canonical field.
@@ -57,6 +116,24 @@ class CodexRunner(EvalRunner):
                 f"Must be one of: {sorted(self._VALID_EFFORTS)}")
         if self._effort:
             self._config_overrides["model_reasoning_effort"] = self._effort
+
+        if self._permissions:
+            warnings.warn(
+                "Codex cannot translate eval permissions.allow/deny rules; "
+                f"the run will use the '{self._codex_sandbox_mode()}' filesystem "
+                "policy, but tool-level permission rules are not enforced.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+    def _codex_sandbox_mode(self) -> str:
+        """Translate Claude Code's permission-mode intent to Codex."""
+        if self._permission_mode == "plan":
+            return "read-only"
+        # default/acceptEdits/auto/dontAsk all permit edits subject to Claude's
+        # approval/tool policy. Codex exec cannot reproduce those approval
+        # details, so workspace-write is the closest safe filesystem policy.
+        return "workspace-write"
 
     @property
     def name(self) -> str:
@@ -83,9 +160,16 @@ class CodexRunner(EvalRunner):
         timeout_s: int = 600,
         extra_env: Optional[dict] = None,
     ) -> RunResult:
-        del settings_path, max_budget_usd  # Codex has no equivalent CLI flags.
+        del settings_path  # Codex has no equivalent settings-file flag.
+        if max_budget_usd not in (None, 5.0):
+            warnings.warn(
+                f"Codex does not enforce max_budget_usd={max_budget_usd}; "
+                "timeout and external provider limits are the available caps.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
         workspace = workspace.resolve()
-        self._stage_skills(workspace)
 
         if target:
             skill_name = target.rsplit(":", 1)[-1]
@@ -99,22 +183,27 @@ class CodexRunner(EvalRunner):
         if effective_system_prompt:
             prompt = f"{effective_system_prompt.rstrip()}\n\n{prompt}"
 
-        cmd = [
-            "codex", "exec", "--json", "--ephemeral",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "--skip-git-repo-check", "-C", str(workspace),
-        ]
+        cmd = ["codex", "exec", "--json", "--ephemeral"]
+        if self._permission_mode == "bypassPermissions":
+            cmd.append("--dangerously-bypass-approvals-and-sandbox")
+        else:
+            cmd.extend(["--sandbox", self._codex_sandbox_mode()])
+        cmd.extend(["--skip-git-repo-check", "-C", str(workspace)])
         if model:
             cmd.extend(["--model", model])
         for key, value in self._config_overrides.items():
             cmd.extend(["-c", f"{key}={json.dumps(value)}"])
-        cmd.extend(["--", prompt])
+        # Omitting PROMPT makes Codex read it from our dedicated stdin pipe.
+        # This keeps prompts out of process listings and prevents inherited
+        # parent stdin from hanging a run or being appended as a <stdin> block.
+        cmd.extend(["--", "-"])
 
         start = time.monotonic()
-        events: list[dict] = []
-        stdout_lines: list[str] = []
+        staged = None
         try:
+            staged = self._stage_skills(workspace)
             popen_kwargs = dict(
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=str(workspace),
@@ -125,44 +214,58 @@ class CodexRunner(EvalRunner):
                 popen_kwargs["start_new_session"] = True
             proc = subprocess.Popen(cmd, **popen_kwargs)
             try:
-                stdout, stderr = proc.communicate(timeout=timeout_s)
-            except subprocess.TimeoutExpired:
-                if os.name != "nt":
-                    os.killpg(proc.pid, signal.SIGKILL)
-                else:
-                    proc.kill()
-                stdout, stderr = proc.communicate()
+                stdout, stderr = proc.communicate(input=prompt, timeout=timeout_s)
+            except subprocess.TimeoutExpired as exc:
+                partial_stdout = _as_text(exc.stdout)
+                partial_stderr = _as_text(exc.stderr)
+                try:
+                    if os.name != "nt":
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    else:
+                        proc.kill()
+                except ProcessLookupError:
+                    pass
+                try:
+                    final_stdout, final_stderr = proc.communicate(timeout=5)
+                    stdout = _prefer_complete(final_stdout, partial_stdout)
+                    stderr = _prefer_complete(final_stderr, partial_stderr)
+                except subprocess.TimeoutExpired:
+                    stdout = partial_stdout
+                    stderr = partial_stderr
+                    if stderr:
+                        stderr += "\n"
+                    stderr += "Process group termination hung"
+                events, normalized_stdout = self._parse_events(stdout or "")
+                usage = _extract_usage(events)
+                timeout_message = f"Timed out after {timeout_s}s"
+                if stderr:
+                    timeout_message += f"\n{stderr}"
                 return RunResult(
                     exit_code=-1,
-                    stdout=stdout or "",
-                    stderr=f"Timed out after {timeout_s}s",
+                    stdout=normalized_stdout,
+                    stderr=timeout_message,
                     duration_s=time.monotonic() - start,
+                    token_usage=usage["token_usage"],
+                    num_turns=usage["num_turns"],
                     resolved_model=model or None,
+                    models_used=[model] if model else None,
+                    raw_output={"events": events},
                 )
-        except (OSError, subprocess.SubprocessError) as exc:
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
             return RunResult(
                 exit_code=-1, stdout="", stderr=str(exc),
                 duration_s=time.monotonic() - start,
                 resolved_model=model or None,
             )
+        finally:
+            if staged is not None:
+                self._cleanup_staged_skills(workspace, staged)
 
-        for line in (stdout or "").splitlines():
-            stdout_lines.append(line)
-            try:
-                event = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            events.append(event)
-            if self._log_prefix:
-                progress = self._extract_progress(event)
-                if progress:
-                    with _print_lock:
-                        print(f"  {self._log_prefix} | {progress}", flush=True)
-
+        events, normalized_stdout = self._parse_events(stdout or "")
         usage = _extract_usage(events)
         return RunResult(
             exit_code=proc.returncode,
-            stdout="\n".join(stdout_lines) + ("\n" if stdout_lines else ""),
+            stdout=normalized_stdout,
             stderr=stderr or "",
             duration_s=time.monotonic() - start,
             token_usage=usage["token_usage"],
@@ -172,29 +275,142 @@ class CodexRunner(EvalRunner):
             raw_output={"events": events},
         )
 
-    def _stage_skills(self, workspace: Path) -> None:
-        """Expose every plugin skill, including transitive dependencies."""
+    def _parse_events(self, stdout: str) -> tuple[list[dict], str]:
+        """Parse mixed JSONL output while preserving the original text."""
+        events: list[dict] = []
+        lines = stdout.splitlines()
+        for line in lines:
+            try:
+                event = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(event, dict):
+                continue
+            events.append(event)
+            if self._log_prefix:
+                progress = self._extract_progress(event)
+                if progress:
+                    with _print_lock:
+                        print(f"  {self._log_prefix} | {progress}", flush=True)
+        normalized = "\n".join(lines) + ("\n" if lines else "")
+        return events, normalized
+
+    def _stage_skills(self, workspace: Path) -> dict:
+        """Copy every plugin skill into a disposable workspace-local tree.
+
+        The returned manifest must be passed to ``_cleanup_staged_skills``.
+        Existing real skill directories are left untouched; dangling symlinks
+        are rejected instead of being silently trusted.  In a Git workspace,
+        the temporary tree is added to the repository-local exclude file so a
+        repo-mode status baseline remains clean while Codex is running.
+        """
+        workspace = workspace.resolve()
         skills_dest = workspace / ".agents" / "skills"
-        for plugin_dir in self._plugin_dirs:
-            source_root = plugin_dir / "skills"
-            if not source_root.is_dir():
-                raise FileNotFoundError(
-                    f"Codex plugin skill directory not found: {source_root}")
-            skills_dest.mkdir(parents=True, exist_ok=True)
-            for source in source_root.iterdir():
-                if not source.is_dir() or not (source / "SKILL.md").is_file():
-                    continue
-                destination = skills_dest / source.name
-                if destination.exists() or destination.is_symlink():
-                    continue
-                try:
-                    destination.symlink_to(source.resolve(), target_is_directory=True)
-                except OSError:
-                    shutil.copytree(source, destination)
+        manifest = {"created": [], "exclude": None}
+        try:
+            manifest["exclude"] = self._ensure_agents_gitignored(workspace)
+            for plugin_dir in self._plugin_dirs:
+                source_root = plugin_dir / "skills"
+                # Constructor validation catches configuration errors early;
+                # repeat this check in case the source vanished between cases.
+                if not source_root.is_dir():
+                    raise FileNotFoundError(
+                        f"Codex plugin skill directory not found: {source_root}")
+                skills_dest.mkdir(parents=True, exist_ok=True)
+                for source in sorted(source_root.iterdir()):
+                    if not source.is_dir() or not (source / "SKILL.md").is_file():
+                        continue
+                    destination = skills_dest / source.name
+                    if destination.is_symlink():
+                        raise ValueError(
+                            f"Refusing existing symlink at staged skill path: "
+                            f"{destination}")
+                    if destination.exists():
+                        continue
+                    try:
+                        shutil.copytree(source, destination, symlinks=False)
+                    except FileExistsError:
+                        # Another staging caller won the atomic directory-create
+                        # race. Treat its complete real directory as idempotent.
+                        if destination.is_symlink() or not destination.is_dir():
+                            raise
+                        continue
+                    manifest["created"].append(destination)
+            return manifest
+        except Exception:
+            self._cleanup_staged_skills(workspace, manifest)
+            raise
+
+    @staticmethod
+    def _ensure_agents_gitignored(workspace: Path):
+        """Temporarily ignore the staged tree in a Git repo; return undo data."""
+        # Most case workspaces are standalone temp directories. Avoid spawning
+        # Git (and avoid coupling skill staging to a Git executable) unless a
+        # repository marker exists at the workspace or one of its parents.
+        if not any((candidate / ".git").exists()
+                   for candidate in (workspace, *workspace.parents)):
+            return None
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(workspace), "rev-parse", "--git-path", "info/exclude"],
+                capture_output=True, text=True, timeout=5, check=True)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        exclude = Path(result.stdout.strip())
+        if not exclude.is_absolute():
+            exclude = workspace / exclude
+        marker = "# agent-eval-harness temporary Codex skills"
+        rule = "/.agents/"
+        try:
+            existing = exclude.read_text() if exclude.exists() else ""
+            if rule in existing.splitlines():
+                return None
+            exclude.parent.mkdir(parents=True, exist_ok=True)
+            prefix = "" if not existing or existing.endswith("\n") else "\n"
+            with exclude.open("a") as stream:
+                stream.write(f"{prefix}{marker}\n{rule}\n")
+            return (exclude, marker, rule)
+        except OSError:
+            return None
+
+    @staticmethod
+    def _cleanup_staged_skills(workspace: Path, manifest: dict) -> None:
+        for destination in reversed(manifest.get("created", [])):
+            if destination.is_symlink():
+                destination.unlink(missing_ok=True)
+            elif destination.exists():
+                shutil.rmtree(destination, ignore_errors=True)
+        for directory in (workspace / ".agents" / "skills", workspace / ".agents"):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+
+        exclude_info = manifest.get("exclude")
+        if exclude_info:
+            exclude, marker, rule = exclude_info
+            try:
+                lines = exclude.read_text().splitlines()
+                removed = False
+                kept = []
+                for line in lines:
+                    if not removed and line == marker:
+                        removed = True
+                        continue
+                    if removed and line == rule:
+                        removed = False
+                        continue
+                    kept.append(line)
+                exclude.write_text("\n".join(kept) + ("\n" if kept else ""))
+            except OSError:
+                pass
 
     def _build_env(self, extra_env: Optional[dict] = None) -> dict:
-        env = os.environ.copy()
+        env = {key: value for key, value in os.environ.items()
+               if key in self._SAFE_ENV_KEYS}
         for key, value in self._env.items():
+            if value is None:
+                continue
             if isinstance(value, str) and value.startswith("$"):
                 resolved = os.environ.get(value[1:])
                 if resolved is not None:
@@ -202,23 +418,39 @@ class CodexRunner(EvalRunner):
             else:
                 env[key] = str(value)
         if extra_env:
-            env.update({key: str(value) for key, value in extra_env.items()})
+            for key, value in extra_env.items():
+                if value is not None:
+                    env[key] = str(value)
         return env
 
     @staticmethod
     def _extract_progress(event: dict) -> str:
+        """Return fixed metadata only; event payloads may contain secrets."""
         event_type = event.get("type")
         item = event.get("item") or {}
         if event_type in {"item.started", "item.completed"}:
             if item.get("type") == "command_execution":
-                command = item.get("command", "")
-                return f"Shell: {command[:100]}" if command else ""
+                state = "started" if event_type == "item.started" else "completed"
+                return f"Shell command {state}"
             if event_type == "item.completed" and item.get("type") == "agent_message":
-                text = item.get("text", "").strip()
-                return text[:100] if text else ""
+                return "Agent message completed"
         if event_type in {"turn.completed", "turn_completed"}:
             return "Turn complete"
         return ""
+
+
+def _as_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return str(value)
+
+
+def _prefer_complete(final, partial) -> str:
+    final_text = _as_text(final)
+    partial_text = _as_text(partial)
+    return final_text if len(final_text) >= len(partial_text) else partial_text
 
 
 def _extract_usage(events: list[dict]) -> dict:

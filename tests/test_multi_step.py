@@ -281,7 +281,7 @@ judges:
         assert [j["name"] for j in review_j] == ["whole"]  # whole-case on final
         assert all("step" not in j for j in create_j + review_j)
 
-    def test_no_judge_step_gets_trivial_verifier(self, tmp_path):
+    def test_no_judge_step_is_marked_unjudged_not_passed(self, tmp_path):
         from agent_eval.harbor.tasks import generate_tasks
         self._case(tmp_path)
         cfgf = _write(tmp_path, """
@@ -299,8 +299,33 @@ judges:
         out = tmp_path / "tasks"
         generate_tasks(cfg, cfgf, out, "img")
         setup_test = (out / "case-1" / "steps" / "setup" / "tests" / "test.sh").read_text()
-        assert '"reward": 1.0' in setup_test  # trivial pass, no eval.yaml
+        assert '"reward": 0.0' in setup_test  # Harbor requires numeric reward
+        assert '"agent_eval_unjudged": 1' in setup_test
+        assert '"reward": 1.0' not in setup_test
         assert not (out / "case-1" / "steps" / "setup" / "tests" / "eval.yaml").exists()
+
+    def test_no_llm_filter_marks_all_llm_step_unjudged(self, tmp_path):
+        from agent_eval.harbor.tasks import generate_tasks
+        self._case(tmp_path)
+        cfgf = _write(tmp_path, """
+name: strat
+execution:
+  mode: case
+  steps:
+    - {id: analyze, skill: s-analyze, arguments: x}
+    - {id: finish, skill: s-finish, arguments: y}
+dataset: {path: __TMP__/cases}
+judges:
+  - {name: quality, step: analyze, prompt: "rate it"}
+  - {name: final, check: "true"}
+""")
+        cfg = EvalConfig.from_yaml(cfgf)
+        out = tmp_path / "tasks"
+        generate_tasks(cfg, cfgf, out, "img", no_llm_judges=True)
+        test_sh = (out / "case-1" / "steps" / "analyze" /
+                   "tests" / "test.sh").read_text()
+        assert '"agent_eval_unjudged": 1' in test_sh
+        assert '"reward": 1.0' not in test_sh
 
     def test_steps_template_ref_errors_for_harbor(self, tmp_path):
         from agent_eval.harbor.tasks import generate_tasks

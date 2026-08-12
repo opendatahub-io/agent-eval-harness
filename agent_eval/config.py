@@ -130,6 +130,35 @@ def _validate_path_segment(value: str, name: str) -> str:
     return value
 
 
+def resolve_plugin_dir(config, configured: str) -> Path:
+    """Resolve one runner plugin directory with an explicit trust boundary.
+
+    Relative paths may use the project root or the eval.yaml directory, but
+    their canonical target must remain beneath the project root (including
+    after symlink resolution). An absolute path is an explicit operator opt-in
+    to an external plugin and is therefore allowed, but still validated before
+    the first case runs.
+    """
+    path = Path(configured).expanduser()
+    project_root = config.project_root.resolve()
+    if path.is_absolute():
+        resolved = path.resolve()
+    else:
+        project_candidate = project_root / path
+        config_candidate = config.resolve_path(path)
+        candidate = (project_candidate if project_candidate.exists()
+                     else config_candidate if config_candidate.exists()
+                     else project_candidate)
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(project_root):
+            raise ValueError(
+                "Relative runner.plugin_dirs entries must stay beneath the "
+                f"project root: {configured!r} resolved to {resolved}")
+    if not resolved.is_dir():
+        raise FileNotFoundError(f"Runner plugin directory not found: {resolved}")
+    return resolved
+
+
 @dataclass
 class DiscoveryResult:
     """A discovered eval config file."""
@@ -370,7 +399,8 @@ class RunnerConfig:
     plugin_dirs: list = field(default_factory=list)
     env: dict = field(default_factory=dict)
     system_prompt: Optional[str] = None
-    effort: Optional[str] = None  # Claude Code: low | medium | high | xhigh | max
+    # Claude Code: low..max; Codex: minimal..xhigh (runner validates precisely).
+    effort: Optional[str] = None
     # Claude Code: default | acceptEdits | plan | auto | dontAsk | bypassPermissions.
     # Passed as --permission-mode (a CLI flag), so it applies even in untrusted
     # isolated workspaces where settings-file permissions are trust-gated.

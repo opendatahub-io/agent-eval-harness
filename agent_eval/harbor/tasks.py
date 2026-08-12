@@ -32,6 +32,7 @@ at a known path and staged into the workspace by the image's entrypoint or
 """
 
 import copy
+import ast
 import json
 import re
 import shutil
@@ -40,6 +41,7 @@ from pathlib import Path
 import yaml
 
 from agent_eval.config import EvalConfig, resolve_arguments
+from agent_eval.judges import BuiltinJudgeRegistry
 from agent_eval.tools.interception import generate_interception
 
 _TEMPLATES = Path(__file__).resolve().parent / "templates"
@@ -96,13 +98,72 @@ def _bundle_eval_config(config_path: Path, judge_model: str | None = None,
     if judge_model:
         raw.setdefault("models", {})["judge"] = judge_model
     if no_llm_judges:
-        # Fail closed for builtins: without loading the registry here, their
-        # implementation kind is not self-evident from YAML.
-        raw["judges"] = [
-            judge for judge in (raw.get("judges") or [])
-            if not any(judge.get(field) for field in (
-                "prompt", "prompt_file", "llm_rubric", "agent", "builtin"))
-        ]
+        judges = raw.get("judges") or []
+        registry = None
+        if any(judge.get("builtin") for judge in judges):
+            try:
+                registry = BuiltinJudgeRegistry()
+                registry.discover()
+            except Exception as exc:
+                raise RuntimeError(
+                    "--no-llm-judges: cannot classify builtin judges "
+                    f"(registry discovery failed: {exc})") from exc
+
+        def calls_model(judge: dict) -> bool:
+            if any(judge.get(field) for field in (
+                    "prompt", "prompt_file", "llm_rubric", "agent")):
+                return True
+            builtin = judge.get("builtin")
+            if builtin:
+                try:
+                    return registry.get(builtin).kind == "llm"
+                except Exception:
+                    return True  # fail closed, matching score.py
+            return False
+
+        kept = [judge for judge in judges if not calls_model(judge)]
+        removed = {judge.get("name") for judge in judges if calls_model(judge)}
+        removed.discard(None)
+        raw["judges"] = kept
+
+        # Thresholds for intentionally skipped model judges must not linger in
+        # the bundled verifier config. The host orchestration rejects such a
+        # run explicitly; direct bundling remains schema-valid.
+        thresholds = raw.get("thresholds")
+        if isinstance(thresholds, dict):
+            raw["thresholds"] = {
+                name: threshold for name, threshold in thresholds.items()
+                if name not in removed
+            }
+
+        reward = raw.get("reward")
+        if isinstance(reward, dict):
+            drop_reward = reward.get("judge") in removed
+            if not drop_reward:
+                weights = reward.get("weights")
+                if isinstance(weights, dict):
+                    reward["weights"] = {
+                        name: weight for name, weight in weights.items()
+                        if name not in removed
+                    }
+                    if reward.get("formula", "weighted") == "weighted" and not reward["weights"]:
+                        drop_reward = True
+                raw_names = reward.get("raw")
+                if isinstance(raw_names, list):
+                    reward["raw"] = [name for name in raw_names if name not in removed]
+                formula = reward.get("formula")
+                if formula and formula != "weighted":
+                    try:
+                        referenced = {
+                            node.id for node in ast.walk(ast.parse(str(formula)))
+                            if isinstance(node, ast.Name)
+                        }
+                    except SyntaxError:
+                        referenced = removed
+                    if referenced & removed:
+                        drop_reward = True
+            if drop_reward:
+                raw.pop("reward", None)
     return raw
 
 
@@ -122,14 +183,20 @@ def _generate_tool_interception(env_dir: Path, config: EvalConfig,
         resolved_handlers_path=resolved if resolved.is_file() else None)
 
 
-# A step with no judges records a pass so Harbor/results.py don't flag it as an
-# infra failure. The trial reward comes from the final step (strategy = final).
-_TRIVIAL_VERIFIER = (
-    "#!/bin/bash\n"
-    "# No judges target this step; record a pass reward.\n"
-    "mkdir -p /logs/verifier\n"
-    "printf '{\"reward\": 1.0}\\n' > /logs/verifier/reward.json\n"
-)
+# Harbor's verifier schema requires numeric rewards. Mark unjudged steps with a
+# sentinel metric and a neutral numeric placeholder; results.py maps the step
+# back to value=None so it is never reported as a passing score. The trial uses
+# the final step reward (strategy = final), so a normal setup step's placeholder
+# does not affect the task reward.
+def _unjudged_verifier(copy_outputs: str = "true") -> str:
+    return (
+        "#!/bin/bash\n"
+        "# No judges target this task/step; mark it unjudged, not passed.\n"
+        "mkdir -p /logs/verifier\n"
+        f"{copy_outputs}\n"
+        "printf '{\"reward\": 0.0, \"agent_eval_unjudged\": 1}\\n' "
+        "> /logs/verifier/reward.json\n"
+    )
 
 
 def _format_skill_instruction(skill_name: str, arguments: str,
@@ -266,7 +333,7 @@ def _write_multi_step_case_package(config, config_path, bundled_cfg, case_dir,
                 encoding="utf-8")
         else:
             (step_dir / "tests" / "test.sh").write_text(
-                _TRIVIAL_VERIFIER, encoding="utf-8")
+                _unjudged_verifier(copy_outputs), encoding="utf-8")
         (step_dir / "tests" / "test.sh").chmod(0o755)
 
     # Per-step agent timeout honors step.timeout when set (verifier uses the
@@ -398,14 +465,20 @@ def generate_tasks(
                     f'mkdir -p "$(dirname {dst})" && '
                     f'cp -r {src} {dst} 2>/dev/null || true')
         copy_outputs = "\n".join(copy_lines) if copy_lines else "true"
-        (task_dir / "tests" / "test.sh").write_text(_render("test.sh.tmpl", {
-            "WORKDIR": workdir,
-            "COPY_OUTPUTS": copy_outputs,
-        }), encoding="utf-8")
+        if bundled_cfg.get("judges"):
+            verifier = _render("test.sh.tmpl", {
+                "WORKDIR": workdir,
+                "COPY_OUTPUTS": copy_outputs,
+            })
+        else:
+            verifier = _unjudged_verifier(copy_outputs)
+        (task_dir / "tests" / "test.sh").write_text(
+            verifier, encoding="utf-8")
         (task_dir / "tests" / "test.sh").chmod(0o755)
-        (task_dir / "tests" / "eval.yaml").write_text(
-            yaml.safe_dump(bundled_cfg, sort_keys=False, allow_unicode=True),
-            encoding="utf-8")
+        if bundled_cfg.get("judges"):
+            (task_dir / "tests" / "eval.yaml").write_text(
+                yaml.safe_dump(bundled_cfg, sort_keys=False, allow_unicode=True),
+                encoding="utf-8")
 
         # environment/ — auto-uploaded to the workspace by Harbor
         if input_file:

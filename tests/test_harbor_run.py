@@ -5,6 +5,9 @@ shape (judges aggregated + per_case), which is what makes report.py / regression
 / MLflow consume Harbor runs unchanged.
 """
 
+import json
+
+import pytest
 import yaml
 
 from agent_eval.config import EvalConfig, OutputConfig
@@ -93,6 +96,51 @@ def test_copy_case_artifacts_uses_configured_output_path(tmp_path):
     assert copied.read_text() == "<h1>report</h1>"
 
 
+def test_copy_case_artifacts_uses_pipeline_order_not_lexical_order(tmp_path):
+    config_path = tmp_path / "pipeline.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "name": "t",
+        "execution": {"steps": [
+            {"id": "zeta", "skill": "a"},
+            {"id": "alpha", "skill": "b"},
+        ]},
+        "dataset": {"path": ""},
+        "outputs": [{"path": "output"}],
+    }))
+    config = EvalConfig.from_yaml(config_path)
+    trial = tmp_path / "trial"
+    for step, text in (("zeta", "first"), ("alpha", "second")):
+        source = trial / "steps" / step / "verifier" / "output"
+        source.mkdir(parents=True)
+        (source / "report.txt").write_text(text)
+
+    out = tmp_path / "run"
+    run_mod._copy_case_artifacts({
+        "trials": [{"trial_path": str(trial), "case_id": "case-1"}]},
+        out, config)
+    assert (out / "cases" / "case-1" / "artifacts" / "output" /
+            "report.txt").read_text() == "second"
+
+
+def test_copy_case_artifacts_replaces_stale_destination_type(tmp_path):
+    config = _config(tmp_path)
+    config.outputs = [OutputConfig(path="report")]
+    trial = tmp_path / "trial"
+    source = trial / "verifier" / "report"
+    source.parent.mkdir(parents=True)
+    source.write_text("fresh")
+    out = tmp_path / "run"
+    destination = out / "cases" / "case-1" / "artifacts" / "report"
+    destination.mkdir(parents=True)
+    (destination / "stale").write_text("old")
+
+    run_mod._copy_case_artifacts({
+        "trials": [{"trial_path": str(trial), "case_id": "case-1"}]},
+        out, config)
+    assert destination.is_file()
+    assert destination.read_text() == "fresh"
+
+
 def test_parse_bind_mount_defaults_read_only(tmp_path):
     mount = run_mod._parse_bind_mount(f"{tmp_path}:/historical-payload-data")
     assert mount == {
@@ -103,6 +151,31 @@ def test_parse_bind_mount_defaults_read_only(tmp_path):
     }
 
 
+def test_parse_bind_mount_explicit_writable(tmp_path):
+    mount = run_mod._parse_bind_mount(f"{tmp_path}:/data:rw")
+    assert mount == {
+        "type": "bind", "source": str(tmp_path.resolve()), "target": "/data"}
+
+
+@pytest.mark.parametrize("spec,error", [
+    ("", "expected SOURCE"),
+    (":/data", "source must not be empty"),
+    ("/tmp:", "target must not be empty"),
+    ("/tmp:relative", "target must be absolute"),
+    ("/tmp:/data:rx", "expected SOURCE"),
+    ("/:/data", "host filesystem root"),
+    ("/tmp:/", "container filesystem root"),
+])
+def test_parse_bind_mount_rejects_invalid_specs(spec, error):
+    with pytest.raises(ValueError, match=error):
+        run_mod._parse_bind_mount(spec)
+
+
+def test_parse_bind_mount_rejects_missing_source(tmp_path):
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        run_mod._parse_bind_mount(f"{tmp_path / 'missing'}:/data")
+
+
 def test_codex_harbor_effort_uses_canonical_field(tmp_path):
     config = _config(tmp_path)
     config.runner.type = "codex"
@@ -110,6 +183,16 @@ def test_codex_harbor_effort_uses_canonical_field(tmp_path):
     config.runner.settings["model_reasoning_effort"] = "medium"
     assert run_mod._harbor_agent_kwargs(config, "codex") == [
         "reasoning_effort=xhigh"]
+
+
+def test_codex_harbor_effort_accepts_minimal_and_rejects_max(tmp_path):
+    config = _config(tmp_path)
+    config.runner.effort = "minimal"
+    assert run_mod._harbor_agent_kwargs(config, "codex") == [
+        "reasoning_effort=minimal"]
+    config.runner.effort = "max"
+    with pytest.raises(ValueError, match="Invalid Codex effort"):
+        run_mod._harbor_agent_kwargs(config, "codex")
 
 
 def test_resolve_harbor_skill_roots_includes_whole_plugin(tmp_path):
@@ -141,6 +224,145 @@ def test_harbor_agent_env_resolves_references_and_redacts_log(tmp_path, monkeypa
     shown = run_mod._display_command([
         "harbor", "run", "--agent-env", "TOKEN=secret-value"])
     assert shown == "harbor run --agent-env TOKEN=<redacted>"
+
+    args, child_env = run_mod._harbor_agent_env_args(config)
+    assert "secret-value" not in args
+    assert args == [
+        "--agent-env", "DATA_DIR=${AGENT_EVAL_HARBOR_AGENT_ENV_0}",
+        "--agent-env", "TOKEN=${AGENT_EVAL_HARBOR_AGENT_ENV_1}",
+    ]
+    assert child_env == {
+        "AGENT_EVAL_HARBOR_AGENT_ENV_0": "/historical-payload-data",
+        "AGENT_EVAL_HARBOR_AGENT_ENV_1": "secret-value",
+    }
+
+
+def test_harbor_command_keeps_secret_out_of_argv(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    config.runner.type = "codex"
+    config.execution.env = {"JIRA_TOKEN": "$TEST_ONLY_TOKEN"}
+    plugin = tmp_path / "plugin"
+    (plugin / "skills" / "parent").mkdir(parents=True)
+    (plugin / "skills" / "parent" / "SKILL.md").write_text("# parent\n")
+    config.runner.plugin_dirs = [str(plugin)]
+    config_path = tmp_path / "run-eval.yaml"
+    raw = yaml.safe_load((tmp_path / "eval.yaml").read_text())
+    raw["runner"] = {
+        "type": "codex", "plugin_dirs": [str(plugin)], "effort": "xhigh"}
+    raw["execution"]["env"] = {"JIRA_TOKEN": "$TEST_ONLY_TOKEN"}
+    config_path.write_text(yaml.safe_dump(raw))
+    monkeypatch.setenv("TEST_ONLY_TOKEN", "argv-redaction-sentinel")
+    tasks_dir = tmp_path / "tasks"
+    (tasks_dir / "case-1").mkdir(parents=True)
+    (tasks_dir / "case-1" / "task.toml").write_text("x")
+    captured = {}
+
+    class FakeProcess:
+        returncode = 17
+
+        def wait(self):
+            return 17
+
+        def send_signal(self, signum):
+            pass
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs["env"]
+        return FakeProcess()
+
+    monkeypatch.setattr(run_mod.subprocess, "Popen", fake_popen)
+    result = run_mod.run_eval_on_harbor(
+        config_path, image=None, model="gpt-5.6-luna",
+        output_dir=tmp_path / "out", tasks_dir=tasks_dir,
+        jobs_dir=tmp_path / "jobs", harbor_bin="harbor",
+        env_import_path=run_mod._ENV_IMPORT_PATHS["podman"],
+        mounts=[{
+            "type": "bind", "source": str(tmp_path), "target": "/history",
+            "read_only": True,
+        }],
+        cpus=2, memory_mb=1024)
+
+    assert result == 17
+    assert "argv-redaction-sentinel" not in captured["command"]
+    joined = " ".join(captured["command"])
+    assert "JIRA_TOKEN=${AGENT_EVAL_HARBOR_AGENT_ENV_0}" in joined
+    assert captured["env"]["AGENT_EVAL_HARBOR_AGENT_ENV_0"] \
+        == "argv-redaction-sentinel"
+    command = captured["command"]
+    assert command[command.index("--skill") + 1] == str(
+        (plugin / "skills").resolve())
+    assert json.loads(command[command.index("--mounts") + 1]) == [{
+        "type": "bind", "source": str(tmp_path), "target": "/history",
+        "read_only": True,
+    }]
+    assert command[command.index("--override-cpus") + 1] == "2"
+    assert command[command.index("--override-memory-mb") + 1] == "1024"
+
+
+def test_claude_harbor_does_not_resolve_codex_skill_roots(tmp_path, monkeypatch):
+    config_path = tmp_path / "eval.yaml"
+    plugin = tmp_path / "commands-only"
+    plugin.mkdir()
+    config_path.write_text(yaml.safe_dump({
+        "name": "t",
+        "execution": {"skill": "x"},
+        "runner": {"type": "claude-code", "plugin_dirs": [str(plugin)]},
+        "dataset": {"path": ""},
+    }))
+    tasks_dir = tmp_path / "tasks"
+    (tasks_dir / "case-1").mkdir(parents=True)
+    (tasks_dir / "case-1" / "task.toml").write_text("x")
+    captured = {}
+
+    class FakeProcess:
+        returncode = 9
+
+        def wait(self):
+            return 9
+
+        def send_signal(self, signum):
+            return None
+
+    monkeypatch.setattr(
+        run_mod.subprocess, "Popen",
+        lambda command, **kwargs: captured.setdefault("command", command)
+        and FakeProcess())
+    assert run_mod.run_eval_on_harbor(
+        config_path, image=None, model="m", output_dir=tmp_path / "out",
+        tasks_dir=tasks_dir, jobs_dir=tmp_path / "jobs") == 9
+    assert "--skill" not in captured["command"]
+
+
+def test_mounts_fail_fast_outside_podman(tmp_path):
+    config_path = tmp_path / "eval.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "name": "t", "execution": {"skill": "x"},
+        "runner": {"type": "claude-code"}, "dataset": {"path": ""}}))
+    tasks_dir = tmp_path / "tasks"
+    (tasks_dir / "case-1").mkdir(parents=True)
+    (tasks_dir / "case-1" / "task.toml").write_text("x")
+    with pytest.raises(ValueError, match="supported only by the Podman"):
+        run_mod.run_eval_on_harbor(
+            config_path, image=None, model="m", output_dir=tmp_path / "out",
+            tasks_dir=tasks_dir, jobs_dir=tmp_path / "jobs",
+            mounts=[{"type": "bind", "source": str(tmp_path),
+                     "target": "/data", "read_only": True}],
+            env_import_path=run_mod._ENV_IMPORT_PATHS["kubernetes"])
+
+
+def test_pregenerated_tasks_reject_generation_only_flags(tmp_path):
+    config_path = tmp_path / "eval.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "name": "t", "execution": {"skill": "x"},
+        "runner": {"type": "claude-code"}, "dataset": {"path": ""}}))
+    tasks_dir = tmp_path / "tasks"
+    (tasks_dir / "case-1").mkdir(parents=True)
+    (tasks_dir / "case-1" / "task.toml").write_text("x")
+    with pytest.raises(ValueError, match="--cases"):
+        run_mod.run_eval_on_harbor(
+            config_path, image=None, model="m", output_dir=tmp_path / "out",
+            tasks_dir=tasks_dir, jobs_dir=tmp_path / "jobs", cases=["case-1"])
 
 
 def test_build_summary_regression_detectable(tmp_path):

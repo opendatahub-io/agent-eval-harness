@@ -6,17 +6,18 @@ read selectively — a field a runner doesn't understand is simply ignored, so t
 block is safe to share across runs.
 
 !!! tip "Runtime, not backend"
-    `runner.type` picks the *agent* (Claude Code, an opaque CLI, the OpenAI Responses
-    API). The **execution backend** (Local, Harbor, EvalHub) is a separate `--runner`
+    `runner.type` picks the *agent* (Claude Code, Codex, an opaque CLI, or the OpenAI
+    Responses API). The **execution backend** (Local, Harbor, EvalHub) is a separate `--runner`
     CLI flag, never a config key. See [backends](../../concepts/backends.md) and the
     [runners concept](../../concepts/runners.md) for the distinction.
 
-## The three runner types
+## The four runner types
 
 ```mermaid
 flowchart TD
     T{runner.type}
     T -->|claude-code<br/>default| CC[ClaudeCodeRunner<br/>claude --print]
+    T -->|codex| CX[CodexRunner<br/>codex exec]
     T -->|cli| CLI[CliRunner<br/>arbitrary command template]
     T -->|responses-api| RA[ResponsesAPIRunner<br/>OpenAI Responses + Skills API]
 ```
@@ -24,24 +25,25 @@ flowchart TD
 | `type` | Runtime | Use it for |
 | --- | --- | --- |
 | `claude-code` *(default)* | Claude Code CLI in headless mode (`claude --print --output-format …`) | The primary path — full tracing, tool interception, permission enforcement, subagent capture |
-| `cli` | Any command you provide, via a placeholder template | Wrapping OpenCode, Codex, a custom agent, or a shell script. See the [opaque CLI runner contract](https://github.com/opendatahub-io/agent-eval-harness/blob/main/docs/opaque-cli-runner-contract.md) |
+| `codex` | Codex CLI in non-interactive mode (`codex exec --json`) | Native Codex execution, skill staging, JSONL usage parsing, and sandbox-mode mapping |
+| `cli` | Any command you provide, via a placeholder template | Wrapping OpenCode, a custom agent, or a shell script. See the [opaque CLI runner contract](https://github.com/opendatahub-io/agent-eval-harness/blob/main/docs/opaque-cli-runner-contract.md) |
 | `responses-api` | OpenAI Responses API with the Shell tool + Skills API | Apples-to-apples comparison of the *same* skill on an OpenAI model |
 
 ## Field reference
 
 Not every runner reads every field. The matrix below shows where each field lands.
 
-| Field | Type | `claude-code` | `cli` | `responses-api` |
-| --- | --- | :---: | :---: | :---: |
-| `type` | `str` | discriminator | discriminator | discriminator |
-| `effort` | `str` (enum) | `--effort` flag | `{effort}` placeholder | — |
-| `permission_mode` | `str` (enum) | `--permission-mode` flag | — | — |
-| `settings` | `dict` | merged into workspace `.claude/settings.json` | — | connection settings (see below) |
-| `plugin_dirs` | `list[str]` | one `--plugin-dir` per entry | — | — |
-| `env` | `dict` | injected on the safe allowlist | — (uses `execution.env`) | — |
-| `system_prompt` | `str` | `--append-system-prompt` | `{system_prompt}` placeholder | `developer` message |
-| `command` | `str` \| `list[str]` | — | **required** — command template | — |
-| `workspace_mode` | `None` \| `"repo"` | harness-level (all runners) | harness-level | harness-level |
+| Field | Type | `claude-code` | `codex` | `cli` | `responses-api` |
+| --- | --- | :---: | :---: | :---: | :---: |
+| `type` | `str` | discriminator | discriminator | discriminator | discriminator |
+| `effort` | `str` (enum) | `--effort` flag | `model_reasoning_effort` | `{effort}` placeholder | — |
+| `permission_mode` | `str` (enum) | `--permission-mode` flag | mapped to Codex sandbox mode | — | — |
+| `settings` | `dict` | merged into workspace `.claude/settings.json` | legacy Codex effort fallback | — | connection settings (see below) |
+| `plugin_dirs` | `list[str]` | one `--plugin-dir` per entry | skills copied into `.agents/skills` | — | — |
+| `env` | `dict` | injected on the safe allowlist | injected on the safe allowlist | — (uses `execution.env`) | — |
+| `system_prompt` | `str` | `--append-system-prompt` | prepended to the prompt | `{system_prompt}` placeholder | `developer` message |
+| `command` | `str` \| `list[str]` | — | — | **required** — command template | — |
+| `workspace_mode` | `None` \| `"repo"` | harness-level (all runners) | harness-level | harness-level | harness-level |
 
 !!! warning "Unset ≠ empty behavior"
     A field ignored by the active runner is harmless — it just does nothing. But two
@@ -52,17 +54,19 @@ Not every runner reads every field. The matrix below shows where each field land
 
 ### `type`
 
-Selects the runner implementation. One of `claude-code` (default), `cli`, or
+Selects the runner implementation. One of `claude-code` (default), `codex`, `cli`, or
 `responses-api`. Any other value fails to resolve at run time.
 
 ### `effort`
 
-Reasoning-effort level for the agent. Valid values, low to high:
+Reasoning-effort level for the agent. The accepted values are runner-specific:
 
-| Value | `low` | `medium` | `high` | `xhigh` | `max` |
-| --- | --- | --- | --- | --- | --- |
+| Runner | Valid values |
+| --- | --- |
+| `claude-code` | `low`, `medium`, `high`, `xhigh`, `max` |
+| `codex` | `minimal`, `low`, `medium`, `high`, `xhigh` |
 
-An invalid value raises at construction time for `claude-code`. The CLI `--effort` flag
+An invalid value raises at construction time for `claude-code` and `codex`. The CLI `--effort` flag
 overrides this field. For the `cli` runner it is exposed as the `{effort}` placeholder
 (empty string if unset); `responses-api` ignores it.
 
@@ -83,12 +87,18 @@ headless mode. One of:
 | Value | `default` | `acceptEdits` | `plan` | `auto` | `dontAsk` | `bypassPermissions` |
 | --- | --- | --- | --- | --- | --- | --- |
 
-An invalid value raises at construction time for `claude-code`; `cli` and
+An invalid value raises at construction time for `claude-code` and `codex`; `cli` and
 `responses-api` ignore the field. For a prompt-free, deny-by-default headless
 run, pair `dontAsk` (allows only what's pre-approved) with a complete
 [`permissions.allow`](permissions.md) list (fed to `--allowed-tools`, also
 trust-independent). `bypassPermissions` skips all prompts — isolated
 environments (containers/VMs) only.
+
+Codex preserves the same intent using its available sandbox modes: `plan` maps to
+`read-only`; `bypassPermissions` maps to Codex's explicit dangerous bypass; and the
+remaining modes map to `workspace-write`. Codex cannot translate Claude Code's
+fine-grained tool allow/deny rules exactly, so the runner emits a warning when such
+rules are configured.
 
 ```yaml
 runner:
@@ -131,12 +141,28 @@ A `dict` whose meaning depends on the runner:
         memory_limit_mb: 4096
     ```
 
+=== "codex"
+
+    `model_reasoning_effort` is accepted as a legacy fallback when `runner.effort`
+    is unset. Prefer the top-level `effort` field; it takes precedence and is
+    validated against Codex's effort values.
+
+    ```yaml
+    runner:
+      type: codex
+      settings:
+        model_reasoning_effort: xhigh
+    ```
+
 The `cli` runner ignores `settings`.
 
 ### `plugin_dirs`
 
-`claude-code` only. A list of directories, each passed as `--plugin-dir` so the CLI can
-discover the skills/plugins under test. Relative paths are resolved to absolute.
+`claude-code` and `codex`. Claude Code receives one `--plugin-dir` per entry. Codex
+copies each plugin's skills into the case workspace's `.agents/skills` directory for
+the duration of the run. Relative paths are resolved from the project root first,
+then from the config directory; they may not escape the project root. An absolute path
+is treated as an explicit opt-in to a trusted external plugin.
 
 ```yaml
 runner:
@@ -148,9 +174,9 @@ runner:
 
 ### `env`
 
-`claude-code` only. Extra environment variables injected into the runner subprocess,
-**additive** to Claude Code's built-in safe allowlist (`PATH`, `HOME`,
-`ANTHROPIC_API_KEY`, `MLFLOW_TRACKING_URI`, …). A value starting with `$` is resolved
+`claude-code` and `codex`. Extra environment variables injected into the runner
+subprocess, **additive** to the runner's built-in safe allowlist (`PATH`, `HOME`,
+provider credentials, `MLFLOW_TRACKING_URI`, …). A value starting with `$` is resolved
 from the caller's environment; missing vars are dropped.
 
 ```yaml
@@ -173,6 +199,7 @@ runner:
 Extra system-prompt text prepended to the agent's context.
 
 - `claude-code` — passed via `--append-system-prompt`, composed with the harness prompt.
+- `codex` — prepended to the user prompt.
 - `cli` — exposed as the `{system_prompt}` placeholder in the command template.
 - `responses-api` — sent as a `developer` role message.
 
@@ -250,6 +277,18 @@ runner:
         - ./my-plugin
       env:
         ANTHROPIC_AUTH_TOKEN: $ANTHROPIC_AUTH_TOKEN
+    ```
+
+=== "Codex"
+
+    ```yaml
+    runner:
+      type: codex
+      effort: xhigh
+      plugin_dirs:
+        - ./my-plugin
+      env:
+        OPENAI_API_KEY: $OPENAI_API_KEY
     ```
 
 === "Opaque CLI"

@@ -138,13 +138,21 @@ python -m agent_eval.harbor.run \
 | `--environment-import-path` | Custom Harbor environment path (overrides `--env`) |
 | `--n-concurrent` | Concurrent trials (default `1`) |
 | `--cases` | Restrict to specific case IDs |
+| `--mount SOURCE:TARGET[:ro\|rw]` | Repeatable Podman bind mount; defaults to read-only |
+| `--cpus` / `--memory-mb` | Hard per-environment CPU and memory limits |
+| `--no-llm-judges` | Keep deterministic judges and omit model-calling judges |
+| `--judge-model` | Override the in-container judge model during task generation |
+| `--arguments` / `--skill` | Override generated task instructions |
 | `--regenerate` | Rebuild task packages even if `--tasks-dir` already has them |
 
 !!! note "Tasks are reused if present"
     If `--tasks-dir` already holds packages (e.g. emitted by `/eval-dataset`), they're
     used as-is and `--image` isn't needed. Pass `--regenerate` to force a rebuild. The
     process exits non-zero if regression [thresholds](config/thresholds.md) are
-    violated. Requires the `harbor` extra (`pip install 'agent-eval-harness[harbor]'`,
+    violated, or if the run produces no numeric scores. Mounts are supported only by
+    the bundled Podman environment; the command fails instead of silently ignoring
+    them on Kubernetes/OpenShift. Requires the `harbor` extra
+    (`pip install 'agent-eval-harness[harbor]'`,
     Python ≥ 3.12). See the [Harbor guide](../guides/harbor.md).
 
 ### `agent_eval.evalhub.runner` — the EvalHub backend

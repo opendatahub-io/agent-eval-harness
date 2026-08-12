@@ -96,6 +96,10 @@ Codex reasoning effort from `eval.yaml`; its repeatable `--mount` flag generates
 the Harbor mount JSON. Host bind mounts apply to Podman only. For external bind
 mounts the local adapter uses `--security-opt label=disable`, avoiding a
 recursive SELinux relabel of the host data while preserving Podman's `:ro` mode.
+This disables SELinux separation for the whole trial container: task code can
+read any host content exposed to the mapped UID, and `:ro` prevents writes only.
+Prefer a dedicated, pre-labeled data directory; do not mount a broad home or
+checkout directory into an untrusted task.
 
 Notes:
 - `PYTHONPATH` must include this repo so Harbor can import the environment
@@ -104,8 +108,9 @@ Notes:
   `OPENAI_API_KEY`, `AWS_ACCESS_KEY_ID`, etc.) are forwarded from the host env
   into the container automatically. Podman receives only variable names in its
   command arguments; values travel through the child process environment so
-  normal process listings do not print credentials. This local environment is
-  not a security boundary from other processes owned by the same OS user. For Vertex AI
+  normal process listings do not print credentials. Same-UID processes can
+  still inspect those environment values; this local environment is not a
+  credential-isolation boundary. For Vertex AI
   (which needs a credentials file), set
   `AGENT_EVAL_PODMAN_GCP_CREDENTIALS_FILE=/path/to/sa-key.json` (mounted
   read-only). See the OpenShift section for Secret / Workload Identity equivalents.

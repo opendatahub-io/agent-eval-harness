@@ -45,6 +45,16 @@ def test_parse_trial_recovers_untruncated_case_id_from_result(tmp_path):
         "case-011-a-very-long-name-that-harbor-truncated")
 
 
+def test_case_id_falls_back_for_parent_segment_and_invalid_utf8(tmp_path):
+    parent = _make_trial(tmp_path, "safe-case__a", 1.0, {})
+    (parent / "result.json").write_text(json.dumps({"task_name": "suite/.."}))
+    assert R.parse_trial(parent)["case_id"] == "safe-case"
+
+    corrupt = _make_trial(tmp_path, "utf8-case__b", 1.0, {})
+    (corrupt / "result.json").write_bytes(b"\xff\xfe")
+    assert R.parse_trial(corrupt)["case_id"] == "utf8-case"
+
+
 def test_parse_trial_none_without_reward(tmp_path):
     (tmp_path / "empty").mkdir()
     assert R.parse_trial(tmp_path / "empty") is None
@@ -75,11 +85,15 @@ def test_parse_job_aggregates(tmp_path):
 # genuine score of 0. A missing reward.json must NOT be counted as 0.
 # ---------------------------------------------------------------------------
 
-def _make_step(trial_dir: Path, step: str, reward: float | None = None):
+def _make_step(trial_dir: Path, step: str, reward: float | None = None,
+               *, unjudged: bool = False):
     sdir = trial_dir / "steps" / step
     (sdir / "verifier").mkdir(parents=True)
     if reward is not None:
-        (sdir / "verifier" / "reward.json").write_text(json.dumps({"reward": reward}))
+        payload = {"reward": reward}
+        if unjudged:
+            payload["agent_eval_unjudged"] = 1
+        (sdir / "verifier" / "reward.json").write_text(json.dumps(payload))
     return sdir
 
 
@@ -118,6 +132,24 @@ def test_multistep_genuine_zero_is_counted(tmp_path):
     assert parsed["aggregated"]["create"]["mean"] == 0.0     # genuine 0 counts
     assert t["reward"] == 0.5
     assert parsed["n_infra_errors"] == 0
+
+
+def test_multistep_unjudged_placeholder_maps_to_none_not_pass_or_infra(tmp_path):
+    job = tmp_path / "job"
+    job.mkdir()
+    trial = job / "case-001__a"
+    trial.mkdir()
+    _make_step(trial, "setup", reward=0.0, unjudged=True)
+    _make_step(trial, "finish", reward=1.0)
+
+    parsed = R.parse_job(job)
+    record = parsed["trials"][0]
+    assert record["per_judge"]["setup"]["value"] is None
+    assert record["per_judge"]["setup"]["error"] == "unjudged"
+    assert record["unjudged_steps"] == ["setup"]
+    assert record["infra_error_steps"] == []
+    assert "setup" not in parsed["aggregated"]
+    assert record["reward"] == 1.0
 
 
 def test_multistep_infra_excluded_from_step_mean(tmp_path):
@@ -251,3 +283,22 @@ def test_extract_transcript_metrics_per_model(tmp_path):
         "z-ai/glm-5.2": {"input": 100, "output": 50, "cache_read": 10,
                          "cache_create": 0, "cost_usd": 0.42},
     }
+
+
+def test_parse_trial_extracts_codex_transcript_metrics(tmp_path):
+    trial = _make_trial(tmp_path, "case-codex__a", 1.0, {})
+    agent_dir = trial / "agent"
+    agent_dir.mkdir()
+    (agent_dir / "codex.txt").write_text(json.dumps({
+        "type": "turn.completed",
+        "usage": {
+            "input_tokens": 12,
+            "output_tokens": 4,
+            "cached_input_tokens": 3,
+        },
+    }) + "\n")
+
+    parsed = R.parse_trial(trial)
+    assert parsed["token_usage"] == {
+        "input": 12, "output": 4, "cache_read": 3}
+    assert parsed["num_turns"] == 1

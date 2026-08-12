@@ -70,12 +70,23 @@ def _external_bind_args(mounts: list[dict]) -> list[str]:
             raise ValueError(
                 "PodmanEnvironment supports external bind mounts only; "
                 f"got {mount.get('type')!r} for {target!r}")
-        source = Path(mount.get("source", "")).expanduser().resolve()
+        raw_source = mount.get("source")
+        if not isinstance(raw_source, str) or not raw_source.strip():
+            raise ValueError(f"Podman mount source is required for {target!r}")
+        if not isinstance(target, str) or not target.strip():
+            raise ValueError("Podman mount target is required")
+        source = Path(raw_source).expanduser().resolve()
         if not source.exists():
             raise FileNotFoundError(f"Podman mount source not found: {source}")
         if not Path(target).is_absolute():
             raise ValueError(f"Podman mount target must be absolute: {target}")
-        mode = "ro" if mount.get("read_only") else "rw"
+        if source == Path("/"):
+            raise ValueError("Refusing to mount the host filesystem root")
+        if Path(target).resolve() == Path("/"):
+            raise ValueError("Refusing to mount over the container filesystem root")
+        # Harbor's schema makes read_only optional; omission must retain the
+        # harness's safe read-only default. Writable access is explicit False.
+        mode = "rw" if mount.get("read_only") is False else "ro"
         args += ["-v", f"{source}:{target}:{mode}"]
     return args
 
@@ -134,7 +145,6 @@ class PodmanEnvironment(BaseEnvironment):
     @classmethod
     def preflight(cls) -> None:
         import shutil
-        import sys
         if not shutil.which(_PODMAN):
             raise SystemExit(
                 f"Podman ('{_PODMAN}') is not installed or not on PATH. "

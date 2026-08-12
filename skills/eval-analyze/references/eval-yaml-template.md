@@ -101,14 +101,14 @@ execution:
 #   NO  (skill testing, isolated capabilities) → omit workspace_mode (use default)
 #
 runner:
-  type: claude-code         # Discriminator: claude-code, opencode, etc.
+  type: claude-code         # claude-code | codex | cli | responses-api
   # workspace_mode: repo    # Set ONLY when testing requires full repo access (see above)
   # settings: {}            # Runner-specific settings overrides
   # plugin_dirs: []         # Plugin dirs the evaluated skill needs
   # env:                     # Extra env vars for the runner ($VAR resolves from caller)
   #   CUSTOM_AUTH_TOKEN: "$CUSTOM_AUTH_TOKEN"
   # system_prompt: ""       # Appended to harness system prompt
-  # effort: high            # Claude Code reasoning effort: low | medium | high | xhigh | max
+  # effort: high            # Claude: low..max; Codex: minimal..xhigh
 
 # Models — defaults for each role (CLI flags override)
 models:

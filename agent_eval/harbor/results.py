@@ -29,7 +29,7 @@ def _case_id_from_dir(trial_dir: Path) -> str:
                 case_id = task_name.rstrip("/").rsplit("/", 1)[-1]
                 if case_id not in {"", ".", ".."}:
                     return case_id
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             pass
     name = trial_dir.name
     return name.rsplit("__", 1)[0] if "__" in name else name
@@ -67,6 +67,7 @@ def _extract_transcript_metrics(transcript_path: Path) -> dict:
     }
     if not transcript_path.is_file():
         return result
+    codex_input = codex_output = codex_cache = codex_turns = 0
     try:
         for line in transcript_path.read_text().splitlines():
             line = line.strip()
@@ -79,6 +80,12 @@ def _extract_transcript_metrics(transcript_path: Path) -> dict:
             if (ev.get("type") == "system" and ev.get("subtype") == "init"
                     and not result["agent_version"]):
                 result["agent_version"] = ev.get("claude_code_version")
+            if ev.get("type") in {"turn.completed", "turn_completed"}:
+                usage = ev.get("usage") or {}
+                codex_input += usage.get("input_tokens") or 0
+                codex_output += usage.get("output_tokens") or 0
+                codex_cache += usage.get("cached_input_tokens") or 0
+                codex_turns += 1
             if ev.get("type") == "result":
                 cost = ev.get("total_cost_usd")
                 if cost is not None:
@@ -113,9 +120,25 @@ def _extract_transcript_metrics(transcript_path: Path) -> dict:
                         }
                     if pmu:
                         result["per_model_usage"] = pmu
-    except OSError:
+        if codex_turns and result["token_usage"] is None:
+            result["token_usage"] = {
+                "input": codex_input,
+                "output": codex_output,
+                "cache_read": codex_cache,
+            }
+            result["num_turns"] = codex_turns
+    except (OSError, UnicodeDecodeError):
         pass
     return result
+
+
+def _agent_transcript_metrics(agent_dir: Path) -> dict:
+    """Read the transcript emitted by the active stock Harbor agent."""
+    for name in ("claude-code.txt", "codex.txt"):
+        path = agent_dir / name
+        if path.is_file():
+            return _extract_transcript_metrics(path)
+    return _extract_transcript_metrics(agent_dir / "claude-code.txt")
 
 
 def _errored_trial_record(trial_dir: Path) -> dict:
@@ -149,6 +172,7 @@ def _errored_trial_record(trial_dir: Path) -> dict:
         "per_judge": {},
         "errored": True,
         "infra_error_steps": [],
+        "unjudged_steps": [],
         "trial_error": reason,
         "cost_usd": None,
         "token_usage": None,
@@ -185,7 +209,7 @@ def parse_trial(trial_dir: Path) -> dict | None:
 
     try:
         reward_data = json.loads(reward_path.read_text())
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         # reward.json present but truncated/unreadable. Same as the missing case:
         # surface it as an errored trial when Harbor recorded a failure, so it is
         # not silently dropped from the case total.
@@ -193,16 +217,19 @@ def parse_trial(trial_dir: Path) -> dict | None:
             return _errored_trial_record(trial_dir)
         return None
 
-    metrics = {k: v for k, v in reward_data.items() if k != "reward"}
+    unjudged = bool(reward_data.get("agent_eval_unjudged"))
+    metrics = {k: v for k, v in reward_data.items()
+               if k not in {"reward", "agent_eval_unjudged"}}
     record = {
         "case_id": _case_id_from_dir(trial_dir),
         "trial_dir": trial_dir.name,
         "trial_path": str(trial_dir),
-        "reward": reward_data.get("reward"),
+        "reward": None if unjudged else reward_data.get("reward"),
         "metrics": metrics,
         "per_judge": {},
         "errored": False,
         "infra_error_steps": [],
+        "unjudged_steps": ["step-1"] if unjudged else [],
         "cost_usd": None,
         "token_usage": None,
         "per_model_usage": None,
@@ -221,14 +248,13 @@ def parse_trial(trial_dir: Path) -> dict | None:
                     "output": ar.get("n_output_tokens"),
                     "cache_read": ar.get("n_cache_tokens"),
                 }
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             pass
 
     # Enrich from the agent transcript (turns, duration, version are only
     # available there; cost/tokens fall back to transcript when result.json
     # doesn't have them).
-    transcript = trial_dir / "agent" / "claude-code.txt"
-    extracted = _extract_transcript_metrics(transcript)
+    extracted = _agent_transcript_metrics(trial_dir / "agent")
     if record["cost_usd"] is None:
         record["cost_usd"] = extracted["cost_usd"]
     if record["token_usage"] is None:
@@ -247,7 +273,7 @@ def parse_trial(trial_dir: Path) -> dict | None:
     if judges_path.is_file():
         try:
             record["per_judge"] = json.loads(judges_path.read_text()).get("per_judge", {})
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             pass
 
     # Trial-level error flag from Harbor (exception.txt present == errored).
@@ -270,6 +296,7 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
     rewards = []
     per_judge: dict = {}
     infra_error_steps: list[str] = []
+    unjudged_steps: list[str] = []
     total_cost = 0.0
     total_turns = 0
     total_duration = 0.0
@@ -287,21 +314,24 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
         # genuine score of 0. We must not conflate the two.
         reward_path = step_dir / "verifier" / "reward.json"
         step_reward = None
+        step_unjudged = False
         if reward_path.is_file():
             try:
                 rd = json.loads(reward_path.read_text())
                 step_reward = rd.get("reward")
-            except (json.JSONDecodeError, OSError):
+                step_unjudged = bool(rd.get("agent_eval_unjudged"))
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 pass
 
         # bool is an int subclass — guard so a genuine reward of 0.0 still
         # counts toward the mean while a missing reward never does.
-        verifier_ran = isinstance(step_reward, (int, float)) and not isinstance(step_reward, bool)
+        verifier_ran = (not step_unjudged
+                        and isinstance(step_reward, (int, float))
+                        and not isinstance(step_reward, bool))
         if verifier_ran:
             rewards.append(step_reward)
 
-        transcript = step_dir / "agent" / "claude-code.txt"
-        extracted = _extract_transcript_metrics(transcript)
+        extracted = _agent_transcript_metrics(step_dir / "agent")
         step_cost = extracted.get("cost_usd")
         step_turns = extracted.get("num_turns")
         step_duration = extracted.get("duration_s")
@@ -323,6 +353,15 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
                 "rationale": rationale,
                 "judge_type": "step",
             }
+        elif step_unjudged:
+            per_judge[step_name] = {
+                "value": None,
+                "rationale": (rationale + "; " if rationale else "")
+                + "no deterministic judge targeted this step",
+                "judge_type": "step",
+                "error": "unjudged",
+            }
+            unjudged_steps.append(step_name)
         else:
             # value=None (not False) so it is excluded from the judge mean and
             # not counted as a real 0. Flagged so the run can surface it.
@@ -362,7 +401,7 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
                     if isinstance(engine_reward, (int, float)):
                         mean_reward = engine_reward
                     break
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 pass
 
     return {
@@ -374,6 +413,7 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
         "per_judge": per_judge,
         "errored": (trial_dir / "exception.txt").is_file(),
         "infra_error_steps": infra_error_steps,
+        "unjudged_steps": unjudged_steps,
         "cost_usd": total_cost if total_cost > 0 else None,
         "token_usage": token_totals or None,
         "per_model_usage": per_model_totals or None,

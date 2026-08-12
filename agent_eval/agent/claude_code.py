@@ -15,6 +15,7 @@ from .stream_capture import (
     count_subagent_turns, count_subagent_turns_by_model, setup_subagent_hook,
 )
 from agent_eval.tools.permissions import compile_permission_rules
+from agent_eval.config import resolve_plugin_dir
 
 _print_lock = threading.Lock()
 
@@ -43,9 +44,10 @@ class ClaudeCodeRunner(EvalRunner):
 
     @classmethod
     def from_config(cls, config, *, log_prefix=None, **overrides):
-        plugin_dirs = config.runner.plugin_dirs or []
         resolved_plugin_dirs = [
-            str(Path(d).resolve()) for d in plugin_dirs]
+            str(resolve_plugin_dir(config, configured))
+            for configured in config.runner.plugin_dirs
+        ]
         return cls(
             permissions=overrides.get("permissions", config.permissions),
             plugin_dirs=resolved_plugin_dirs,

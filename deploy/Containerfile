@@ -18,8 +18,9 @@ USER 0
 # System deps: Node (for claude-code / codex) + git + tar.
 RUN dnf install -y nodejs npm git tar && dnf clean all
 
-# Agent CLIs.
-RUN npm install -g @anthropic-ai/claude-code @openai/codex
+# Agent CLIs. Pin the versions exercised by this image and the runner tests;
+# unpinned npm installs make identical image sources produce different agents.
+RUN npm install -g @anthropic-ai/claude-code@2.1.228 @openai/codex@0.147.0
 
 # Python deps for the judge engine + LLM judges (Vertex + direct API).
 # Installed BEFORE the source COPY so editing agent_eval/ doesn't invalidate

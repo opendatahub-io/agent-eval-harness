@@ -7,7 +7,7 @@ process that turns a skill invocation or prompt into work. It is selected in
 runtime-agnostic.
 
 !!! important "Runner ≠ backend"
-    A **runner** is *what agent runtime* runs a case (`claude-code`, `cli`,
+    A **runner** is *what agent runtime* runs a case (`claude-code`, `codex`, `cli`,
     `responses-api`) — chosen in `eval.yaml` via `runner.type`. A **backend** is
     *where* the eval runs (Local, [Harbor](../guides/harbor.md),
     [EvalHub](../guides/evalhub.md)) — always chosen by a **CLI flag** (`--runner`),
@@ -26,9 +26,11 @@ runtime-agnostic.
 flowchart TD
     C["eval.yaml → runner.type"] --> R{RUNNERS registry}
     R -->|claude-code| CC["ClaudeCodeRunner<br/>claude --print"]
+    R -->|codex| CX["CodexRunner<br/>codex exec"]
     R -->|cli| CLI["CliRunner<br/>arbitrary command"]
     R -->|responses-api| RA["ResponsesAPIRunner<br/>OpenAI Responses API"]
     CC --> RR["RunResult"]
+    CX --> RR
     CLI --> RR
     RA --> RR
     RR --> S["collect → judges → report → MLflow"]
@@ -42,6 +44,7 @@ flowchart TD
 | `runner.type` | Class | Runtime | Notes |
 | --- | --- | --- | --- |
 | `claude-code` | `ClaudeCodeRunner` | Claude Code CLI (`claude --print`) | **Default.** Full-fidelity: stream-json traces, budget cap, tool interception, subagent capture, permission-denial detection |
+| `codex` | `CodexRunner` | Codex CLI (`codex exec --json`) | Native Codex execution with copied skill staging, sandbox-mode mapping, and JSONL usage parsing |
 | `cli` | `CliRunner` | Any command you provide | Opaque: harness only sees exit code, stdout/stderr, and an optional `metrics.json` |
 | `responses-api` | `ResponsesAPIRunner` | OpenAI Responses API (Shell tool + Skills API) | Apples-to-apples cross-runtime comparison; needs `pip install agent-eval-harness[openai]` |
 
@@ -56,15 +59,15 @@ and implements three members:
 | Member | Purpose |
 | --- | --- |
 | `from_config(config, *, log_prefix=None, **overrides)` | Classmethod factory; each subclass pulls the config fields it needs. CLI overrides (resolved models, effort, permissions) take precedence. |
-| `name` | Short identifier (`"claude-code"`, `"cli"`, `"responses-api"`). |
+| `name` | Short identifier (`"claude-code"`, `"codex"`, `"cli"`, `"responses-api"`). |
 | `execute(target, args, workspace, model, ...)` | Run one case in a pre-staged workspace and return a `RunResult`. |
 
 `execute()` takes a uniform signature. The two most important arguments encode
 [skill vs prompt mode](../guides/skill-vs-prompt.md):
 
 - **`target`** — the skill name (e.g. `"rfe.review"`) in case/batch mode, or `None`
-  in prompt mode. All runners build the prompt as `/{target} {args}` when `target` is
-  set, and pass `args` verbatim as the prompt when it is `None`.
+  in prompt mode. Each runner renders its native skill-invocation syntax when `target`
+  is set; all pass `args` verbatim when it is `None`.
 - **`args`** — resolved skill arguments, or the raw prompt text in prompt mode.
 
 Other arguments: `workspace` (staged case dir), `model`, `settings_path`,
@@ -148,12 +151,40 @@ allowlist of keys (`_SAFE_ENV_KEYS`): `PATH`, `HOME`, `USER`, `SHELL`, `LANG`,
     from the caller's environment (`JIRA_TOKEN: $JIRA_TOKEN`). See
     [environment variables](../reference/environment-variables.md).
 
+## `codex`
+
+`CodexRunner`
+([`codex.py`](https://github.com/opendatahub-io/agent-eval-harness/blob/main/agent_eval/agent/codex.py))
+shells out to `codex exec --json`. The prompt is sent on stdin, and each configured
+plugin's skills are copied into the case workspace under `.agents/skills` for the
+duration of the run. This works directly on the host; Harbor is optional.
+
+```yaml title="eval.yaml"
+runner:
+  type: codex
+  effort: xhigh       # minimal | low | medium | high | xhigh
+  plugin_dirs:
+    - ./plugins/payload-analysis
+```
+
+Codex permission modes preserve the intent of the Claude Code configuration using
+the controls available in `codex exec`: `plan` uses `read-only`, explicit
+`bypassPermissions` uses the dangerous bypass flag, and all other modes use
+`workspace-write`. Fine-grained Claude Code tool allow/deny rules do not have an exact
+Codex equivalent, so the runner warns rather than silently claiming they are enforced.
+Likewise, Codex CLI does not expose the harness's dollar budget cap; a non-default
+`max_budget_usd` produces a warning.
+
+Like the Claude Code runner, Codex starts from a safe environment allowlist rather than
+forwarding the full host environment. Add intentional variables under `runner.env` or
+`execution.env`; `$VAR` values are resolved from the caller.
+
 ## `cli` (opaque CLI runner)
 
 `CliRunner`
 ([`cli_runner.py`](https://github.com/opendatahub-io/agent-eval-harness/blob/main/agent_eval/agent/cli_runner.py))
 delegates to an arbitrary `runner.command` — any string (shell-parsed) or list of
-args. This is how you evaluate non-Claude runtimes (OpenCode, Codex, a bespoke
+args. This is how you evaluate opaque runtimes (OpenCode or a bespoke
 harness). The full contract lives in
 [`docs/opaque-cli-runner-contract.md`](https://github.com/opendatahub-io/agent-eval-harness/blob/main/docs/opaque-cli-runner-contract.md);
 see also the [OpenCode cookbook](../cookbook/cross-runner-opencode.md).
@@ -266,6 +297,17 @@ runner:
     runner:
       type: cli
       command: "opencode run {agent} --model {model}"
+    ```
+
+=== "Evaluate a Codex skill locally"
+
+    Use the native Codex runner. Harbor is only needed when you want container or
+    cluster isolation.
+
+    ```yaml
+    runner:
+      type: codex
+      effort: xhigh
     ```
 
 === "Compare Claude vs OpenAI on the same skill"

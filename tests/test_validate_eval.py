@@ -105,6 +105,39 @@ class TestPluginDirResolution:
         assert validate_eval._resolve_plugin_dir(
             "plugin", config_dir) == plugin
 
+    def test_rejects_parent_traversal_outside_project(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        config_dir = repo / "evals"
+        outside = tmp_path / "outside"
+        config_dir.mkdir(parents=True)
+        outside.mkdir()
+        monkeypatch.chdir(repo)
+        with pytest.raises(ValueError, match="escapes project root"):
+            validate_eval._resolve_plugin_dir("../../outside", config_dir, repo)
+
+    def test_rejects_relative_symlink_escape(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (repo / "plugin-link").symlink_to(outside, target_is_directory=True)
+        monkeypatch.chdir(repo)
+        with pytest.raises(ValueError, match="escapes project root"):
+            validate_eval._resolve_plugin_dir("plugin-link", repo, repo)
+
+    def test_does_not_prefer_existing_path_from_unrelated_cwd(
+            self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        config_dir = repo / "evals"
+        config_plugin = config_dir / "plugin"
+        unrelated = tmp_path / "unrelated"
+        unrelated_plugin = unrelated / "plugin"
+        config_plugin.mkdir(parents=True)
+        unrelated_plugin.mkdir(parents=True)
+        monkeypatch.chdir(unrelated)
+        assert validate_eval._resolve_plugin_dir(
+            "plugin", config_dir, repo) == config_plugin.resolve()
+
 
 def _check(prompt):
     """Run the variable check over a single LLM judge; return (errors, warnings)."""

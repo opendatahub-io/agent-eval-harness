@@ -85,6 +85,9 @@ call `harbor run`, parse the job dir, generate the report, and check regressions
 | `--env <name>` | Execution environment: `kubernetes` (default), `podman`, `openshift`, `k8s` |
 | `--model <name>` | Model passed to the Harbor agent (`harbor run -m`) |
 | `-n <n>` | Parallelism — concurrent trial pods/containers |
+| `--mount <source:target[:ro\|rw]>` | Repeatable Podman bind mount; read-only by default |
+| `--cpus <n>` / `--memory-mb <MiB>` | Hard per-environment resource limits |
+| `--no-llm-judges` | Run deterministic judges only |
 
 The output is the same `eval/runs/<id>/` layout as a local run (`summary.yaml`,
 `report.html`, per-case artifacts), so `/eval-review` and `/eval-mlflow` work unchanged.
@@ -93,6 +96,11 @@ The output is the same `eval/runs/<id>/` layout as a local run (`summary.yaml`,
     `eval.yaml` describes **what** to evaluate (agent, dataset, judges, thresholds) — not
     **where** it runs. The same file works locally, on Podman, on Kubernetes, and on
     [EvalHub](evalhub.md). See [Backends](../concepts/backends.md).
+
+!!! warning "Mounts are local-Podman only"
+    Host bind mounts are implemented by the bundled Podman environment. Supplying
+    `--mount` with Kubernetes/OpenShift or an unrelated custom environment is rejected
+    so historical data is never silently absent from an eval.
 
 ## Generating task packages
 
@@ -122,6 +130,18 @@ PYTHONPATH="$(pwd)" harbor run -p eval/harbor-tasks \
     -n 1 -o eval/harbor-jobs
 ```
 
+The harness wrapper can run the same task packages with the native Harbor Codex agent
+and a read-only historical-data mount:
+
+```bash
+python -m agent_eval.harbor.run \
+  --config eval.yaml --model gpt-5.6-luna --agent codex --env podman \
+  --tasks-dir eval/harbor-tasks --jobs-dir eval/harbor-jobs \
+  --output eval/runs/codex-luna \
+  --mount "$HOME/git/historical-payload-data:/historical-payload-data:ro" \
+  --cpus 2 --memory-mb 4096
+```
+
 !!! warning "Credentials are forwarded from the host"
     The container runs on your machine (no security boundary), so provider config **and**
     API keys are copied from the host env into the container automatically —
@@ -129,6 +149,17 @@ PYTHONPATH="$(pwd)" harbor run -p eval/harbor-tasks \
     `AWS_ACCESS_KEY_ID`, and friends. Nothing to configure. Vertex AI needs a credentials
     file, so set `AGENT_EVAL_PODMAN_GCP_CREDENTIALS_FILE=/path/to/sa-key.json` (mounted
     read-only).
+
+    The Harbor subprocess receives requested agent variables through its environment;
+    plaintext secret values are not placed in its command line. They still share the
+    host user's `/proc` visibility, and the local container deliberately runs with the
+    invoking UID, so this is resource isolation rather than credential isolation.
+
+!!! warning "SELinux and external mounts"
+    The Podman adapter disables SELinux labeling when external bind mounts are present
+    because relabeling a large shared dataset can be destructive. Use only a dedicated,
+    pre-labeled data directory on SELinux-enforcing hosts; do not mount broad home or
+    system directories.
 
 Project resources (skills, scripts, `.context`, `CLAUDE.md`) can be **bind-mounted** from
 a host directory instead of baked into an image:

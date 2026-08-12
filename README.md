@@ -161,7 +161,7 @@ execution:
 # Runner — agent harness + runner-specific knobs
 runner:
   type: claude-code          # claude-code | codex | cli | responses-api
-  # effort: high              # Reasoning effort: low | medium | high | xhigh | max
+  # effort: high              # Claude: low..max; Codex: minimal..xhigh
   # settings: {}              # Arbitrary Claude Code settings merged into workspace
   # plugin_dirs: []           # Directories to load plugins from
   # env:                       # Extra env vars for subprocess ($VAR resolves from caller)
@@ -347,8 +347,8 @@ thresholds:
         timeout: 420
         max_budget_usd: 2.0
   ```
-- **`permissions`** — tool access patterns (`allow`/`deny`) for headless execution. Generic across runners — each runner translates to its platform's mechanism.
-- **`runner`** — `type` discriminator selects the runner implementation (`claude-code`, `codex`, `cli`, or `responses-api`); remaining fields (`effort`, `settings`, `plugin_dirs`, `env`, `system_prompt`) are runner-specific and ignored by other runners. Codex accepts `low`, `medium`, `high`, `xhigh`, and `max` effort; its CLI does not enforce `max_budget_usd`.
+- **`permissions`** — tool access patterns (`allow`/`deny`) for headless execution. Claude Code enforces these exactly. Codex maps `runner.permission_mode` to its filesystem sandbox and warns because it cannot translate Claude's tool-level patterns.
+- **`runner`** — `type` selects `claude-code`, `codex`, `cli`, or `responses-api`; remaining fields are runner-specific. Codex accepts `minimal`, `low`, `medium`, `high`, and `xhigh`; its CLI does not enforce `max_budget_usd`. Local Codex defaults to `workspace-write`; `permission_mode: plan` maps to `read-only`, while `bypassPermissions` maps to Codex's unrestricted bypass and should be used only inside a container or VM.
 - **`models`** — `skill`/`subagent`/`judge`/`hook` defaults, overridable per-judge or via CLI flags. `hook` is the model used for LLM-based AskUserQuestion answering.
 - **`mlflow`** — `experiment` (and optional `tracking_uri`/`tags`) for result logging.
 - **`thresholds`** — per-judge regression detection. Valid keys: `min_mean` (minimum average score), `min_pass_rate` (minimum fraction of cases passing, 0.0–1.0), `min_win_rate` (minimum pairwise win rate).
