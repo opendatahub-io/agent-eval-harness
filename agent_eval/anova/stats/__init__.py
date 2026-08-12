@@ -6,6 +6,7 @@ land in ``.eval-venv``, which is rarely the interpreter a bare ``pip install``
 would target.
 """
 
+import shlex
 import sys
 from pathlib import Path
 
@@ -75,6 +76,13 @@ def missing_deps_message(exc=None):
         'A plain `pip install -e ".[anova]"` targets whichever environment is',
         "active, which is not the one the harness imports from. Use:",
         "",
-        f'  {target} -m pip install -e "{_plugin_root()}[anova]"',
+        # shlex.quote both arguments. This is a command we invite the reader to
+        # paste into a shell, so it has to survive a checkout path containing
+        # spaces (the interpreter path was previously unquoted, which simply broke
+        # the command) and must not let one containing $(...) or backticks execute
+        # anything — double quotes don't stop substitution. It also keeps the
+        # `[anova]` suffix safe from zsh glob expansion.
+        "  " + " ".join(shlex.quote(a) for a in (
+            target, "-m", "pip", "install", "-e", f"{_plugin_root()}[anova]")),
     ]
     return "\n".join(lines)

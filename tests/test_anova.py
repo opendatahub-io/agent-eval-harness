@@ -1,5 +1,6 @@
 """Tests for agent_eval.anova.stats — repeated-measures ANOVA, mixed-effects, Pareto frontier."""
 
+import shlex
 import sys
 from pathlib import Path
 
@@ -16,6 +17,14 @@ from agent_eval.anova.stats.anova import (
     repeated_measures_anova,
 )
 from agent_eval.anova.stats.pareto import pareto_frontier
+
+
+def _install_argv(msg):
+    """The argv a shell would actually build from the pip line in `msg`."""
+    # Not just any line mentioning pip — the prose above it does too. The command
+    # is the indented one invoking the interpreter directly.
+    line = next(l for l in msg.splitlines() if " -m pip install -e " in l)
+    return shlex.split(line)
 
 
 class TestRepeatedMeasuresAnova:
@@ -289,10 +298,30 @@ class TestMissingDepsMessage:
         only patches sys.path, so the launcher is NOT where the extra must land."""
         msg = missing_deps_message()
         target = agent_eval.anova.stats._installer_python()
-        assert f'{target} -m pip install -e "' in msg
         plugin_root = Path(agent_eval.anova.stats.__file__).resolve().parents[3]
-        assert f'{plugin_root}[anova]"' in msg  # local checkout, not PyPI
+        assert _install_argv(msg) == [
+            target, "-m", "pip", "install", "-e", f"{plugin_root}[anova]"]
         assert sys.executable in msg            # still reports what is running
+
+    @pytest.mark.parametrize("hostile", [
+        "/Users/me/My Code/agent-eval-harness",   # spaces: previously broke argv[0]
+        "/tmp/$(id > /tmp/pwned)/harness",        # $() expands inside double quotes
+        "/tmp/`id`/harness",                      # so do backticks
+        "/tmp/glob[abc]/harness",                 # zsh would try to glob this
+        "/tmp/it's/harness",                      # a bare apostrophe
+    ])
+    def test_command_survives_a_hostile_checkout_path(self, hostile, monkeypatch):
+        """The message invites the reader to paste this into a shell, so the path
+        has to round-trip through the shell exactly — not re-split on spaces and
+        not execute anything."""
+        root = Path(hostile)
+        monkeypatch.setattr(agent_eval.anova.stats, "_plugin_root", lambda: root)
+        monkeypatch.setattr(agent_eval.anova.stats, "_installer_python",
+                            lambda: f"{hostile}/.eval-venv/bin/python3")
+
+        argv = _install_argv(missing_deps_message())
+        assert argv == [f"{hostile}/.eval-venv/bin/python3",
+                        "-m", "pip", "install", "-e", f"{hostile}[anova]"]
 
     def test_installer_target_is_the_venv_when_one_exists(self, tmp_path, monkeypatch):
         root = tmp_path / "plugin"
