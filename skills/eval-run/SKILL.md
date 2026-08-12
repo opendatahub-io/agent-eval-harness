@@ -24,9 +24,11 @@ Parse `$ARGUMENTS`:
 | `--baseline <run-id>` | no | — | Previous run to compare against |
 | `--no-llm-judges` | no | false | Skip LLM judges (prompt, prompt_file, LLM builtins, agent). Run deterministic judges (check, Python builtins, external code). |
 | `--gold` | no | false | Save outputs as gold references after run |
-| `--effort <level>` | no | `runner.effort` from config | Claude Code reasoning effort (Claude Code only; ignored by other runners) |
+| `--effort <level>` | no | `runner.effort` from config | Agent reasoning effort (`claude-code` or `codex`) |
 | `--runner <type>` | no | local | `local` (default Steps 1–8) or `harbor` (containerized — skips to Harbor runner section) |
 | `--env <name>` | no | `kubernetes` | Harbor execution environment: `podman`, `kubernetes`, `openshift` (only with `--runner harbor`) |
+| `--mount <source:target[:ro|rw]>` | no | — | Repeatable Podman bind mount; defaults to read-only (only with `--runner harbor`) |
+| `--cpus <n>` / `--memory-mb <MiB>` | no | Harbor defaults | Hard resource limits per Harbor environment |
 
 If `--runner harbor`: after config discovery, **skip to the Harbor runner section** below. Steps 2–6 are replaced by one `run.py` call.
 
@@ -260,8 +262,16 @@ PYTHONPATH="$PLUGIN_ROOT:$(pwd)${PYTHONPATH:+:$PYTHONPATH}" "$VENV_PY" -m agent_
     --output $AGENT_EVAL_RUNS_DIR/<eval-name>/<run-id> \
     --tasks-dir <tasks-dir> --jobs-dir <tmp-jobs> \
     [--image <image>] [--agent <agent>] [--n-concurrent N] \
-    [--env kubernetes]
+    [--env kubernetes] [--mount <source:target:ro>] [--no-llm-judges] \
+    [--cpus N] [--memory-mb MiB]
 ```
+
+For `runner.type: codex`, `run.py` selects Harbor's Codex agent, passes
+`runner.effort` as `reasoning_effort`, and passes every `runner.plugin_dirs`
+entry's complete `skills/` root. Do not narrow an orchestrator to its primary
+skill directory; sibling dependencies must remain discoverable. Use `--mount`
+with Podman for large historical datasets instead of copying them into each
+task. Kubernetes requires cluster-visible storage rather than host paths.
 
 Cluster-specific config (namespace, credentials secret) is read from a
 `.env` file in the project root. Create it with `AGENT_EVAL_K8S_NAMESPACE`

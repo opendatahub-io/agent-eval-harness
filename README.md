@@ -160,7 +160,7 @@ execution:
 
 # Runner — agent harness + runner-specific knobs
 runner:
-  type: claude-code
+  type: claude-code          # claude-code | codex | cli | responses-api
   # effort: high              # Reasoning effort: low | medium | high | xhigh | max
   # settings: {}              # Arbitrary Claude Code settings merged into workspace
   # plugin_dirs: []           # Directories to load plugins from
@@ -348,7 +348,7 @@ thresholds:
         max_budget_usd: 2.0
   ```
 - **`permissions`** — tool access patterns (`allow`/`deny`) for headless execution. Generic across runners — each runner translates to its platform's mechanism.
-- **`runner`** — `type` discriminator selects the runner implementation; remaining fields (`effort`, `settings`, `plugin_dirs`, `env`, `system_prompt`) are runner-specific and ignored by other runners.
+- **`runner`** — `type` discriminator selects the runner implementation (`claude-code`, `codex`, `cli`, or `responses-api`); remaining fields (`effort`, `settings`, `plugin_dirs`, `env`, `system_prompt`) are runner-specific and ignored by other runners. Codex accepts `low`, `medium`, `high`, `xhigh`, and `max` effort; its CLI does not enforce `max_budget_usd`.
 - **`models`** — `skill`/`subagent`/`judge`/`hook` defaults, overridable per-judge or via CLI flags. `hook` is the model used for LLM-based AskUserQuestion answering.
 - **`mlflow`** — `experiment` (and optional `tracking_uri`/`tags`) for result logging.
 - **`thresholds`** — per-judge regression detection. Valid keys: `min_mean` (minimum average score), `min_pass_rate` (minimum fraction of cases passing, 0.0–1.0), `min_win_rate` (minimum pairwise win rate).

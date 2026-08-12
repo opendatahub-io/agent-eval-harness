@@ -1,7 +1,7 @@
 # agent-eval-harness base image.
 #
 # Generic runtime for agent evaluation trial pods. Contains the agent CLIs
-# (claude-code, opencode) and the agent-eval-harness package (judge engine,
+# (claude-code, codex) and the agent-eval-harness package (judge engine,
 # reward bridge, tool interception). No project code — project resources are
 # delivered via ConfigMap (K8s), bind-mount (Podman), or a thin FROM-this
 # Containerfile in the project's own repo.
@@ -15,11 +15,11 @@ FROM registry.access.redhat.com/ubi9/python-312:latest
 
 USER 0
 
-# System deps: Node (for claude-code / opencode) + git + tar.
+# System deps: Node (for claude-code / codex) + git + tar.
 RUN dnf install -y nodejs npm git tar && dnf clean all
 
 # Agent CLIs.
-RUN npm install -g @anthropic-ai/claude-code
+RUN npm install -g @anthropic-ai/claude-code @openai/codex
 
 # Python deps for the judge engine + LLM judges (Vertex + direct API).
 # Installed BEFORE the source COPY so editing agent_eval/ doesn't invalidate

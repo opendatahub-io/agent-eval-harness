@@ -83,6 +83,22 @@ def test_generate_tasks_structure_and_command(tmp_path):
     assert bundled["judges"][0]["name"] == "files_exist"
 
 
+def test_generate_tasks_uses_codex_skill_instruction(tmp_path):
+    cfg_path, config = _make_eval(tmp_path)
+    config.runner.type = "codex"
+    out = tmp_path / "harbor-tasks"
+
+    gen.generate_tasks(
+        config, cfg_path, out, image="img:latest",
+        arguments='--snapshot-dir /history/{prompt}', skill="ci:payload-analysis",
+        cases=["case-001"],
+    )
+
+    instruction = (out / "case-001" / "instruction.md").read_text()
+    assert "Use the payload-analysis skill with arguments:" in instruction
+    assert "/history/Verify model signatures at serving" in instruction
+    assert "/ci:payload-analysis" not in instruction
+
 def test_generate_tasks_case_subset(tmp_path):
     cfg_path, config = _make_eval(tmp_path)
     out = tmp_path / "harbor-tasks"
@@ -93,6 +109,25 @@ def test_generate_tasks_case_subset(tmp_path):
     assert len(tasks) == 1
     assert tasks[0].name == "case-002"
     assert not (out / "case-001").exists()
+
+
+def test_generate_tasks_can_drop_model_calling_judges(tmp_path):
+    cfg_path, config = _make_eval(tmp_path)
+    raw = yaml.safe_load(cfg_path.read_text())
+    raw["judges"] += [
+        {"name": "quality", "prompt": "score it"},
+        {"name": "builtin-unknown", "builtin": "quality/example"},
+    ]
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    config = EvalConfig.from_yaml(cfg_path)
+
+    gen.generate_tasks(
+        config, cfg_path, tmp_path / "tasks", image="img:latest",
+        cases=["case-001"], no_llm_judges=True)
+
+    bundled = yaml.safe_load(
+        (tmp_path / "tasks" / "case-001" / "tests" / "eval.yaml").read_text())
+    assert [judge["name"] for judge in bundled["judges"]] == ["files_exist"]
 
 
 def test_generate_tasks_escapes_multiline_description_for_toml(tmp_path):

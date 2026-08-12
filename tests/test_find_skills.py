@@ -6,6 +6,7 @@ test coverage, even though the repo already unit-tests the equivalent guard for
 config.py in ``test_path_validation.py``.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -110,6 +111,25 @@ class TestListSkills:
         skills = find_skills.list_skills()
 
         assert {s["dir_name"] for s in skills} == {"mine"}
+
+
+class TestMarketplaceDiscovery:
+    def test_skips_structured_remote_sources(self, tmp_path, monkeypatch):
+        project, _ = _isolated_project(tmp_path, monkeypatch)
+        local_skills = project / "plugins" / "local" / "skills"
+        _make_skill(local_skills, "local-skill")
+        marketplace = project / ".claude-plugin" / "marketplace.json"
+        marketplace.parent.mkdir()
+        marketplace.write_text(json.dumps({"plugins": [
+            {
+                "name": "remote",
+                "source": {"source": "github", "repo": "example/remote"},
+            },
+            {"name": "local", "source": "./plugins/local"},
+        ]}))
+
+        assert find_skills.get_skill_dirs() == [
+            str((project / "plugins" / "local" / "skills").resolve())]
 
 
 class TestFindSkill:

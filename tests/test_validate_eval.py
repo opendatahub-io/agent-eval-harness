@@ -82,6 +82,30 @@ class TestStandardVarsContract:
         assert errors == [], errors
 
 
+class TestPluginDirResolution:
+    def test_prefers_repo_root_relative_path(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        plugin = repo / "plugins" / "ci"
+        config_dir = repo / "plugins" / "ci" / "evals"
+        plugin.mkdir(parents=True)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.chdir(repo)
+
+        assert validate_eval._resolve_plugin_dir(
+            "plugins/ci", config_dir) == plugin.resolve()
+
+    def test_falls_back_to_config_relative_path(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        config_dir = repo / "evals"
+        plugin = config_dir / "plugin"
+        config_dir.mkdir(parents=True)
+        plugin.mkdir()
+        monkeypatch.chdir(repo)
+
+        assert validate_eval._resolve_plugin_dir(
+            "plugin", config_dir) == plugin
+
+
 def _check(prompt):
     """Run the variable check over a single LLM judge; return (errors, warnings)."""
     errors, warnings = [], []

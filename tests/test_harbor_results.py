@@ -32,6 +32,19 @@ def test_parse_trial_strips_id_and_reads_metrics(tmp_path):
     assert trial["errored"] is False
 
 
+def test_parse_trial_recovers_untruncated_case_id_from_result(tmp_path):
+    trial_dir = _make_trial(
+        tmp_path, "case-011-a-very-long-name__abc123", 1.0, {})
+    (trial_dir / "result.json").write_text(json.dumps({
+        "task_name": "suite/case-011-a-very-long-name-that-harbor-truncated",
+    }))
+
+    trial = R.parse_trial(trial_dir)
+
+    assert trial["case_id"] == (
+        "case-011-a-very-long-name-that-harbor-truncated")
+
+
 def test_parse_trial_none_without_reward(tmp_path):
     (tmp_path / "empty").mkdir()
     assert R.parse_trial(tmp_path / "empty") is None

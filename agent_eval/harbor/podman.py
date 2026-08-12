@@ -38,11 +38,15 @@ _FORWARD_ENV = (
     "CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION",
     "GOOGLE_CLOUD_PROJECT", "ANTHROPIC_MODEL", "ANTHROPIC_BASE_URL",
     "CLAUDE_CODE_USE_BEDROCK", "AWS_REGION",
+    "OPENAI_BASE_URL", "OPENAI_MODEL",
     # API keys
     "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
     "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
     "AWS_BEARER_TOKEN_BEDROCK",
+    "OPENAI_API_KEY",
 )
+
+_HARBOR_LOG_TARGETS = {"/logs/verifier", "/logs/agent", "/logs/artifacts"}
 
 # Where a mounted GCP credentials file lands inside the container.
 _CONTAINER_CREDS = "/var/creds/creds.json"
@@ -53,6 +57,40 @@ def _container_name(session_id: str) -> str:
     name = session_id.lower()
     name = re.sub(r"[^a-z0-9_.-]", "-", name)
     return f"aeh-{name}"[:120]
+
+
+def _external_bind_args(mounts: list[dict]) -> list[str]:
+    """Translate user mounts to Podman args, excluding copy-based log dirs."""
+    args: list[str] = []
+    for mount in mounts:
+        target = mount.get("target", "")
+        if target in _HARBOR_LOG_TARGETS:
+            continue
+        if mount.get("type") != "bind":
+            raise ValueError(
+                "PodmanEnvironment supports external bind mounts only; "
+                f"got {mount.get('type')!r} for {target!r}")
+        source = Path(mount.get("source", "")).expanduser().resolve()
+        if not source.exists():
+            raise FileNotFoundError(f"Podman mount source not found: {source}")
+        if not Path(target).is_absolute():
+            raise ValueError(f"Podman mount target must be absolute: {target}")
+        mode = "ro" if mount.get("read_only") else "rw"
+        args += ["-v", f"{source}:{target}:{mode}"]
+    return args
+
+
+def _environment_args(environment: dict[str, str]) -> list[str]:
+    """Return value-free Podman environment arguments.
+
+    Podman resolves ``-e NAME`` from its own process environment. Passing
+    ``-e NAME=value`` would expose credentials in process listings while a
+    trial is running.
+    """
+    args: list[str] = []
+    for key in environment:
+        args += ["-e", key]
+    return args
 
 
 class PodmanEnvironment(BaseEnvironment):
@@ -116,12 +154,18 @@ class PodmanEnvironment(BaseEnvironment):
     # --- podman command helper ---------------------------------------------
 
     async def _podman(self, args: list[str], timeout_sec: int | None = None,
-                      input_bytes: bytes | None = None) -> ExecResult:
+                      input_bytes: bytes | None = None,
+                      environment: dict[str, str] | None = None) -> ExecResult:
+        subprocess_environment = None
+        if environment:
+            subprocess_environment = os.environ.copy()
+            subprocess_environment.update(environment)
         proc = await asyncio.create_subprocess_exec(
             _PODMAN, *args,
             stdin=asyncio.subprocess.PIPE if input_bytes is not None else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=subprocess_environment,
         )
         try:
             stdout, stderr = await asyncio.wait_for(
@@ -166,7 +210,21 @@ class PodmanEnvironment(BaseEnvironment):
         if self._network_disabled:
             run_args += ["--network", "none"]
 
-        # Forward NON-SECRET provider config so claude-code knows how to auth.
+        # Harbor always supplies three internal log mounts. This environment
+        # intentionally keeps those copy-based (capabilities.mounted=False),
+        # while honoring any additional user bind mounts such as a large,
+        # read-only historical dataset that should not be copied per trial.
+        external_mount_args = _external_bind_args(self._mounts)
+        if external_mount_args:
+            # Host data under $HOME commonly carries user_home_t. A container
+            # can stat such a bind mount but SELinux denies directory traversal.
+            # Disabling labels for this local trial avoids mutating the user's
+            # dataset labels recursively via :z/:Z. The requested ro/rw mode is
+            # still enforced by Podman.
+            run_args += ["--security-opt", "label=disable"]
+            run_args += external_mount_args
+
+        # Forward provider configuration and credentials needed by agent CLIs.
         forwarded = {k: os.environ[k] for k in _FORWARD_ENV if os.environ.get(k)}
 
         # Credentials: only via an explicitly provided file, read-only mounted —
@@ -187,13 +245,13 @@ class PodmanEnvironment(BaseEnvironment):
             forwarded["AGENT_EVAL_PROJECT_DIR"] = project_mount
 
         merged_env = {**forwarded, **(self._persistent_env or {})}
-        for key, value in merged_env.items():
-            run_args += ["-e", f"{key}={value}"]
+        run_args += _environment_args(merged_env)
         self._persistent_env = merged_env
 
         run_args += [image, "infinity"]
 
-        result = await self._podman(run_args, timeout_sec=300)
+        result = await self._podman(
+            run_args, timeout_sec=300, environment=merged_env)
         if result.return_code != 0:
             raise RuntimeError(f"podman run failed:\n{result.stderr}")
         self._started = True
@@ -233,8 +291,7 @@ class PodmanEnvironment(BaseEnvironment):
         if effective_cwd:
             args += ["-w", effective_cwd]
         if env:
-            for key, value in env.items():
-                args += ["-e", f"{key}={value}"]
+            args += _environment_args(env)
         if user is not None:
             args += ["-u", str(user)]
         args.append(self._container)
@@ -242,7 +299,8 @@ class PodmanEnvironment(BaseEnvironment):
         # matching BaseInstalledAgent._exec which prefixes `set -o pipefail`.
         args += ["/bin/sh", "-c", command]
 
-        return await self._podman(args, timeout_sec=timeout_sec)
+        return await self._podman(
+            args, timeout_sec=timeout_sec, environment=env)
 
     # --- file transfer (podman cp) -----------------------------------------
 

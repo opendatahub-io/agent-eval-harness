@@ -60,6 +60,7 @@ def _load_dotenv() -> None:
 # Names that match directly (claude-code) need no mapping.
 _RUNNER_TO_HARBOR_AGENT = {
     "claude-code": "claude-code",
+    "codex": "codex",
     "cli": None,            # CLI runner is generic — user must pass --agent explicitly
     "responses-api": None,  # no Harbor equivalent
 }
@@ -70,6 +71,90 @@ _ENV_IMPORT_PATHS = {
     "k8s": "agent_eval.harbor.kubernetes:KubernetesEnvironment",
     "openshift": "agent_eval.harbor.kubernetes:KubernetesEnvironment",
 }
+
+
+def _resolve_harbor_skill_roots(config: EvalConfig) -> list[Path]:
+    """Resolve plugin skill roots for Harbor's ``--skill`` option.
+
+    A plugin directory contains one ``skills/`` root. Passing that root makes
+    all sibling skills available, which is important for orchestrator skills
+    whose dependencies are selected dynamically by the agent.
+    """
+    roots: list[Path] = []
+    for configured in config.runner.plugin_dirs:
+        path = Path(configured).expanduser()
+        if not path.is_absolute():
+            # Match the existing local runners' repo-root-relative behavior,
+            # but also accept paths relative to eval.yaml for standalone use.
+            cwd_path = path.resolve()
+            path = cwd_path if cwd_path.exists() else config.resolve_path(path)
+        skills_root = path / "skills"
+        if not skills_root.is_dir():
+            raise FileNotFoundError(
+                f"Harbor plugin skill directory not found: {skills_root}")
+        roots.append(skills_root.resolve())
+    return roots
+
+
+def _parse_bind_mount(spec: str) -> dict:
+    """Parse ``SOURCE:TARGET[:ro|rw]`` into Harbor's mount schema."""
+    parts = spec.rsplit(":", 2)
+    if len(parts) == 2:
+        source_text, target = parts
+        mode = "ro"
+    elif len(parts) == 3 and parts[2] in {"ro", "rw"}:
+        source_text, target, mode = parts
+    else:
+        raise ValueError(
+            f"Invalid --mount {spec!r}; expected SOURCE:TARGET[:ro|rw]")
+
+    source = Path(source_text).expanduser().resolve()
+    if not source.exists():
+        raise FileNotFoundError(f"Mount source does not exist: {source}")
+    if not Path(target).is_absolute():
+        raise ValueError(f"Mount target must be absolute: {target}")
+    if source == Path("/"):
+        raise ValueError("Refusing to mount the host filesystem root")
+
+    mount = {"type": "bind", "source": str(source), "target": target}
+    if mode == "ro":
+        mount["read_only"] = True
+    return mount
+
+
+def _harbor_agent_kwargs(config: EvalConfig, agent_name: str) -> list[str]:
+    """Translate runner settings that have an equivalent Harbor agent kwarg."""
+    if agent_name != "codex":
+        return []
+    effort = config.runner.effort
+    if not effort:
+        effort = config.runner.settings.get("model_reasoning_effort")
+    return [f"reasoning_effort={effort}"] if effort else []
+
+
+def _resolve_harbor_agent_env(config: EvalConfig) -> dict[str, str]:
+    """Resolve eval/runner env for Harbor's agent process."""
+    resolved: dict[str, str] = {}
+    configured = {**config.execution.env, **config.runner.env}
+    for key, value in configured.items():
+        if isinstance(value, str) and value.startswith("$"):
+            host_value = os.environ.get(value[1:])
+            if host_value is None:
+                continue
+            resolved[key] = host_value
+        else:
+            resolved[key] = str(value)
+    return resolved
+
+
+def _display_command(cmd: list[str]) -> str:
+    """Format a Harbor command without exposing agent environment values."""
+    shown = list(cmd)
+    for index, value in enumerate(shown):
+        if index and shown[index - 1] in {"--agent-env", "--verifier-env"}:
+            key = value.partition("=")[0]
+            shown[index] = f"{key}=<redacted>"
+    return " ".join(shown)
 
 
 def _judge_types(config: EvalConfig) -> dict:
@@ -147,34 +232,49 @@ def _load_report_module():
     return mod
 
 
-def _copy_case_artifacts(parsed: dict, output_dir: Path) -> None:
-    """Copy each trial's downloaded artifacts into the run dir's cases/<id>/.
+def _copy_case_artifacts(parsed: dict, output_dir: Path,
+                         config: EvalConfig) -> None:
+    """Copy configured outputs from Harbor trials into the harness run dir.
 
-    The task's verifier (test.sh) copies the agent's produced artifacts to
-    /logs/verifier/artifacts, which Harbor downloads to
-    <trial>/verifier/artifacts. Mirror them under cases/<case_id>/ (preserving
-    the artifacts/ tree) so report.py renders per-case Output files.
+    A task verifier copies every ``outputs[].path`` to
+    ``/logs/verifier/<path>``. Harbor downloads that as
+    ``<trial>/verifier/<path>``; mirror the same paths beneath the harness's
+    conventional ``cases/<case>/artifacts/`` directory for report rendering.
     """
     import shutil
     for trial in parsed["trials"]:
         trial_path = Path(trial.get("trial_path", ""))
-        src = trial_path / "verifier" / "artifacts"
+        verifier_dirs = [trial_path / "verifier"]
+        steps_dir = trial_path / "steps"
+        if steps_dir.is_dir():
+            verifier_dirs.extend(
+                step / "verifier"
+                for step in sorted(steps_dir.iterdir()) if step.is_dir())
 
-        # Multi-step: check each step's artifacts (last non-empty one wins)
-        if not src.is_dir():
-            steps_dir = trial_path / "steps"
-            if steps_dir.is_dir():
-                for step_dir in sorted(steps_dir.iterdir()):
-                    candidate = step_dir / "verifier" / "artifacts"
-                    if candidate.is_dir() and any(candidate.iterdir()):
-                        src = candidate
-
-        if not src.is_dir():
-            continue
-        dst = output_dir / "cases" / trial["case_id"] / "artifacts"
-        if dst.exists():
-            shutil.rmtree(dst)
-        shutil.copytree(src, dst)
+        artifacts_dir = output_dir / "cases" / trial["case_id"] / "artifacts"
+        for configured_output in config.outputs:
+            if not configured_output.path:
+                continue
+            # Later pipeline steps take precedence when the same configured
+            # output exists more than once.
+            sources = [
+                verifier_dir / configured_output.path
+                for verifier_dir in verifier_dirs
+                if (verifier_dir / configured_output.path).exists()
+            ]
+            if not sources:
+                continue
+            src = sources[-1]
+            dst = artifacts_dir / configured_output.path
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if dst.is_dir():
+                shutil.rmtree(dst)
+            elif dst.exists():
+                dst.unlink()
+            if src.is_dir():
+                shutil.copytree(src, dst)
+            else:
+                shutil.copy2(src, dst)
 
 
 def _write_report(config_path: Path, output_dir: Path, summary: dict,
@@ -215,6 +315,10 @@ def run_eval_on_harbor(
     workdir: str = "/workspace",
     agent_name: str | None = None,
     env_import_path: str | None = None,
+    mounts: list[dict] | None = None,
+    no_llm_judges: bool = False,
+    cpus: int | None = None,
+    memory_mb: int | None = None,
     harbor_bin: str = "harbor",
     regenerate: bool = False,
 ) -> int:
@@ -253,7 +357,7 @@ def run_eval_on_harbor(
         tasks_mod.generate_tasks(
             config, Path(config_path), tasks_dir, image,
             arguments=arguments, skill=skill, workdir=workdir, cases=cases,
-            judge_model=judge_model,
+            judge_model=judge_model, no_llm_judges=no_llm_judges,
         )
 
     # 2. Run on Harbor (one job over the tasks dir).
@@ -262,9 +366,21 @@ def run_eval_on_harbor(
         "-a", agent_name, "-m", model,
         "-n", str(n_concurrent), "-o", str(jobs_dir),
     ]
+    for root in _resolve_harbor_skill_roots(config):
+        cmd += ["--skill", str(root)]
+    for kwarg in _harbor_agent_kwargs(config, agent_name):
+        cmd += ["--agent-kwarg", kwarg]
+    for key, value in _resolve_harbor_agent_env(config).items():
+        cmd += ["--agent-env", f"{key}={value}"]
+    if mounts:
+        cmd += ["--mounts", json.dumps(mounts, separators=(",", ":"))]
+    if cpus is not None:
+        cmd += ["--override-cpus", str(cpus)]
+    if memory_mb is not None:
+        cmd += ["--override-memory-mb", str(memory_mb)]
     if env_import_path:
         cmd += ["--environment-import-path", env_import_path]
-    print(f"harbor: {' '.join(cmd)}", file=sys.stderr)
+    print(f"harbor: {_display_command(cmd)}", file=sys.stderr)
     import signal
     proc = subprocess.Popen(cmd)
     def _forward_signal(signum, frame):
@@ -291,11 +407,13 @@ def run_eval_on_harbor(
     # 4. Map into the harness run-dir layout.
     summary = build_summary(parsed, config)
     output_dir.mkdir(parents=True, exist_ok=True)
-    _copy_case_artifacts(parsed, output_dir)
+    _copy_case_artifacts(parsed, output_dir, config)
     run_meta = {
         "exit_code": 0 if parsed["n_errored"] == 0 else 1,
         "execution_mode": "harbor",
         "agent": f"harbor:{agent_name}",
+        "effort": config.runner.effort or config.runner.settings.get(
+            "model_reasoning_effort"),
         "agent_version": parsed.get("agent_version"),
         "model": model,
         "num_cases": parsed["n_completed"],
@@ -365,8 +483,15 @@ def main() -> None:
     p.add_argument("--arguments", default=None)
     p.add_argument("--skill", default=None)
     p.add_argument("--judge-model", default=None)
+    p.add_argument(
+        "--no-llm-judges", action="store_true",
+        help="Skip model-calling judges inside Harbor; run deterministic judges only")
     p.add_argument("--cases", nargs="*", default=None)
     p.add_argument("--n-concurrent", type=int, default=1)
+    p.add_argument("--cpus", type=int, default=None,
+                   help="Hard CPU limit per Harbor environment")
+    p.add_argument("--memory-mb", type=int, default=None,
+                   help="Hard memory limit in MiB per Harbor environment")
     p.add_argument("--workdir", default="/workspace")
     p.add_argument("--agent", default=None,
                    help="Harbor agent name (default: from runner.type in eval.yaml; "
@@ -376,12 +501,17 @@ def main() -> None:
                    help="Execution environment (default: kubernetes)")
     p.add_argument("--environment-import-path", default=None,
                    help="Custom Harbor environment import path (overrides --env)")
+    p.add_argument(
+        "--mount", action="append", default=[], metavar="SOURCE:TARGET[:ro|rw]",
+        help="Bind-mount host data into each Harbor environment (repeatable; "
+             "read-only by default)")
     p.add_argument("--regenerate", action="store_true",
                    help="Regenerate task packages even if --tasks-dir already has them "
                         "(default: reuse pre-generated tasks, e.g. from /eval-dataset)")
     args = p.parse_args()
 
     env_import = args.environment_import_path or _ENV_IMPORT_PATHS.get(args.env)
+    mounts = [_parse_bind_mount(spec) for spec in args.mount]
 
     code = run_eval_on_harbor(
         Path(args.config), image=args.image, model=args.model,
@@ -391,6 +521,10 @@ def main() -> None:
         n_concurrent=args.n_concurrent, workdir=args.workdir,
         agent_name=args.agent,
         env_import_path=env_import,
+        mounts=mounts,
+        no_llm_judges=args.no_llm_judges,
+        cpus=args.cpus,
+        memory_mb=args.memory_mb,
         regenerate=args.regenerate,
     )
     sys.exit(code)

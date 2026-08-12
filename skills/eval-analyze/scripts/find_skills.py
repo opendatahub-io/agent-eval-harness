@@ -106,7 +106,10 @@ def _discover_via_marketplace():
     dirs = []
     for plugin in data.get("plugins", []):
         source = plugin.get("source", "")
-        if not source:
+        # Marketplace entries can reference remote plugins with a structured
+        # source object. Only string sources name local paths discoverable from
+        # this checkout; remote entries are not validation errors.
+        if not isinstance(source, str) or not source:
             continue
         source_path = _resolve_under_cwd(source, Path.cwd())
         if not source_path:

@@ -87,13 +87,22 @@ def _find_input_file(case_dir: Path):
     return None
 
 
-def _bundle_eval_config(config_path: Path, judge_model: str | None = None) -> dict:
+def _bundle_eval_config(config_path: Path, judge_model: str | None = None,
+                        no_llm_judges: bool = False) -> dict:
     """Load the eval.yaml and sanitize it for in-container verification."""
     raw = yaml.safe_load(config_path.read_text()) or {}
     if "dataset" in raw and isinstance(raw["dataset"], dict):
         raw["dataset"] = {**raw["dataset"], "path": ""}
     if judge_model:
         raw.setdefault("models", {})["judge"] = judge_model
+    if no_llm_judges:
+        # Fail closed for builtins: without loading the registry here, their
+        # implementation kind is not self-evident from YAML.
+        raw["judges"] = [
+            judge for judge in (raw.get("judges") or [])
+            if not any(judge.get(field) for field in (
+                "prompt", "prompt_file", "llm_rubric", "agent", "builtin"))
+        ]
     return raw
 
 
@@ -121,6 +130,20 @@ _TRIVIAL_VERIFIER = (
     "mkdir -p /logs/verifier\n"
     "printf '{\"reward\": 1.0}\\n' > /logs/verifier/reward.json\n"
 )
+
+
+def _format_skill_instruction(skill_name: str, arguments: str,
+                              runner_type: str) -> str:
+    """Render an explicit skill invocation for the selected agent family."""
+    if runner_type == "codex":
+        # Codex discovers the injected skill by its directory/frontmatter name;
+        # Claude plugin namespaces such as ``ci:`` are not part of that name.
+        codex_name = skill_name.rsplit(":", 1)[-1]
+        command = f"Use the {codex_name} skill"
+        if arguments:
+            command += f" with arguments: {arguments}"
+        return command
+    return f"/{skill_name} {arguments}".strip()
 
 
 def _render_multistep_task_toml(*, task_name, task_desc, eval_name, case_id,
@@ -212,7 +235,9 @@ def _write_multi_step_case_package(config, config_path, bundled_cfg, case_dir,
             raise ValueError(
                 f"Harbor generation: step '{sid}' arguments cannot be resolved "
                 f"from input alone ({e}).{hint}") from e
-        cmd = f"/{step.skill} {resolved}".strip() if is_skill else resolved
+        runner_type = step.runner.type if step.runner else config.runner.type
+        cmd = (_format_skill_instruction(step.skill, resolved, runner_type)
+               if is_skill else resolved)
 
         step_dir = task_dir / "steps" / sid
         (step_dir / "tests").mkdir(parents=True, exist_ok=True)
@@ -282,6 +307,7 @@ def generate_tasks(
     verifier_timeout: float = 300.0,
     agent_timeout: float = 1800.0,
     judge_model: str | None = None,
+    no_llm_judges: bool = False,
 ) -> list[Path]:
     """Generate one self-contained Harbor task package per dataset case."""
     args_template = arguments if arguments is not None else config.execution.arguments
@@ -307,7 +333,8 @@ def generate_tasks(
     if not case_dirs:
         raise ValueError("No matching cases found")
 
-    bundled_cfg = _bundle_eval_config(config_path, judge_model=judge_model)
+    bundled_cfg = _bundle_eval_config(
+        config_path, judge_model=judge_model, no_llm_judges=no_llm_judges)
     out_dir.mkdir(parents=True, exist_ok=True)
     generated: list[Path] = []
 
@@ -332,7 +359,9 @@ def generate_tasks(
             command = resolve_arguments(prompt_template, input_data)
         else:
             resolved_args = resolve_arguments(args_template, input_data) if args_template else ""
-            command = f"/{skill_name} {resolved_args}".strip() if skill_name else resolved_args
+            command = (_format_skill_instruction(
+                skill_name, resolved_args, config.runner.type)
+                if skill_name else resolved_args)
 
         task_dir = out_dir / case_id
         (task_dir / "tests").mkdir(parents=True, exist_ok=True)

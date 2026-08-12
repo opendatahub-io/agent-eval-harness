@@ -7,7 +7,7 @@ shape (judges aggregated + per_case), which is what makes report.py / regression
 
 import yaml
 
-from agent_eval.config import EvalConfig
+from agent_eval.config import EvalConfig, OutputConfig
 from agent_eval.harbor import run as run_mod
 
 
@@ -74,6 +74,73 @@ def test_count_task_packages(tmp_path):
     (tasks / "not-a-task").mkdir()                            # no task.toml
     (tasks / "stray.txt").write_text("x")                    # not a dir
     assert run_mod._count_task_packages(tasks) == 2
+
+
+def test_copy_case_artifacts_uses_configured_output_path(tmp_path):
+    trial = tmp_path / "trial"
+    source = trial / "verifier" / "output"
+    source.mkdir(parents=True)
+    (source / "report.html").write_text("<h1>report</h1>")
+    config = _config(tmp_path)
+    config.outputs = [OutputConfig(path="output")]
+    run_dir = tmp_path / "run"
+
+    run_mod._copy_case_artifacts({
+        "trials": [{"trial_path": str(trial), "case_id": "case-001"}],
+    }, run_dir, config)
+
+    copied = run_dir / "cases" / "case-001" / "artifacts" / "output" / "report.html"
+    assert copied.read_text() == "<h1>report</h1>"
+
+
+def test_parse_bind_mount_defaults_read_only(tmp_path):
+    mount = run_mod._parse_bind_mount(f"{tmp_path}:/historical-payload-data")
+    assert mount == {
+        "type": "bind",
+        "source": str(tmp_path.resolve()),
+        "target": "/historical-payload-data",
+        "read_only": True,
+    }
+
+
+def test_codex_harbor_effort_uses_canonical_field(tmp_path):
+    config = _config(tmp_path)
+    config.runner.type = "codex"
+    config.runner.effort = "xhigh"
+    config.runner.settings["model_reasoning_effort"] = "medium"
+    assert run_mod._harbor_agent_kwargs(config, "codex") == [
+        "reasoning_effort=xhigh"]
+
+
+def test_resolve_harbor_skill_roots_includes_whole_plugin(tmp_path):
+    plugin = tmp_path / "plugin"
+    for name in ("parent", "dependency"):
+        skill = plugin / "skills" / name
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(f"# {name}\n")
+    config = _config(tmp_path)
+    config.runner.plugin_dirs = [str(plugin)]
+
+    assert run_mod._resolve_harbor_skill_roots(config) == [
+        (plugin / "skills").resolve()]
+
+
+def test_harbor_agent_env_resolves_references_and_redacts_log(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    config.execution.env = {
+        "DATA_DIR": "/historical-payload-data",
+        "TOKEN": "$TEST_ONLY_TOKEN",
+        "MISSING": "$TEST_ONLY_MISSING",
+    }
+    monkeypatch.setenv("TEST_ONLY_TOKEN", "secret-value")
+    resolved = run_mod._resolve_harbor_agent_env(config)
+    assert resolved == {
+        "DATA_DIR": "/historical-payload-data",
+        "TOKEN": "secret-value",
+    }
+    shown = run_mod._display_command([
+        "harbor", "run", "--agent-env", "TOKEN=secret-value"])
+    assert shown == "harbor run --agent-env TOKEN=<redacted>"
 
 
 def test_build_summary_regression_detectable(tmp_path):

@@ -28,6 +28,12 @@ podman push <registry>/<project>-eval:latest
 For Podman (local dev), project resources can be bind-mounted instead:
 `AGENT_EVAL_PODMAN_PROJECT_DIR=.`
 
+Large read-only datasets should be mounted rather than copied into every task:
+
+```bash
+--mount /absolute/host/data:/data:ro
+```
+
 For OpenShift credentials and project resource options, see
 `deploy/harbor/README.md`.
 
@@ -81,6 +87,38 @@ task packages (or generates them if `--image` is provided), calls
 /eval-run --runner harbor --env podman --model <model>
 ```
 
+Codex is selected by `runner.type: codex`. The wrapper automatically forwards
+every configured plugin's complete `skills/` root (including sibling/dependent
+skills) and translates `runner.effort` into Harbor's Codex agent option:
+
+```yaml
+runner:
+  type: codex
+  effort: xhigh
+  plugin_dirs: [plugins/ci]
+models:
+  skill: gpt-5.6-luna
+```
+
+```bash
+python -m agent_eval.harbor.run ... \
+  --env podman --model gpt-5.6-luna \
+  --n-concurrent 1 --cpus 2 --memory-mb 4096 \
+  --mount "$HOME/git/historical-payload-data:/historical-payload-data:ro"
+```
+
+`--mount` is implemented by the local Podman environment. Kubernetes runs need
+the equivalent data in a PVC, image, or other cluster-visible volume; a laptop
+host path cannot be mounted into an OpenShift pod. When external Podman mounts
+are present, the adapter disables SELinux container labeling instead of
+recursively relabeling the host dataset; the requested read-only mode remains
+enforced by Podman.
+
+Provider environment variables, including API keys, are forwarded by name:
+their values are supplied through Podman's process environment rather than
+embedded in `podman run` or `podman exec` arguments. This prevents ordinary
+process listings from printing credentials.
+
 The `--env` flag selects the execution environment (`kubernetes` by
 default, also accepts `podman`, `openshift`, `k8s`). The `-n` flag
 sets parallelism (concurrent pods/containers).
@@ -96,7 +134,10 @@ Run individual cases or the full task set with Harbor's CLI:
 # Podman (local)
 PYTHONPATH="$(pwd)" \
 harbor run -p eval/harbor-tasks \
-  --agent claude-code -m <model> \
+  --agent codex -m gpt-5.6-luna \
+  --agent-kwarg reasoning_effort=xhigh \
+  --skill /absolute/path/to/plugins/ci/skills \
+  --mounts '[{"type":"bind","source":"/absolute/host/data","target":"/data","read_only":true}]' \
   --environment-import-path agent_eval.harbor.podman:PodmanEnvironment \
   -n 1 -o eval/harbor-jobs
 
@@ -133,7 +174,7 @@ runs — these work unchanged:
 
 | Content | How it gets into the pod |
 |---|---|
-| Runtime (OS, agent CLI, harness) | Container image pull (`docker_image` in task.toml) |
+| Runtime (OS, Claude Code + Codex CLIs, harness) | Container image pull (`docker_image` in task.toml) |
 | Project resources (skills, scripts, .context) | Image layer, bind-mount (Podman), or ConfigMap (K8s) |
 | Per-case files (input.yaml, hooks) | Harbor `environment/` upload via exec |
 | Instruction (skill command) | Harbor reads `instruction.md` as agent prompt |

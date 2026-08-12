@@ -55,7 +55,7 @@ EvalHub), judgment (LLM judges, pairwise, regression), and authoring
 
 | Image | Containerfile | Contents | Used by |
 |---|---|---|---|
-| **agent-eval-harness** | `deploy/Containerfile` | UBI9 + python + node + claude-code + agent-eval-harness (judge engine, reward bridge, interception). No project code. | Harbor trial pods, EvalHub Job pods (base) |
+| **agent-eval-harness** | `deploy/Containerfile` | UBI9 + python + node + Claude Code + Codex + agent-eval-harness (judge engine, reward bridge, interception). No project code. | Harbor trial pods, EvalHub Job pods (base) |
 | **agent-eval-hub** | `deploy/evalhub/Containerfile` | FROM agent-eval-harness + eval-hub-sdk + boto3 + mlflow. No Harbor/kubernetes deps (adapter runs in-process). | EvalHub provider pod |
 
 No project-specific images needed. Project resources are delivered to trial pods via:

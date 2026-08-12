@@ -27,7 +27,7 @@ are self-contained (Harbor's stock agents run them directly).
 ## Container images
 
 **Base image** (`deploy/Containerfile`): generic agent-eval runtime for trial pods.
-Contains UBI9 + python + node + claude-code + agent-eval-harness (judge engine,
+Contains UBI9 + python + node + claude-code + codex + agent-eval-harness (judge engine,
 reward bridge, interception). No project code — project resources come from a
 ConfigMap (K8s), bind-mount (Podman), or a thin `FROM base` Containerfile in
 the project's own repo.
@@ -78,12 +78,34 @@ PYTHONPATH="$(pwd)" harbor run -p harbor-tasks/<case> --agent claude-code -m <mo
     -n 1 -o harbor-jobs
 ```
 
+For Codex, pass the plugin's whole skill root so orchestrator skills can invoke
+their sibling dependencies, and pass large historical data as a bind mount:
+
+```bash
+PYTHONPATH="$(pwd)" harbor run -p harbor-tasks/<case> \
+    --agent codex -m gpt-5.6-luna \
+    --agent-kwarg reasoning_effort=xhigh \
+    --skill /path/to/project/plugins/ci/skills \
+    --mounts '[{"type":"bind","source":"/path/to/history","target":"/historical-payload-data","read_only":true}]' \
+    --environment-import-path agent_eval.harbor.podman:PodmanEnvironment \
+    -n 1 -o harbor-jobs
+```
+
+The higher-level `agent_eval.harbor.run` wrapper derives `--skill` and the
+Codex reasoning effort from `eval.yaml`; its repeatable `--mount` flag generates
+the Harbor mount JSON. Host bind mounts apply to Podman only. For external bind
+mounts the local adapter uses `--security-opt label=disable`, avoiding a
+recursive SELinux relabel of the host data while preserving Podman's `:ro` mode.
+
 Notes:
 - `PYTHONPATH` must include this repo so Harbor can import the environment
   plug-ins (unnecessary if agent-eval-harness is pip-installed).
-- **Auth** — only NON-SECRET provider config is forwarded from the host
-  Provider config AND API keys (`ANTHROPIC_API_KEY`, `AWS_ACCESS_KEY_ID`, etc.)
-  are forwarded from the host env into the container automatically. For Vertex AI
+- **Auth** — provider config and API keys (`ANTHROPIC_API_KEY`,
+  `OPENAI_API_KEY`, `AWS_ACCESS_KEY_ID`, etc.) are forwarded from the host env
+  into the container automatically. Podman receives only variable names in its
+  command arguments; values travel through the child process environment so
+  normal process listings do not print credentials. This local environment is
+  not a security boundary from other processes owned by the same OS user. For Vertex AI
   (which needs a credentials file), set
   `AGENT_EVAL_PODMAN_GCP_CREDENTIALS_FILE=/path/to/sa-key.json` (mounted
   read-only). See the OpenShift section for Secret / Workload Identity equivalents.
@@ -107,7 +129,7 @@ with `podman rm -f <name>` or `oc delete pod -l app.kubernetes.io/managed-by=age
 Note: each trial uses a unique name, so kept resources accumulate — remember to prune.
 
 Even without keeping the pod, Harbor captures the agent transcript
-(`agent/claude-code.txt`, `agent/trajectory.json`), subagent transcripts, and the
+(`agent/claude-code.txt` or `agent/codex.txt`, plus `agent/trajectory.json`), subagent transcripts, and the
 verifier output (`verifier/{reward.json,judges.json,test-stdout.txt}`) into the job dir
 before deletion.
 

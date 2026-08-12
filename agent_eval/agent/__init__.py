@@ -3,16 +3,18 @@
 from .base import EvalRunner, RunResult
 from .claude_code import ClaudeCodeRunner
 from .cli_runner import CliRunner
+from .codex import CodexRunner
 from .responses_api import ResponsesAPIRunner
 
 RUNNERS = {
     "claude-code": ClaudeCodeRunner,
     "cli": CliRunner,
+    "codex": CodexRunner,
     "responses-api": ResponsesAPIRunner,
 }
 
 __all__ = [
     "EvalRunner", "RunResult",
-    "ClaudeCodeRunner", "CliRunner", "ResponsesAPIRunner",
+    "ClaudeCodeRunner", "CliRunner", "CodexRunner", "ResponsesAPIRunner",
     "RUNNERS",
 ]

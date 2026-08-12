@@ -6,11 +6,13 @@ from pathlib import Path
 
 import pytest
 
-# Add skills script directories to sys.path so tests can import them
+# Add skill script directories after normal import locations so their generic
+# filenames (notably eval-dataset/scripts/harbor.py) cannot shadow installed
+# third-party packages such as the Harbor framework.
 _repo_root = Path(__file__).parent.parent
-sys.path.insert(0, str(_repo_root / "skills" / "eval-run" / "scripts"))
-sys.path.insert(0, str(_repo_root / "skills" / "eval-mlflow" / "scripts"))
-sys.path.insert(0, str(_repo_root / "skills" / "eval-dataset" / "scripts"))
+sys.path.append(str(_repo_root / "skills" / "eval-run" / "scripts"))
+sys.path.append(str(_repo_root / "skills" / "eval-mlflow" / "scripts"))
+sys.path.append(str(_repo_root / "skills" / "eval-dataset" / "scripts"))
 
 
 # ---------------------------------------------------------------------------

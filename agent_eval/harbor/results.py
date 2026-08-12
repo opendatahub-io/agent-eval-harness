@@ -16,7 +16,21 @@ from pathlib import Path
 
 
 def _case_id_from_dir(trial_dir: Path) -> str:
-    """Harbor names trial dirs '<task>__<shortid>'. Strip the trailing id."""
+    """Recover the full task case ID, falling back to Harbor's trial slug.
+
+    Harbor truncates long trial directory names. Its result metadata retains
+    the original ``<suite>/<case>`` task name, so prefer that when available.
+    """
+    result_path = trial_dir / "result.json"
+    if result_path.is_file():
+        try:
+            task_name = json.loads(result_path.read_text()).get("task_name")
+            if isinstance(task_name, str) and task_name.strip():
+                case_id = task_name.rstrip("/").rsplit("/", 1)[-1]
+                if case_id not in {"", ".", ".."}:
+                    return case_id
+        except (json.JSONDecodeError, OSError):
+            pass
     name = trial_dir.name
     return name.rsplit("__", 1)[0] if "__" in name else name
 

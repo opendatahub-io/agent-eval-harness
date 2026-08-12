@@ -38,6 +38,15 @@ STANDARD_TEMPLATE_VARS = {
 }
 
 
+def _resolve_plugin_dir(raw, config_dir):
+    """Resolve plugin dirs with the same precedence as agent runners."""
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path
+    cwd_path = path.resolve()
+    return cwd_path if cwd_path.exists() else config_dir / path
+
+
 def _extract_template_variables(template_text):
     """Extract undeclared root variable names from a Jinja2 template.
 
@@ -686,7 +695,7 @@ def validate_config(path="eval.yaml"):
         if not isinstance(pd, str) or not pd:
             errors.append(f"runner.plugin_dirs[{i}] must be a non-empty string")
             continue
-        pp = Path(pd) if Path(pd).is_absolute() else config_dir / pd
+        pp = _resolve_plugin_dir(pd, config_dir)
         if not pp.exists():
             warnings.append(f"runner.plugin_dirs[{i}] '{pd}' not found")
         elif not pp.is_dir():
