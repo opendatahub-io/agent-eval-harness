@@ -125,6 +125,30 @@ def test_multistep_infra_excluded_from_step_mean(tmp_path):
     assert parsed["n_infra_errors"] == 1
 
 
+def test_multistep_infra_step_excludes_trial_from_reward_mean(tmp_path):
+    # A case whose create ran (1.0) but auto-fix infra-failed must NOT contribute
+    # a perfect 1.0 from its surviving step — the trial is excluded from the
+    # reward mean entirely, so only fully-scored cases count.
+    job = tmp_path / "job"
+    job.mkdir()
+    healthy = job / "case-001__a"
+    healthy.mkdir()
+    _make_step(healthy, "create", reward=1.0)
+    _make_step(healthy, "submit", reward=1.0)
+    partial = job / "case-006__b"
+    partial.mkdir()
+    _make_step(partial, "create", reward=1.0)
+    _make_step(partial, "auto-fix")  # infra failure (no reward.json)
+
+    parsed = R.parse_job(job)
+    rb = next(t for t in parsed["trials"] if t["case_id"] == "case-006")
+    assert rb["infra_error_steps"] == ["auto-fix"]
+    assert rb["reward"] is None                  # not 1.0 from create-only
+    assert parsed["mean_reward"] == 1.0          # only the healthy case counts
+    assert parsed["n_completed"] == 2            # still counted as a case
+    assert parsed["n_infra_errors"] == 1
+
+
 # ---------------------------------------------------------------------------
 # Trial that failed before producing any reward (e.g. pod never Ready) must be
 # surfaced as an errored trial, not silently dropped from the case total.
