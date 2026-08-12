@@ -302,3 +302,23 @@ def test_parse_trial_extracts_codex_transcript_metrics(tmp_path):
     assert parsed["token_usage"] == {
         "input": 12, "output": 4, "cache_read": 3}
     assert parsed["num_turns"] == 1
+
+
+def test_malformed_transcript_values_degrade_to_missing_metrics(tmp_path):
+    # Transcript content is agent-influenced; one malformed line must not
+    # crash the mapping of a completed Harbor run.
+    tp = tmp_path / "codex.txt"
+    tp.write_text("\n".join([
+        json.dumps({"type": "turn.completed", "usage": "oops"}),
+        json.dumps({"type": "turn.completed",
+                    "usage": {"input_tokens": "abc", "output_tokens": 4}}),
+        json.dumps({"type": "result", "usage": "oops",
+                    "total_cost_usd": "abc", "duration_ms": "xyz"}),
+        json.dumps(["not", "an", "object"]),
+    ]) + "\n")
+
+    metrics = R._extract_transcript_metrics(tp)
+    assert metrics["cost_usd"] is None
+    assert metrics["duration_s"] is None
+    assert metrics["token_usage"] == {"input": 0, "output": 4, "cache_read": 0}
+    assert metrics["num_turns"] == 2

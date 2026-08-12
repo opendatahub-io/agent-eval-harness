@@ -195,6 +195,34 @@ def test_codex_harbor_effort_accepts_minimal_and_rejects_max(tmp_path):
         run_mod._harbor_agent_kwargs(config, "codex")
 
 
+def test_claude_code_harbor_effort_is_forwarded(tmp_path):
+    # Harbor's stock claude-code agent exposes the reasoning_effort kwarg;
+    # a configured effort must reach it rather than being recorded in run
+    # metadata while the agent runs at its default.
+    config = _config(tmp_path)
+    config.runner.effort = "high"
+    assert run_mod._harbor_agent_kwargs(config, "claude-code") == [
+        "reasoning_effort=high"]
+    assert run_mod._harbor_agent_effort(config, "claude-code") == "high"
+
+
+def test_claude_code_harbor_effort_validates_vocabulary(tmp_path):
+    config = _config(tmp_path)
+    config.runner.effort = "minimal"  # codex-only value
+    with pytest.raises(ValueError, match="Invalid claude-code effort"):
+        run_mod._harbor_agent_kwargs(config, "claude-code")
+    config.runner.effort = "max"  # claude-only value is accepted here
+    assert run_mod._harbor_agent_kwargs(config, "claude-code") == [
+        "reasoning_effort=max"]
+
+
+def test_unknown_harbor_agent_records_no_effort(tmp_path):
+    config = _config(tmp_path)
+    config.runner.effort = "high"
+    assert run_mod._harbor_agent_kwargs(config, "opencode") == []
+    assert run_mod._harbor_agent_effort(config, "opencode") is None
+
+
 def test_resolve_harbor_skill_roots_includes_whole_plugin(tmp_path):
     plugin = tmp_path / "plugin"
     for name in ("parent", "dependency"):
@@ -284,7 +312,7 @@ def test_harbor_command_keeps_secret_out_of_argv(tmp_path, monkeypatch):
         cpus=2, memory_mb=1024)
 
     assert result == 17
-    assert "argv-redaction-sentinel" not in captured["command"]
+    assert "argv-redaction-sentinel" not in " ".join(captured["command"])
     joined = " ".join(captured["command"])
     assert "JIRA_TOKEN=${AGENT_EVAL_HARBOR_AGENT_ENV_0}" in joined
     assert captured["env"]["AGENT_EVAL_HARBOR_AGENT_ENV_0"] \

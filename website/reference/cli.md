@@ -147,7 +147,9 @@ python -m agent_eval.harbor.run \
 
 !!! note "Tasks are reused if present"
     If `--tasks-dir` already holds packages (e.g. emitted by `/eval-dataset`), they're
-    used as-is and `--image` isn't needed. Pass `--regenerate` to force a rebuild. The
+    used as-is and `--image` isn't needed. Generation-time options (`--arguments`,
+    `--skill`, `--cases`, `--judge-model`, `--no-llm-judges`) cannot be applied to
+    pre-generated tasks — the command errors unless `--regenerate` is passed. The
     process exits non-zero if regression [thresholds](config/thresholds.md) are
     violated, or if the run produces no numeric scores. Mounts are supported only by
     the bundled Podman environment; the command fails instead of silently ignoring

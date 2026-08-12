@@ -23,30 +23,23 @@ class CodexRunner(EvalRunner):
     """Run a skill or prompt with ``codex exec --json``."""
 
     # codex-cli 0.147.0 accepts these values.  In particular, ``minimal`` is
-    # valid and ``max`` is not (older code accepted max, which the CLI silently
-    # ignored and therefore mislabeled in run metadata).
+    # valid and ``max`` (a Claude Code effort level) is not.
     _VALID_EFFORTS = CODEX_EFFORTS
     _VALID_PERMISSION_MODES = {
         "default", "acceptEdits", "plan", "auto", "dontAsk",
         "bypassPermissions",
     }
 
-    # Environment keys safe to forward to an evaluated Codex process.  Keep
-    # the same operating/provider baseline as ClaudeCodeRunner, plus Codex and
-    # OpenAI configuration.  Eval-authored env is added explicitly below.
+    # Environment keys safe to forward to an evaluated Codex process: the OS
+    # baseline, OpenAI/Codex provider configuration, and harness telemetry.
+    # Cross-provider credentials (Anthropic, GCP) are deliberately not
+    # forwarded — the agent subprocess has no use for them, and judges run in
+    # the harness process. Evals that need one can opt in via runner.env.
     _SAFE_ENV_KEYS = {
         "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TERM",
         "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORG_ID",
         "OPENAI_ORGANIZATION", "OPENAI_PROJECT", "OPENAI_MODEL",
         "CODEX_HOME", "CODEX_API_KEY",
-        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-        "ANTHROPIC_BASE_URL", "ANTHROPIC_VERTEX_PROJECT_ID",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-        "CLOUD_ML_REGION", "CLAUDE_CODE_USE_VERTEX",
-        "CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_CODE_SUBAGENT_MODEL",
-        "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT",
-        "CLOUDSDK_CONFIG", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
         "MLFLOW_TRACKING_URI", "MLFLOW_EXPERIMENT_NAME",
         "AGENT_EVAL_RUNS_DIR",
     }
@@ -106,8 +99,8 @@ class CodexRunner(EvalRunner):
                 f"Must be one of: {sorted(self._VALID_PERMISSION_MODES)}")
         self._permission_mode = permission_mode
 
-        # Keep compatibility with early Codex configs that put the effort in
-        # runner.settings while making runner.effort the canonical field.
+        # runner.settings["model_reasoning_effort"] is accepted as a fallback;
+        # runner.effort is canonical and wins when both are set.
         settings_effort = self._config_overrides.get("model_reasoning_effort")
         self._effort = effort or settings_effort
         if self._effort and self._effort not in self._VALID_EFFORTS:
@@ -327,15 +320,20 @@ class CodexRunner(EvalRunner):
                             f"{destination}")
                     if destination.exists():
                         continue
+                    # Record before copying so a copytree that fails midway is
+                    # removed by cleanup instead of surviving as a truncated
+                    # skill that later runs would treat as complete.
+                    manifest["created"].append(destination)
                     try:
                         shutil.copytree(source, destination, symlinks=False)
                     except FileExistsError:
                         # Another staging caller won the atomic directory-create
-                        # race. Treat its complete real directory as idempotent.
+                        # race. Its directory is not ours to clean up; treat a
+                        # complete real directory as idempotent.
+                        manifest["created"].remove(destination)
                         if destination.is_symlink() or not destination.is_dir():
                             raise
                         continue
-                    manifest["created"].append(destination)
             return manifest
         except Exception:
             self._cleanup_staged_skills(workspace, manifest)
@@ -352,15 +350,23 @@ class CodexRunner(EvalRunner):
             return None
         try:
             result = subprocess.run(
-                ["git", "-C", str(workspace), "rev-parse", "--git-path", "info/exclude"],
+                ["git", "-C", str(workspace), "rev-parse",
+                 "--git-path", "info/exclude", "--show-prefix"],
                 capture_output=True, text=True, timeout=5, check=True)
         except (OSError, subprocess.SubprocessError):
             return None
-        exclude = Path(result.stdout.strip())
+        lines = result.stdout.splitlines()
+        exclude = Path(lines[0].strip()) if lines else Path("")
+        if not lines or not lines[0].strip():
+            return None
         if not exclude.is_absolute():
             exclude = workspace / exclude
+        # Anchor the rule to the workspace's path inside the repo: a bare
+        # "/.agents/" only matches at the repo root, while workspaces often
+        # live in nested paths such as eval/runs/<case>/workspace.
+        prefix = lines[1].strip() if len(lines) > 1 else ""
         marker = "# agent-eval-harness temporary Codex skills"
-        rule = "/.agents/"
+        rule = f"/{prefix}.agents/"
         try:
             existing = exclude.read_text() if exclude.exists() else ""
             if rule in existing.splitlines():
@@ -427,7 +433,9 @@ class CodexRunner(EvalRunner):
     def _extract_progress(event: dict) -> str:
         """Return fixed metadata only; event payloads may contain secrets."""
         event_type = event.get("type")
-        item = event.get("item") or {}
+        item = event.get("item")
+        if not isinstance(item, dict):
+            item = {}
         if event_type in {"item.started", "item.completed"}:
             if item.get("type") == "command_execution":
                 state = "started" if event_type == "item.started" else "completed"
@@ -453,16 +461,24 @@ def _prefer_complete(final, partial) -> str:
     return final_text if len(final_text) >= len(partial_text) else partial_text
 
 
+def _usage_count(usage: dict, key: str) -> int:
+    """Read a token count defensively; agent-influenced events may be malformed."""
+    value = usage.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 def _extract_usage(events: list[dict]) -> dict:
     """Aggregate Codex ``turn.completed`` usage records."""
     input_tokens = output_tokens = cache_read = turns = 0
     for event in events:
         if event.get("type") not in {"turn.completed", "turn_completed"}:
             continue
-        usage = event.get("usage") or {}
-        input_tokens += usage.get("input_tokens") or 0
-        output_tokens += usage.get("output_tokens") or 0
-        cache_read += usage.get("cached_input_tokens") or 0
+        usage = event.get("usage")
+        if not isinstance(usage, dict):
+            usage = {}
+        input_tokens += _usage_count(usage, "input_tokens")
+        output_tokens += _usage_count(usage, "output_tokens")
+        cache_read += _usage_count(usage, "cached_input_tokens")
         turns += 1
     return {
         "token_usage": {

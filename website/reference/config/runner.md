@@ -38,7 +38,7 @@ Not every runner reads every field. The matrix below shows where each field land
 | `type` | `str` | discriminator | discriminator | discriminator | discriminator |
 | `effort` | `str` (enum) | `--effort` flag | `model_reasoning_effort` | `{effort}` placeholder | — |
 | `permission_mode` | `str` (enum) | `--permission-mode` flag | mapped to Codex sandbox mode | — | — |
-| `settings` | `dict` | merged into workspace `.claude/settings.json` | legacy Codex effort fallback | — | connection settings (see below) |
+| `settings` | `dict` | merged into workspace `.claude/settings.json` | `-c` config overrides for `codex exec` | — | connection settings (see below) |
 | `plugin_dirs` | `list[str]` | one `--plugin-dir` per entry | skills copied into `.agents/skills` | — | — |
 | `env` | `dict` | injected on the safe allowlist | injected on the safe allowlist | — (uses `execution.env`) | — |
 | `system_prompt` | `str` | `--append-system-prompt` | prepended to the prompt | `{system_prompt}` placeholder | `developer` message |
@@ -143,9 +143,10 @@ A `dict` whose meaning depends on the runner:
 
 === "codex"
 
-    `model_reasoning_effort` is accepted as a legacy fallback when `runner.effort`
-    is unset. Prefer the top-level `effort` field; it takes precedence and is
-    validated against Codex's effort values.
+    Each key is passed to `codex exec` as a `-c key=value` config override.
+    `model_reasoning_effort` is also accepted here as a fallback when
+    `runner.effort` is unset; the top-level `effort` field takes precedence
+    and is validated against Codex's effort values.
 
     ```yaml
     runner:

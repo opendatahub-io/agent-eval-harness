@@ -27,6 +27,7 @@ from harbor.environments.capabilities import (
 from harbor.models.task.config import TaskOS
 
 import os
+import sys
 
 _PODMAN = os.environ.get("PODMAN_BINARY", "podman")
 
@@ -84,11 +85,17 @@ def _external_bind_args(mounts: list[dict]) -> list[str]:
             raise ValueError("Refusing to mount the host filesystem root")
         if Path(target).resolve() == Path("/"):
             raise ValueError("Refusing to mount over the container filesystem root")
-        # Harbor's schema makes read_only optional; omission must retain the
-        # harness's safe read-only default. Writable access is explicit False.
-        mode = "rw" if mount.get("read_only") is False else "ro"
+        # Harbor's ServiceVolumeConfig types read_only as
+        # NotRequired[Literal[True]] (Compose semantics: omission means
+        # writable; False is unrepresentable). The harness's safe read-only
+        # default lives in the producer — run.py's _parse_bind_mount stamps
+        # read_only: True unless :rw was explicitly requested.
+        mode = "ro" if mount.get("read_only") else "rw"
         args += ["-v", f"{source}:{target}:{mode}"]
     return args
+
+
+_ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _environment_args(environment: dict[str, str]) -> list[str]:
@@ -96,10 +103,17 @@ def _environment_args(environment: dict[str, str]) -> list[str]:
 
     Podman resolves ``-e NAME`` from its own process environment. Passing
     ``-e NAME=value`` would expose credentials in process listings while a
-    trial is running.
+    trial is running. Keys must be valid POSIX names: Podman treats a
+    trailing ``*`` in a value-free ``-e`` as a host-environment prefix glob
+    (``-e '*'`` forwards the entire host environment into the container).
     """
     args: list[str] = []
     for key in environment:
+        if not _ENV_KEY.fullmatch(key):
+            raise ValueError(
+                f"Refusing to forward invalid environment variable name {key!r}: "
+                "Podman expands value-free names ending in '*' as a "
+                "host-environment prefix glob")
         args += ["-e", key]
     return args
 
@@ -231,6 +245,9 @@ class PodmanEnvironment(BaseEnvironment):
             # Disabling labels for this local trial avoids mutating the user's
             # dataset labels recursively via :z/:Z. The requested ro/rw mode is
             # still enforced by Podman.
+            print(f"WARNING: disabling SELinux label confinement for container "
+                  f"{self._container} (external bind mounts present)",
+                  file=sys.stderr)
             run_args += ["--security-opt", "label=disable"]
             run_args += external_mount_args
 

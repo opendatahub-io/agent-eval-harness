@@ -24,8 +24,9 @@ from pathlib import Path
 
 import yaml
 
-from agent_eval.config import EvalConfig, resolve_plugin_dir
+from agent_eval.agent.claude_code import ClaudeCodeRunner
 from agent_eval.agent.codex import CODEX_EFFORTS
+from agent_eval.config import EvalConfig, resolve_plugin_dir
 from agent_eval.harbor import results as results_mod
 from agent_eval.harbor import tasks as tasks_mod
 from agent_eval.harbor.reward import _load_score_module
@@ -127,17 +128,32 @@ def _parse_bind_mount(spec: str) -> dict:
     return mount
 
 
+def _harbor_agent_effort(config: EvalConfig, agent_name: str) -> str | None:
+    """Effort value actually forwarded to the Harbor agent, validated per agent.
+
+    Both stock Harbor agents expose a ``reasoning_effort`` kwarg but accept
+    different vocabularies. Agents without an effort kwarg return None so run
+    metadata never records an effort that was not applied.
+    """
+    if agent_name == "codex":
+        effort = (config.runner.effort
+                  or config.runner.settings.get("model_reasoning_effort"))
+        valid, label = CODEX_EFFORTS, "Codex"
+    elif agent_name == "claude-code":
+        effort = config.runner.effort
+        valid, label = ClaudeCodeRunner._VALID_EFFORTS, "claude-code"
+    else:
+        return None
+    if effort and effort not in valid:
+        raise ValueError(
+            f"Invalid {label} effort '{effort}'. "
+            f"Must be one of: {sorted(valid)}")
+    return effort or None
+
+
 def _harbor_agent_kwargs(config: EvalConfig, agent_name: str) -> list[str]:
     """Translate runner settings that have an equivalent Harbor agent kwarg."""
-    if agent_name != "codex":
-        return []
-    effort = config.runner.effort
-    if not effort:
-        effort = config.runner.settings.get("model_reasoning_effort")
-    if effort and effort not in CODEX_EFFORTS:
-        raise ValueError(
-            f"Invalid Codex effort '{effort}'. "
-            f"Must be one of: {sorted(CODEX_EFFORTS)}")
+    effort = _harbor_agent_effort(config, agent_name)
     return [f"reasoning_effort={effort}"] if effort else []
 
 
@@ -492,8 +508,7 @@ def run_eval_on_harbor(
         "exit_code": 0 if parsed["n_errored"] == 0 else 1,
         "execution_mode": "harbor",
         "agent": f"harbor:{agent_name}",
-        "effort": config.runner.effort or config.runner.settings.get(
-            "model_reasoning_effort"),
+        "effort": _harbor_agent_effort(config, agent_name),
         "agent_version": parsed.get("agent_version"),
         "model": model,
         "num_cases": parsed["n_completed"],

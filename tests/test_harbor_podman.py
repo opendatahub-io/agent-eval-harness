@@ -27,16 +27,32 @@ def test_external_bind_args_ignores_harbor_log_mounts(tmp_path):
 
 
 def test_external_bind_args_supports_writable_mount(tmp_path):
+    # Harbor's ServiceVolumeConfig cannot express read_only: False — absence
+    # of the key is Compose's "writable" (see test_mount_pipeline_* below for
+    # the composed CLI-to-podman contract).
     assert _external_bind_args([
-        {"type": "bind", "source": str(tmp_path), "target": "/data",
-         "read_only": False},
+        {"type": "bind", "source": str(tmp_path), "target": "/data"},
     ]) == ["-v", f"{tmp_path.resolve()}:/data:rw"]
 
 
-def test_external_bind_args_defaults_to_read_only(tmp_path):
+def test_external_bind_args_honors_read_only(tmp_path):
     assert _external_bind_args([
-        {"type": "bind", "source": str(tmp_path), "target": "/data"},
+        {"type": "bind", "source": str(tmp_path), "target": "/data",
+         "read_only": True},
     ]) == ["-v", f"{tmp_path.resolve()}:/data:ro"]
+
+
+def test_mount_pipeline_preserves_rw_and_ro_end_to_end(tmp_path):
+    # Composition regression test: the dict emitted by run.py's CLI parser
+    # must round-trip through _external_bind_args with the requested mode.
+    from agent_eval.harbor.run import _parse_bind_mount
+    rw = _parse_bind_mount(f"{tmp_path}:/data:rw")
+    ro = _parse_bind_mount(f"{tmp_path}:/data:ro")
+    default = _parse_bind_mount(f"{tmp_path}:/data")
+    assert _external_bind_args([rw]) == ["-v", f"{tmp_path.resolve()}:/data:rw"]
+    assert _external_bind_args([ro]) == ["-v", f"{tmp_path.resolve()}:/data:ro"]
+    assert _external_bind_args([default]) == [
+        "-v", f"{tmp_path.resolve()}:/data:ro"]
 
 
 @pytest.mark.parametrize("mount,error", [
@@ -73,7 +89,16 @@ def test_environment_args_do_not_expose_values():
     })
 
     assert args == ["-e", "OPENAI_API_KEY", "-e", "EVAL_SNAPSHOT_DIR"]
-    assert "secret-value" not in args
+    assert "secret-value" not in " ".join(args)
+
+
+@pytest.mark.parametrize("key", ["*", "AEH_*", "BAD-KEY", "1BAD", "A=B", ""])
+def test_environment_args_reject_invalid_names(key):
+    # Podman expands a value-free `-e NAME*` as a host-environment prefix
+    # glob (`-e '*'` forwards the entire host environment), so non-POSIX
+    # names must be rejected at the sink.
+    with pytest.raises(ValueError, match="invalid environment variable name"):
+        _environment_args({key: "x"})
 
 
 def _startable_environment(tmp_path, mounts):
@@ -127,7 +152,7 @@ def test_start_wires_mount_resources_and_value_free_env(
     assert f"{tmp_path.resolve()}:/data:ro" in run_args
     assert ["-e", "OPENAI_API_KEY"] == run_args[
         run_args.index("OPENAI_API_KEY") - 1:run_args.index("OPENAI_API_KEY") + 1]
-    assert "secret-value" not in run_args
+    assert "secret-value" not in " ".join(run_args)
     assert child_env["OPENAI_API_KEY"] == "secret-value"
     assert child_env["TASK_FLAG"] == "enabled"
     assert uploaded == [True]

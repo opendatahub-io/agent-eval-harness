@@ -59,6 +59,12 @@ def _merge_per_model(acc: dict, pmu: dict | None) -> None:
             dst["cost_usd"] = (dst["cost_usd"] or 0) + c
 
 
+def _int_field(mapping: dict, key: str) -> int:
+    """Read a token count defensively from agent-influenced transcript data."""
+    value = mapping.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 def _extract_transcript_metrics(transcript_path: Path) -> dict:
     """Extract cost, tokens, turns, duration, version from a stream-json transcript."""
     result: dict = {
@@ -77,24 +83,34 @@ def _extract_transcript_metrics(transcript_path: Path) -> dict:
                 ev = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(ev, dict):
+                continue
             if (ev.get("type") == "system" and ev.get("subtype") == "init"
                     and not result["agent_version"]):
                 result["agent_version"] = ev.get("claude_code_version")
             if ev.get("type") in {"turn.completed", "turn_completed"}:
-                usage = ev.get("usage") or {}
-                codex_input += usage.get("input_tokens") or 0
-                codex_output += usage.get("output_tokens") or 0
-                codex_cache += usage.get("cached_input_tokens") or 0
+                usage = ev.get("usage")
+                if not isinstance(usage, dict):
+                    usage = {}
+                codex_input += _int_field(usage, "input_tokens")
+                codex_output += _int_field(usage, "output_tokens")
+                codex_cache += _int_field(usage, "cached_input_tokens")
                 codex_turns += 1
             if ev.get("type") == "result":
+                # Transcript content is agent-influenced; malformed fields
+                # must degrade to missing metrics, not crash the mapping of
+                # an already-completed Harbor run.
                 cost = ev.get("total_cost_usd")
-                if cost is not None:
+                if isinstance(cost, (int, float)) and not isinstance(cost, bool):
                     result["cost_usd"] = float(cost)
                 result["num_turns"] = ev.get("num_turns")
                 duration_ms = ev.get("duration_ms")
-                if duration_ms is not None:
+                if isinstance(duration_ms, (int, float)) and not isinstance(
+                        duration_ms, bool):
                     result["duration_s"] = duration_ms / 1000
                 usage = ev.get("usage", {})
+                if not isinstance(usage, dict):
+                    usage = {}
                 if usage:
                     result["token_usage"] = {
                         "input": usage.get("input_tokens"),

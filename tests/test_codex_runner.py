@@ -1,7 +1,9 @@
 """Tests for the Codex CLI runner."""
 
 import json
+import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 import yaml
@@ -127,7 +129,7 @@ def test_codex_effort_allowlist(effort):
     assert CodexRunner(effort=effort)._effort == effort
 
 
-def test_codex_rejects_ignored_max_effort():
+def test_codex_rejects_max_effort():
     with pytest.raises(ValueError, match="Invalid effort"):
         CodexRunner(effort="max")
 
@@ -213,6 +215,74 @@ def test_repo_staging_does_not_dirty_git_status(tmp_path):
         ["git", "status", "--porcelain"], cwd=repo,
         check=True, capture_output=True, text=True).stdout
     assert status == ""
+
+
+def test_nested_workspace_staging_does_not_dirty_git_status(tmp_path):
+    # Workspaces commonly live in nested repo paths (eval/runs/<case>/workspace);
+    # the exclude rule must be anchored to the workspace, not the repo root.
+    plugin = _plugin(tmp_path, "parent")
+    repo = tmp_path / "repo"
+    workspace = repo / "eval" / "runs" / "case-1" / "workspace"
+    workspace.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run([
+        "git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "commit", "-q", "--allow-empty", "-m", "init",
+    ], cwd=repo, check=True)
+    runner = CodexRunner(plugin_dirs=[str(plugin)])
+
+    manifest = runner._stage_skills(workspace)
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo,
+        check=True, capture_output=True, text=True).stdout
+    assert status == ""
+    exclude = repo / ".git" / "info" / "exclude"
+    assert "/eval/runs/case-1/workspace/.agents/" in exclude.read_text()
+
+    runner._cleanup_staged_skills(workspace, manifest)
+    assert ".agents" not in exclude.read_text()
+
+
+def test_partial_copytree_failure_is_cleaned_up_and_restaged(
+        tmp_path, monkeypatch):
+    plugin = _plugin(tmp_path, "parent")
+    (plugin / "skills" / "parent" / "extra.py").write_text("x = 1\n")
+    runner = CodexRunner(plugin_dirs=[str(plugin)])
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    real_copytree = shutil.copytree
+
+    def failing_copytree(src, dst, **kwargs):
+        Path(dst).mkdir(parents=True)
+        (Path(dst) / "SKILL.md").write_text("truncated")
+        raise shutil.Error([(str(src), str(dst), "simulated copy failure")])
+
+    monkeypatch.setattr(
+        "agent_eval.agent.codex.shutil.copytree", failing_copytree)
+    with pytest.raises(shutil.Error):
+        runner._stage_skills(workspace)
+    # The truncated destination must not survive to be treated as a complete
+    # skill by later stagings.
+    assert not (workspace / ".agents").exists()
+
+    monkeypatch.setattr("agent_eval.agent.codex.shutil.copytree", real_copytree)
+    manifest = runner._stage_skills(workspace)
+    assert (workspace / ".agents" / "skills" / "parent" / "extra.py").is_file()
+    runner._cleanup_staged_skills(workspace, manifest)
+
+
+def test_codex_malformed_events_degrade_gracefully():
+    events = [
+        {"type": "turn.completed", "usage": "oops"},
+        {"type": "turn.completed",
+         "usage": {"input_tokens": "many", "output_tokens": 3}},
+    ]
+    usage = _extract_usage(events)
+    assert usage["token_usage"] == {"input": 0, "output": 3, "cache_read": 0}
+    assert usage["num_turns"] == 2
+    assert CodexRunner._extract_progress(
+        {"type": "item.started", "item": "oops"}) == ""
 
 
 def test_codex_missing_binary_returns_failed_result(tmp_path, monkeypatch):

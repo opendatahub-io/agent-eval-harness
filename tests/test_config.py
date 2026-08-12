@@ -490,3 +490,60 @@ judges:
     # Other agent keys survive alongside the parsed runner.
     assert jc.agent["inputs"] == ["a"]
     assert isinstance(jc.agent["runner"], RunnerConfig)
+
+
+# ---------------------------------------------------------------------------
+# resolve_plugin_dir trust boundary (runtime path used by all runners)
+# ---------------------------------------------------------------------------
+
+from agent_eval.config import resolve_plugin_dir  # noqa: E402
+
+_MINIMAL = "name: t\nexecution:\n  skill: s\n"
+
+
+def _plugin_config(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    eval_dir = project / "eval"
+    eval_dir.mkdir(parents=True)
+    cfg = EvalConfig.from_yaml(_write(eval_dir, _MINIMAL))
+    monkeypatch.chdir(project)
+    return project, eval_dir, cfg
+
+
+def test_resolve_plugin_dir_rejects_relative_escape(tmp_path, monkeypatch):
+    project, _, cfg = _plugin_config(tmp_path, monkeypatch)
+    (tmp_path / "outside-plugin").mkdir()
+    with pytest.raises(ValueError, match="must stay beneath"):
+        resolve_plugin_dir(cfg, "../outside-plugin")
+
+
+def test_resolve_plugin_dir_rejects_symlink_escape(tmp_path, monkeypatch):
+    project, _, cfg = _plugin_config(tmp_path, monkeypatch)
+    outside = tmp_path / "outside-plugin"
+    outside.mkdir()
+    (project / "plugin-link").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="must stay beneath"):
+        resolve_plugin_dir(cfg, "plugin-link")
+
+
+def test_resolve_plugin_dir_prefers_project_root_candidate(tmp_path, monkeypatch):
+    project, eval_dir, cfg = _plugin_config(tmp_path, monkeypatch)
+    (project / "plugins").mkdir()
+    (eval_dir / "plugins").mkdir()
+    assert resolve_plugin_dir(cfg, "plugins") == (project / "plugins").resolve()
+
+
+def test_resolve_plugin_dir_falls_back_to_config_dir(tmp_path, monkeypatch):
+    project, eval_dir, cfg = _plugin_config(tmp_path, monkeypatch)
+    (eval_dir / "plugins").mkdir()
+    assert resolve_plugin_dir(cfg, "plugins") == (eval_dir / "plugins").resolve()
+
+
+def test_resolve_plugin_dir_absolute_is_opt_in_but_must_exist(
+        tmp_path, monkeypatch):
+    project, _, cfg = _plugin_config(tmp_path, monkeypatch)
+    outside = tmp_path / "outside-plugin"
+    outside.mkdir()
+    assert resolve_plugin_dir(cfg, str(outside)) == outside.resolve()
+    with pytest.raises(FileNotFoundError, match="plugin directory not found"):
+        resolve_plugin_dir(cfg, str(tmp_path / "missing"))
