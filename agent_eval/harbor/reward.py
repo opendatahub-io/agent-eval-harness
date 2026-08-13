@@ -18,6 +18,9 @@ Reward composition (resolution order):
 2. Otherwise: boolean judges gate (any fail -> 0.0), numeric judges
    normalized to [0,1] and averaged.
 
+Either way a numeric judge is normalized over its OWN declared ``score_range``;
+``reward.score_range`` is only a fallback for judges that declare none.
+
 Pairwise comparison and regression thresholds are SUITE-level (need >=2 runs /
 the full set) and stay above Harbor — they are not computed here.
 
@@ -226,9 +229,25 @@ def _normalize(value: float, score_range: list[float]) -> float:
     return max(0.0, min(1.0, (value - lo) / span))
 
 
+def _resolve_range(name: str, judge_ranges: Optional[dict],
+                   fallback) -> tuple[float, float]:
+    """The scale a judge's value is normalized over.
+
+    The judge's own declared `score_range` wins. That range is what the harness
+    already puts in the judge's prompt and tool schema, enforces the answer
+    against, and bands the report cell with — normalizing it against a
+    different one is a unit error. `fallback` (``reward.score_range``, else
+    ``[1, 5]``) applies only to judges that declare nothing.
+    """
+    declared = (judge_ranges or {}).get(name)
+    lo, hi = declared if declared else fallback
+    return float(lo), float(hi)
+
+
 def _judge_value(per_judge: dict, name: str,
                  score_range: list[float],
-                 raw_judges: list[str] = ()) -> Optional[float]:
+                 raw_judges: list[str] = (),
+                 judge_ranges: Optional[dict] = None) -> Optional[float]:
     """Extract a judge's value as a float in [0, 1]."""
     rec = per_judge.get(name, {})
     val = rec.get("value")
@@ -239,12 +258,15 @@ def _judge_value(per_judge: dict, name: str,
     if isinstance(val, (int, float)):
         if name in raw_judges:
             return max(0.0, min(1.0, float(val)))
-        return _normalize(float(val), score_range)
+        return _normalize(float(val), list(_resolve_range(
+            name, judge_ranges, score_range)))
     return None
 
 
 def compute_reward_from_config(per_judge: dict,
-                               reward_cfg: RewardConfig) -> float:
+                               reward_cfg: RewardConfig,
+                               *,
+                               judge_ranges: Optional[dict] = None) -> float:
     """Compute reward using the eval.yaml reward: section.
 
     Resolution within the section:
@@ -267,7 +289,8 @@ def compute_reward_from_config(per_judge: dict,
     # judge (value None) scores 0.0.
     if reward_cfg.judge is not None:
         clamp_raw = () if reward_cfg.normalize else (reward_cfg.judge,)
-        jv = _judge_value(per_judge, reward_cfg.judge, score_range, clamp_raw)
+        jv = _judge_value(per_judge, reward_cfg.judge, score_range, clamp_raw,
+                          judge_ranges=judge_ranges)
         return jv if jv is not None else 0.0
 
     formula = reward_cfg.formula.strip()
@@ -278,7 +301,8 @@ def compute_reward_from_config(per_judge: dict,
         total = 0.0
         weight_sum = 0.0
         for judge_name, weight in reward_cfg.weights.items():
-            jv = _judge_value(per_judge, judge_name, score_range, raw_judges)
+            jv = _judge_value(per_judge, judge_name, score_range, raw_judges,
+                              judge_ranges=judge_ranges)
             if jv is not None:
                 total += float(weight) * jv
                 weight_sum += float(weight)
@@ -286,7 +310,8 @@ def compute_reward_from_config(per_judge: dict,
 
     judge_vars: dict[str, float] = {}
     for name, rec in per_judge.items():
-        jv = _judge_value(per_judge, name, score_range, raw_judges)
+        jv = _judge_value(per_judge, name, score_range, raw_judges,
+                          judge_ranges=judge_ranges)
         if jv is not None:
             judge_vars[name] = jv
 
@@ -310,16 +335,17 @@ def compose_reward(per_judge: dict, *,
     1. If reward_cfg is provided (from eval.yaml reward: section), use it.
     2. Otherwise fall back to: boolean gates + average of normalized numerics.
 
-    In the fallback path each numeric judge is normalized over its OWN declared
-    ``score_range`` when ``judge_ranges`` supplies one, and over
-    ``score_min``/``score_max`` otherwise. Without this a 0-2 judge normalized
-    against the 1-5 default maps both 0 and 1 to 0.0 and its top score to 0.25,
-    silently collapsing most of the scale.
+    On BOTH paths each numeric judge is normalized over its OWN declared
+    ``score_range`` when ``judge_ranges`` supplies one, and over the fallback
+    otherwise. Without this a 0-2 judge normalized against the 1-5 default maps
+    both 0 and 1 to 0.0 and its top score to 0.25, silently collapsing most of
+    the scale.
     """
     metrics = _extract_metrics(per_judge)
 
     if reward_cfg is not None:
-        reward = compute_reward_from_config(per_judge, reward_cfg)
+        reward = compute_reward_from_config(per_judge, reward_cfg,
+                                            judge_ranges=judge_ranges)
         return reward, metrics
 
     gate_ok = True
@@ -337,8 +363,7 @@ def compose_reward(per_judge: dict, *,
         if isinstance(value, bool) and not value:
             gate_ok = False
         elif isinstance(value, (int, float)) and not isinstance(value, bool):
-            declared = (judge_ranges or {}).get(name)
-            lo, hi = declared if declared else (score_min, score_max)
+            lo, hi = _resolve_range(name, judge_ranges, (score_min, score_max))
             span = hi - lo
             norm = (float(value) - lo) / span if span else 0.0
             normalized_scores.append(max(0.0, min(1.0, norm)))

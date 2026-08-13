@@ -587,3 +587,134 @@ def test_a_broken_if_condition_is_not_a_skip():
                        "rationale": "Condition error: NameError"}}
     reward, _ = reward_mod.compose_reward(per_judge)
     assert reward == 0.0
+
+
+# --- per-judge score_range in the CONFIGURED path ----------------------------
+
+_RANGES = {"testability": (0, 2), "clarity": (1, 5)}
+
+
+def _weighted(**kw):
+    base = dict(formula="weighted", weights={"testability": 0.5, "clarity": 0.5},
+                gate=False)
+    base.update(kw)
+    return RewardConfig(**base)
+
+
+def test_configured_reward_normalizes_over_each_judges_own_range():
+    """A single global reward.score_range cannot be right for two judges on
+    different scales. testability=2 is a perfect score on [0, 2]; normalized
+    against [1, 5] it read as 0.25."""
+    per_judge = {"testability": {"value": 2}, "clarity": {"value": 4}}
+    cfg = _weighted(score_range=[1, 5])
+    assert reward_mod.compute_reward_from_config(per_judge, cfg) == pytest.approx(0.5)
+    assert reward_mod.compute_reward_from_config(
+        per_judge, cfg, judge_ranges=_RANGES) == pytest.approx(0.875)
+
+
+def test_a_short_scale_keeps_its_gradient():
+    """Against [1, 5] a [0, 2] judge maps 0 and 1 both to 0.0 and 2 to 0.25 —
+    two of three rubric bands collapse into one reward, which is the whole
+    signal a GRPO loop has to learn from."""
+    cfg = RewardConfig(formula="weighted", weights={"t": 1.0}, gate=False)
+    rewards = [reward_mod.compute_reward_from_config(
+        {"t": {"value": v}}, cfg, judge_ranges={"t": (0, 2)}) for v in (0, 1, 2)]
+    assert rewards == [0.0, 0.5, 1.0]
+    assert len(set(rewards)) == 3
+
+
+def test_the_two_reward_paths_agree_on_the_same_judges():
+    """Adding an equal-weight reward: block must not change the number. The
+    default path was fixed first; the configured path kept flat normalization,
+    so the same judges composed to 0.875 or 0.5 depending on the block."""
+    per_judge = {"testability": {"value": 2}, "clarity": {"value": 4}}
+    default, _ = reward_mod.compose_reward(per_judge, judge_ranges=_RANGES)
+    configured, _ = reward_mod.compose_reward(
+        per_judge, judge_ranges=_RANGES, reward_cfg=_weighted())
+    assert default == configured == pytest.approx(0.875)
+
+
+def test_compose_reward_threads_ranges_into_the_configured_path(monkeypatch):
+    """Guards the one production line. #184 wired a range mapping into two of
+    three call sites and the third silently kept the old scale."""
+    seen = {}
+
+    def spy(per_judge, reward_cfg, *, judge_ranges=None):
+        seen["judge_ranges"] = judge_ranges
+        return 0.0
+
+    monkeypatch.setattr(reward_mod, "compute_reward_from_config", spy)
+    reward_mod.compose_reward({"t": {"value": 1}}, judge_ranges=_RANGES,
+                              reward_cfg=_weighted())
+    assert seen["judge_ranges"] == _RANGES
+
+
+def test_undeclared_judges_keep_the_fallback_range():
+    per_judge = {"testability": {"value": 2}, "plain": {"value": 3}}
+    cfg = RewardConfig(formula="weighted",
+                       weights={"testability": 0.5, "plain": 0.5}, gate=False,
+                       score_range=[1, 5])
+    # testability -> 1.0 on its own [0, 2]; plain -> 0.5 on the fallback [1, 5].
+    assert reward_mod.compute_reward_from_config(
+        per_judge, cfg, judge_ranges={"testability": (0, 2)}) == pytest.approx(0.75)
+
+
+def test_raw_still_beats_a_declared_range():
+    """`raw` means the value is already in [0, 1]; no range applies to it."""
+    cfg = RewardConfig(formula="weighted", weights={"eff": 1.0}, gate=False,
+                       raw=["eff"])
+    assert reward_mod.compute_reward_from_config(
+        {"eff": {"value": 0.8}}, cfg,
+        judge_ranges={"eff": (0, 100)}) == pytest.approx(0.8)
+
+
+def test_single_judge_normalize_uses_the_judges_own_range():
+    cfg = RewardConfig(judge="testability", normalize=True, gate=False,
+                       score_range=[1, 5])
+    assert reward_mod.compute_reward_from_config(
+        {"testability": {"value": 2}}, cfg,
+        judge_ranges=_RANGES) == pytest.approx(1.0)
+
+
+def test_single_judge_without_normalize_ignores_every_range():
+    cfg = RewardConfig(judge="t", gate=False)
+    for ranges in (None, {"t": (0, 2)}):
+        assert reward_mod.compute_reward_from_config(
+            {"t": {"value": 0.6}}, cfg, judge_ranges=ranges) == pytest.approx(0.6)
+
+
+def test_expression_mode_resolves_ranges_per_judge():
+    cfg = RewardConfig(formula="0.5 * testability + 0.5 * clarity", gate=False,
+                       score_range=[1, 5])
+    assert reward_mod.compute_reward_from_config(
+        {"testability": {"value": 2}, "clarity": {"value": 4}}, cfg,
+        judge_ranges=_RANGES) == pytest.approx(0.875)
+
+
+def test_bool_judges_are_untouched_by_ranges():
+    cfg = RewardConfig(formula="weighted", weights={"ok": 1.0}, gate=False)
+    for value, expected in ((True, 1.0), (False, 0.0)):
+        assert reward_mod.compute_reward_from_config(
+            {"ok": {"value": value}}, cfg,
+            judge_ranges={"ok": (0, 2)}) == pytest.approx(expected)
+
+
+def test_end_to_end_build_reward_honours_a_declared_range(tmp_path):
+    """parse -> judge_ranges(config) -> compose_reward -> configured path."""
+    case_dir = tmp_path / "case-001"
+    (case_dir / "artifacts" / "out").mkdir(parents=True)
+    (case_dir / "artifacts" / "out" / "f.md").write_text("x")
+
+    raw = {
+        "name": "t", "execution": {"skill": "t"}, "dataset": {"path": ""},
+        "outputs": [{"path": "artifacts/out", "schema": "any"}],
+        "judges": [{"name": "depth", "score_range": [0, 2],
+                    "check": "return (2, 'top of the scale')"}],
+        "reward": {"formula": "weighted", "weights": {"depth": 1.0}, "gate": False},
+    }
+    cfg_path = tmp_path / "eval.yaml"
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    config = EvalConfig.from_yaml(cfg_path)
+
+    payload = reward_mod.build_reward(config, case_dir)
+    assert payload["reward"] == pytest.approx(1.0)
