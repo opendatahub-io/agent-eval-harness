@@ -122,3 +122,27 @@ class TestDeprecationWarning:
     ])
     def test_it_stays_silent_when_no_number_moves(self, tmp_path, judges, reward):
         assert _warnings(tmp_path, judges, reward) == []
+
+
+class TestClampedSingleJudge:
+    """`reward: {judge: x}` clamps rather than normalizes. On a scale wider
+    than [0, 1] that silently saturates: every value >= 1 is a perfect reward."""
+
+    def test_it_warns_on_a_wider_scale(self, tmp_path):
+        with pytest.warns(UserWarning, match="clamped to \\[0, 1\\]"):
+            _load(tmp_path, [_T], {"judge": "testability"})
+
+    @pytest.mark.parametrize("judges,reward", [
+        # Already [0, 1] — clamping is exactly right.
+        ([{"name": "rm", "feedback_type": "float", "score_range": [0, 1],
+           "prompt": "p"}], {"judge": "rm"}),
+        # normalize: true maps the value instead of clamping it.
+        ([_T], {"judge": "testability", "normalize": True}),
+        # No declared range — nothing to contradict.
+        ([_PLAIN], {"judge": "plain"}),
+    ])
+    def test_it_stays_silent_when_clamping_is_right(self, tmp_path, judges, reward):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _load(tmp_path, judges, reward)
+        assert [str(w.message) for w in caught if "clamped" in str(w.message)] == []

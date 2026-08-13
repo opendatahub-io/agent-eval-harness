@@ -801,6 +801,31 @@ def _warn_reward_range_precedence(config) -> None:
         stacklevel=2)
 
 
+def _warn_reward_judge_clamp(config) -> None:
+    """Warn when a clamped single-judge reward is scored off [0, 1].
+
+    `reward: {judge: x}` uses x's value as the reward directly, clamped — the
+    right thing for a judge that already emits [0, 1]. On any wider scale every
+    value at or above 1 becomes the maximum reward, which is silent and looks
+    like a well-behaved run. Pre-existing; surfaced here because the same
+    change makes a declared `score_range` authoritative everywhere else.
+    """
+    reward = config.reward
+    if reward.judge is None or reward.normalize:
+        return
+    declared = next((j.score_range for j in config.judges
+                     if j.name == reward.judge and j.score_range), None)
+    if not declared or [float(declared[0]), float(declared[1])] == [0.0, 1.0]:
+        return
+    lo, hi = float(declared[0]), float(declared[1])
+    import warnings
+    warnings.warn(
+        f"reward.judge '{reward.judge}' declares score_range [{lo}, {hi}] but "
+        "'normalize' is not set, so its value is clamped to [0, 1] — every "
+        f"score at or above 1 becomes the maximum reward. Set 'normalize: true' "
+        f"to map it from [{lo}, {hi}].", stacklevel=2)
+
+
 @dataclass
 class EvalConfig:
     """Complete evaluation suite configuration.
@@ -1399,6 +1424,7 @@ class EvalConfig:
             )
             if sr is not None:
                 _warn_reward_range_precedence(config)
+            _warn_reward_judge_clamp(config)
 
         # Thresholds
         config.thresholds = raw.get("thresholds", {})
