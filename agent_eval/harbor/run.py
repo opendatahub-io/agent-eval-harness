@@ -497,6 +497,14 @@ def run_eval_on_harbor(
         )
 
     # 2. Run on Harbor (one job over the tasks dir).
+    if harbor_bin == "harbor":
+        # Prefer the harbor CLI installed alongside this interpreter: the
+        # harness pins harbor's version in its own environment, and a stale
+        # global `harbor` on PATH would silently run a different (possibly
+        # incompatible) agent bootstrap than the pinned one.
+        sibling = Path(sys.executable).parent / "harbor"
+        if sibling.is_file():
+            harbor_bin = str(sibling)
     cmd = [
         harbor_bin, "run", "-p", str(tasks_dir),
         "-a", agent_name, "-m", model,
