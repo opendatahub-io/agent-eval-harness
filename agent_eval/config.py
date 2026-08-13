@@ -1,5 +1,7 @@
 """Evaluation suite configuration loaded from eval.yaml files."""
 
+import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -135,27 +137,26 @@ def resolve_plugin_path(configured: str, project_root, config_dir=None) -> Path:
 
     This is the single implementation of the plugin-path security rules —
     the runtime runners and the eval.yaml validator must agree on them, so
-    neither may carry its own copy. Relative paths may use the project root
-    or the eval.yaml directory, but their canonical target (after symlink
-    resolution) must remain beneath the project root. An absolute path is an
-    explicit operator opt-in to an external plugin. Existence is not checked
-    here; callers decide how a missing directory is reported.
+    neither may carry its own copy. Relative paths use the project root, which
+    matches the runner behavior before this helper existed. A path that is
+    lexically inside the project may not escape it through a symlink. A path
+    declared lexically outside (for example ``../shared-plugins``) is an
+    explicit operator opt-in equivalent to an absolute external path.
+    Existence is not checked here; callers decide how a missing directory is
+    reported. ``config_dir`` remains accepted for API compatibility but is not
+    a resolution base.
     """
     path = Path(configured).expanduser()
     if path.is_absolute():
         return path.resolve()
     root = Path(project_root).resolve()
-    project_candidate = root / path
-    config_candidate = (Path(config_dir) / path if config_dir is not None
-                        else project_candidate)
-    candidate = (project_candidate if project_candidate.exists()
-                 else config_candidate if config_candidate.exists()
-                 else project_candidate)
-    resolved = candidate.resolve()
-    if not resolved.is_relative_to(root):
+    lexical = Path(os.path.abspath(root / path))
+    resolved = lexical.resolve()
+    if lexical.is_relative_to(root) and not resolved.is_relative_to(root):
         raise ValueError(
-            "Relative plugin_dirs entries must stay beneath the "
-            f"project root {root}: {configured!r} resolved to {resolved}")
+            "A plugin_dirs entry declared inside the project must not escape "
+            f"the project root through a symlink: {configured!r} resolved to "
+            f"{resolved}")
     return resolved
 
 
@@ -170,6 +171,48 @@ def resolve_plugin_dir(config, configured: str) -> Path:
     if not resolved.is_dir():
         raise FileNotFoundError(f"Runner plugin directory not found: {resolved}")
     return resolved
+
+
+def resolve_plugin_skill_roots(plugin_dir: str | Path) -> list[Path]:
+    """Resolve the skill roots exported by one Claude plugin.
+
+    ``.claude-plugin/plugin.json`` may override the conventional ``skills/``
+    directory with a string or list in its ``skills`` field. Invalid manifests
+    and missing roots fail fast: silently starting Codex without the configured
+    skills would turn a setup error into a misleading model-quality failure.
+    """
+    plugin = Path(plugin_dir).resolve()
+    manifest_path = plugin / ".claude-plugin" / "plugin.json"
+    configured_roots = None
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+            raise ValueError(
+                f"Cannot read plugin manifest {manifest_path}: {exc}") from exc
+        configured_roots = manifest.get("skills")
+
+    if configured_roots is None:
+        entries = ["skills"]
+    elif isinstance(configured_roots, str) and configured_roots:
+        entries = [configured_roots]
+    elif (isinstance(configured_roots, list) and configured_roots
+          and all(isinstance(entry, str) and entry for entry in configured_roots)):
+        entries = configured_roots
+    else:
+        raise ValueError(
+            f"Plugin manifest {manifest_path} field 'skills' must be a "
+            "non-empty string or list of non-empty strings")
+
+    roots = [(plugin / entry).resolve() for entry in entries]
+    missing = [root for root in roots if not root.is_dir()]
+    if missing:
+        raise FileNotFoundError(
+            "Plugin skill directory not found: " + ", ".join(map(str, missing)))
+    if not any(any(child.is_dir() and (child / "SKILL.md").is_file()
+                       for child in root.iterdir()) for root in roots):
+        raise ValueError(f"Configured plugin has no discoverable skills: {plugin}")
+    return roots
 
 
 @dataclass
@@ -1284,6 +1327,20 @@ class EvalConfig:
                 _validate_path_segment(resolved_skill, f"skill name in {path}")
             except ValueError as e:
                 raise ValueError(str(e)) from e
+
+        codex_runners = [config.runner]
+        codex_runners.extend(
+            step.runner for step in config.execution.steps if step.runner)
+        codex_runners = [runner for runner in codex_runners
+                         if runner.type == "codex"]
+        if codex_runners and config.inputs.tools:
+            raise ValueError(
+                "runner.type 'codex' does not support inputs.tools interception; "
+                "use claude-code or remove the tool interceptors")
+        if any(runner.workspace_mode == "repo" for runner in codex_runners):
+            raise ValueError(
+                "runner.type 'codex' does not support workspace_mode: repo "
+                "because repository answer-key protections cannot be enforced")
 
         return config
 

@@ -12,6 +12,7 @@ by Harbor version). Pairwise/regression remain suite-level above this.
 """
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 
@@ -92,9 +93,11 @@ def _extract_transcript_metrics(transcript_path: Path) -> dict:
                 usage = ev.get("usage")
                 if not isinstance(usage, dict):
                     usage = {}
-                codex_input += _int_field(usage, "input_tokens")
+                turn_input = _int_field(usage, "input_tokens")
+                turn_cache = _int_field(usage, "cached_input_tokens")
+                codex_input += max(turn_input - turn_cache, 0)
                 codex_output += _int_field(usage, "output_tokens")
-                codex_cache += _int_field(usage, "cached_input_tokens")
+                codex_cache += turn_cache
                 codex_turns += 1
             if ev.get("type") == "result":
                 # Transcript content is agent-influenced; malformed fields
@@ -155,6 +158,48 @@ def _agent_transcript_metrics(agent_dir: Path) -> dict:
         if path.is_file():
             return _extract_transcript_metrics(path)
     return _extract_transcript_metrics(agent_dir / "claude-code.txt")
+
+
+def _number(mapping: dict, key: str):
+    value = mapping.get(key)
+    return (value if isinstance(value, (int, float))
+            and not isinstance(value, bool) else None)
+
+
+def _agent_result_metrics(agent_result) -> dict:
+    """Normalize Harbor's AgentContext token/cost fields defensively."""
+    if not isinstance(agent_result, dict):
+        agent_result = {}
+    total_input = _number(agent_result, "n_input_tokens")
+    cache = _number(agent_result, "n_cache_tokens")
+    output = _number(agent_result, "n_output_tokens")
+    token_usage = None
+    if any(value is not None for value in (total_input, cache, output)):
+        token_usage = {
+            "input": (max(total_input - (cache or 0), 0)
+                      if total_input is not None else None),
+            "output": output,
+            "cache_read": cache,
+        }
+    return {
+        "cost_usd": _number(agent_result, "cost_usd"),
+        "token_usage": token_usage,
+    }
+
+
+def _timing_duration(timing) -> float | None:
+    if not isinstance(timing, dict):
+        return None
+    started = timing.get("started_at")
+    finished = timing.get("finished_at")
+    if not isinstance(started, str) or not isinstance(finished, str):
+        return None
+    try:
+        return max((datetime.fromisoformat(finished.replace("Z", "+00:00"))
+                    - datetime.fromisoformat(started.replace("Z", "+00:00")))
+                   .total_seconds(), 0)
+    except ValueError:
+        return None
 
 
 def _errored_trial_record(trial_dir: Path) -> dict:
@@ -256,14 +301,9 @@ def parse_trial(trial_dir: Path) -> dict | None:
     if trial_result.is_file():
         try:
             ar = (json.loads(trial_result.read_text()).get("agent_result") or {})
-            record["cost_usd"] = ar.get("cost_usd")
-            if any(ar.get(k) is not None for k in
-                   ("n_input_tokens", "n_output_tokens", "n_cache_tokens")):
-                record["token_usage"] = {
-                    "input": ar.get("n_input_tokens"),
-                    "output": ar.get("n_output_tokens"),
-                    "cache_read": ar.get("n_cache_tokens"),
-                }
+            normalized = _agent_result_metrics(ar)
+            record["cost_usd"] = normalized["cost_usd"]
+            record["token_usage"] = normalized["token_usage"]
         except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             pass
 
@@ -314,11 +354,28 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
     infra_error_steps: list[str] = []
     unjudged_steps: list[str] = []
     total_cost = 0.0
+    has_cost = False
     total_turns = 0
     total_duration = 0.0
     token_totals: dict = {}
     per_model_totals: dict = {}
     agent_version = None
+    harbor_steps: dict[str, dict] = {}
+    try:
+        trial_result = json.loads((trial_dir / "result.json").read_text())
+        raw_steps = trial_result.get("step_results") or []
+        if isinstance(raw_steps, list):
+            harbor_steps = {
+                step["step_name"]: step for step in raw_steps
+                if isinstance(step, dict)
+                and isinstance(step.get("step_name"), str)
+            }
+        info = trial_result.get("agent_info") or {}
+        version = info.get("version") if isinstance(info, dict) else None
+        if isinstance(version, str) and version:
+            agent_version = version
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        pass
 
     for step_dir in step_dirs:
         step_name = step_dir.name
@@ -348,9 +405,15 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
             rewards.append(step_reward)
 
         extracted = _agent_transcript_metrics(step_dir / "agent")
+        harbor_step = harbor_steps.get(step_name, {})
+        fallback = _agent_result_metrics(harbor_step.get("agent_result"))
         step_cost = extracted.get("cost_usd")
+        if step_cost is None:
+            step_cost = fallback["cost_usd"]
         step_turns = extracted.get("num_turns")
         step_duration = extracted.get("duration_s")
+        if step_duration is None:
+            step_duration = _timing_duration(harbor_step.get("agent_execution"))
         if not agent_version:
             agent_version = extracted.get("agent_version")
 
@@ -392,11 +455,13 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
 
         if isinstance(step_cost, (int, float)):
             total_cost += step_cost
+            has_cost = True
         if isinstance(step_turns, (int, float)):
             total_turns += int(step_turns)
         if isinstance(step_duration, (int, float)):
             total_duration += step_duration
-        for k, v in (extracted.get("token_usage") or {}).items():
+        step_tokens = extracted.get("token_usage") or fallback["token_usage"] or {}
+        for k, v in step_tokens.items():
             if isinstance(v, (int, float)):
                 token_totals[k] = token_totals.get(k, 0) + v
         _merge_per_model(per_model_totals, extracted.get("per_model_usage"))
@@ -430,7 +495,7 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
         "errored": (trial_dir / "exception.txt").is_file(),
         "infra_error_steps": infra_error_steps,
         "unjudged_steps": unjudged_steps,
-        "cost_usd": total_cost if total_cost > 0 else None,
+        "cost_usd": total_cost if has_cost else None,
         "token_usage": token_totals or None,
         "per_model_usage": per_model_totals or None,
         "num_turns": total_turns if total_turns > 0 else None,

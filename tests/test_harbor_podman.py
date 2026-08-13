@@ -177,3 +177,28 @@ def test_start_does_not_disable_labels_for_internal_log_mounts(tmp_path):
     asyncio.run(PodmanEnvironment.start(env, force_build=False))
 
     assert "--security-opt" not in calls[-1]
+
+
+def test_exec_passes_scoped_environment_to_podman_process():
+    env = SimpleNamespace(
+        _started=True,
+        _container="aeh-test",
+        task_env_config=SimpleNamespace(workdir="/workspace"),
+        _resolve_user=lambda user: user,
+        _merge_env=lambda extra: {"CARRIER": "secret", **(extra or {})},
+    )
+    calls = []
+
+    async def fake_podman(args, timeout_sec=None, environment=None):
+        calls.append((args, timeout_sec, environment))
+        return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    env._podman = fake_podman
+    asyncio.run(PodmanEnvironment.exec(
+        env, "env", env={"VISIBLE": "yes"}, timeout_sec=7))
+
+    args, timeout, child_env = calls[0]
+    assert timeout == 7
+    assert child_env == {"CARRIER": "secret", "VISIBLE": "yes"}
+    assert "secret" not in " ".join(args)
+    assert ["-e", "CARRIER", "-e", "VISIBLE"] == args[3:7]

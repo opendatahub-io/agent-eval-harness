@@ -157,7 +157,8 @@ allowlist of keys (`_SAFE_ENV_KEYS`): `PATH`, `HOME`, `USER`, `SHELL`, `LANG`,
 ([`codex.py`](https://github.com/opendatahub-io/agent-eval-harness/blob/main/agent_eval/agent/codex.py))
 shells out to `codex exec --json`. The prompt is sent on stdin, and each configured
 plugin's skills are copied into the case workspace under `.agents/skills` for the
-duration of the run. This works directly on the host; Harbor is optional.
+duration of the run. Manifest-declared custom skill roots are supported. This works
+directly on the host; Harbor is optional.
 
 ```yaml title="eval.yaml"
 runner:
@@ -173,7 +174,12 @@ the controls available in `codex exec`: `plan` uses `read-only`, explicit
 `workspace-write`. Fine-grained Claude Code tool allow/deny rules do not have an exact
 Codex equivalent, so the runner warns rather than silently claiming they are enforced.
 Likewise, Codex CLI does not expose the harness's dollar budget cap; a non-default
-`max_budget_usd` produces a warning.
+`max_budget_usd` produces a warning. Local Codex JSONL reports tokens but not cost,
+so `cost_usd` remains `null`; Harbor may provide cost from its agent result metadata.
+
+Codex does not support `inputs.tools` interception. It also rejects
+`workspace_mode: repo`, where the harness cannot enforce repository answer-key
+protections. Use the default isolated workspace for Codex evals.
 
 Like the Claude Code runner, Codex starts from a safe environment allowlist rather than
 forwarding the full host environment. Add intentional variables under `runner.env` or

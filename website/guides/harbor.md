@@ -87,7 +87,7 @@ call `harbor run`, parse the job dir, generate the report, and check regressions
 | `-n <n>` | Parallelism — concurrent trial pods/containers |
 | `--mount <source:target[:ro\|rw]>` | Repeatable Podman bind mount; read-only by default |
 | `--cpus <n>` / `--memory-mb <MiB>` | Hard per-environment resource limits |
-| `--no-llm-judges` | Run deterministic judges only |
+| `--no-llm-judges` | Generate and run deterministic judges only; requires `--image` and an empty tasks directory or `--regenerate` |
 
 The output is the same `eval/runs/<id>/` layout as a local run (`summary.yaml`,
 `report.html`, per-case artifacts), so `/eval-review` and `/eval-mlflow` work unchanged.

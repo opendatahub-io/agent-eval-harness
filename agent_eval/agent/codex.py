@@ -11,7 +11,7 @@ import warnings
 from pathlib import Path
 from typing import Optional
 
-from agent_eval.config import resolve_plugin_dir
+from agent_eval.config import resolve_plugin_dir, resolve_plugin_skill_roots
 
 from .base import EvalRunner, RunResult
 
@@ -80,17 +80,13 @@ class CodexRunner(EvalRunner):
         self._env = env or {}
         self._log_prefix = log_prefix
         self._config_overrides = dict(config_overrides or {})
-        self._plugin_dirs: list[Path] = []
+        self._skill_roots: list[Path] = []
         for configured in plugin_dirs or []:
             plugin_dir = Path(configured).expanduser().resolve()
             if not plugin_dir.is_dir():
                 raise FileNotFoundError(
                     f"Codex plugin directory not found: {plugin_dir}")
-            skills_root = plugin_dir / "skills"
-            if not skills_root.is_dir():
-                raise FileNotFoundError(
-                    f"Codex plugin skill directory not found: {skills_root}")
-            self._plugin_dirs.append(plugin_dir)
+            self._skill_roots.extend(resolve_plugin_skill_roots(plugin_dir))
         self._system_prompt = system_prompt
         self._permissions = permissions or {}
         if permission_mode is not None and permission_mode not in self._VALID_PERMISSION_MODES:
@@ -299,17 +295,37 @@ class CodexRunner(EvalRunner):
         """
         workspace = workspace.resolve()
         skills_dest = workspace / ".agents" / "skills"
-        manifest = {"created": [], "exclude": None}
+        owner_marker = workspace / ".agents" / ".agent-eval-harness-codex-skills"
+        manifest = {
+            "created": [], "exclude": None, "owner_marker": owner_marker,
+            "active": bool(self._skill_roots),
+        }
+        if not self._skill_roots:
+            return manifest
         try:
+            if owner_marker.is_file():
+                if owner_marker.read_text() != "agent-eval-harness\n":
+                    raise ValueError(
+                        f"Refusing unrecognized staged-skill marker: {owner_marker}")
+                if skills_dest.is_symlink():
+                    skills_dest.unlink()
+                elif skills_dest.exists():
+                    shutil.rmtree(skills_dest)
+                owner_marker.unlink()
+            elif skills_dest.exists() or skills_dest.is_symlink():
+                raise ValueError(
+                    "Refusing to replace an existing workspace skill tree not "
+                    f"owned by agent-eval-harness: {skills_dest}")
+
             manifest["exclude"] = self._ensure_agents_gitignored(workspace)
-            for plugin_dir in self._plugin_dirs:
-                source_root = plugin_dir / "skills"
+            skills_dest.mkdir(parents=True, exist_ok=True)
+            owner_marker.write_text("agent-eval-harness\n")
+            for source_root in self._skill_roots:
                 # Constructor validation catches configuration errors early;
                 # repeat this check in case the source vanished between cases.
                 if not source_root.is_dir():
                     raise FileNotFoundError(
                         f"Codex plugin skill directory not found: {source_root}")
-                skills_dest.mkdir(parents=True, exist_ok=True)
                 for source in sorted(source_root.iterdir()):
                     if not source.is_dir() or not (source / "SKILL.md").is_file():
                         continue
@@ -319,7 +335,9 @@ class CodexRunner(EvalRunner):
                             f"Refusing existing symlink at staged skill path: "
                             f"{destination}")
                     if destination.exists():
-                        continue
+                        raise ValueError(
+                            "Duplicate Codex skill name across plugin roots: "
+                            f"{destination.name}")
                     # Record before copying so a copytree that fails midway is
                     # removed by cleanup instead of surviving as a truncated
                     # skill that later runs would treat as complete.
@@ -335,7 +353,7 @@ class CodexRunner(EvalRunner):
                             raise
                         continue
             return manifest
-        except Exception:
+        except BaseException:
             self._cleanup_staged_skills(workspace, manifest)
             raise
 
@@ -369,7 +387,13 @@ class CodexRunner(EvalRunner):
         rule = f"/{prefix}.agents/"
         try:
             existing = exclude.read_text() if exclude.exists() else ""
-            if rule in existing.splitlines():
+            existing_lines = existing.splitlines()
+            if any(existing_lines[index:index + 2] == [marker, rule]
+                   for index in range(max(len(existing_lines) - 1, 0))):
+                # A prior interrupted harness run left its exact marker/rule.
+                # Adopt it so this run's cleanup removes the stale entry.
+                return (exclude, marker, rule)
+            if rule in existing_lines:
                 return None
             exclude.parent.mkdir(parents=True, exist_ok=True)
             prefix = "" if not existing or existing.endswith("\n") else "\n"
@@ -381,11 +405,31 @@ class CodexRunner(EvalRunner):
 
     @staticmethod
     def _cleanup_staged_skills(workspace: Path, manifest: dict) -> None:
-        for destination in reversed(manifest.get("created", [])):
-            if destination.is_symlink():
-                destination.unlink(missing_ok=True)
-            elif destination.exists():
-                shutil.rmtree(destination, ignore_errors=True)
+        if not manifest.get("active"):
+            return
+        owner_marker = manifest.get("owner_marker")
+        owns_tree = False
+        try:
+            owns_tree = (owner_marker is not None and owner_marker.is_file()
+                         and owner_marker.read_text() == "agent-eval-harness\n")
+        except OSError:
+            pass
+        if owns_tree:
+            skills_dest = workspace / ".agents" / "skills"
+            if skills_dest.is_symlink():
+                skills_dest.unlink(missing_ok=True)
+            elif skills_dest.exists():
+                shutil.rmtree(skills_dest, ignore_errors=True)
+            try:
+                owner_marker.unlink()
+            except OSError:
+                pass
+        else:
+            for destination in reversed(manifest.get("created", [])):
+                if destination.is_symlink():
+                    destination.unlink(missing_ok=True)
+                elif destination.exists():
+                    shutil.rmtree(destination, ignore_errors=True)
         for directory in (workspace / ".agents" / "skills", workspace / ".agents"):
             try:
                 directory.rmdir()
@@ -468,8 +512,14 @@ def _toml_value(value) -> str:
     tables use ``key = value`` syntax — a JSON object would fall back to a
     plain string on the Codex side.
     """
+    if value is None:
+        raise TypeError("Codex TOML overrides do not support null values")
     if isinstance(value, dict):
-        inner = ", ".join(f"{k} = {_toml_value(v)}" for k, v in value.items())
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("Codex TOML override mapping keys must be strings")
+        inner = ", ".join(
+            f"{json.dumps(key)} = {_toml_value(item)}"
+            for key, item in value.items())
         return "{" + inner + "}"
     if isinstance(value, (list, tuple)):
         return "[" + ", ".join(_toml_value(v) for v in value) + "]"
@@ -491,9 +541,11 @@ def _extract_usage(events: list[dict]) -> dict:
         usage = event.get("usage")
         if not isinstance(usage, dict):
             usage = {}
-        input_tokens += _usage_count(usage, "input_tokens")
+        turn_input = _usage_count(usage, "input_tokens")
+        turn_cache = _usage_count(usage, "cached_input_tokens")
+        input_tokens += max(turn_input - turn_cache, 0)
         output_tokens += _usage_count(usage, "output_tokens")
-        cache_read += _usage_count(usage, "cached_input_tokens")
+        cache_read += turn_cache
         turns += 1
     return {
         "token_usage": {

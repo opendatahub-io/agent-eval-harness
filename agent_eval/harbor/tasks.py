@@ -215,7 +215,7 @@ def _format_skill_instruction(skill_name: str, arguments: str,
 
 def _render_multistep_task_toml(*, task_name, task_desc, eval_name, case_id,
                                 image, workdir, step_specs,
-                                reward_strategy="final"):
+                                reward_strategy="final", judge_mode="full"):
     """Build a schema 1.4 multi-step task.toml (variable-length [[steps]]).
 
     ``step_specs`` is a list of ``(name, agent_timeout, verifier_timeout)``.
@@ -238,6 +238,7 @@ def _render_multistep_task_toml(*, task_name, task_desc, eval_name, case_id,
         'generated_by = "agent-eval-harness/eval-dataset"',
         f'eval_name = {_toml_string(eval_name)}',
         f'case_id = {_toml_string(case_id)}',
+        f'judge_mode = {_toml_string(judge_mode)}',
         "",
         "[environment]",
         f'docker_image = {_toml_string(image)}',
@@ -261,7 +262,7 @@ def _render_multistep_task_toml(*, task_name, task_desc, eval_name, case_id,
 def _write_multi_step_case_package(config, config_path, bundled_cfg, case_dir,
                                    case_id, input_file, input_data, out_dir,
                                    image, workdir, agent_timeout,
-                                   verifier_timeout):
+                                   verifier_timeout, no_llm_judges=False):
     """Write one Harbor multi-step task package (schema 1.4) for a case.
 
     Emits ``task.toml`` with a ``[[steps]]`` block per step, and per-step
@@ -347,7 +348,9 @@ def _write_multi_step_case_package(config, config_path, bundled_cfg, case_dir,
         task_name=f"{config.name or 'eval'}/{case_id}",
         task_desc=_task_label(config),
         eval_name=config.name, case_id=case_id, image=image, workdir=workdir,
-        step_specs=step_specs), encoding="utf-8")
+        step_specs=step_specs,
+        judge_mode="deterministic-only" if no_llm_judges else "full"),
+        encoding="utf-8")
 
     # environment/ — auto-uploaded to the workspace by Harbor.
     env_dir = task_dir / "environment"
@@ -417,7 +420,7 @@ def generate_tasks(
             task_dir = _write_multi_step_case_package(
                 config, Path(config_path), bundled_cfg, case_dir, case_id,
                 input_file, input_data, out_dir, image, workdir,
-                agent_timeout, verifier_timeout)
+                agent_timeout, verifier_timeout, no_llm_judges)
             generated.append(task_dir)
             print(f"  {case_id}: {task_dir}")
             continue
@@ -444,6 +447,8 @@ def generate_tasks(
             "TASK_DESC": _toml_string(_task_label(config)),
             "EVAL_NAME": _toml_string(config.name),
             "CASE_ID": _toml_string(case_id),
+            "JUDGE_MODE": _toml_string(
+                "deterministic-only" if no_llm_judges else "full"),
             "IMAGE": _toml_string(image),
             "WORKDIR": _toml_string(workdir),
             "VERIFIER_TIMEOUT": verifier_timeout,

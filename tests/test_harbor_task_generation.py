@@ -66,6 +66,7 @@ def test_generate_tasks_structure_and_command(tmp_path):
     toml_text = (t1 / "task.toml").read_text()
     assert 'docker_image = "quay.io/test/rfe-task:latest"' in toml_text
     assert 'case_id = "case-001"' in toml_text
+    assert tomllib.loads(toml_text)["metadata"]["judge_mode"] == "full"
 
     # instruction.md carries the resolved per-case command
     instr = (t1 / "instruction.md").read_text()
@@ -128,6 +129,9 @@ def test_generate_tasks_can_drop_model_calling_judges(tmp_path):
     bundled = yaml.safe_load(
         (tmp_path / "tasks" / "case-001" / "tests" / "eval.yaml").read_text())
     assert [judge["name"] for judge in bundled["judges"]] == ["files_exist"]
+    task = tomllib.loads(
+        (tmp_path / "tasks" / "case-001" / "task.toml").read_text())
+    assert task["metadata"]["judge_mode"] == "deterministic-only"
 
 
 def test_single_step_with_all_llm_judges_is_marked_unjudged(tmp_path):

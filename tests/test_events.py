@@ -114,6 +114,33 @@ class TestParseStreamEvents:
         assert types == ["system", "assistant", "assistant", "tool_result",
                          "assistant", "result"]
 
+    def test_codex_jsonl_maps_messages_tools_and_result(self):
+        events = [
+            {"type": "item.completed", "item": {
+                "id": "item_0", "type": "agent_message", "text": "Starting"}},
+            {"type": "item.completed", "item": {
+                "id": "item_1", "type": "command_execution",
+                "command": "sed -n '1,20p' README.md",
+                "aggregated_output": "contents", "exit_code": 0,
+                "status": "completed"}},
+            {"type": "item.completed", "item": {
+                "id": "item_2", "type": "agent_message", "text": "Done"}},
+            {"type": "turn.completed", "usage": {
+                "input_tokens": 10, "cached_input_tokens": 4,
+                "output_tokens": 2}},
+        ]
+
+        parsed = parse_stream_events(_to_stdout(events))
+
+        assert [event["type"] for event in parsed] == [
+            "assistant", "assistant", "tool_result", "assistant", "result"]
+        assert parsed[1]["tools"] == [{
+            "name": "Bash", "id": "item_1",
+            "input": {"command": "sed -n '1,20p' README.md"},
+        }]
+        assert parsed[2]["content"] == "contents"
+        assert extract_conversation_text(parsed) == "Starting\n\nDone"
+
     def test_timestamps_preserved(self):
         events = [make_assistant("msg_001", text="test")]
         result = parse_stream_events(_to_stdout(events))

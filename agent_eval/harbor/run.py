@@ -20,13 +20,16 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import yaml
 
 from agent_eval.agent.claude_code import ClaudeCodeRunner
 from agent_eval.agent.codex import CODEX_EFFORTS
-from agent_eval.config import EvalConfig, resolve_plugin_dir
+from agent_eval.config import (
+    EvalConfig, resolve_plugin_dir, resolve_plugin_skill_roots,
+)
 from agent_eval.harbor import results as results_mod
 from agent_eval.harbor import tasks as tasks_mod
 from agent_eval.harbor.reward import _load_score_module
@@ -79,19 +82,16 @@ _ENV_IMPORT_PATHS = {
 def _resolve_harbor_skill_roots(config: EvalConfig) -> list[Path]:
     """Resolve plugin skill roots for Harbor's ``--skill`` option.
 
-    A plugin directory contains one ``skills/`` root. Passing that root makes
-    all sibling skills available, which is important for orchestrator skills
-    whose dependencies are selected dynamically by the agent.
+    Passing every manifest-declared skill root makes all sibling skills
+    available, which is important for orchestrator skills whose dependencies
+    are selected dynamically by the agent.
     """
     roots: list[Path] = []
     for configured in config.runner.plugin_dirs:
         path = resolve_plugin_dir(config, configured)
-        skills_root = path / "skills"
-        if not skills_root.is_dir():
-            print(f"WARNING: Harbor Codex plugin has no skills directory; "
-                  f"skipping {path}", file=sys.stderr)
-            continue
-        roots.append(skills_root.resolve())
+        roots.extend(resolve_plugin_skill_roots(path))
+    if config.runner.plugin_dirs and not roots:
+        raise ValueError("Configured Harbor Codex plugins export no skill roots")
     return roots
 
 
@@ -274,6 +274,50 @@ def _count_task_packages(tasks_dir: Path) -> int:
                if d.is_dir() and (d / "task.toml").is_file())
 
 
+def _validate_task_package_reuse(tasks_dir: Path, config: EvalConfig) -> None:
+    """Reject pre-generated packages whose judge provenance mismatches config."""
+    required = set(config.thresholds or {})
+    for task_dir in sorted(d for d in tasks_dir.iterdir() if d.is_dir()
+                           and (d / "task.toml").is_file()):
+        try:
+            task = tomllib.loads((task_dir / "task.toml").read_text())
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            raise ValueError(
+                f"Cannot validate pre-generated Harbor task {task_dir}: {exc}") from exc
+        metadata = task.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            raise ValueError(
+                f"Pre-generated Harbor task {task_dir} has invalid metadata; "
+                "regenerate it with --regenerate --image IMAGE")
+        mode = metadata.get("judge_mode")
+        if mode not in {None, "full", "deterministic-only"}:
+            raise ValueError(
+                f"Pre-generated Harbor task {task_dir} has unknown judge_mode "
+                f"{mode!r}; regenerate it with --regenerate --image IMAGE")
+        if mode == "deterministic-only":
+            raise ValueError(
+                f"Pre-generated Harbor task {task_dir} was built with "
+                "--no-llm-judges and cannot be reused for a full run; pass "
+                "--regenerate --image IMAGE")
+
+        bundled_judges = set()
+        for bundled_path in task_dir.rglob("eval.yaml"):
+            try:
+                bundled = yaml.safe_load(bundled_path.read_text()) or {}
+            except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+                raise ValueError(
+                    f"Cannot validate bundled config {bundled_path}: {exc}") from exc
+            bundled_judges.update(
+                judge.get("name") for judge in (bundled.get("judges") or [])
+                if isinstance(judge, dict) and judge.get("name"))
+        missing = sorted(required - bundled_judges)
+        if missing:
+            raise ValueError(
+                f"Pre-generated Harbor task {task_dir} is missing thresholded "
+                f"judge(s): {', '.join(missing)}; regenerate it with "
+                "--regenerate --image IMAGE")
+
+
 def _load_report_module():
     """Load report.py from the eval-run skill (by path)."""
     path = _REPO_ROOT / "skills" / "eval-run" / "scripts" / "report.py"
@@ -290,7 +334,8 @@ def _copy_case_artifacts(parsed: dict, output_dir: Path,
     A task verifier copies every ``outputs[].path`` to
     ``/logs/verifier/<path>``. Harbor downloads that as
     ``<trial>/verifier/<path>``; mirror the same paths beneath the harness's
-    conventional ``cases/<case>/artifacts/`` directory for report rendering.
+    conventional ``cases/<case>/<configured path>`` location used by local
+    collection and report rendering.
     """
     import shutil
     for trial in parsed["trials"]:
@@ -311,7 +356,7 @@ def _copy_case_artifacts(parsed: dict, output_dir: Path,
                         step_order.get(candidate.name, len(step_order)),
                         candidate.name)))
 
-        artifacts_dir = output_dir / "cases" / trial["case_id"] / "artifacts"
+        case_root = output_dir / "cases" / trial["case_id"]
         for configured_output in config.outputs:
             if not configured_output.path:
                 continue
@@ -325,7 +370,7 @@ def _copy_case_artifacts(parsed: dict, output_dir: Path,
             if not sources:
                 continue
             src = sources[-1]
-            dst = artifacts_dir / configured_output.path
+            dst = case_root / configured_output.path
             dst.parent.mkdir(parents=True, exist_ok=True)
             if dst.is_dir():
                 shutil.rmtree(dst)
@@ -421,6 +466,7 @@ def run_eval_on_harbor(
             raise ValueError(
                 "Pre-generated Harbor tasks cannot apply generation options "
                 f"{', '.join(ignored)}; pass --regenerate to rebuild them")
+        _validate_task_package_reuse(tasks_dir, config)
         print(f"Using {existing} pre-generated task package(s) in {tasks_dir} "
               f"(skipping generation; --regenerate to force)", file=sys.stderr)
     else:

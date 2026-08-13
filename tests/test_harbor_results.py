@@ -170,6 +170,37 @@ def test_multistep_infra_excluded_from_step_mean(tmp_path):
     assert parsed["n_infra_errors"] == 1
 
 
+def test_multistep_falls_back_to_harbor_agent_results(tmp_path):
+    job = tmp_path / "job"
+    job.mkdir()
+    trial = job / "case-001__a"
+    trial.mkdir()
+    _make_step(trial, "analyze", reward=1.0)
+    (trial / "result.json").write_text(json.dumps({
+        "task_name": "suite/case-001",
+        "agent_info": {"version": "codex-cli 0.147.0"},
+        "step_results": [{
+            "step_name": "analyze",
+            "agent_result": {
+                "n_input_tokens": 100, "n_cache_tokens": 80,
+                "n_output_tokens": 5, "cost_usd": 0.25,
+            },
+            "agent_execution": {
+                "started_at": "2026-08-13T10:00:00Z",
+                "finished_at": "2026-08-13T10:00:03Z",
+            },
+        }],
+    }))
+
+    parsed = R.parse_trial(trial)
+
+    assert parsed["cost_usd"] == 0.25
+    assert parsed["token_usage"] == {
+        "input": 20, "output": 5, "cache_read": 80}
+    assert parsed["duration_s"] == 3.0
+    assert parsed["agent_version"] == "codex-cli 0.147.0"
+
+
 # ---------------------------------------------------------------------------
 # Trial that failed before producing any reward (e.g. pod never Ready) must be
 # surfaced as an errored trial, not silently dropped from the case total.
@@ -300,8 +331,23 @@ def test_parse_trial_extracts_codex_transcript_metrics(tmp_path):
 
     parsed = R.parse_trial(trial)
     assert parsed["token_usage"] == {
-        "input": 12, "output": 4, "cache_read": 3}
+        "input": 9, "output": 4, "cache_read": 3}
     assert parsed["num_turns"] == 1
+
+
+def test_parse_trial_rejects_malformed_harbor_agent_metrics(tmp_path):
+    trial = _make_trial(tmp_path, "case-malformed__a", 1.0, {})
+    (trial / "result.json").write_text(json.dumps({
+        "agent_result": {
+            "cost_usd": "abc", "n_input_tokens": "many",
+            "n_cache_tokens": False, "n_output_tokens": None,
+        },
+    }))
+
+    parsed = R.parse_trial(trial)
+
+    assert parsed["cost_usd"] is None
+    assert parsed["token_usage"] is None
 
 
 def test_malformed_transcript_values_degrade_to_missing_metrics(tmp_path):

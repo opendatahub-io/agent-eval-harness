@@ -46,6 +46,19 @@ def _parsed_job():
     }
 
 
+def _write_pregenerated_task(tasks_dir, case_id="case-1", *,
+                             judge_mode="full", judges=("rfe_quality",)):
+    task = tasks_dir / case_id
+    (task / "tests").mkdir(parents=True)
+    (task / "task.toml").write_text(
+        '[metadata]\njudge_mode = ' + json.dumps(judge_mode) + '\n')
+    (task / "tests" / "eval.yaml").write_text(yaml.safe_dump({
+        "judges": [{"name": name, "check": "return True"}
+                   for name in judges],
+    }))
+    return task
+
+
 def test_judge_types_inference(tmp_path):
     types = run_mod._judge_types(_config(tmp_path))
     assert types == {"files_exist": "check", "rfe_quality": "llm"}
@@ -92,8 +105,27 @@ def test_copy_case_artifacts_uses_configured_output_path(tmp_path):
         "trials": [{"trial_path": str(trial), "case_id": "case-001"}],
     }, run_dir, config)
 
-    copied = run_dir / "cases" / "case-001" / "artifacts" / "output" / "report.html"
+    copied = run_dir / "cases" / "case-001" / "output" / "report.html"
     assert copied.read_text() == "<h1>report</h1>"
+
+
+def test_copy_case_artifacts_matches_local_collect_layout(tmp_path):
+    trial = tmp_path / "trial"
+    source = trial / "verifier" / "artifacts"
+    source.mkdir(parents=True)
+    (source / "report.html").write_text("report")
+    config = _config(tmp_path)
+    config.outputs = [OutputConfig(path="artifacts")]
+    run_dir = tmp_path / "run"
+
+    run_mod._copy_case_artifacts({
+        "trials": [{"trial_path": str(trial), "case_id": "case-001"}],
+    }, run_dir, config)
+
+    assert (run_dir / "cases" / "case-001" / "artifacts" /
+            "report.html").read_text() == "report"
+    assert not (run_dir / "cases" / "case-001" / "artifacts" /
+                "artifacts").exists()
 
 
 def test_copy_case_artifacts_uses_pipeline_order_not_lexical_order(tmp_path):
@@ -118,7 +150,7 @@ def test_copy_case_artifacts_uses_pipeline_order_not_lexical_order(tmp_path):
     run_mod._copy_case_artifacts({
         "trials": [{"trial_path": str(trial), "case_id": "case-1"}]},
         out, config)
-    assert (out / "cases" / "case-1" / "artifacts" / "output" /
+    assert (out / "cases" / "case-1" / "output" /
             "report.txt").read_text() == "second"
 
 
@@ -130,7 +162,7 @@ def test_copy_case_artifacts_replaces_stale_destination_type(tmp_path):
     source.parent.mkdir(parents=True)
     source.write_text("fresh")
     out = tmp_path / "run"
-    destination = out / "cases" / "case-1" / "artifacts" / "report"
+    destination = out / "cases" / "case-1" / "report"
     destination.mkdir(parents=True)
     (destination / "stale").write_text("old")
 
@@ -236,6 +268,21 @@ def test_resolve_harbor_skill_roots_includes_whole_plugin(tmp_path):
         (plugin / "skills").resolve()]
 
 
+def test_resolve_harbor_skill_roots_honors_plugin_manifest(tmp_path):
+    plugin = tmp_path / "plugin"
+    skill = plugin / "custom-skills" / "parent"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# parent\n")
+    manifest = plugin / ".claude-plugin" / "plugin.json"
+    manifest.parent.mkdir()
+    manifest.write_text(json.dumps({"skills": ["custom-skills"]}))
+    config = _config(tmp_path)
+    config.runner.plugin_dirs = [str(plugin)]
+
+    assert run_mod._resolve_harbor_skill_roots(config) == [
+        (plugin / "custom-skills").resolve()]
+
+
 def test_harbor_agent_env_resolves_references_and_redacts_log(tmp_path, monkeypatch):
     config = _config(tmp_path)
     config.execution.env = {
@@ -281,8 +328,7 @@ def test_harbor_command_keeps_secret_out_of_argv(tmp_path, monkeypatch):
     config_path.write_text(yaml.safe_dump(raw))
     monkeypatch.setenv("TEST_ONLY_TOKEN", "argv-redaction-sentinel")
     tasks_dir = tmp_path / "tasks"
-    (tasks_dir / "case-1").mkdir(parents=True)
-    (tasks_dir / "case-1" / "task.toml").write_text("x")
+    _write_pregenerated_task(tasks_dir)
     captured = {}
 
     class FakeProcess:
@@ -339,8 +385,7 @@ def test_claude_harbor_does_not_resolve_codex_skill_roots(tmp_path, monkeypatch)
         "dataset": {"path": ""},
     }))
     tasks_dir = tmp_path / "tasks"
-    (tasks_dir / "case-1").mkdir(parents=True)
-    (tasks_dir / "case-1" / "task.toml").write_text("x")
+    _write_pregenerated_task(tasks_dir, judges=())
     captured = {}
 
     class FakeProcess:
@@ -368,8 +413,7 @@ def test_mounts_fail_fast_outside_podman(tmp_path):
         "name": "t", "execution": {"skill": "x"},
         "runner": {"type": "claude-code"}, "dataset": {"path": ""}}))
     tasks_dir = tmp_path / "tasks"
-    (tasks_dir / "case-1").mkdir(parents=True)
-    (tasks_dir / "case-1" / "task.toml").write_text("x")
+    _write_pregenerated_task(tasks_dir, judges=())
     with pytest.raises(ValueError, match="supported only by the Podman"):
         run_mod.run_eval_on_harbor(
             config_path, image=None, model="m", output_dir=tmp_path / "out",
@@ -391,6 +435,23 @@ def test_pregenerated_tasks_reject_generation_only_flags(tmp_path):
         run_mod.run_eval_on_harbor(
             config_path, image=None, model="m", output_dir=tmp_path / "out",
             tasks_dir=tasks_dir, jobs_dir=tmp_path / "jobs", cases=["case-1"])
+
+
+def test_pregenerated_deterministic_tasks_rejected_for_full_run(tmp_path):
+    config = _config(tmp_path)
+    tasks = tmp_path / "tasks"
+    _write_pregenerated_task(tasks, judge_mode="deterministic-only", judges=())
+    with pytest.raises(ValueError, match="built with --no-llm-judges"):
+        run_mod._validate_task_package_reuse(tasks, config)
+
+
+def test_legacy_pregenerated_task_missing_thresholded_judge_is_rejected(tmp_path):
+    config = _config(tmp_path)
+    tasks = tmp_path / "tasks"
+    task = _write_pregenerated_task(tasks, judges=())
+    (task / "task.toml").write_text('[metadata]\neval_name = "t"\n')
+    with pytest.raises(ValueError, match="missing thresholded judge.*rfe_quality"):
+        run_mod._validate_task_package_reuse(tasks, config)
 
 
 def test_build_summary_regression_detectable(tmp_path):

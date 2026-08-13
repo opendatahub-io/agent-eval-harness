@@ -678,6 +678,14 @@ def validate_config(path="eval.yaml"):
                 errors.append(f"inputs.tools prompt_file '{prompt_file}' not found")
 
     runner = config.get("runner") or {}
+    runner_type = runner.get("type", "claude-code")
+    if runner_type == "codex" and (config.get("inputs", {}).get("tools") or []):
+        errors.append(
+            "runner.type 'codex' does not support inputs.tools interception")
+    if runner_type == "codex" and runner.get("workspace_mode") == "repo":
+        errors.append(
+            "runner.type 'codex' does not support workspace_mode: repo because "
+            "repository answer-key protections cannot be enforced")
     settings = runner.get("settings")
     if isinstance(settings, str) and settings:
         sp = Path(settings) if Path(settings).is_absolute() else config_dir / settings
@@ -695,6 +703,8 @@ def validate_config(path="eval.yaml"):
     for i, pd in enumerate(plugin_dirs):
         if not isinstance(pd, str) or not pd:
             errors.append(f"runner.plugin_dirs[{i}] must be a non-empty string")
+            continue
+        if runner_type not in {"claude-code", "codex"}:
             continue
         try:
             pp = _resolve_plugin_dir(pd, config_dir, Path.cwd())

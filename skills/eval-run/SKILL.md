@@ -268,7 +268,7 @@ PYTHONPATH="$PLUGIN_ROOT:$(pwd)${PYTHONPATH:+:$PYTHONPATH}" "$VENV_PY" -m agent_
 
 For `runner.type: codex`, `run.py` selects Harbor's Codex agent, passes
 `runner.effort` as `reasoning_effort`, and passes every `runner.plugin_dirs`
-entry's complete `skills/` root. Do not narrow an orchestrator to its primary
+entry's complete manifest-declared skill roots. Do not narrow an orchestrator to its primary
 skill directory; sibling dependencies must remain discoverable. Use `--mount`
 with Podman for large historical datasets instead of copying them into each
 task. Kubernetes requires cluster-visible storage rather than host paths.
@@ -283,6 +283,10 @@ empty, it generates on the fly (needs `--image`). The output is a standard
 `run_result.json` + `summary.yaml` + `report.html` — then continue with **Step 6
 pairwise** (if `--baseline`) and **Step 8 (MLflow)** as normal. See
 `deploy/harbor/README.md` for image build, credentials, and environment setup.
+
+`--no-llm-judges` is a generation-only option. It requires an image and either
+an empty tasks directory or `--regenerate`; generated packages are stamped as
+deterministic-only and cannot later be reused for a full judge run.
 
 ## EvalHub runner (`--runner evalhub`)
 

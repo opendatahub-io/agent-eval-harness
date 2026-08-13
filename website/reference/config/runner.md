@@ -161,9 +161,9 @@ The `cli` runner ignores `settings`.
 
 `claude-code` and `codex`. Claude Code receives one `--plugin-dir` per entry. Codex
 copies each plugin's skills into the case workspace's `.agents/skills` directory for
-the duration of the run. Relative paths are resolved from the project root first,
-then from the config directory; they may not escape the project root. An absolute path
-is treated as an explicit opt-in to a trusted external plugin.
+the duration of the run. Relative paths are always resolved from the project root.
+A lexically external path such as `../shared-skills` is an explicit opt-in like an
+absolute path; a path declared inside the project may not escape through a symlink.
 
 ```yaml
 runner:

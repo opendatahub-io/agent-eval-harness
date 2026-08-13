@@ -510,11 +510,12 @@ def _plugin_config(tmp_path, monkeypatch):
     return project, eval_dir, cfg
 
 
-def test_resolve_plugin_dir_rejects_relative_escape(tmp_path, monkeypatch):
-    project, _, cfg = _plugin_config(tmp_path, monkeypatch)
+def test_resolve_plugin_dir_allows_declared_relative_external_path(
+        tmp_path, monkeypatch):
+    _project, _, cfg = _plugin_config(tmp_path, monkeypatch)
     (tmp_path / "outside-plugin").mkdir()
-    with pytest.raises(ValueError, match="must stay beneath"):
-        resolve_plugin_dir(cfg, "../outside-plugin")
+    assert resolve_plugin_dir(cfg, "../outside-plugin") == (
+        tmp_path / "outside-plugin").resolve()
 
 
 def test_resolve_plugin_dir_rejects_symlink_escape(tmp_path, monkeypatch):
@@ -522,7 +523,7 @@ def test_resolve_plugin_dir_rejects_symlink_escape(tmp_path, monkeypatch):
     outside = tmp_path / "outside-plugin"
     outside.mkdir()
     (project / "plugin-link").symlink_to(outside, target_is_directory=True)
-    with pytest.raises(ValueError, match="must stay beneath"):
+    with pytest.raises(ValueError, match="must not escape"):
         resolve_plugin_dir(cfg, "plugin-link")
 
 
@@ -533,17 +534,36 @@ def test_resolve_plugin_dir_prefers_project_root_candidate(tmp_path, monkeypatch
     assert resolve_plugin_dir(cfg, "plugins") == (project / "plugins").resolve()
 
 
-def test_resolve_plugin_dir_falls_back_to_config_dir(tmp_path, monkeypatch):
-    project, eval_dir, cfg = _plugin_config(tmp_path, monkeypatch)
+def test_resolve_plugin_dir_never_falls_back_to_config_dir(tmp_path, monkeypatch):
+    _project, eval_dir, cfg = _plugin_config(tmp_path, monkeypatch)
     (eval_dir / "plugins").mkdir()
-    assert resolve_plugin_dir(cfg, "plugins") == (eval_dir / "plugins").resolve()
+    with pytest.raises(FileNotFoundError, match="plugin directory not found"):
+        resolve_plugin_dir(cfg, "plugins")
 
 
 def test_resolve_plugin_dir_absolute_is_opt_in_but_must_exist(
         tmp_path, monkeypatch):
-    project, _, cfg = _plugin_config(tmp_path, monkeypatch)
+    _project, _, cfg = _plugin_config(tmp_path, monkeypatch)
     outside = tmp_path / "outside-plugin"
     outside.mkdir()
     assert resolve_plugin_dir(cfg, str(outside)) == outside.resolve()
     with pytest.raises(FileNotFoundError, match="plugin directory not found"):
         resolve_plugin_dir(cfg, str(tmp_path / "missing"))
+
+
+def test_codex_rejects_unenforceable_tool_interception_and_repo_mode(tmp_path):
+    with pytest.raises(ValueError, match="does not support inputs.tools"):
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+runner: {type: codex}
+inputs:
+  tools:
+    - {match: Bash, prompt: mock it}
+"""))
+    with pytest.raises(ValueError, match="answer-key protections"):
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+runner: {type: codex, workspace_mode: repo}
+"""))

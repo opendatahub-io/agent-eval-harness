@@ -1,4 +1,4 @@
-"""Structured event parser for Claude Code stream-json output.
+"""Structured event parser for Claude Code and Codex JSONL output.
 
 Parses JSONL stdout into a flat list of typed event dicts suitable for
 judge consumption via ``outputs["events"]``.
@@ -119,7 +119,107 @@ def parse_stream_events(stdout_text, result_cap=DEFAULT_RESULT_CAP):
             if event:
                 events.append(event)
 
+        elif event_type in {"item.completed", "turn.completed", "turn_completed"}:
+            events.extend(_parse_codex_event(obj, result_cap))
+
     return events
+
+
+def _parse_codex_event(obj, result_cap):
+    """Translate one Codex exec event into the harness's flat event schema."""
+    event_type = obj.get("type")
+    if event_type in {"turn.completed", "turn_completed"}:
+        return [{
+            "type": "result",
+            "cost_usd": None,
+            "num_turns": 1,
+            "timestamp": obj.get("timestamp"),
+        }]
+
+    item = obj.get("item")
+    if not isinstance(item, dict):
+        return []
+    item_type = item.get("type")
+    item_id = str(item.get("id") or "")
+    timestamp = obj.get("timestamp")
+
+    if item_type == "agent_message":
+        text = item.get("text")
+        return [{
+            "type": "assistant",
+            "text": text if isinstance(text, str) else "",
+            "tools": [],
+            "timestamp": timestamp,
+            **({"_msg_id": item_id} if item_id else {}),
+        }]
+
+    if item_type == "reasoning":
+        text = item.get("text")
+        if not isinstance(text, str):
+            text = item.get("summary")
+        return [{
+            "type": "assistant", "text": "", "tools": [],
+            "thinking": text if isinstance(text, str) else "",
+            "timestamp": timestamp,
+        }]
+
+    tool_name = ""
+    tool_input = {}
+    tool_output = ""
+    is_error = False
+    if item_type == "command_execution":
+        tool_name = "Bash"
+        tool_input = {"command": item.get("command", "")}
+        tool_output = item.get("aggregated_output", "")
+        exit_code = item.get("exit_code")
+        is_error = (isinstance(exit_code, int) and not isinstance(exit_code, bool)
+                    and exit_code != 0)
+    elif item_type == "mcp_tool_call":
+        server = item.get("server") or item.get("server_name") or "mcp"
+        name = item.get("tool") or item.get("name") or "tool"
+        tool_name = f"mcp__{server}__{name}"
+        arguments = item.get("arguments", {})
+        tool_input = arguments if isinstance(arguments, dict) else {
+            "arguments": arguments}
+        tool_output = item.get("result") or item.get("error") or ""
+        is_error = bool(item.get("error"))
+    elif item_type == "collab_tool_call":
+        tool_name = str(item.get("tool") or "collaboration")
+        tool_input = {
+            key: item[key] for key in ("prompt", "receiver_thread_ids")
+            if key in item
+        }
+        tool_output = item.get("message") or item.get("status") or ""
+        is_error = item.get("status") == "failed"
+    elif item_type == "web_search":
+        tool_name = "WebSearch"
+        tool_input = {"query": item.get("query", "")}
+        tool_output = item.get("result") or ""
+    elif item_type == "file_change":
+        tool_name = "Edit"
+        tool_input = {"changes": item.get("changes", [])}
+        tool_output = item.get("status") or ""
+        is_error = item.get("status") == "failed"
+    else:
+        return []
+
+    tool_input = _cap_values(tool_input, result_cap)
+    if not isinstance(tool_output, str):
+        tool_output = json.dumps(tool_output, ensure_ascii=False, default=str)
+    truncated = _truncate_string(_sanitize_text(tool_output), result_cap)
+    assistant = {
+        "type": "assistant", "text": "", "timestamp": timestamp,
+        "tools": [{"name": tool_name, "id": item_id, "input": tool_input}],
+    }
+    result = {
+        "type": "tool_result", "tool_use_id": item_id,
+        "tool_name": tool_name, "content": truncated["value"],
+        "is_error": is_error, "timestamp": timestamp,
+    }
+    if truncated.get("truncated"):
+        result["truncated"] = True
+        result["original_length"] = truncated["original_length"]
+    return [assistant, result]
 
 
 def _extract_content_blocks(content_blocks, result_cap):

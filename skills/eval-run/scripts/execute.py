@@ -548,8 +548,24 @@ def _extract_last_assistant_text(stdout, limit=4000):
                 if isinstance(block, dict) and block.get("type") == "text":
                     if (block.get("text") or "").strip():
                         texts.append(block["text"])
+        elif obj.get("type") == "item.completed":
+            item = obj.get("item") or {}
+            if (isinstance(item, dict) and item.get("type") == "agent_message"
+                    and isinstance(item.get("text"), str)
+                    and item["text"].strip()):
+                texts.append(item["text"])
     text = (texts[-1] if texts else ("" if saw_json else stdout)).strip()
     return text[:limit]
+
+
+def _sum_reported_costs(case_results):
+    """Sum measured case costs, preserving unknown when none were reported."""
+    reported = [
+        result["cost_usd"] for result in case_results.values()
+        if isinstance(result.get("cost_usd"), (int, float))
+        and not isinstance(result.get("cost_usd"), bool)
+    ]
+    return sum(reported) if reported else None
 
 
 def _list_step_output_files(case_ws, config):
@@ -1465,7 +1481,7 @@ def _execute_per_case(args, config, runner, runner_cls,
 
     # Aggregate metrics across cases
     total_duration = sum(r["duration_s"] for r in case_results.values())
-    total_cost = sum(r.get("cost_usd") or 0 for r in case_results.values())
+    total_cost = _sum_reported_costs(case_results)
     total_turns = sum(r.get("num_turns") or 0 for r in case_results.values())
     worst_exit = max((r["exit_code"] for r in case_results.values()), default=0)
     # Ensure exit code reflects repo verification failure
@@ -1500,7 +1516,7 @@ def _execute_per_case(args, config, runner, runner_cls,
         "exit_code": worst_exit,
         "duration_s": round(total_duration, 1),
         "wall_clock_s": wall_clock_s,
-        "cost_usd": round(total_cost, 2),
+        "cost_usd": round(total_cost, 2) if total_cost is not None else None,
         "token_usage": agg_tokens or None,
         "num_turns": total_turns or None,
         "per_model_usage": agg_per_model or None,
@@ -1519,7 +1535,8 @@ def _execute_per_case(args, config, runner, runner_cls,
 
     print(f"EXIT: {worst_exit}")
     print(f"DURATION: {wall_clock_s:.0f}s wall-clock, {total_duration:.0f}s total")
-    print(f"COST: ${total_cost:.2f} total")
+    print(f"COST: ${total_cost:.2f} total" if total_cost is not None
+          else "COST: unavailable")
     print(f"CASES: {len(case_results)} "
           f"({sum(1 for r in case_results.values() if r['exit_code'] == 0)} OK, "
           f"{sum(1 for r in case_results.values() if r['exit_code'] != 0)} FAIL)")

@@ -3,6 +3,7 @@
 import json
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -58,6 +59,8 @@ def test_codex_from_config_accepts_effort_settings_and_stdin_prompt(
             }) + "\n", "")
 
     def fake_popen(command, **kwargs):
+        assert (tmp_path / "workspace" / ".agents" / "skills" /
+                "parent" / "SKILL.md").is_file()
         captured["command"] = command
         captured["kwargs"] = kwargs
         return FakeProcess()
@@ -69,12 +72,15 @@ def test_codex_from_config_accepts_effort_settings_and_stdin_prompt(
         "ci:parent", "--flag value", workspace, "gpt-5.6-luna", timeout_s=5)
 
     assert result.exit_code == 0
-    assert result.token_usage == {"input": 12, "output": 3, "cache_read": 4}
+    assert result.token_usage == {"input": 8, "output": 3, "cache_read": 4}
     assert not (workspace / ".agents").exists()  # staged copies are disposable
     assert captured["kwargs"]["stdin"] is subprocess.PIPE
     assert captured["input"] == "Use the parent skill with arguments: --flag value"
     command = captured["command"]
     assert command[:2] == ["codex", "exec"]
+    assert "--ephemeral" in command
+    assert "--skip-git-repo-check" in command
+    assert command[command.index("-C") + 1] == str(workspace.resolve())
     assert ["--sandbox", "workspace-write"] == command[
         command.index("--sandbox"):command.index("--sandbox") + 2]
     assert ["--model", "gpt-5.6-luna"] == command[
@@ -161,7 +167,7 @@ def test_codex_stages_copies_all_sibling_skills_and_cleanup(tmp_path):
     assert not (workspace / ".agents").exists()
 
 
-def test_codex_staging_is_idempotent_and_skips_non_skills(tmp_path):
+def test_codex_staging_refreshes_interrupted_copy_and_skips_non_skills(tmp_path):
     plugin = _plugin(tmp_path, "parent")
     (plugin / "skills" / "README.md").write_text("not a skill")
     (plugin / "skills" / "empty").mkdir()
@@ -170,12 +176,14 @@ def test_codex_staging_is_idempotent_and_skips_non_skills(tmp_path):
     workspace.mkdir()
 
     first = runner._stage_skills(workspace)
+    (plugin / "skills" / "parent" / "SKILL.md").write_text("# refreshed\n")
     second = runner._stage_skills(workspace)
     assert len(first["created"]) == 1
-    assert second["created"] == []
+    assert len(second["created"]) == 1
+    assert (workspace / ".agents" / "skills" / "parent" /
+            "SKILL.md").read_text() == "# refreshed\n"
     assert not (workspace / ".agents" / "skills" / "empty").exists()
     runner._cleanup_staged_skills(workspace, second)
-    runner._cleanup_staged_skills(workspace, first)
 
 
 def test_codex_rejects_dangling_staged_symlink(tmp_path):
@@ -184,7 +192,7 @@ def test_codex_rejects_dangling_staged_symlink(tmp_path):
     staged = workspace / ".agents" / "skills"
     staged.mkdir(parents=True)
     (staged / "parent").symlink_to(tmp_path / "missing", target_is_directory=True)
-    with pytest.raises(ValueError, match="existing symlink"):
+    with pytest.raises(ValueError, match="not owned"):
         runner._stage_skills(workspace)
 
 
@@ -195,6 +203,37 @@ def test_codex_validates_plugin_root_before_execution(tmp_path):
     commands_only.mkdir()
     with pytest.raises(FileNotFoundError, match="skill directory"):
         CodexRunner(plugin_dirs=[str(commands_only)])
+
+
+def test_codex_honors_manifest_declared_skill_roots(tmp_path):
+    plugin = tmp_path / "plugin"
+    skill = plugin / "custom-skills" / "parent"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# parent\n")
+    manifest = plugin / ".claude-plugin" / "plugin.json"
+    manifest.parent.mkdir()
+    manifest.write_text(json.dumps({"skills": "custom-skills"}))
+    runner = CodexRunner(plugin_dirs=[str(plugin)])
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    staged = runner._stage_skills(workspace)
+
+    assert (workspace / ".agents" / "skills" / "parent" /
+            "SKILL.md").is_file()
+    runner._cleanup_staged_skills(workspace, staged)
+
+
+def test_codex_without_plugins_does_not_touch_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runner = CodexRunner()
+
+    manifest = runner._stage_skills(workspace)
+    runner._cleanup_staged_skills(workspace, manifest)
+
+    assert manifest["active"] is False
+    assert not (workspace / ".agents").exists()
 
 
 @requires_git
@@ -286,8 +325,14 @@ def test_toml_value_serializes_mappings_codex_can_parse():
     assert _toml_value(4) == "4"
     assert _toml_value(True) == "true"
     assert _toml_value(["a", 1]) == '["a", 1]'
-    assert _toml_value({"network_access": True, "writable_roots": ["/tmp"]}) \
-        == '{network_access = true, writable_roots = ["/tmp"]}'
+    value = {"network access": True, "nested": {"x-y": ["/tmp"]}}
+    encoded = _toml_value(value)
+    assert tomllib.loads(f"value = {encoded}")["value"] == value
+    assert encoded == '{"network access" = true, "nested" = {"x-y" = ["/tmp"]}}'
+    with pytest.raises(TypeError, match="null"):
+        _toml_value(None)
+    with pytest.raises(TypeError, match="keys must be strings"):
+        _toml_value({1: "bad"})
 
 
 def test_codex_malformed_events_degrade_gracefully():

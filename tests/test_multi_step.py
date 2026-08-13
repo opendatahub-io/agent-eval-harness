@@ -36,6 +36,26 @@ def _result(exit_code=0, target=None, stdout=None):
         per_model_usage={}, per_model_turns={})
 
 
+def test_extract_last_assistant_text_from_codex_jsonl():
+    stdout = "\n".join(json.dumps(event) for event in [
+        {"type": "item.completed", "item": {
+            "id": "1", "type": "agent_message", "text": "first"}},
+        {"type": "item.completed", "item": {
+            "id": "2", "type": "command_execution", "command": "true",
+            "aggregated_output": "", "exit_code": 0}},
+        {"type": "item.completed", "item": {
+            "id": "3", "type": "agent_message", "text": "final output"}},
+    ])
+    assert ex._extract_last_assistant_text(stdout) == "final output"
+
+
+def test_run_cost_aggregate_preserves_unknown_cost():
+    assert ex._sum_reported_costs({
+        "a": {"cost_usd": None}, "b": {"cost_usd": None}}) is None
+    assert ex._sum_reported_costs({
+        "a": {"cost_usd": None}, "b": {"cost_usd": 0.25}}) == 0.25
+
+
 class _FakeRunner:
     """Records calls, writes a per-target file into the shared workspace."""
 
@@ -326,6 +346,9 @@ judges:
                    "tests" / "test.sh").read_text()
         assert '"agent_eval_unjudged": 1' in test_sh
         assert '"reward": 1.0' not in test_sh
+        task = pytest.importorskip("tomllib").loads(
+            (out / "case-1" / "task.toml").read_text())
+        assert task["metadata"]["judge_mode"] == "deterministic-only"
 
     def test_steps_template_ref_errors_for_harbor(self, tmp_path):
         from agent_eval.harbor.tasks import generate_tasks
