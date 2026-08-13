@@ -52,6 +52,8 @@ judges:
       return True, "OK"
 
   - name: output_quality
+    feedback_type: int
+    score_range: [1, 5]     # declare the scale — omitting it warns at config load
     prompt: |
       Score the output 1-5 for completeness, clarity, and accuracy.
 

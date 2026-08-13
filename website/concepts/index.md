@@ -35,7 +35,7 @@ flowchart LR
 - [**Judges & scoring**](judges.md) — The five judge types and the `outputs` record they see.
 - [**Pairwise & sampling**](pairwise-and-sampling.md) — A/B run comparison and statistical judge stability.
 - [**Analysis of variance**](anova.md) — Full-factorial DoE, repeated-measures / mixed-effects ANOVA, and the cost/quality Pareto frontier.
-- [**Regression thresholds**](thresholds.md) — How `min_mean` / `min_pass_rate` / `min_win_rate` gate a run.
+- [**Regression thresholds**](thresholds.md) — How `min_mean` / `min_pass_rate` / `min_win_rate` / `max_error_rate` gate a run.
 - [**The Reward API**](reward-api.md) — Collapsing judges into a single `[0, 1]` scalar for GRPO.
 - [**Tool interception**](tool-interception.md) — The `PreToolUse` hook and 3-tier AskUserQuestion answering.
 - [**Lifecycle hooks**](lifecycle-hooks.md) — `before`/`after` `all`/`each` pipeline hooks (distinct from tool interception).

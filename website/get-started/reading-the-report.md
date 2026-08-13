@@ -81,6 +81,14 @@ those cases; `ERROR` means the judge raised. When a [pairwise
 baseline](../concepts/pairwise-and-sampling.md) is present, a final `pairwise`
 row shows the `W / L / T` record.
 
+!!! note "`SKIP` and `ERROR` read differently here and per case"
+    In the summary the status is decided per **judge**, and `SKIP`/`ERROR` are only
+    reached when the judge produced no aggregate at all — one that errored on two cases
+    out of ten still shows a `mean` over the eight survivors. In the per-case tables
+    below, **every** valueless cell renders `SKIP`; an error is distinguished only by an
+    `ERROR: …` rationale and counts as a skip, not a failure. So a case whose score was
+    rejected as off-scale still reads green, as `(4/4 pass, 1 skip)`.
+
 !!! tip "Sampling stability"
     If you scored with `--samples N`, each row gets a small proportion bar
     (`3/5 · 3×`) showing how many cases gave a stable verdict across samples.
@@ -109,7 +117,8 @@ pairwise winner). Inside:
 
 - **Judge results table** — `Judge`, `Value`, and the full **Rationale**
   (Markdown-rendered) for every judge. Numeric scores are colored against their
-  `score_range`; sampled judges show an ASCII histogram of the spread.
+  `score_range` when the judge declares one (undeclared, the cell stays neutral);
+  sampled judges show an ASCII histogram of the spread.
 - **Human feedback** — from `review.yaml`, if `/eval-review` attached any.
 - **Input** — the case's `input.yaml`.
 - **Output files** — every artifact the skill produced (see rendering below).

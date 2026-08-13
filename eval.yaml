@@ -122,6 +122,8 @@ judges:
   # LLM judge with inline prompt (conditional — skipped when condition is false)
   - name: output_quality
     if: "not annotations.get('skip_quality', False)"  # Skip based on case annotations
+    feedback_type: int
+    score_range: [1, 5]      # declare the scale — omitting it warns at config load
     description: |
       Evaluate the quality of the generated output compared to the
       reference. Score 1-5.

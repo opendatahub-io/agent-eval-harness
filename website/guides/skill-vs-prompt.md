@@ -41,6 +41,8 @@ Both minimal configs below differ in exactly one key.
 
     judges:
       - name: output_quality
+        feedback_type: int
+        score_range: [1, 5]    # declare the scale — omitting it warns at load
         prompt: "Score the output 1-5 for completeness and accuracy."
     ```
 

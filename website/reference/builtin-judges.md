@@ -31,8 +31,12 @@ graph LR
 
 !!! info "Two kinds of judge"
     A `.py` file is a **python** judge — its `judge(outputs, **kwargs)` returns
-    `(passed: bool, rationale: str)`. A `.md` file is an **LLM** judge — a Jinja2 prompt
-    rendered with `outputs` and `arguments`, scored by `models.judge`. See
+    `(value, rationale: str)`, where `value` is a `bool` for a pass/fail judge or a
+    number for a scored one (declare its scale with `score_range`). A `.md` file is an **LLM** judge — a Jinja2 prompt
+    rendered with `outputs` and `arguments`, scored **pass/fail** by `models.judge` —
+    those prompts state their own verdict contract, so declaring a `score_range` or a
+    non-`bool` `feedback_type` on one is rejected at config load. Python builtins are
+    unaffected: they may be numeric and take a `score_range`. See
     [judge types](config/judges.md).
 
 ## How to reference one
@@ -41,8 +45,9 @@ Every builtin is registered under its **bare file stem** (e.g. `cost_budget`). S
 globally unique across categories — the registry raises a collision error at load if two
 files share a stem — so the bare name is all you normally need.
 
-You may optionally **category-qualify** the name (`category/stem`) for readability. If the
-category prefix doesn't match where the judge actually lives, config load fails.
+You may optionally **category-qualify** the name (`category/stem`) for readability. Any
+name that doesn't resolve — a typo, or a category prefix that doesn't match where the
+judge actually lives — fails at config load, listing every available `category/name`.
 
 === "Bare stem"
 

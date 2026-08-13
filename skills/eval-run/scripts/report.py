@@ -20,6 +20,7 @@ import base64
 import difflib
 import hashlib
 import json
+import math
 import os
 import platform
 import subprocess
@@ -2003,15 +2004,32 @@ def _ascii_hist(items, lo_label, hi_label, mark_key):
 def _ascii_score_hist(med, values, smin=None, smax=None):
     """`_ascii_hist` over the numeric score scale, marking the median level."""
     from collections import Counter
-    numeric = [int(v) for v in values if isinstance(v, (int, float))]
-    if not numeric:
+    # Keep the fractional part until after the axis is sized. Truncating first
+    # turned an off-scale 2.9 on a [0, 2] judge into an in-range 2, so the
+    # reading this widening exists to expose was the one it hid.
+    raw = [float(v) for v in values if isinstance(v, (int, float))]
+    if not raw:
         return ""
-    lo = smin if smin is not None else min(numeric)
-    hi = smax if smax is not None else max(numeric)
+    lo = smin if smin is not None else min(raw)
+    hi = smax if smax is not None else max(raw)
+    # Bins are whole numbers, so a fractional declared bound has to widen to
+    # the enclosing integers: ceil keeps a [0, 2.5] judge's top bin, where
+    # truncating to 2 would drop every reading above it off the chart.
+    lo, hi = math.floor(lo), math.ceil(hi)
+    # Widen to cover values off the declared scale: `range(lo, hi + 1)` below
+    # would otherwise drop them, hiding the very readings worth seeing.
+    lo, hi = min(lo, math.floor(min(raw))), max(hi, math.ceil(max(raw)))
     if hi - lo > _MAX_HIST_BINS:   # pathological declared range -> use observed span
-        lo, hi = min(numeric), max(numeric)
-    counts = Counter(numeric)
-    med = max(lo, min(hi, int(med)))
+        lo, hi = math.floor(min(raw)), math.ceil(max(raw))
+        # Still unbounded if the observations themselves are: cap the axis so a
+        # single wild reading cannot build one cell per integer up to it.
+        hi = min(hi, lo + _MAX_HIST_BINS)
+    # A fractional reading bins to the integer at or above it, so an off-scale
+    # 2.9 lands in the 3 bin rather than masquerading as a 2.
+    counts = Counter(math.ceil(v) for v in raw)
+    # Bin the marker the same way the counts are binned, or it lands on an
+    # empty cell for any fractional median.
+    med = max(lo, min(hi, math.ceil(med)))
     items = [(s, counts.get(s, 0)) for s in range(lo, hi + 1)]
     return _ascii_hist(items, str(lo), str(hi), med)
 
@@ -2027,13 +2045,17 @@ _MAX_HIST_BINS = 40  # safety cap: fall back to observed span for pathological r
 
 
 def _judge_score_ranges(config):
-    """Map judge name -> validated integer (lo, hi) from its `score_range`.
+    """Map judge name -> validated (lo, hi) from its `score_range`.
 
     report.py reads eval.yaml as raw dicts (bypassing EvalConfig validation),
-    so guard here: keep only well-formed ranges (exactly two int-coercible,
+    so guard here: keep only well-formed ranges (exactly two float-coercible,
     strictly increasing endpoints). Malformed ranges (non-numeric, reversed,
     wrong length) are dropped so downstream histograms/coloring fall back to a
     safe default instead of raising on range()/arithmetic.
+
+    Bounds keep their fractional part — `int()` here turned a `[0, 2.5]` scale
+    into `[0, 2]` and banded a legitimate 2.4 as off-scale. Only the histogram
+    needs whole numbers, and it derives its own bins.
     """
     ranges = {}
     for j in config.get("judges", []):
@@ -2042,7 +2064,7 @@ def _judge_score_ranges(config):
         if not isinstance(sr, list) or len(sr) != 2:
             continue
         try:
-            lo, hi = int(sr[0]), int(sr[1])
+            lo, hi = float(sr[0]), float(sr[1])
         except (TypeError, ValueError):
             continue
         if lo < hi:
@@ -2201,7 +2223,8 @@ def _render_reward_overview(summary, config, reward_cfg=None):
         if _compose_reward is not None:
             try:
                 reward_val, metrics = _compose_reward(
-                    case_results, reward_cfg=reward_cfg)
+                    case_results, reward_cfg=reward_cfg,
+                    judge_ranges=judge_score_range)
                 # compose_reward returns 1.0 when all judges are None/skipped;
                 # treat as unscored instead of inflating the average.
                 if not metrics:
@@ -2239,7 +2262,12 @@ def _score_band_class(val, lo, hi):
     scale — NOT against the aggregate `min_mean` threshold, which is a floor on
     the mean ACROSS cases and mis-flags valid per-case scores (e.g. a 1 on a
     0-2 judge with min_mean 1.5 would render red even though the judge passes).
+
+    A value OFF the scale is invalid, not excellent: without the guard below a
+    stray 4 from a 0-2 judge scores frac 2.0 and renders as a green pass.
     """
+    if val < lo or val > hi:
+        return "fail"
     span = hi - lo
     frac = (val - lo) / span if span else 0.5
     if frac >= 0.75:

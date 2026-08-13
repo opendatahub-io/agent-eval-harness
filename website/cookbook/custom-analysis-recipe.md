@@ -121,6 +121,8 @@ judges:
       preloaded_files: [CLAUDE.md, AGENTS.md]
 
   - name: navigation_success         # semantic: did it navigate vs. answer from memory?
+    feedback_type: int
+    score_range: [1, 5]              # declare the scale — omitting it warns at load
     prompt: |
       Expected files: {{ annotations.expected_files }}
       Did the agent find and read the correct docs?

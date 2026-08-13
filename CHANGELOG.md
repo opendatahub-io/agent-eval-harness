@@ -1,3 +1,26 @@
+## [1.37.4](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.37.3...v1.37.4) (2026-08-13)
+
+
+### Bug Fixes
+
+* **config:** validate judge score scales at load ([1e9c4bd](https://github.com/opendatahub-io/agent-eval-harness/commit/1e9c4bd724f9cd14b0b1b898a9a9d820ae37e296)), closes [#182](https://github.com/opendatahub-io/agent-eval-harness/issues/182)
+* **config:** warn the judge that actually runs unbounded ([0e58c2b](https://github.com/opendatahub-io/agent-eval-harness/commit/0e58c2b63f1f9d42fc9f2d6bc04b45d50306b4f8))
+* **eval-analyze:** stop the validator rejecting score_range ([b67c53f](https://github.com/opendatahub-io/agent-eval-harness/commit/b67c53fc88eb63f3fdaac3bc7d0f7ac5beefaea0))
+* **judges:** close the gaps an adversarial pass found in this series ([feb1db7](https://github.com/opendatahub-io/agent-eval-harness/commit/feb1db79fcc27e96c4e990162d919987375c6a2f))
+* **judges:** honor score_range in LLM judge prompt, schema, and scoring ([baffec3](https://github.com/opendatahub-io/agent-eval-harness/commit/baffec39d8002fad06c25165361f5fd8a79e5b43)), closes [#182](https://github.com/opendatahub-io/agent-eval-harness/issues/182)
+* **judges:** keep the sign when the scale goes below zero ([66f587b](https://github.com/opendatahub-io/agent-eval-harness/commit/66f587bcd9a03d2465445928ed3d8f6ad563430d))
+* **judges:** read integer-ness off the declared bounds ([326c62f](https://github.com/opendatahub-io/agent-eval-harness/commit/326c62fba8cd5a2aaf118e87cbf2946491872e6d))
+* **judges:** reject a non-finite judge value ([add4b12](https://github.com/opendatahub-io/agent-eval-harness/commit/add4b12969dbe57a37c03c8d0e89c2e16e1f3ae0))
+* **judges:** round an agent verdict on the scale its contract states ([b9996a4](https://github.com/opendatahub-io/agent-eval-harness/commit/b9996a40e21a62b6ef3f81668cb5fbdbc7b6674d))
+* **judges:** tell the MLflow fallback judge its scale ([61394b2](https://github.com/opendatahub-io/agent-eval-harness/commit/61394b208d390af17661da2328dd397049cbedda))
+* **judges:** validate the score range without rewriting the value ([0e8e6c8](https://github.com/opendatahub-io/agent-eval-harness/commit/0e8e6c815e6c6ac64f547b0ce001ee33a3435d09))
+* **report:** keep the fractional part of a declared score_range ([3e3e52b](https://github.com/opendatahub-io/agent-eval-harness/commit/3e3e52b2310a45a5ddb10b9da7d4c8e9571cc092)), closes [#182](https://github.com/opendatahub-io/agent-eval-harness/issues/182)
+* **report:** pass judge_ranges through the reward overview ([e3aaceb](https://github.com/opendatahub-io/agent-eval-harness/commit/e3aaceb674c6334b03c728f5bd2dd83f08c42eef))
+* **report:** size the histogram axis before truncating to bins ([4b6743c](https://github.com/opendatahub-io/agent-eval-harness/commit/4b6743ca4ff89b29ec0c05b87afeaa9befb47773))
+* **reward:** an unscored trial is not a perfect trial ([37f3a29](https://github.com/opendatahub-io/agent-eval-harness/commit/37f3a293befc88c7973c440948dc5e3ab6fbe5ee))
+* **score:** keep max_error_rate working on a persisted summary ([cd8b40d](https://github.com/opendatahub-io/agent-eval-harness/commit/cd8b40dca84d25130fc74f145b8bbb0f1b0c2532))
+* **score:** name the real cause of an unavailable metric, and gate coverage ([3585140](https://github.com/opendatahub-io/agent-eval-harness/commit/35851406168893009821cbe11fb6ea37900ae996))
+
 ## [1.37.3](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.37.2...v1.37.3) (2026-08-12)
 
 

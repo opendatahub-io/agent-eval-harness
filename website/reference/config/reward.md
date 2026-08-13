@@ -112,7 +112,7 @@ flowchart TD
 | `normalize` | bool | `false` | single-judge | `false` clamps the judge value to `[0, 1]` as-is; `true` maps it from `score_range`. |
 | `formula` | string | `"weighted"` | formula | `"weighted"` or a Python expression over judge names. |
 | `weights` | map | `{}` | formula (`weighted`) | Per-judge weights (numeric, non-negative). |
-| `score_range` | `[min, max]` | `[1, 5]` | both | Range used to normalize numeric judge values to `[0, 1]`. Must be increasing. |
+| `score_range` | `[min, max]` | `[1, 5]` | both | Range used to normalize numeric judge values to `[0, 1]`. Must be increasing. It overrides the judges' own [`score_range`](judges.md): every judge normalized on this path uses this one range (those in `raw` are not normalized at all). |
 | `raw` | list | `[]` | formula | Judges whose values are already in `[0, 1]`; clamped, not normalized. |
 | `gate` | bool | `true` formula / `false` single-judge | both | When `true`, any boolean judge that returned `false` zeros the reward. |
 
@@ -153,8 +153,12 @@ case at run time.
 With no `reward` block, the harness falls back to a built-in composition:
 
 - any boolean judge returning `false` gates the reward to `0.0`;
-- otherwise numeric judges are normalized (from `[1, 5]`) and averaged;
-- if no numeric judges scored and the gate passed, the reward is `1.0`.
+- otherwise each numeric judge is normalized over its **own** declared `score_range` —
+  falling back to `[1, 5]` only when it declares none — and the normalized values are averaged;
+- if nothing scored because every scoring judge **errored** (e.g. values rejected as
+  off-scale), the reward is `0.0`;
+- if the gate passed and nothing was normalized — no numeric judges, or every one of
+  them skipped by its `if:` condition — the reward is `1.0`.
 
 ## See also
 

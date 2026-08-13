@@ -60,7 +60,13 @@ the default composition is:
 - **Numeric judges are normalized** from their `score_range` `[lo, hi]` via
   `(v − lo) / (hi − lo)`, clamped to `[0, 1]` (default range `[1, 5]`), then
   averaged.
-- **Non-gate booleans** act as a pass-fraction multiplier.
+- **There is no "non-gate" boolean.** The default path has no pass-fraction
+  multiplier: a `true` contributes nothing to the average, a `false` zeros the
+  composite. (`agent_eval/anova/composite.py::composite_score` does apply such a
+  modifier, but nothing on this path calls it.)
+- **A case where nothing scored because a judge errored** — including a value
+  rejected by its `score_range` — composites to `0.0`, not `1.0`, which moves
+  the cell means ANOVA runs on.
 
 !!! note "A `bool` is an `int` in Python"
     Booleans are a subclass of `int`, so the code deliberately excludes them from

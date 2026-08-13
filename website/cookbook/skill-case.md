@@ -79,6 +79,8 @@ judges:
 
   - name: output_quality
     description: Quality of the output versus the reference.
+    feedback_type: int
+    score_range: [1, 5]     # declare the scale — omitting it warns at config load
     prompt: |
       Compare the generated output against the reference.
 
@@ -186,6 +188,7 @@ judge name exactly.
 | boolean (`check`, most `builtin`) | `min_pass_rate` | Minimum fraction of cases passing (0.0–1.0) |
 | numeric (`llm`) | `min_mean` | Minimum average score across cases |
 | pairwise | `min_win_rate` | Minimum win rate versus a baseline |
+| any kind | `max_error_rate` | **Maximum** fraction of cases the judge may error on (opt-in coverage gate) |
 
 ## 5. Run it
 

@@ -135,14 +135,16 @@ then every judge grouped into three colour-coded bands:
 | Band | Judges | Cell values |
 | --- | --- | --- |
 | **Gate Judges** | inline `check` judges | binary `PASS` / `FAIL` |
-| **LLM Judges** | `prompt`/`prompt_file` and LLM builtins | scored, coloured by position in `score_range` |
-| **Other** | Python builtins, external `module` judges | scores (default `0–1`) |
+| **LLM Judges** | `prompt`/`prompt_file`, `agent`, and LLM builtins | `PASS` / `FAIL` for a boolean judge; a numeric one is coloured by position in `score_range` when it declares one |
+| **Other** | Python builtins, external `module` judges | `PASS` / `FAIL` for a boolean judge; a numeric one is uncoloured unless it declares a `score_range`, banded on that scale when it does |
 
 The **Reward** value is computed with the same `compose_reward` logic the
 harness trains on, so the number shown matches your configured
 [`reward:`](../concepts/reward-api.md) section (single-judge / weighted /
 formula). Numeric cells are green/amber/red by where the score falls in the
-judge's `score_range`; a bottom **Average** row summarises scored cases.
+judge's declared `score_range` — a value *off* that scale bands red rather than
+scoring past the top of it — and a bottom **Average** row summarises scored
+cases.
 
 !!! note "Only rendered with a reward config"
     The Per-Case Reward Overview is **omitted entirely** unless the config sets a
@@ -160,9 +162,10 @@ visualises how much the verdict wobbled.
   `stable / total` cases and the sample count (e.g. `4/5 · 3×`). Green = cases
   that agreed across all samples, amber = cases that flipped.
 - **Per-Case Details** — a monospace ASCII histogram of the sampled values on
-  the judge's scale (`1…5` for numeric, `F…P` for boolean, `A…B` for pairwise),
-  with the median/winning bucket highlighted. A perfectly stable judge shows a
-  single bar. Hover to see the raw samples.
+  the judge's scale (its declared `score_range` — widened to show any off-scale
+  sample, or the observed span when no range is declared — `F…P` for boolean,
+  `A…B` for pairwise), with the median/winning bucket highlighted. A perfectly
+  stable judge shows a single bar. Hover to see the raw samples.
 
 ## Markdown rendering
 

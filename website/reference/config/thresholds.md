@@ -1,8 +1,8 @@
 # thresholds
 
 `thresholds` turns judge scores into a **pass/fail gate**. Each entry maps a
-[judge](judges.md) name to one or more minimum-metric checks; if a run falls
-below any of them, scoring exits non-zero — the hook you want for CI.
+[judge](judges.md) name to one or more metric checks; if a run misses any of
+them, scoring exits non-zero — the hook you want for CI.
 
 ```yaml
 thresholds:
@@ -10,6 +10,7 @@ thresholds:
     min_mean: 3.5            # numeric judge — average score across cases
   has_content:
     min_pass_rate: 1.0       # boolean judge — fraction of cases passing (0.0–1.0)
+    max_error_rate: 0.2      # optional — fail if >20% of cases errored
   # pairwise:
   #   min_win_rate: 0.6      # pairwise judge — fraction of cases won vs baseline
 ```
@@ -17,16 +18,25 @@ thresholds:
 The block is a plain mapping (`dict`, default empty). When it is empty or
 omitted, no gate runs and scoring always succeeds.
 
-## The three keys
+## The four keys
 
 | Key | Applies to | Metric compared | Passes when |
 | --- | --- | --- | --- |
 | `min_mean` | numeric (score) judges | mean score across cases | `mean >= min_mean` |
 | `min_pass_rate` | boolean judges | fraction of cases returning `True` | `pass_rate >= min_pass_rate` |
 | `min_win_rate` | the `pairwise` judge | fraction of cases won vs the `--baseline` run | `win_rate >= min_win_rate` |
+| `max_error_rate` | any judge | fraction of cases where the judge errored | `error_rate <= max_error_rate` |
 
-You may set more than one key per judge; each is checked independently. Values
-are compared with `<`, so a metric exactly equal to the threshold **passes**.
+`max_error_rate` is the coverage gate. The other three are computed over the
+cases that produced a value, so a judge that errors on most of the dataset
+still reports a `mean` over the survivors and passes `min_mean`. Declare
+`max_error_rate` to say how much of the dataset actually has to be scored. It
+is off unless declared — one flaky judge run should not fail a suite by
+default.
+
+You may set more than one key per judge; each is checked independently. The
+three `min_*` keys are compared with `<` and `max_error_rate` with `>`, so a
+metric exactly equal to its threshold **passes** either way.
 
 ## Match the key to the judge's value type
 
@@ -52,7 +62,11 @@ When a threshold key is configured but the metric it targets is unavailable
 missing metric almost always means a misconfiguration or a run that produced no
 data:
 
-- the judge was **skipped for every case** (e.g. an `if:` condition never fired), or
+- the judge was **skipped for every case** (e.g. an `if:` condition never fired),
+- the judge **errored on every case** — every value rejected by its
+  [`score_range`](judges.md), say, since an off-scale value is recorded as an error
+  sample and never aggregated (the detail names it: *"…judge errored on N cases; see
+  the per-case rationales"*), or
 - the threshold **targets the wrong judge type** — `min_pass_rate` on a numeric
   judge, or `min_win_rate` without a pairwise comparison.
 

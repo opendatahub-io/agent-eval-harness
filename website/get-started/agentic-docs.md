@@ -153,6 +153,8 @@ judges:
     if: "annotations.get('category') == 'navigation'"
 
   - name: navigation_success
+    feedback_type: int
+    score_range: [1, 5]           # declare the scale — omitting it warns at config load
     prompt: |
       Expected files: {{ annotations.expected_files }}
       Did the agent find and read the correct docs, or answer from memory?

@@ -24,7 +24,7 @@ flowchart TD
 | --- | --- | --- | --- |
 | `builtin` | Library judge | Deterministic Python | `(bool\|number, str)` |
 | `check` | Inline Python | Deterministic | `(bool\|number, str)` |
-| `prompt` / `prompt_file` / `llm_rubric` | LLM judge | An API call to `models.judge` | pass/fail or a 1–5 score |
+| `prompt` / `prompt_file` / `llm_rubric` | LLM judge | An API call to `models.judge` | pass/fail, or a score on the judge's `score_range` (`1–5` when undeclared) |
 | the above **+ `agent`** | Agent judge | A tool-using agent run via the runner | pass/fail or a numeric score |
 | `module` + `function` | External code | Your imported callable | `(bool\|number, str)` |
 
@@ -129,6 +129,15 @@ judges:
     [`cost_budget`](https://github.com/opendatahub-io/agent-eval-harness/blob/main/agent_eval/judges/efficiency/cost_budget.py)
     is a minimal example of the same signature.
 
+!!! warning "A declared `score_range` is enforced on these judges too"
+    `score_range` is not just report colouring. A `builtin`, `check`, or `module` judge
+    whose returned number falls outside its declared range — or is non-finite — is
+    recorded as an **error sample** (`value: null` plus an `error`, and a `WARNING` line
+    on stderr) and left out of the judge's mean. The value is never rounded or clamped:
+    rounding only happens where a *model's* answer is parsed. So declare
+    `score_range: [0, 8]` only if the judge genuinely cannot return 9; leave the range
+    off for an unbounded count and the judge keeps emitting whatever it computes.
+
 ## LLM judges
 
 For qualitative criteria, hand the case to a model. Choose one of three fields — they
@@ -142,6 +151,7 @@ all compile to the same Jinja2 template, then render against the case record:
     ```yaml
     judges:
       - name: cited_sources
+        feedback_type: bool     # one yes/no criterion — no scale to declare
         llm_rubric: "The agent cited relevant documentation sources."
     ```
 
@@ -153,6 +163,7 @@ all compile to the same Jinja2 template, then render against the case record:
     judges:
       - name: output_quality
         description: Compare the output to the reference.
+        score_range: [1, 5]     # declare the scale — omitting it warns at config load
         prompt: |
           Compare the generated output against the reference for
           completeness, clarity, and accuracy.
@@ -171,6 +182,7 @@ all compile to the same Jinja2 template, then render against the case record:
     ```yaml
     judges:
       - name: detailed_quality
+        score_range: [1, 5]
         prompt_file: eval/prompts/quality-judge.md
         context:
           - eval/prompts/scoring-rubric.md
@@ -193,10 +205,25 @@ The prompt is rendered with these variables:
 | `{{ arguments }}` | This judge's `arguments` dict |
 
 !!! tip "Score scale vs. pass/fail"
-    By default an LLM judge returns an integer **1–5 score** (aggregated as a mean). Set
+    With no `score_range` an LLM judge returns an integer score on the unenforced **1–5**
+    default (aggregated as a mean) and warns at config load — declare the scale. Set
     `feedback_type: bool` to make it a **pass/fail** judge (aggregated as a pass rate).
     `{{ tool_trace }}`, `{{ evidence }}`, and `{{ reasoning }}` need `traces.events: true`;
     `{{ conversation }}` falls back to `stdout.log` when no events were captured.
+
+!!! tip "Grading on a scale other than 1–5"
+    Declare it: `score_range: [0, 2]`. The range is stated in the judge's system prompt,
+    set as `minimum`/`maximum` on the `submit_score` tool schema, and used to normalize the
+    judge in the default reward composition. Because a tool schema is *advisory* — the model
+    is not constrained by `minimum`/`maximum` — a returned value off the scale is recorded
+    as an **error sample** and left out of the judge's mean rather than clamped onto the
+    scale, where a 4 from a 0-2 judge would land as a perfect 2. With `samples: 3` the case
+    still reduces over the surviving samples, so one bad sample costs a stability flag. Keep
+    stating the scale in the rubric text as well; a prompt that says "score 0, 1, or 2" and
+    a config that says nothing is the combination that produced silently out-of-range scores
+    ([#182](https://github.com/opendatahub-io/agent-eval-harness/issues/182)).
+    An LLM judge's answer is rounded to an integer unless the scale says otherwise — declare
+    `feedback_type: float`, or fractional bounds such as `[0, 2.5]`, for a continuous scale.
 
 LLM judges — including the agent judges below — are the only types that can be
 **sampled**. Set `samples: 3` to call the model several times per case and reduce the
@@ -297,10 +324,13 @@ expression is evaluated against `annotations` and `outputs`; when it's false the
 judges:
   - name: dedup_correct
     if: "annotations.get('is_duplicate', False)"   # only duplicate cases
+    feedback_type: bool
     prompt: "Did the agent correctly flag the input as a duplicate?"
 
   - name: output_quality
     if: "not annotations.get('skip_quality', False)"
+    feedback_type: int
+    score_range: [1, 5]
     prompt: "Score the output 1-5 for completeness, clarity, and accuracy."
 ```
 

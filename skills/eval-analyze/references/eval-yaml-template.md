@@ -329,11 +329,22 @@ judges:
       {{ outputs }}
       {{ conversation }}
       <scoring criteria — define what each score level means>
-    # score_range: [1, 5]             # optional; default LLM assumption is [1, 5].
-    #                                 # Set explicitly for rubrics on a different
-    #                                 # scale (e.g. [1, 10], [0, 100]). The report
-    #                                 # uses it for per-cell color bands; reward
-    #                                 # composition still uses reward.score_range.
+    score_range: [1, 5]             # DECLARE on every numeric judge — omitting it
+                                    # warns at config load. Use the rubric's own
+                                    # scale (e.g. [0, 2], [1, 10], [0, 100]) — a
+                                    # DECLARED range is stated in the judge's
+                                    # prompt and tool schema, colors the report's
+                                    # per-cell bands, normalizes the judge in the
+                                    # default reward composition, and is enforced
+                                    # (an off-scale value becomes an error sample).
+                                    # The configured `reward:` section still
+                                    # normalizes through reward.score_range.
+    # feedback_type: float          # feedback_type is never inferred: int-vs-float
+    #                               # is read off the bounds, so [0, 1] alone means
+    #                               # an integer 0/1 judge and a continuous scale
+    #                               # needs feedback_type: float (never with bool,
+    #                               # never fractional with int — both rejected at
+    #                               # load).
     # arguments:                      # optional, available as {{ arguments }} in prompt
     #   focus: completeness
     # context:                        # optional supplementary files
@@ -367,6 +378,8 @@ thresholds:
   <judge_name>:
     min_pass_rate: 1.0     # for boolean judges (check, builtin)
     # min_mean: 3.5        # for numeric judges (llm)
+    # max_error_rate: 0.2  # optional coverage gate: fail if >20% of cases errored.
+    #                      # min_mean is computed over the survivors only.
 
 # Reward composition (OPTIONAL) — collapse per-judge results into a single
 # scalar in [0, 1] for RL training (GRPO). Only needed when training; the
@@ -562,6 +575,7 @@ All template variables can be used in the same prompt. Without any template vari
 Example with file artifacts:
 ```yaml
   - name: output_quality
+    score_range: [1, 5]
     prompt: |
       Review the following outputs:
 
@@ -574,6 +588,7 @@ Example with file artifacts:
 Example for conversation-only skills:
 ```yaml
   - name: response_quality
+    score_range: [1, 5]
     prompt: |
       Evaluate this skill's response:
 
@@ -586,6 +601,7 @@ Example for conversation-only skills:
 Example with both file artifacts and conversation output:
 ```yaml
   - name: comprehensive_quality
+    score_range: [1, 5]
     prompt: |
       The skill produced these file artifacts:
 
@@ -602,6 +618,7 @@ Example with both file artifacts and conversation output:
 Example grounded in verifiable evidence (use `{{ evidence }}` when the rubric depends on what the agent actually *did*, not what it *said*):
 ```yaml
   - name: followed_workflow
+    score_range: [1, 5]
     prompt: |
       The task was to update `docs/api.md` after reading the current source
       and running the linter.
@@ -636,7 +653,7 @@ Score 4: Good coverage, well-structured, minor issues only
 Score 5: Comprehensive, accurate, well-written
 ```
 
-**Declare the scale when it isn't `[1, 5]`.** LLM judges default to `[1, 5]`, other numeric judges to `[0, 1]`. For a rubric on any other range (e.g. `[1, 10]`, `[0, 100]`), set `score_range: [lo, hi]` on the judge itself — the report uses it to color the per-cell bands proportionally instead of against the default. If you're also composing a reward from these judges, set `reward.score_range` to match (that field governs weighted/formula normalization independently). For `[0, 1]` judges that should NOT be re-normalized by the reward composition (e.g. a builtin like `efficiency/cost_budget`), list them in `reward.raw`.
+**Declare the scale on every numeric judge, including a plain `[1, 5]` one.** A numeric LLM or agent judge that omits `score_range` is merely *told* `[1, 5]`, nothing checks its answer, and it warns at config load. There is no `[0, 1]` default for other numeric judges either: undeclared means no report coloring and `[1, 5]` normalization in the default reward composition. Set `score_range: [lo, hi]` on the judge itself (e.g. `[0, 2]`, `[1, 10]`, `[0, 100]`) — a declared range is stated in the LLM judge's system prompt and `submit_score` schema, enforced on the returned value of *any* judge type, inline `check` included (off-scale → error sample, dropped from the mean, never clamped), used to color the report's per-cell bands, and used to normalize the judge in the *default* reward composition. If you're also composing a reward from these judges, set `reward.score_range` to match — a configured `reward:` section normalizes through that field and ignores the per-judge ranges. For `[0, 1]` judges that should NOT be re-normalized by the reward composition (e.g. a builtin like `efficiency/cost_budget`), list them in `reward.raw`.
 
 **How many judges**: aim for 2-4 inline checks + 1-2 LLM judges. Start lean — you can always add more in later iterations. Every judge needs a `description` field explaining what it checks.
 

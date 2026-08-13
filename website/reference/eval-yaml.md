@@ -158,6 +158,7 @@ one `judge`.
           <span class="sd-f">min_mean</span>
           <span class="sd-f">min_pass_rate</span>
           <span class="sd-f">min_win_rate</span>
+          <span class="sd-f">max_error_rate</span>
         </div>
       </div>
       <div class="sd-card">
@@ -250,6 +251,7 @@ See [the execution model](../concepts/execution-model.md) for the difference.
     judges:
       - name: output_quality
         prompt: "Score the output 1-5 for completeness and accuracy."
+        score_range: [1, 5]   # declare the scale — omitting it warns at config load
     ```
 
 === "Prompt mode"
@@ -330,6 +332,7 @@ judges:
 
   - name: output_quality
     prompt: "Score 1-5 vs the reference for completeness, clarity, accuracy."
+    score_range: [1, 5]     # declare the scale — omitting it warns at config load
 
 thresholds:
   has_content: { min_pass_rate: 1.0 }
@@ -361,7 +364,7 @@ thresholds:
 - [**traces**](config/traces.md) — stdout, stderr, events, metrics
 - [**hooks**](config/hooks.md) — before/after all/each, before_scoring
 - [**judges**](config/judges.md) — the five judge types and all fields
-- [**thresholds**](config/thresholds.md) — min_mean, min_pass_rate, min_win_rate
+- [**thresholds**](config/thresholds.md) — min_mean, min_pass_rate, min_win_rate, max_error_rate
 - [**reward**](config/reward.md) — single-judge and formula reward modes
 
 </div>

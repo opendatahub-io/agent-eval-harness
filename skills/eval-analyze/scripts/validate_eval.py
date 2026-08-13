@@ -513,10 +513,13 @@ def validate_config(path="eval.yaml"):
                 errors.append(f"outputs[{i}].path must not traverse parent: {out_path}")
 
     # Valid judge fields — keep in sync with JudgeConfig / EvalConfig.from_yaml.
+    # `if` is the YAML spelling of JudgeConfig.condition; the rest are field
+    # names verbatim. A test below pins this set against the dataclass so a new
+    # field cannot be added without landing here too.
     valid_judge_fields = {
         "name", "description", "builtin", "check", "prompt", "prompt_file",
         "module", "function", "arguments", "context", "model", "if", "llm_rubric",
-        "feedback_type", "samples",
+        "feedback_type", "samples", "score_range", "step", "agent",
     }
 
     for j in judges:
@@ -527,7 +530,7 @@ def validate_config(path="eval.yaml"):
         if unknown_fields:
             errors.append(
                 f"judges.{name} has unknown field(s): {', '.join(sorted(unknown_fields))}. "
-                f"Valid fields: builtin, check, prompt, prompt_file, module+function, llm_rubric"
+                f"Valid fields: {', '.join(sorted(valid_judge_fields))}"
             )
 
         # Check that exactly one implementation type is specified

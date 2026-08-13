@@ -30,7 +30,8 @@ $AGENT_EVAL_RUNS_DIR/<run-id>/
 ├── collection.json     # per-case artifact counts
 ├── events.json         # parsed event stream (batch mode; if traces.events)
 ├── report.html         # scored HTML report
-├── summary.yaml        # judge results (per_case + aggregated)
+├── summary.yaml        # judge results: judges (mean, pass_rate, scored_cases,
+│                       #   errored_cases, stability) + per_case + run_metrics
 └── cases/
     └── <case-id>/
         ├── artifacts/          # files collected from outputs[].path

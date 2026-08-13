@@ -164,17 +164,29 @@ class TestVerdictParsing:
         assert isinstance(val, int)
         assert rat == "all claims verified"
 
-    def test_numeric_float_preserved_without_int_type(self):
-        judge = _agent_judge(score_range=[0, 5])
-        (val, rat), _ = self._run(judge, {"score": 3.5, "rationale": "ok"})
+    def test_numeric_float_preserved_on_a_fractional_scale(self):
+        """A float survives without an explicit `feedback_type: float` — but
+        the scale has to be continuous. On a whole-numbered scale the agent is
+        told "integer", so a fractional answer is rounded to it (below), the
+        same as the LLM path does for the identical judge config."""
+        judge = _agent_judge(score_range=[0, 5.5])
+        (val, _rat), _ = self._run(judge, {"score": 3.5, "rationale": "ok"})
         assert val == 3.5
 
-    def test_score_range_clamps(self):
+    def test_a_whole_scale_rounds_the_agent_verdict(self):
+        judge = _agent_judge(score_range=[0, 5])
+        (val, _rat), _ = self._run(judge, {"score": 3.5, "rationale": "ok"})
+        assert val == 4
+
+    def test_score_range_not_clamped_here(self):
+        """Range enforcement moved to `_enforce_bounds` in score_cases, so an
+        agent judge that ignores its scale warns like an LLM judge instead of
+        being silently clamped at the point of parsing."""
         judge = _agent_judge(feedback_type="int", score_range=[0, 2])
         (val, _), _ = self._run(judge, {"score": 9, "rationale": "over"})
-        assert val == 2
+        assert val == 9
         (val2, _), _ = self._run(judge, {"score": -4, "rationale": "under"})
-        assert val2 == 0
+        assert val2 == -4
 
     def test_bool_from_score_json(self):
         judge = _agent_judge(feedback_type="bool")
@@ -614,3 +626,27 @@ class TestAgentJudgeHardening:
         with patch("agent_eval.judges.BuiltinJudgeRegistry", side_effect=RuntimeError("boom")):
             with pytest.raises(RuntimeError, match="cannot classify"):
                 _drop_model_calling_judges(judges, config)
+
+
+class TestVerdictContractScale:
+    """The contract handed to the agent must state the same scale the LLM path
+    uses — it was hand-rolled from `jc.score_range` and had already drifted."""
+
+    def _args(self, **judge_kwargs):
+        cap = {}
+        judge = _agent_judge(**judge_kwargs)
+        TestRunnerIsolation()._load_and_run(judge, {"score": 1, "rationale": "x"}, cap)
+        return cap["execute_calls"][0]["args"]
+
+    def test_a_judge_with_no_declared_range_is_still_given_one(self):
+        # Was '{"score": <number>}' — no scale at all — while `_numeric_bounds`
+        # scores that same judge on [1, 5].
+        assert "in [1, 5]" in self._args()
+
+    def test_a_declared_range_reaches_the_contract(self):
+        assert "integer in [0, 2]" in self._args(feedback_type="int",
+                                                 score_range=[0, 2])
+
+    def test_a_fractional_range_asks_for_a_number(self):
+        args = self._args(score_range=[0, 2.5])
+        assert "number in [0, 2.5]" in args and "integer in" not in args

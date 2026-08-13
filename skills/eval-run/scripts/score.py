@@ -17,6 +17,7 @@ import argparse
 import importlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -810,6 +811,10 @@ def _make_builtin_scorer(entry, jc, config):
             out = outputs or {}
             rendered = _render_jinja2_template(prompt_text, arguments, out)
             images = _extract_images(out)
+            # Builtin prompts state a pass/fail contract, so the verdict shape
+            # is theirs, not the judge config's. A config that declares
+            # `feedback_type`/`score_range` on one of these is rejected at load
+            # rather than having the declaration silently dropped here.
             return _call_structured_judge(rendered, judge_model, "bool",
                                           images=images)
 
@@ -844,25 +849,131 @@ _BOOL_SYSTEM_PROMPT = (
     "You are a judge evaluating agent outputs. Call the submit_evaluation "
     "tool once with your pass/fail judgment and a thorough rationale.")
 
-_SCORE_SYSTEM_PROMPT = (
-    "You are a judge evaluating skill outputs. Call the submit_score tool "
-    "once with an integer score 1-5 and a thorough rationale.")
+# Scale assumed for a numeric judge that declares no `score_range`. Matches
+# JudgeConfig.score_range's documented default for LLM judges.
+_DEFAULT_SCORE_RANGE = (1, 5)
 
-_SCORE_JUDGE_TOOL = {
-    "name": "submit_score",
-    "description": "Submit the evaluation score and rationale.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "score": {"type": "integer", "minimum": 1, "maximum": 5,
-                      "description": "Overall score, 1 (worst) to 5 (best)."},
-            "rationale": {"type": "string",
-                          "description": "Thorough justification citing specific "
-                                         "content from the outputs."},
+
+def _fmt_bound(value):
+    """Render a score bound for a prompt: 2 rather than 2.0.
+
+    Config parsing coerces `score_range` to floats, so an integer scale would
+    otherwise reach the judge as "0.0-2.0" and invite fractional scores.
+    """
+    fval = float(value)
+    return str(int(fval)) if fval.is_integer() else str(fval)
+
+
+def _numeric_bounds(jc):
+    """Effective numeric scale for a judge as ``(lo, hi, is_int)``.
+
+    Returns None for boolean judges. Falls back to `_DEFAULT_SCORE_RANGE` when
+    the judge declares no `score_range`, so the judge is still told *a* scale;
+    only a declared range is enforced (see `_enforce_bounds`).
+    """
+    ft = getattr(jc, "feedback_type", "")
+    if ft == "bool":
+        return None
+    lo, hi = jc.score_range if jc.score_range else _DEFAULT_SCORE_RANGE
+    if ft == "float":
+        is_int = False
+    elif ft == "int":
+        is_int = True
+    else:
+        # feedback_type is optional and never inferred, so read the intent off
+        # the scale: whole bounds mean a banded rubric, fractional bounds mean
+        # a continuous one. Declaring `[0, 2.5]` and getting "an integer score
+        # 0-2.5" with an unreachable maximum helps nobody.
+        is_int = float(lo).is_integer() and float(hi).is_integer()
+    return (lo, hi, is_int)
+
+
+def _coerce_number(value, is_int):
+    """Cast a parsed score to the judge's feedback_type."""
+    return int(round(float(value))) if is_int else float(value)
+
+
+def _score_system_prompt(bounds):
+    lo, hi, is_int = bounds
+    kind = "an integer" if is_int else "a numeric"
+    # "-1-1" for a [-1, 1] scale is unreadable; spell those out.
+    span = (f"from {_fmt_bound(lo)} to {_fmt_bound(hi)}" if lo < 0
+            else f"{_fmt_bound(lo)}-{_fmt_bound(hi)}")
+    return ("You are a judge evaluating skill outputs. Call the submit_score "
+            f"tool once with {kind} score {span} "
+            "and a thorough rationale.")
+
+
+def _score_judge_tool(bounds):
+    """Build the submit_score tool for a judge's scale.
+
+    `minimum`/`maximum` are advisory on a non-strict input_schema — the model
+    is not constrained by them — so the scale is also stated in the system
+    prompt and the returned value is range-checked in `_enforce_bounds`.
+    """
+    lo, hi, is_int = bounds
+    return {
+        "name": "submit_score",
+        "description": "Submit the evaluation score and rationale.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "score": {"type": "integer" if is_int else "number",
+                          "minimum": lo, "maximum": hi,
+                          "description": f"Overall score, {_fmt_bound(lo)} "
+                                         f"(worst) to {_fmt_bound(hi)} (best)."},
+                "rationale": {"type": "string",
+                              "description": "Thorough justification citing "
+                                             "specific content from the outputs."},
+            },
+            "required": ["score", "rationale"],
         },
-        "required": ["score", "rationale"],
-    },
-}
+    }
+
+
+class ScoreRangeError(ValueError):
+    """A judge returned a value outside its declared `score_range`."""
+
+
+def _enforce_bounds(value, bounds, judge_name):
+    """Validate a numeric judge value against its declared range.
+
+    Raises `ScoreRangeError` when the value is off-scale. Clamping instead
+    would turn a 4 from a 0-2 judge into a 2 — a perfect score that lifts the
+    mean and bands green. A judge that ignored its scale has not produced a
+    usable number, so the sample is recorded as an error and drops out of the
+    aggregate rather than being imputed.
+
+    Validates only. An in-range value is returned untouched: rounding belongs
+    to the paths that turn a *model's* answer into a number
+    (`_call_structured_judge`, `_parse_score_response`,
+    `_interpret_agent_verdict`), which already do it. A deterministic judge
+    computed its own value and declaring a `score_range` to get report bands
+    must not silently rewrite it.
+    """
+    if bounds is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+        return value
+    lo, hi, _ = bounds
+    # NaN first: it compares False against everything, so both bounds checks
+    # below pass it through, and one NaN poisons the judge's whole mean.
+    if not math.isfinite(value) or value < lo or value > hi:
+        raise ScoreRangeError(
+            f"judge '{judge_name}' returned {value}, outside its declared "
+            f"score_range [{_fmt_bound(lo)}, {_fmt_bound(hi)}]")
+    return value
+
+
+def _log_judge_error(case_id, exc):
+    """Shout about a scale breach; stay quiet about ordinary judge errors.
+
+    A `ScoreRangeError` is a prompt/config bug that recurs every run and is
+    worth seeing in the job log. Every judge error is already persisted on the
+    result and rendered by the report, so printing all of them would only add
+    noise to a parallel scoring pass.
+    """
+    if isinstance(exc, ScoreRangeError):
+        print(f"  WARNING: {case_id}: {exc}", file=sys.stderr, flush=True)
+
 
 _BOOL_JUDGE_TOOL = {
     "name": "submit_evaluation",
@@ -913,19 +1024,25 @@ def _call_judge_llm(prompt, model, system_prompt, images=None, max_tokens=4096):
 
 
 def _call_structured_judge(prompt, model, feedback_type, images=None,
-                           max_tokens=4096):
+                           max_tokens=4096, bounds=None):
     """Call an LLM judge with forced tool output. Returns (value, rationale).
 
     feedback_type "bool" → (passed: bool, rationale); anything else →
-    (score: int, rationale). Forcing a tool guarantees the value and rationale
-    come back in known fields instead of free-form text the model may format
-    however it likes (opus-4-8 routinely ignores "return JSON" instructions).
-    Falls back to parsing any text in the response if no tool_use is returned.
+    (score, rationale) on the judge's own scale. `bounds` is the judge's
+    ``(lo, hi, is_int)`` from `_numeric_bounds`; it sets the scale stated in the
+    system prompt and the tool schema, defaulting to `_DEFAULT_SCORE_RANGE`.
+    Forcing a tool guarantees the value and rationale come back in known fields
+    instead of free-form text the model may format however it likes (opus-4-8
+    routinely ignores "return JSON" instructions). Falls back to parsing any
+    text in the response if no tool_use is returned.
     """
     is_bool = (feedback_type == "bool")
-    tool = _BOOL_JUDGE_TOOL if is_bool else _SCORE_JUDGE_TOOL
-    system_prompt = _BOOL_SYSTEM_PROMPT if is_bool else _SCORE_SYSTEM_PROMPT
-    parser = _parse_bool_response if is_bool else _parse_score_response
+    if bounds is None:
+        bounds = (_DEFAULT_SCORE_RANGE[0], _DEFAULT_SCORE_RANGE[1], True)
+    tool = _BOOL_JUDGE_TOOL if is_bool else _score_judge_tool(bounds)
+    system_prompt = _BOOL_SYSTEM_PROMPT if is_bool else _score_system_prompt(bounds)
+    parser = (_parse_bool_response if is_bool
+              else lambda text: _parse_score_response(text, bounds))
     client = _get_anthropic_client()
     response = client.messages.create(
         model=model,
@@ -944,7 +1061,8 @@ def _call_structured_judge(prompt, model, feedback_type, images=None,
                     return (data["passed"], rationale or "(no rationale provided)")
             else:
                 try:
-                    return (int(data["score"]), rationale or "(no rationale provided)")
+                    return (_coerce_number(data["score"], bounds[2]),
+                            rationale or "(no rationale provided)")
                 except (KeyError, TypeError, ValueError):
                     pass
     # Fallback: model emitted text instead of a tool call (rare with tool_choice).
@@ -982,38 +1100,62 @@ def _parse_bool_response(text):
     return (False, f"Could not parse judge response: {text.strip() or '(empty)'}")
 
 
-def _parse_score_response(text):
-    """Parse {"score": int, "rationale": str} from an LLM response, with fallbacks.
+def _parse_score_response(text, bounds=None):
+    """Parse {"score": num, "rationale": str} from an LLM response, with fallbacks.
 
-    Never truncates the rationale: when the judge returns prose instead of the
-    requested JSON (observed with opus-4-8), the full response text is used as
-    the rationale rather than a 200-char slice that cuts off mid-word.
+    `bounds` is the judge's ``(lo, hi, is_int)``; the prose patterns and the
+    last-resort "loose number" scan are derived from it, so a 0-2 judge is not
+    scanned for 1-5 values. Raises `ValueError` when no on-scale score can be
+    found. Never truncates the rationale: when the judge
+    returns prose instead of the requested JSON (observed with opus-4-8), the
+    full response text is used as the rationale rather than a 200-char slice
+    that cuts off mid-word.
     """
+    if bounds is None:
+        bounds = (_DEFAULT_SCORE_RANGE[0], _DEFAULT_SCORE_RANGE[1], True)
+    lo, hi, is_int = bounds
+    # Signed on every scale. Unsigned, a "-1" reads as 1: on a [-1, 1] judge
+    # that inverts the verdict with `_enforce_bounds` none the wiser, since the
+    # flipped value is in range; on a [0, 2] judge it invents an in-range score
+    # from an off-scale one. Signed, the first is read correctly and the second
+    # is rejected.
+    num = r'-?\d+(?:\.\d+)?'
     # 1. Clean JSON object (handles escapes, newlines, embedded quotes).
     obj = _loads_json_object(text)
     if isinstance(obj, dict) and obj.get("score") is not None:
         try:
             rationale = str(obj.get("rationale") or "").strip() or text.strip()
-            return (int(obj["score"]), rationale)
+            return (_coerce_number(obj["score"], is_int), rationale)
         except (ValueError, TypeError):
             pass
     # 2. Regex score + escaped-quote-aware rationale; full text if absent.
-    match = re.search(r'"score"\s*:\s*(\d+)', text)
+    match = re.search(rf'"score"\s*:\s*({num})', text)
     if match:
-        return (int(match.group(1)), _rationale_field(text) or text.strip())
+        return (_coerce_number(match.group(1), is_int),
+                _rationale_field(text) or text.strip())
     # 3. Prose fallbacks — keep the full text as the rationale.
+    top = re.escape(_fmt_bound(hi))
     explicit = re.search(
-        r'(?:overall|score|rating)\s*[=:]\s*(\d)\b'
-        r'|(\d)\s*/\s*5'
-        r'|\*\*(\d)\*\*\s*/\s*5',
+        rf'(?:overall|score|rating)\s*[=:]\s*({num})\b'
+        rf'|({num})\s*/\s*{top}'
+        rf'|\*\*({num})\*\*\s*/\s*{top}',
         text, re.IGNORECASE)
     if explicit:
-        score_val = int(next(g for g in explicit.groups() if g))
-        return (score_val, text.strip())
-    nums = re.findall(r'\b([1-5])\b', text)
-    if nums:
-        return (int(nums[-1]), text.strip())
-    return (3, f"Could not parse score from: {text.strip() or '(empty)'}")
+        return (_coerce_number(next(g for g in explicit.groups() if g), is_int),
+                text.strip())
+    # 4. Last resort: the final number in the response that is ON the scale.
+    # `\b` cannot open a signed number — space to "-" is not a word boundary —
+    # so anchor on "not preceded by a word char or a dot" instead.
+    on_scale = [n for n in re.findall(rf'(?<![\w.]){num}\b', text)
+                if lo <= float(n) <= hi]
+    if on_scale:
+        return (_coerce_number(on_scale[-1], is_int), text.strip())
+    # Nothing parseable. Raise so the sample is recorded as an error, matching
+    # the agent judge: any default we invented here (the old literal 3, or the
+    # scale midpoint) is a fabricated score that counts toward the mean.
+    raise ValueError(
+        f"could not parse a score in [{_fmt_bound(lo)}, {_fmt_bound(hi)}] "
+        f"from judge response: {text.strip() or '(empty)'}")
 
 
 def _loads_json_object(text):
@@ -1107,13 +1249,19 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
     if not case_dirs:
         return {"per_case": {}, "aggregated": {n: {"values": [], "mean": None, "pass_rate": None} for n, *_ in judges}}
     per_case = {}
-    aggregated = {name: {"values": []} for name, *_ in judges}
+    aggregated = {name: {"values": [], "errored_cases": 0}
+                  for name, *_ in judges}
     parallelism = min(len(case_dirs), os.cpu_count() or 4)
     lock = threading.Lock()
     completed = 0
 
     # Judges may scope to a single execution step (JudgeConfig.step).
     judge_steps = {jc.name: jc.step for jc in config.judges if jc.step}
+    # Only a DECLARED score_range is enforced. Judges that declare none keep
+    # emitting whatever they emit (an inline check returning a raw count must
+    # not be failed against the [1, 5] default).
+    judge_bounds = {jc.name: _numeric_bounds(jc)
+                    for jc in config.judges if jc.score_range}
 
     def _score_case(case_dir):
         case_id = case_dir.name
@@ -1136,8 +1284,12 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
                         }
                         continue
                 except Exception as e:
+                    # An `error` key, not just a rationale: a condition that
+                    # blew up is a failure, and reward composition must not
+                    # mistake it for a judge that was meant to be skipped.
                     case_results[name] = {
                         "value": None,
+                        "error": f"Condition error: {e}",
                         "rationale": f"Condition error: {e}",
                         "judge_type": judge_type,
                     }
@@ -1150,21 +1302,26 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
                      else judge_samples)
             else:
                 n = 1
+            bounds = judge_bounds.get(name)
             try:
                 if n > 1:
                     runs = []
                     for _ in range(n):
                         try:
                             v, rat = _normalize_result(scorer(outputs=rec))
+                            v = _enforce_bounds(v, bounds, name)
                             runs.append({"value": v, "rationale": rat})
                         except Exception as e:
+                            _log_judge_error(case_id, e)
                             runs.append({"value": None, "error": str(e)})
                     case_results[name] = _aggregate_samples(runs, judge_type)
                 else:
                     v, rat = _normalize_result(scorer(outputs=rec))
+                    v = _enforce_bounds(v, bounds, name)
                     case_results[name] = {"value": v, "rationale": rat,
                                           "judge_type": judge_type}
             except Exception as e:
+                _log_judge_error(case_id, e)
                 case_results[name] = {"value": None, "error": str(e),
                                       "judge_type": judge_type}
         # Annotate step-scoped judges so the summary/report shows the step.
@@ -1190,13 +1347,24 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
             per_case[case_id] = case_results
             with lock:
                 for name, result in case_results.items():
-                    if name in aggregated and result.get("value") is not None:
+                    if name not in aggregated:
+                        continue
+                    if result.get("value") is not None:
                         aggregated[name]["values"].append(result["value"])
+                    elif result.get("error"):
+                        # Distinguishes "errored" from "if:-skipped", which the
+                        # threshold diagnostics conflated into "skipped".
+                        aggregated[name]["errored_cases"] = (
+                            aggregated[name].get("errored_cases", 0) + 1)
                 print(f"  [{completed}/{len(case_dirs)}] {case_id}", flush=True)
 
     # Compute aggregates
     for name in aggregated:
         values = aggregated[name]["values"]
+        # `values` is stripped before persistence, so anything computed from
+        # its length has to survive as its own field or the standalone
+        # `score.py regression` path silently loses the denominator.
+        aggregated[name]["scored_cases"] = len(values)
         if not values:
             aggregated[name]["mean"] = None
             aggregated[name]["pass_rate"] = None
@@ -1340,8 +1508,12 @@ def _read_agent_verdict(workspace, stdout):
 
 
 def _interpret_agent_verdict(obj, is_bool, jc):
-    """Convert a verdict dict into (value, rationale) honoring feedback_type
-    and score_range (bands/clamps a numeric score)."""
+    """Convert a verdict dict into (value, rationale) honoring feedback_type.
+
+    Range enforcement is deliberately NOT done here: `_enforce_bounds` applies
+    it centrally for every judge type, so an agent judge that ignores its scale
+    errors exactly like an LLM judge instead of being silently clamped.
+    """
     rationale = str(obj.get("rationale", "") or "")[:800]
     if is_bool:
         if "passed" in obj:
@@ -1357,10 +1529,14 @@ def _interpret_agent_verdict(obj, is_bool, jc):
     else:
         raise RuntimeError(
             f"Agent judge '{jc.name}': verdict missing 'score'")
-    if jc.score_range:
-        lo, hi = jc.score_range
-        value = max(lo, min(hi, value))
-    if jc.feedback_type == "int":
+    # Round on the rule the agent was actually given. `_numeric_bounds` decides
+    # integer-ness for the verdict contract, the LLM tool schema and the report
+    # alike, so keying this off `feedback_type: int` alone made the same judge
+    # config produce a different type depending on which runner scored it: told
+    # "integer in [0, 5]" and answering 3.5, the LLM path recorded 4 and the
+    # agent path 3.5.
+    bounds = _numeric_bounds(jc)
+    if bounds is not None and bounds[2]:
         value = int(round(value))
     return value, rationale or "agent judge verdict"
 
@@ -1507,15 +1683,20 @@ def _load_agent_judge(jc, config, project_root=None):
     arguments = jc.arguments
 
     # --- Output-contract note appended to every rendered prompt ---
-    if is_bool:
+    # Built from the same `_numeric_bounds` the LLM path uses, so the two agree
+    # on the scale and on integer-ness. Hand-rolling it here had already
+    # drifted: a judge with no declared range was told nothing at all
+    # ('{"score": <number>}'), while `_numeric_bounds` scores it on [1, 5].
+    bounds = _numeric_bounds(jc)
+    if is_bool or bounds is None:
         verdict_spec = ('{"passed": <true|false>, '
                         '"rationale": "<short justification>"}')
-    elif jc.score_range:
-        verdict_spec = ('{"score": <number in [%s, %s]>, '
-                        '"rationale": "<short justification>"}'
-                        % (jc.score_range[0], jc.score_range[1]))
     else:
-        verdict_spec = '{"score": <number>, "rationale": "<short justification>"}'
+        lo, hi, is_int = bounds
+        verdict_spec = ('{"score": <%s in [%s, %s]>, '
+                        '"rationale": "<short justification>"}'
+                        % ("integer" if is_int else "number",
+                           _fmt_bound(lo), _fmt_bound(hi)))
     contract = _AGENT_JUDGE_CONTRACT.format(verdict_spec=verdict_spec)
 
     def scorer(outputs=None, **kwargs):
@@ -1601,6 +1782,7 @@ def _load_llm_judge(jc, config, project_root=None):
             or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
         judge_model = _resolve_judge_model(jc, config)
         feedback_type = "bool" if jc.feedback_type == "bool" else "score"
+        bounds = _numeric_bounds(jc)
         arguments = jc.arguments
 
         def scorer(outputs=None, **kwargs):
@@ -1608,14 +1790,26 @@ def _load_llm_judge(jc, config, project_root=None):
             rendered = _render_jinja2_template(prompt, arguments, out)
             images = _extract_images(out)
             return _call_structured_judge(rendered, judge_model, feedback_type,
-                                          images=images)
+                                          images=images, bounds=bounds)
 
         return scorer
 
     # MLflow make_judge fallback (requires OpenAI-compatible API key)
     try:
         from mlflow.genai.judges import make_judge
-        kwargs = {"name": jc.name, "instructions": prompt}
+        # make_judge takes no scale argument, but `_enforce_bounds` applies to
+        # every judge by name regardless of which scorer produced the value.
+        # Left unstated, this path would be the one place a judge is failed
+        # against a scale it was never given — worse than before the fix.
+        instructions = prompt
+        scale = _numeric_bounds(jc) if jc.score_range else None
+        if scale:
+            lo, hi, is_int = scale
+            instructions += (
+                f"\n\nReturn {'an integer' if is_int else 'a numeric'} score "
+                f"between {_fmt_bound(lo)} and {_fmt_bound(hi)} inclusive. A "
+                "score outside that range is rejected, not clamped.")
+        kwargs = {"name": jc.name, "instructions": instructions}
         if jc.feedback_type:
             kwargs["feedback_value_type"] = _parse_feedback_type(jc.feedback_type)
         return make_judge(**kwargs)
@@ -2025,6 +2219,21 @@ class Regression:
     detail: str = ""
 
 
+def _unavailable_reason(current, metric, kind):
+    """Why a thresholded metric is None — errored beats skipped.
+
+    Saying "skipped" when every case actually errored hides the actionable
+    cause, and score_range enforcement makes an all-errored judge a realistic
+    outcome rather than an exotic one.
+    """
+    errored = current.get("errored_cases") or 0
+    if errored:
+        return (f"{metric} unavailable — judge errored on {errored} case"
+                f"{'s' if errored != 1 else ''}; see the per-case rationales")
+    return (f"{metric} unavailable — judge skipped for all cases "
+            f"or not {kind}")
+
+
 def detect_regressions(current_results, thresholds, baseline_results=None):
     regressions = []
     for judge_name, threshold in thresholds.items():
@@ -2041,18 +2250,37 @@ def detect_regressions(current_results, thresholds, baseline_results=None):
             if rate is None:
                 regressions.append(Regression(
                     judge_name, "pass_rate", f">= {threshold['min_pass_rate']}",
-                    "n/a", "pass_rate unavailable — judge skipped for all cases "
-                    "or not a boolean judge"))
+                    "n/a", _unavailable_reason(current, "pass_rate",
+                                                "a boolean judge")))
             elif rate < threshold["min_pass_rate"]:
                 regressions.append(Regression(judge_name, "pass_rate",
                                               f">= {threshold['min_pass_rate']}", str(rate)))
+        # Opt-in coverage gate. A judge that errors on SOME cases still yields a
+        # mean — over the survivors only — so `min_mean` silently gates a
+        # shrinking sample: one good score and nine errors passes. Enforcement
+        # of `score_range` makes that a realistic outcome, so CI needs a way to
+        # say how much of the dataset actually has to be scored. Off unless
+        # declared, because one flaky judge run should not fail a suite by
+        # default.
+        if "max_error_rate" in threshold:
+            errored = current.get("errored_cases") or 0
+            scored = current.get("scored_cases")
+            if scored is None:            # pre-1.38 summary.yaml
+                scored = len(current.get("values") or [])
+            total = errored + scored
+            rate = (errored / total) if total else 0.0
+            if rate > threshold["max_error_rate"]:
+                regressions.append(Regression(
+                    judge_name, "error_rate",
+                    f"<= {threshold['max_error_rate']}", f"{rate:.3f}",
+                    f"{errored} of {total} cases errored"))
         if "min_mean" in threshold:
             mean = current.get("mean")
             if mean is None:
                 regressions.append(Regression(
                     judge_name, "mean", f">= {threshold['min_mean']}",
-                    "n/a", "mean unavailable — judge skipped for all cases "
-                    "or not a numeric judge"))
+                    "n/a", _unavailable_reason(current, "mean",
+                                                "a numeric judge")))
             elif mean < threshold["min_mean"]:
                 regressions.append(Regression(judge_name, "mean",
                                               f">= {threshold['min_mean']}", str(mean)))

@@ -156,8 +156,10 @@ it via the Harbor rollout interface, and NeMo Gym reads it via Harbor's agent
 server. No separate wrapper needed.
 
 Boolean judges (inline checks) gate: any failure → reward 0. Numeric judges
-(LLM scores 1-5) normalize to 0-1 and average. The composition policy is
-configurable.
+normalize to 0-1 over each judge's declared `score_range` (`[1, 5]` when none
+is declared). Averaging them is the *default* composition; a `reward:` block
+replaces it with a single judge, a weighted sum, or a formula, and judges it
+lists in `raw` are clamped rather than normalized.
 
 ## How our pieces plug into NeMo Gym + Harbor
 

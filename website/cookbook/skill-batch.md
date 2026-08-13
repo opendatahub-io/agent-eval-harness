@@ -162,6 +162,8 @@ judges:
 
   - name: quality
     description: Evaluate the generated RFE against the reference.
+    feedback_type: int
+    score_range: [1, 5]     # declare the scale — omitting it warns at config load
     prompt_file: eval/prompts/quality-judge.md
 
 thresholds:

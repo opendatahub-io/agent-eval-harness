@@ -22,6 +22,7 @@ judges:
 
   - name: output_quality
     prompt: "Score 1-5 for completeness, clarity, and accuracy.\n\n{{ outputs }}"
+    score_range: [1, 5]      # declare the scale — omitting it warns at config load
 ```
 
 ## The five judge types
@@ -79,10 +80,10 @@ flowchart TD
 | `function` | string | code | Callable in `module`; receives `outputs=` plus any `arguments`. |
 | `arguments` | mapping | all | `**kwargs` for Python judges; `{{ arguments }}` for LLM judges. |
 | `if` | string | all | Python expression over `annotations`/`outputs`; skip the case when false. |
-| `feedback_type` | string | LLM, agent | `bool` selects a `passed` verdict; any other value selects a numeric `score` (bounds from `score_range`). Inferred if omitted. |
+| `feedback_type` | string | LLM, agent (validated on every judge) | `bool` selects a `passed` verdict; anything else — **including omitting it** — selects a numeric `score` on `score_range`. **Never inferred** from the rubric text. `int`/`float` force integer/continuous scoring; when omitted, integer-ness follows the bounds: whole bounds score as an integer, fractional bounds (e.g. `[0, 2.5]`) as a number. `bool` + `score_range`, and `int` + fractional bounds, are rejected at load on any judge type. |
 | `model` | string | LLM, agent | Per-judge model override (highest precedence). |
 | `samples` | int | LLM, agent | Run N times per case and reduce (median/majority). Default `1`. |
-| `score_range` | `[min, max]` | numeric | Numeric bounds + report-color scale. LLM/agent default `[1, 5]`; agent judges use it in the `score.json` contract. Also honored on numeric `check`/`builtin` judges to band their per-case report cells (e.g. `score_range: [0, 8]` for a 0-8 total). A numeric judge with no `score_range` renders neutral (uncolored) in per-case cells. |
+| `score_range` | `[min, max]` | all numeric judges | The judge's scale. **Declared:** stated in the LLM judge's system prompt and `submit_score` schema (and in the agent judge's `score.json` contract), colors per-case report cells, normalizes the judge in the default reward composition, and is **enforced for every judge type** — including `check`, `module`/`function` and Python `builtin` judges: an off-scale (or non-finite) value becomes an error sample, not a clamped one (see [Validation](#validation-at-load-time)). **Omitted:** LLM/agent judges are told `[1, 5]` but nothing is checked, and the cell renders neutral (uncolored). Bounds may be negative (`[-1, 1]`) or fractional (`[0, 2.5]`); fractional bounds also select a non-rounded `number` verdict. |
 
 !!! note "Boolean vs numeric aggregation"
     A judge whose values are all booleans aggregates into a **pass rate**; all-numeric
@@ -215,7 +216,11 @@ or, for a boolean judge:
 {"passed": true, "rationale": "Touched tests pass."}
 ```
 
-`feedback_type` selects `score` vs `passed`; `score_range` bands a numeric score. The
+`feedback_type` selects `score` vs `passed`; `score_range` states the scale **inside the
+contract handed to the agent** (`{"score": <integer in [0, 2]>, …}`, or `<number …>` on
+fractional bounds), bands the score in the report, and is enforced — a verdict off the
+scale is recorded as an error sample, never clamped. With no `score_range` a numeric
+agent judge is told `[1, 5]` and its verdict is not checked. The
 harness appends this output contract (plus an untrusted-data guard) to the prompt
 automatically, so rubric authors write only the criteria.
 
@@ -340,9 +345,48 @@ optional `model`; the harness swaps output positions to control for order bias.
 The config fails fast rather than mid-run when:
 
 - two judges share a `name` (except `pairwise`);
+- `builtin` names a judge that does not exist (a typo used to load fine and fail
+  mid-run) — the error lists every available `category/name`;
 - `builtin` is combined with `check`, `prompt`, `prompt_file`, `module`, or `function`;
 - `builtin` or `arguments` have the wrong type (must be string / mapping);
-- `score_range` is not a two-element increasing numeric `[min, max]` list.
+- `score_range` is not a two-element increasing numeric `[min, max]` list;
+- `feedback_type: bool` is combined with a `score_range` — the verdict is
+  pass/fail, so the scale would be ignored;
+- `feedback_type: int` declares fractional bounds (use `feedback_type: float`);
+- a **builtin LLM** judge declares a `feedback_type` other than `bool`, or any
+  `score_range` — those prompts state their own pass/fail contract, so the
+  declaration would be dropped. Builtin *Python* judges are unaffected: they
+  may be numeric.
+
+A numeric LLM or agent judge that declares no `score_range` **warns** rather
+than failing: it is scored on the unenforced `[1, 5]` default — the model is
+still told that scale, but the value it returns is not checked. Only that
+warning exempts inline `check:` judges — they compute
+their own value, so there is no model to bound.
+
+```text
+UserWarning: Judge 'output_quality': numeric judge has no 'score_range', so it is
+scored on the unenforced [1, 5] default — declare one to have the returned value
+checked
+```
+
+The warning comes from config load, so it prints on every command that reads
+`eval.yaml`, not only `/eval-run`.
+
+A declared `score_range` **is** enforced for every judge type, inline `check:`,
+`module`/`function` and builtin Python judges included: a value outside it is
+recorded as an error sample rather than counted. The value itself is never
+rewritten — enforcement only validates. Rounding happens where a *model's*
+answer is parsed, and follows the scale rather than `feedback_type` alone: a
+whole-numbered scale rounds to an integer (even with `feedback_type` omitted),
+fractional bounds such as `[0, 2.5]` keep the decimal.
+
+A scale breach is the one judge error printed while scoring — every other judge
+error is persisted on the result and shown only in the report:
+
+```text
+  WARNING: case-003: judge 'quality' returned 4, outside its declared score_range [0, 2]
+```
 
 ## Related
 

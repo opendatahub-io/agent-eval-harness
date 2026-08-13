@@ -37,7 +37,7 @@ import yaml
 
 from agent_eval.anova.archive import ResultsArchiver
 from agent_eval.anova.composite import aggregate_replications
-from agent_eval.harbor.reward import compose_reward
+from agent_eval.harbor.reward import compose_reward, judge_ranges
 
 logger = logging.getLogger(__name__)
 
@@ -240,6 +240,7 @@ def load_conditions_from_runs(
     """
     runs_dir = Path(runs_dir)
     reward_cfg = getattr(eval_config, "reward", None)
+    ranges = judge_ranges(eval_config)
 
     rows: list[dict[str, Any]] = []
     factor_keys: set[str] = set()
@@ -276,7 +277,8 @@ def load_conditions_from_runs(
         for case_id, judges in per_case.items():
             if not isinstance(judges, dict):
                 continue
-            composite, _ = compose_reward(judges, reward_cfg=reward_cfg)
+            composite, _ = compose_reward(judges, reward_cfg=reward_cfg,
+                                          judge_ranges=ranges)
             row = {
                 "case_id": str(case_id),
                 "replication": rep,

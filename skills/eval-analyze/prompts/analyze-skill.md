@@ -119,10 +119,13 @@ suggested_judges:
     builtin: "<builtin name>"
     arguments:              # optional parameterization
       <key>: <value>
-    # score_range: [lo, hi] # ONLY when the LLM judge's rubric is not on
-    #                         [1, 5] (e.g. a 1-10 or 0-100 rubric). Skip for
-    #                         boolean judges and for standard 1-5 LLM rubrics —
-    #                         omitting the field is the right default.
+    score_range: [lo, hi]   # REQUIRED on a numeric LLM/agent judge — include it
+                            # even for a plain 1-5 rubric. A DECLARED range is
+                            # stated in the judge's prompt and tool schema and the
+                            # returned value is checked against it (off-scale =
+                            # error sample, dropped from the mean); omitting it
+                            # warns at config load. Omit for boolean judges —
+                            # feedback_type: bool plus score_range is rejected.
     # For check type, include a working inline script:
     check: |
       <python snippet — receives (outputs, arguments) dicts, returns (bool|number, str)>

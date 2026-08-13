@@ -53,6 +53,54 @@ def _score_render_kwargs():
     pytest.fail("could not find template.render(...) in _render_jinja2_template")
 
 
+def _valid_judge_fields():
+    """The `valid_judge_fields` set literal in validate_eval.check_config.
+
+    Parsed rather than imported: the set is a local, not a module constant.
+    """
+    tree = ast.parse(VALIDATE_EVAL.read_text(), filename=str(VALIDATE_EVAL))
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "valid_judge_fields"
+                        for t in node.targets)):
+            return {e.value for e in node.value.elts}
+    pytest.fail("could not find valid_judge_fields in validate_eval.py")
+
+
+class TestJudgeFieldContract:
+    """The allowlist drifted from JudgeConfig and `/eval-analyze --validate` then
+    called a valid eval.yaml invalid — `score_range`, `step` and `agent` were all
+    real fields the validator rejected."""
+
+    def test_every_judge_config_field_is_accepted(self):
+        import dataclasses
+        sys.path.insert(0, str(REPO_ROOT))
+        from agent_eval.config import JudgeConfig
+
+        allowed = _valid_judge_fields()
+        # `condition` is spelled `if` in YAML; everything else matches verbatim.
+        expected = {f.name for f in dataclasses.fields(JudgeConfig)}
+        expected = (expected - {"condition"}) | {"if"}
+        assert expected <= allowed, (
+            f"validate_eval rejects real JudgeConfig field(s): "
+            f"{sorted(expected - allowed)}"
+        )
+
+    def test_the_allowlist_invents_nothing(self):
+        import dataclasses
+        sys.path.insert(0, str(REPO_ROOT))
+        from agent_eval.config import JudgeConfig
+
+        # `condition` must NOT be accepted — YAML spells it `if`. Leaving it in
+        # `known` would let an accidental `condition` entry pass this test.
+        known = ({f.name for f in dataclasses.fields(JudgeConfig)}
+                 - {"condition"}) | {"if"}
+        assert _valid_judge_fields() == known, (
+            f"validate_eval accepts field(s) JudgeConfig does not define: "
+            f"{sorted(_valid_judge_fields() - known)}"
+        )
+
+
 class TestStandardVarsContract:
     def test_standard_vars_match_score_renderer(self):
         assert validate_eval.STANDARD_TEMPLATE_VARS == _score_render_kwargs(), (

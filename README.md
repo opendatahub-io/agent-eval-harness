@@ -245,6 +245,8 @@ judges:
   # LLM judge with inline prompt (conditional — skipped when condition is false)
   - name: output_quality
     if: "not annotations.get('skip_quality', False)"  # Skip based on annotations
+    feedback_type: int
+    score_range: [1, 5]      # declare the scale — omitting it warns at config load
     description: |
       Evaluate quality compared to the reference. Score 1-5.
     prompt: |
@@ -322,6 +324,9 @@ thresholds:
   - **`prompt_file`**: External file path (absolute or relative to project root). Use for sharing prompts across judges. File can contain rubric-style or full template content.
 - **`context`** — list of file paths loaded and appended to the LLM judge prompt as supplementary material (rubrics, guidelines, examples).
 - **`module`** / **`function`** — external Python code judge for complex validation.
+- **`feedback_type`** / **`score_range`** — the judge's verdict shape and numeric scale. `feedback_type: bool` gives a pass/fail verdict; anything else gives a `score` on `score_range`. A **declared** scale reaches the model — it is stated in the judge's system prompt and in the `submit_score` tool schema — and the returned value is enforced against it: a value outside the scale is recorded as an error sample rather than clamped, because clamping a 4 from a 0-2 judge into a 2 invents a perfect score. Omit the range and the judge is only *told* `[1, 5]`, with nothing checking the answer — so a numeric LLM or agent judge without one warns at config load. Incoherent combinations (`bool` with a `score_range`, `int` with fractional bounds, a non-`bool` `feedback_type` or any `score_range` on a builtin LLM judge) and unknown `builtin:` names fail at config load.
+
+  > **Upgrading:** LLM judges with a non-default `score_range` were previously asked for a `[1, 5]` score regardless of what they declared, and nothing checked the answer; agent judges *were* told their declared range, but an off-scale verdict was silently clamped into it. Both are now asked for, and held to, the scale they declare. How much a mean moves depends on the rubric: a prompt that already stated "0-2" was often answered on 0-2 anyway, since the rubric text competes with the system prompt and usually wins — in one 1,449-sample corpus every value was already on the declared scale. A rubric that left the scale to the config will move more, and in either direction. Two further changes affect existing runs: an off-scale value is now an **error sample** rather than a number, so a judge whose model ignores its scale can end up with no mean at all; and the *default* reward composition (no `reward:` block) normalizes each numeric judge over its own `score_range` instead of a flat `[1, 5]`, which shifts `reward.json` and `anova.json` — a config with an explicit `reward:` block keeps its composition rule, since it still normalizes every judge through `reward.score_range`, though its reward moves wherever the judge values did. Two smaller ones: in that default path a case whose every scoring judge errored now composes to `0.0` rather than `1.0`, and an LLM response with no parseable score is now an error sample rather than the old silent `3`. Re-baseline any `thresholds.min_mean` tuned against the old numbers, and do not compare pre- and post-upgrade runs.
 - **`agent`** — turns a judge into a tool-using **agent judge**: instead of a single stateless model call, the judge runs as an agent *through the runner abstraction*, with read-only file tools and a staged, isolated workspace, so it can Read/Grep/Glob the material and any reference docs to **ground its verdict** (e.g. verify architecture claims against the real docs) instead of guessing from prompt text. An agent judge still takes its instructions from `prompt`/`prompt_file`/`llm_rubric`, and reuses `model`, `feedback_type`, `score_range`, `samples`, `if`, and `thresholds` like any other judge. The presence of an `agent:` block is what upgrades an otherwise-LLM judge. Sub-keys (all optional):
   - **`runner`** — a per-judge runner block, parsed exactly like the top-level `runner:` (`type`, `effort`, `command`, `env`, …). Defaults to `{type: claude-code}`. Lets the judge use a different runner/model stack than the skill-under-test.
   - **`allowed_tools`** — tool allowlist for the judge (read-only default `[Read, Grep, Glob]`; add `Bash` for judges that must run commands, e.g. a tests-pass judge). The judge sees only its own staged workspace, never other cases or the real repo tree.
@@ -329,7 +334,7 @@ thresholds:
   - **`inputs`** — which collected output dirs (by `outputs[].path` name) to stage as files; default: all of `outputs["files"]`. Use `[.]` to stage everything.
   - **`timeout`** — seconds (default: `execution.timeout` or harness default). **`max_budget_usd`** — per-judge-run cap (default `2.0`).
 
-  The judge writes its verdict to `./output/score.json` — `{"score": <number>, "rationale": "…"}` (numeric) or `{"passed": <bool>, "rationale": "…"}` (bool); `feedback_type` selects which, and `score_range` bands a numeric score. The harness appends this output contract (plus an untrusted-data guard) to the prompt automatically, so rubric authors write only the criteria. If `score.json` is absent, the harness falls back to parsing the last `{"score"|"passed", …}` JSON object from the run's stdout; if neither yields a value it records an error sample rather than silently passing. Example:
+  The judge writes its verdict to `./output/score.json` — `{"score": <number>, "rationale": "…"}` (numeric) or `{"passed": <bool>, "rationale": "…"}` (bool); `feedback_type` selects which, and `score_range` states the scale in the prompt, bands the score in the report, and records an off-scale verdict as an error sample rather than counting it. The harness appends this output contract (plus an untrusted-data guard) to the prompt automatically, so rubric authors write only the criteria. If `score.json` is absent, the harness falls back to parsing the last `{"score"|"passed", …}` JSON object from the run's stdout; if neither yields a value it records an error sample rather than silently passing. Example:
 
   ```yaml
   judges:
@@ -351,7 +356,7 @@ thresholds:
 - **`runner`** — `type` selects `claude-code`, `codex`, `cli`, or `responses-api`; remaining fields are runner-specific. Codex accepts `minimal`, `low`, `medium`, `high`, and `xhigh`; its CLI does not enforce `max_budget_usd`. Local Codex defaults to `workspace-write`; `permission_mode: plan` maps to `read-only`, while `bypassPermissions` maps to Codex's unrestricted bypass and should be used only inside a container or VM.
 - **`models`** — `skill`/`subagent`/`judge`/`hook` defaults, overridable per-judge or via CLI flags. `hook` is the model used for LLM-based AskUserQuestion answering.
 - **`mlflow`** — `experiment` (and optional `tracking_uri`/`tags`) for result logging.
-- **`thresholds`** — per-judge regression detection. Valid keys: `min_mean` (minimum average score), `min_pass_rate` (minimum fraction of cases passing, 0.0–1.0), `min_win_rate` (minimum pairwise win rate).
+- **`thresholds`** — per-judge regression detection. Valid keys: `min_mean` (minimum average score), `min_pass_rate` (minimum fraction of cases passing, 0.0–1.0), `min_win_rate` (minimum pairwise win rate), `max_error_rate` (**maximum** fraction of cases the judge may error on, 0.0–1.0 — an opt-in coverage gate; the other three are computed over the cases that produced a value).
 
 ## Example: eval.yaml for RFE Creator
 
@@ -434,6 +439,8 @@ judges:
   - name: quality
     description: |
       Evaluate quality of the generated RFE compared to the reference.
+    feedback_type: int
+    score_range: [1, 5]
     prompt_file: eval/prompts/quality-judge.md
     context:
       - eval/prompts/rfe-scoring-rubric.md
@@ -506,6 +513,8 @@ judges:
   - name: accuracy
     description: |
       Compare the generated architecture summary against the reference.
+    feedback_type: int
+    score_range: [1, 5]
     prompt: |
       Compare the generated architecture summary against the reference.
       Are the same components identified? Are APIs correct?
@@ -584,6 +593,8 @@ judges:
   
   # Semantic quality assessment
   - name: answer_quality
+    feedback_type: int
+    score_range: [1, 5]
     llm_rubric: |
       Evaluate the agent's answer against the expected behavior.
       Score 1-5 where 5 is excellent.

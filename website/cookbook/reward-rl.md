@@ -46,6 +46,8 @@ judges:
       return ("artifacts/out.md" in outputs["files"]), "presence check"
 
   - name: quality              # LLM judge, scored 1-5
+    feedback_type: int
+    score_range: [1, 5]        # the judge's own scale — reward.score_range normalizes
     prompt: "Score the output 1-5 for completeness, clarity, and accuracy."
 
   - name: efficiency           # already normalized to [0, 1]
@@ -90,6 +92,8 @@ judges:
       return outputs["exit_code"] == 0, "ran cleanly"
 
   - name: quality              # LLM judge, 1-5
+    feedback_type: int
+    score_range: [1, 5]        # the judge's own scale — reward.score_range normalizes
     prompt: "Score the output 1-5 for overall quality."
 
 reward:

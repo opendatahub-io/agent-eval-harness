@@ -96,9 +96,11 @@ models:
 judges:
   - name: output_quality
     prompt: "Score the output 1-5 for completeness and accuracy."
+    score_range: [1, 5]      # declare the scale — omitting it warns at config load
   - name: strict_rubric
     model: claude-opus-4-6   # per-judge override wins over models.judge
     llm_rubric: "Response cites a relevant source."
+    feedback_type: bool      # pass/fail verdict — no scale to declare
 ```
 
 ```bash

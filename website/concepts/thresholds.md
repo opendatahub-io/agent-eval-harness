@@ -1,7 +1,7 @@
 # Regression thresholds
 
 Thresholds turn judge scores into a **pass/fail gate**. After scoring, the harness
-compares each judge's aggregate against the minimums you declare in `eval.yaml` and
+compares each judge's aggregate against the bounds you declare in `eval.yaml` and
 **exits non-zero** if any is missed — so a regression fails a CI job instead of quietly
 landing in a report.
 
@@ -15,16 +15,19 @@ thresholds:
 Each key under `thresholds` is a **judge name**; each value is a dict of one or more
 threshold checks.
 
-## The three threshold keys
+## The four threshold keys
 
-Every threshold is a *minimum*: the run passes when the metric is `>=` the value. Which
-key you use must match the **value type the judge produces**.
+Three of the keys are *minimums* — the run passes when the metric is `>=` the value.
+`max_error_rate` is the exception: it is a *maximum*, and passes when the error rate is
+`<=` the value. Either way a metric exactly equal to its threshold passes. Which key you
+use must match the **value type the judge produces**.
 
 | Key | Judge type | Metric compared | Value range |
 | --- | --- | --- | --- |
 | `min_pass_rate` | Boolean (`return True/False`, `feedback_type: bool`) | Fraction of cases that passed | `0.0`–`1.0` |
-| `min_mean` | Numeric (score `1`–`5`) | Mean score across cases | matches the score scale |
+| `min_mean` | Numeric (a score on the judge's `score_range`) | Mean score across cases | matches the score scale |
 | `min_win_rate` | [Pairwise](pairwise-and-sampling.md) | Win rate vs. a baseline run | `0.0`–`1.0` |
+| `max_error_rate` | Any judge | Fraction of cases where the judge errored | `0.0`–`1.0` |
 
 !!! note "How aggregates are derived"
     The harness aggregates each judge across all cases before checking thresholds:
@@ -43,23 +46,42 @@ that is *not* silently ignored.
 
 !!! warning "A missing metric is reported AS a regression"
     When a configured threshold's metric is `None` (the judge was skipped for all cases,
-    or the key targets the wrong judge type), the harness records it as a regression with
-    an `n/a` value rather than skipping it. The rationale: a threshold you asked for but
-    that can never evaluate is a mistake worth surfacing, not hiding.
+    it **errored** on all of them, or the key targets the wrong judge type), the harness
+    records it as a regression with an `n/a` value rather than skipping it. The rationale:
+    a threshold you asked for but that can never evaluate is a mistake worth surfacing,
+    not hiding.
 
     ```text
     REGRESSIONS: 1 detected
       [output_quality] pass_rate: >= 0.9 -> n/a
     ```
 
-    The detail explains why, e.g. *"pass_rate unavailable — judge skipped for all cases
-    or not a boolean judge"*. Fix it by switching to `min_mean` for the numeric judge (or
-    by ensuring the judge isn't `if`-skipped for every case).
+    The detail names the cause: *"pass_rate unavailable — judge errored on 12 cases; see
+    the per-case rationales"* when every value was rejected (by its `score_range`, say),
+    or *"…judge skipped for all cases or not a boolean judge"* when the judge genuinely
+    never ran. Fix the first by looking at the rationales, the second by switching to
+    `min_mean` for a numeric judge or by loosening an `if:` that skipped every case.
+
+!!! warning "Partial errors shrink the sample — gate them with `max_error_rate`"
+    A judge that errors on *some* cases still produces a `mean` — over the survivors only.
+    Two off-scale cases out of ten leave `min_mean` gating the remaining eight, and one
+    good score with nine errors passes a `min_mean` outright. The report shows `ERROR` for
+    the judge only when *no* case produced a value.
+
+    ```yaml
+    thresholds:
+      output_quality:
+        min_mean: 3.5
+        max_error_rate: 0.2    # ...over at least 80% of the dataset
+    ```
+
+    `max_error_rate` is off unless declared, so this is opt-in: one flaky judge run
+    should not fail a suite by default.
 
 !!! tip "Unknown keys and unknown judges are silently ignored"
     Thresholds are stored as-is at config load — there is no key-name validation. A typo
     like `min_pass` (instead of `min_pass_rate`) simply does nothing, and a threshold
-    naming a judge that doesn't exist in the results is skipped. Only the three keys above
+    naming a judge that doesn't exist in the results is skipped. Only the four keys above
     are honored.
 
 ## How detection works
@@ -72,11 +94,15 @@ flowchart TD
     C --> D[min_pass_rate -> pass_rate]
     C --> E[min_mean -> mean]
     C --> F[min_win_rate -> win_rate]
+    C --> EC[max_error_rate -> error_rate]
     D & E & F --> G{metric is None?}
     G -- yes --> R1[regression: n/a]
     G -- no --> H{metric < threshold?}
     H -- yes --> R2[regression]
     H -- no --> P[pass]
+    EC --> HE{error_rate > threshold?}
+    HE -- yes --> R2
+    HE -- no --> P
     R1 & R2 --> X[exit code 1]
 ```
 
@@ -113,7 +139,7 @@ Thresholds are enforced in two places, both of which `exit(1)` on any regression
 ## Optional baseline comparison
 
 Pass a prior run to also flag **relative degradation**, independent of the absolute
-minimums above:
+bounds above:
 
 ```bash
 python3 skills/eval-run/scripts/score.py regression \

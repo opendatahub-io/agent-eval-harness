@@ -17,7 +17,7 @@ than one could apply, the harness resolves in this priority order (see
 | 1 | **builtin** | `builtin` | Registered judge from `agent_eval/judges/` | Python judge: whatever it returns · LLM judge (`.md`): boolean |
 | 2 | **inline check** | `check` | A Python snippet, in-process | `(bool \| number, rationale)` |
 | 3 | **agent** | `agent` (+ `prompt` / `prompt_file` / `llm_rubric`) | An agent run through the runner abstraction (reads a staged workspace) | numeric or boolean via `output/score.json` |
-| 4 | **LLM** | `prompt` / `prompt_file` / `llm_rubric` | An Anthropic model call | numeric `1–5` (default) or boolean |
+| 4 | **LLM** | `prompt` / `prompt_file` / `llm_rubric` | An Anthropic model call | numeric on `score_range` (told `1–5` when undeclared) or boolean |
 | 5 | **external code** | `module` + `function` | An imported Python callable | whatever it returns |
 
 !!! warning "`builtin` is mutually exclusive"
@@ -63,6 +63,7 @@ than one could apply, the harness resolves in this priority order (see
     ```yaml
     judges:
       - name: output_quality
+        score_range: [1, 5]   # declare the scale — omitting it warns at config load
         prompt: |
           Compare the generated output against the reference. Consider
           completeness, clarity, accuracy. Score 1-5 where 5 is excellent.
@@ -107,11 +108,12 @@ than one could apply, the harness resolves in this priority order (see
     abstraction*, against an isolated, staged workspace: the case's output files (filtered
     by `agent.inputs`) plus each `agent.context` dir/file are symlinked in read-only, and a
     writable `./output/` receives the verdict. The judge writes `./output/score.json` —
-    `{"score": <number>, "rationale": "…"}` or `{"passed": <bool>, "rationale": "…"}`
-    (`feedback_type` selects which; the harness appends the contract + an untrusted-data
-    guard to the prompt automatically). It still takes its instructions from
-    `prompt`/`prompt_file`/`llm_rubric` and reuses `model`, `samples`, `score_range`,
-    `feedback_type`, `if`, and thresholds like an LLM judge.
+    `{"score": <integer in [0, 2]>, "rationale": "…"}` or `{"passed": <bool>,
+    "rationale": "…"}`. `feedback_type` selects which, and the numeric spec states the
+    judge's effective scale (`[1, 5]` when it declares no `score_range`); the harness
+    appends the contract + an untrusted-data guard to the prompt automatically. It still
+    takes its instructions from `prompt`/`prompt_file`/`llm_rubric` and reuses `model`,
+    `samples`, `score_range`, `feedback_type`, `if`, and thresholds like an LLM judge.
 
     Use it for grading that must **look something up** rather than guess from prompt text:
     verify component/CRD/API claims against real docs, cross-reference a spec, or run the
@@ -172,18 +174,38 @@ For **LLM judges** the shape is set by `feedback_type`:
 
 | `feedback_type` | Tool the judge is forced to call | Value |
 | --- | --- | --- |
-| *(omitted)* | `submit_score` | integer `1–5` (numeric) |
+| *(omitted)*, whole bounds | `submit_score` | integer on `score_range` (default `1–5`) |
+| *(omitted)*, fractional bounds e.g. `[0, 2.5]` | `submit_score` | number, the fraction preserved |
+| `int` | `submit_score` | integer; a fractional `score_range` is rejected at load |
+| `float` | `submit_score` | number on `score_range`, never rounded |
 | `bool` | `submit_evaluation` | `passed` (boolean) |
 
 Builtin `.md` LLM judges are always boolean. Inline `check` and external judges decide
 their own return type — the aggregator infers boolean vs numeric from the values it
 actually sees across cases.
 
-!!! note "Numeric range and the report"
-    `score_range: [min, max]` sets the scale used to colour report cells (and available
-    to any consumer that normalizes the value). If omitted, LLM judges default to
-    `[1, 5]` and other numeric judges to `[0, 1]`. This is independent of
+!!! note "Numeric range: declared vs. assumed"
+    `score_range: [min, max]` is the judge's scale. When **declared**, it is stated in the
+    LLM judge's system prompt and tool schema, colours report cells, normalizes the judge
+    in the default reward composition, and is enforced on **every** judge type — a value
+    off the scale is recorded as an error sample rather than counted. When **omitted**,
+    LLM and agent judges are told `[1, 5]` but nothing is enforced (an inline `check`
+    returning a raw count keeps returning it), and the report has no scale to band
+    against, so those cells render neutral (uncoloured). Declare the range on every
+    numeric judge — omitting it on an LLM or agent judge warns at config load. This is
+    independent of
     `reward.score_range` — see the [reward API](reward-api.md).
+
+!!! warning "Upgrading: scores move"
+    A numeric LLM judge used to be asked for a `1–5` score whatever its `score_range`
+    said, and an agent judge's off-scale verdict was silently clamped into range. The
+    declared scale now reaches the model, and a value off it becomes an error sample
+    excluded from the mean — so per-judge means shift and `thresholds.min_mean` needs
+    re-baselining. Composites move with those values, and an eval with **no** `reward:`
+    block moves twice over: that path now normalizes each numeric judge over its own
+    `score_range` instead of a flat `[1, 5]`, while a config with an explicit `reward:`
+    block still normalizes everything through `reward.score_range`. Don't compare runs
+    across the upgrade.
 
 ## Aggregation: `pass_rate` vs `mean`
 
@@ -224,12 +246,21 @@ failures.
 judges:
   - name: output_quality
     if: "not annotations.get('skip_quality', False)"
+    score_range: [1, 5]
     prompt: "Score the output 1-5 for completeness, clarity, and accuracy."
 ```
 
 !!! note "Annotations come from the dataset"
     `annotations` is the per-case `annotations.yaml` in the dataset directory. See
     [datasets](datasets.md) for how cases carry metadata.
+
+!!! warning "A condition that *raises* is an error, not a skip"
+    `annotations['tier']` on a case that has no `tier` key raises, and the expression
+    runs without builtins, so a helper like `len(...)` raises too. A blown-up condition
+    records an `error` rather than a skip: the judge's summary status flips from `SKIP`
+    to `ERROR`, and a case where nothing else scored composes a reward of `0.0` instead
+    of the `1.0` a genuinely skipped judge would leave. Prefer
+    `annotations.get('tier')`.
 
 ## Judge model resolution
 
@@ -248,6 +279,7 @@ models:
 judges:
   - name: strict_review
     prompt: "..."
+    score_range: [1, 5]
     model: claude-sonnet-4-6  # overrides models.judge for this judge only
 ```
 

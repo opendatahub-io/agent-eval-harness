@@ -99,7 +99,8 @@ class TestLLMRubricJudgeLoading:
         mock_client = Mock()
         mock_response = Mock()
         mock_response.content = [Mock()]
-        mock_response.content[0].text = "true"
+        mock_response.content[0].type = "text"
+        mock_response.content[0].text = '{"score": 3, "rationale": "ok"}'
         mock_client.messages.create.return_value = mock_response
 
         with patch.dict('os.environ', {'ANTHROPIC_API_KEY': 'test-key'}):
@@ -126,7 +127,8 @@ class TestLLMRubricJudgeLoading:
         mock_client = Mock()
         mock_response = Mock()
         mock_response.content = [Mock()]
-        mock_response.content[0].text = "true"
+        mock_response.content[0].type = "text"
+        mock_response.content[0].text = '{"score": 3, "rationale": "ok"}'
         mock_client.messages.create.return_value = mock_response
 
         with patch.dict('os.environ', {'ANTHROPIC_API_KEY': 'test-key'}):
@@ -186,6 +188,7 @@ class TestLLMRubricJudgeLoading:
         mock_client = Mock()
         mock_response = Mock()
         mock_response.content = [Mock()]
+        mock_response.content[0].type = "text"
         mock_response.content[0].text = '{"score": 5, "rationale": "test"}'
         mock_client.messages.create.return_value = mock_response
 
@@ -234,6 +237,7 @@ class TestLLMRubricJudgeLoading:
         mock_client = Mock()
         mock_response = Mock()
         mock_response.content = [Mock()]
+        mock_response.content[0].type = "text"
         mock_response.content[0].text = '{"score": 5, "rationale": "test"}'
         mock_client.messages.create.return_value = mock_response
 

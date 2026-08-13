@@ -333,6 +333,8 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/list_builtins.py
        {{ tool_trace }}
        Agent's response:
        {{ conversation }}
+     feedback_type: int
+     score_range: [1, 5]        # declare the scale — omitting it warns at config load
      if: "annotations.get('category') == 'navigation'"
    ```
 

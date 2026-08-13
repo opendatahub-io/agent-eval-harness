@@ -657,13 +657,20 @@ class JudgeConfig:
     context: list = field(
         default_factory=list
     )  # File paths loaded as supplementary context
-    feedback_type: str = ""  # Optional: int, float, bool, str. Inferred if omitted.
-    # Numeric scale [lo, hi] for this judge's value. Used by the report to
-    # color per-cell bands proportionally, and can be honored by any consumer
-    # that needs to normalize this judge's raw value. If omitted, LLM judges
-    # default to [1, 5] and other numeric judges to [0, 1]. Set explicitly for
-    # judges on a non-default range (e.g. 1-10, 0-100). Independent of
-    # `reward.score_range`, which governs the reward composition normalization.
+    # Optional verdict shape: "bool" (pass/fail) vs "int"/"float" (numeric
+    # score). Never inferred — an omitted value means numeric, and int-vs-float
+    # is then read off `score_range` (whole bounds => integer). "str" and
+    # "Literal[...]" apply only on the MLflow make_judge fallback path.
+    feedback_type: str = ""
+    # Numeric scale [lo, hi] for this judge's value. When declared it is stated
+    # in the LLM judge's system prompt and tool schema, enforced on the returned
+    # value (an off-scale value is recorded as an error sample, not clamped),
+    # used by the report to color per-cell bands proportionally, and used to
+    # normalize this judge in the default reward composition. If omitted, LLM
+    # judges are told [1, 5] and nothing is enforced — an inline check returning
+    # a raw count keeps returning it. Set explicitly for judges on a non-default
+    # range (e.g. 0-2, 1-10, 0-100). Independent of `reward.score_range`, which
+    # governs the configured reward composition's normalization.
     score_range: Optional[list] = None
     model: str = ""  # Override model for this judge (pairwise, LLM)
     # External code judge
@@ -1194,6 +1201,49 @@ class EvalConfig:
                 raise ValueError(
                     f"Judge '{jc.name}': 'step: {jc.step}' does not match any "
                     f"execution step id ({sorted(step_ids)})")
+
+        # Scale coherence: a judge's declared scale has to agree with its
+        # feedback_type and with the scorer that will actually run it. Each of
+        # these used to be accepted and then quietly ignored at scoring time,
+        # which is how a judge shipped scoring on a scale nobody declared.
+        from agent_eval.judges import builtin_judge_kind, builtin_judge_names
+
+        for jc in config.judges:
+            builtin_kind = builtin_judge_kind(jc.builtin) if jc.builtin else None
+            if jc.builtin and builtin_kind is None:
+                raise ValueError(
+                    f"Judge '{jc.name}': unknown builtin judge '{jc.builtin}' "
+                    f"(available: {', '.join(builtin_judge_names())})")
+            if jc.feedback_type == "bool" and jc.score_range:
+                raise ValueError(
+                    f"Judge '{jc.name}': 'score_range' has no meaning with "
+                    "'feedback_type: bool' (the verdict is pass/fail) — "
+                    "drop one of the two")
+            if (jc.feedback_type == "int" and jc.score_range
+                    and any(float(b) != int(b) for b in jc.score_range)):
+                raise ValueError(
+                    f"Judge '{jc.name}': 'feedback_type: int' cannot express "
+                    f"the fractional 'score_range' {jc.score_range} — use "
+                    "'feedback_type: float'")
+            if (builtin_kind == "llm"
+                    and (jc.feedback_type not in ("", "bool") or jc.score_range)):
+                raise ValueError(
+                    f"Judge '{jc.name}': builtin LLM judge '{jc.builtin}' is "
+                    "always scored as pass/fail, so 'feedback_type'/"
+                    "'score_range' would be silently ignored")
+            # `feedback_type` is optional, and score.py's `_numeric_bounds`
+            # treats anything that is not "bool" as numeric — so the judge that
+            # most needs this warning is the one that declares neither field,
+            # and gating on ("int", "float") alone never reached it.
+            if (jc.feedback_type in ("int", "float", "") and not jc.score_range
+                    and not jc.builtin
+                    and (jc.prompt or jc.prompt_file or jc.llm_rubric)):
+                import warnings
+                warnings.warn(
+                    f"Judge '{jc.name}': numeric judge has no 'score_range', "
+                    "so it is scored on the unenforced [1, 5] default — "
+                    "declare one to have the returned value checked",
+                    stacklevel=2)
 
         # Reward composition
         if "reward" in raw:

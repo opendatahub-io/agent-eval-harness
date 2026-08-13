@@ -32,13 +32,14 @@ flowchart TD
 ## Thresholds
 
 `thresholds` is a top-level map of **judge name → gate**. Each gate sets one or more of
-three keys; a run regresses if the matching aggregate is below the floor.
+four keys; a run regresses if the matching aggregate misses its bound.
 
 | Key | Applies to | Aggregate compared | Passes when |
 | --- | --- | --- | --- |
 | `min_pass_rate` | boolean judges | `pass_rate` (fraction of cases that returned `True`) | `pass_rate >= min_pass_rate` |
 | `min_mean` | numeric judges (e.g. 1–5 LLM scores) | `mean` (average value across cases) | `mean >= min_mean` |
 | `min_win_rate` | a pairwise judge (needs `--baseline`) | `win_rate` | `win_rate >= min_win_rate` |
+| `max_error_rate` | any judge (opt-in) | fraction of cases where the judge errored | `error_rate <= max_error_rate` |
 
 ```yaml title="eval.yaml (excerpt)"
 judges:
@@ -48,6 +49,8 @@ judges:
       return (len(content.strip()) >= 100,
               f"{len(content.strip())} chars")
   - name: output_quality       # numeric judge (1–5) → mean
+    feedback_type: int
+    score_range: [1, 5]        # declare the scale — omitting it warns at config load
     prompt: "Score the output 1-5 for completeness, clarity, and accuracy."
 
 thresholds:
@@ -190,7 +193,7 @@ jobs:
 
     ---
 
-    The full reference for `min_mean`, `min_pass_rate`, and `min_win_rate`.
+    The full reference for `min_mean`, `min_pass_rate`, `min_win_rate`, and `max_error_rate`.
 
     [:octicons-arrow-right-24: thresholds reference](../reference/config/thresholds.md)
 
