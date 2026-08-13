@@ -1,6 +1,7 @@
 """Evaluation suite configuration loaded from eval.yaml files."""
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -804,13 +805,20 @@ def _warn_reward_range_precedence(config) -> None:
         stacklevel=2)
 
 
+def _fmt_num(value) -> str:
+    """Render a bound without a pointless trailing .0 — config coerces to float."""
+    return str(int(value)) if float(value).is_integer() else str(value)
+
+
 def _warn_reward_judge_clamp(config) -> None:
     """Warn when a clamped single-judge reward is scored off [0, 1].
 
     `reward: {judge: x}` uses x's value as the reward directly, clamped — the
-    right thing for a judge that already emits [0, 1]. On any wider scale every
-    value at or above 1 becomes the maximum reward, which is silent and looks
-    like a well-behaved run. Pre-existing; surfaced here because the same
+    right thing for a judge that already emits [0, 1] and wrong for every other
+    scale, silently. A scale reaching 1 or beyond saturates: every value at or
+    above 1 is the maximum reward. A narrower one (say [0, 0.5]) never
+    saturates but never reaches the top of the reward range either. Both are
+    fixed by `normalize: true`. Pre-existing; surfaced here because the same
     change makes a declared `score_range` authoritative everywhere else.
     """
     reward = config.reward
@@ -821,12 +829,15 @@ def _warn_reward_judge_clamp(config) -> None:
     if not declared or [float(declared[0]), float(declared[1])] == [0.0, 1.0]:
         return
     lo, hi = float(declared[0]), float(declared[1])
+    effect = ("every score at or above 1 becomes the maximum reward"
+              if hi >= 1 else
+              f"the reward can never exceed {_fmt_num(hi)}")
     import warnings
     warnings.warn(
-        f"reward.judge '{reward.judge}' declares score_range [{lo}, {hi}] but "
-        "'normalize' is not set, so its value is clamped to [0, 1] — every "
-        f"score at or above 1 becomes the maximum reward. Set 'normalize: true' "
-        f"to map it from [{lo}, {hi}].", stacklevel=2)
+        f"reward.judge '{reward.judge}' declares score_range "
+        f"[{_fmt_num(lo)}, {_fmt_num(hi)}] but 'normalize' is not set, so its "
+        f"value is clamped to [0, 1] — {effect}. Set 'normalize: true' to map "
+        f"it from [{_fmt_num(lo)}, {_fmt_num(hi)}].", stacklevel=2)
 
 
 @dataclass
@@ -1258,9 +1269,10 @@ class EvalConfig:
                 except (TypeError, ValueError) as exc:
                     raise ValueError(
                         f"Judge '{jname}': 'score_range' values must be numeric") from exc
-                if lo >= hi:
+                if not (math.isfinite(lo) and math.isfinite(hi)) or lo >= hi:
                     raise ValueError(
-                        f"Judge '{jname}': 'score_range' must be increasing [min, max]")
+                        f"Judge '{jname}': 'score_range' must be finite and "
+                        "increasing [min, max]")
                 score_range_val = [lo, hi]
             config.judges.append(
                 JudgeConfig(
@@ -1360,9 +1372,11 @@ class EvalConfig:
                 except (TypeError, ValueError) as exc:
                     raise ValueError(
                         "reward.score_range values must be numeric") from exc
-                if not score_min < score_max:
+                if (not (math.isfinite(score_min) and math.isfinite(score_max))
+                        or score_min >= score_max):
                     raise ValueError(
-                        "reward.score_range must be increasing [min, max]")
+                        "reward.score_range must be finite and increasing "
+                        "[min, max]")
                 reward_score_range = [score_min, score_max]
             weights = reward_raw.get("weights", {}) or {}
             if not isinstance(weights, dict):

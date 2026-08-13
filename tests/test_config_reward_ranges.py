@@ -60,7 +60,7 @@ class TestOptionalFallback:
         ("nope", "must be a \\[min, max\\] list"),
         ([1], "must be a \\[min, max\\] list"),
         (["a", "b"], "values must be numeric"),
-        ([5, 1], "must be increasing"),
+        ([5, 1], "finite and increasing"),
     ])
     def test_a_written_range_is_still_validated(self, tmp_path, bad, message):
         with pytest.raises(ValueError, match=message):
@@ -146,3 +146,58 @@ class TestClampedSingleJudge:
             warnings.simplefilter("always")
             _load(tmp_path, judges, reward)
         assert [str(w.message) for w in caught if "clamped" in str(w.message)] == []
+
+
+class TestNonFiniteBounds:
+    """`lo >= hi` and `not lo < hi` each let a different non-finite value
+    through — NaN fails every comparison, so `lo >= hi` is False for it, and
+    `0 < inf` is True. An accepted infinite range normalizes every score to
+    0.0 and puts "score 0-inf" in the judge's prompt."""
+
+    @pytest.mark.parametrize("rng", [
+        [float("nan"), 2], [0, float("nan")],
+        [0, float("inf")], [float("-inf"), 0],
+    ])
+    def test_a_judge_range_must_be_finite(self, tmp_path, rng):
+        judge = {"name": "q", "feedback_type": "float", "prompt": "p",
+                 "score_range": rng}
+        with pytest.raises(ValueError, match="finite and increasing"):
+            _load(tmp_path, [judge], {"formula": "weighted",
+                                      "weights": {"q": 1.0}})
+
+    @pytest.mark.parametrize("rng", [
+        [float("nan"), 2], [0, float("inf")], [float("-inf"), 0],
+    ])
+    def test_the_reward_fallback_must_be_finite(self, tmp_path, rng):
+        with pytest.raises(ValueError, match="finite and increasing"):
+            _load(tmp_path, [_C], {"formula": "weighted",
+                                   "weights": {"clarity": 1.0},
+                                   "score_range": rng})
+
+    def test_ordinary_ranges_still_load(self, tmp_path):
+        config = _load(tmp_path, [_T], {"formula": "weighted",
+                                        "weights": {"testability": 1.0}})
+        assert config.judges[0].score_range == [0.0, 2.0]
+
+
+class TestClampWarningWording:
+    """The saturation claim only holds for a scale that reaches 1."""
+
+    def _warning(self, tmp_path, hi):
+        judge = {"name": "q", "feedback_type": "float", "prompt": "p",
+                 "score_range": [0, hi]}
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _load(tmp_path, [judge], {"judge": "q"})
+        return " ".join(str(w.message) for w in caught if "clamped" in str(w.message))
+
+    def test_a_wide_scale_saturates(self, tmp_path):
+        assert "at or above 1 becomes the maximum" in self._warning(tmp_path, 2)
+
+    def test_a_narrow_scale_is_capped_not_saturated(self, tmp_path):
+        msg = self._warning(tmp_path, 0.5)
+        assert "can never exceed 0.5" in msg
+        assert "maximum reward" not in msg
+
+    def test_bounds_render_without_a_trailing_zero(self, tmp_path):
+        assert "[0, 2]" in self._warning(tmp_path, 2)
