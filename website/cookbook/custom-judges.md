@@ -214,7 +214,8 @@ The prompt is rendered with these variables:
 !!! tip "Grading on a scale other than 1–5"
     Declare it: `score_range: [0, 2]`. The range is stated in the judge's system prompt,
     set as `minimum`/`maximum` on the `submit_score` tool schema, and used to normalize the
-    judge in every reward composition. Because a tool schema is *advisory* — the model
+    judge in every reward composition that normalizes it (not `reward.raw`, nor a
+    clamped single `reward.judge`). Because a tool schema is *advisory* — the model
     is not constrained by `minimum`/`maximum` — a returned value off the scale is recorded
     as an **error sample** and left out of the judge's mean rather than clamped onto the
     scale, where a 4 from a 0-2 judge would land as a perfect 2. With `samples: 3` the case

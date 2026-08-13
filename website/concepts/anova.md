@@ -56,11 +56,12 @@ ANOVA needs exactly one number per (condition, case). That number is the
 `eval.yaml` [`reward:`](../reference/config/reward.md) block if present.
 
 **Numeric judges are normalized** from their own declared `score_range`
-`[lo, hi]` via `(v − lo) / (hi − lo)`, clamped to `[0, 1]` (default range
-`[1, 5]`) — on either path, so a `reward:` block changes how the normalized
-values are combined, not what they are (its `raw` judges and an un-normalized
-single `judge` are clamped to `[0, 1]` instead). With no block the default
-composition averages them, and:
+`[lo, hi]` via `(v − lo) / (hi − lo)`, clamped to `[0, 1]` (a judge declaring
+none falls back to `reward.score_range`, else `[1, 5]` — see
+[Precedence](../reference/config/reward.md#precedence)) — on either path, so a
+`reward:` block changes how the normalized values are combined, not what they
+are (its `raw` judges and an un-normalized single `judge` are clamped to
+`[0, 1]` instead). With no block the default composition averages them, and:
 
 - **Boolean gates fire first.** Any `false` boolean judge → `0.0` immediately.
 - **There is no "non-gate" boolean.** The default path has no pass-fraction

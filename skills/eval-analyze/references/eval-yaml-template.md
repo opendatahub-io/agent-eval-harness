@@ -335,7 +335,10 @@ judges:
                                     # DECLARED range is stated in the judge's
                                     # prompt and tool schema, colors the report's
                                     # per-cell bands, normalizes the judge in
-                                    # every reward composition, and is enforced
+                                    # every reward composition that normalizes
+                                    # it at all (not `reward.raw` judges, nor a
+                                    # single `reward.judge` without normalize —
+                                    # those are clamped), and is enforced
                                     # (an off-scale value becomes an error sample).
     # feedback_type: float          # feedback_type is never inferred: int-vs-float
     #                               # is read off the bounds, so [0, 1] alone means
@@ -426,7 +429,9 @@ Resolution order at scoring time: (1) a `reward:` section if present —
 else (2) the default: boolean judges gate, numeric judges are normalized and
 averaged. Either way a numeric judge is normalized over its OWN declared
 `score_range` — the deprecated `reward.score_range` covers only judges that
-declare none. `reward.judge` is validated against the defined judges at config load;
+declare none — except judges listed in `raw` and a single `judge` without
+`normalize`, which are clamped to [0, 1] and consult no range at all.
+`reward.judge` is validated against the defined judges at config load;
 syntax- or AST-invalid formulas are also rejected at config load, while
 evaluation-time errors (e.g. an undefined name in an expression) warn and
 return 0.0.
@@ -660,7 +665,7 @@ Score 4: Good coverage, well-structured, minor issues only
 Score 5: Comprehensive, accurate, well-written
 ```
 
-**Declare the scale on every numeric judge, including a plain `[1, 5]` one.** A numeric LLM or agent judge that omits `score_range` is merely *told* `[1, 5]`, nothing checks its answer, and it warns at config load. There is no `[0, 1]` default for other numeric judges either: undeclared means no report coloring and `[1, 5]` normalization in the reward composition. Set `score_range: [lo, hi]` on the judge itself (e.g. `[0, 2]`, `[1, 10]`, `[0, 100]`) — a declared range is stated in the LLM judge's system prompt and `submit_score` schema, enforced on the returned value of *any* judge type, inline `check` included (off-scale → error sample, dropped from the mean, never clamped), used to color the report's per-cell bands, and used to normalize the judge in *every* reward composition, configured or default. Do not pin `reward.score_range` to match — it is a deprecated fallback for composed judges that declare no range, and writing it warns once one of them declares a different range. For `[0, 1]` judges that should NOT be re-normalized by the reward composition (e.g. a builtin like `efficiency/cost_budget`), list them in `reward.raw`.
+**Declare the scale on every numeric judge, including a plain `[1, 5]` one.** A numeric LLM or agent judge that omits `score_range` is merely *told* `[1, 5]`, nothing checks its answer, and it warns at config load. There is no `[0, 1]` default for other numeric judges either: undeclared means no report coloring and fallback normalization in the reward composition (`reward.score_range` if that deprecated key is set, else `[1, 5]`). Set `score_range: [lo, hi]` on the judge itself (e.g. `[0, 2]`, `[1, 10]`, `[0, 100]`) — a declared range is stated in the LLM judge's system prompt and `submit_score` schema, enforced on the returned value of *any* judge type, inline `check` included (off-scale → error sample, dropped from the mean, never clamped), used to color the report's per-cell bands, and used to normalize the judge in *every* reward composition that normalizes it, configured or default. Do not pin `reward.score_range` to match — it is a deprecated fallback for composed judges that declare no range, and writing it warns once one of them declares a different range. For `[0, 1]` judges that should NOT be re-normalized by the reward composition (e.g. a builtin like `efficiency/cost_budget`), list them in `reward.raw` — a single-judge reward is the other clamped case: `reward.judge` without `normalize: true` uses the value as-is and consults no range.
 
 **How many judges**: aim for 2-4 inline checks + 1-2 LLM judges. Start lean — you can always add more in later iterations. Every judge needs a `description` field explaining what it checks.
 
