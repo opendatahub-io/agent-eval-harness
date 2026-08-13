@@ -127,8 +127,9 @@ reward:
     If a learned reward model already emits a scalar, name it directly instead
     of writing a formula. `normalize: false` (the default) clamps its value to
     `[0, 1]` as-is; `normalize: true` maps it from the judge's own
-    `score_range`. Leaving `normalize` off on a judge that declares a wider
-    scale saturates the reward, and warns at config load.
+    `score_range`. Leaving `normalize` off on a judge that declares any other
+    scale warns at config load — a scale reaching 1 saturates the reward, a
+    narrower one caps it below the top.
 
     ```yaml
     reward:

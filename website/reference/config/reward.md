@@ -58,9 +58,11 @@ flowchart TD
       normalize: true
     ```
 
-    Without `normalize`, a judge that declares a wider scale saturates — every
-    value at or above `1` becomes the maximum reward. That combination warns at
-    config load (see [Load-time warnings](#load-time-warnings)).
+    Without `normalize`, a judge that declares any other scale is misread in
+    one of two directions: one reaching `1` saturates (every value at or above
+    `1` is the maximum reward), a narrower one such as `[0, 0.5]` can never
+    exceed `0.5`. Either warns at config load (see
+    [Load-time warnings](#load-time-warnings)).
 
     !!! warning "`judge` stands alone"
         `judge` cannot be combined with `formula`, `weights`, or `raw` —

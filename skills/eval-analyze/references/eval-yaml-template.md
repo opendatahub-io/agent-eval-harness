@@ -394,8 +394,8 @@ thresholds:
 #     judge: my_reward_model   # name of a judge defined above
 #     normalize: false         # default: use the value as-is, clamped to [0,1].
 #                              # Warns at load if the judge declares a scale
-#                              # other than [0, 1] — every score at or above 1
-#                              # would saturate at the maximum reward.
+#                              # other than [0, 1]: one reaching 1 saturates at
+#                              # the maximum reward, a narrower one caps below it.
 #                              # true: map it from the judge's score_range instead
 #     gate: false              # default false in judge mode
 #
