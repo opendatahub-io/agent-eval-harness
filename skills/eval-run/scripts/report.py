@@ -1302,6 +1302,10 @@ def _stability_proportion_bar(stable, total, samples):
 def _render_scoring_summary(summary, config, baseline_summary=None):
     judges = summary.get("judges", {})
     thresholds = config.get("thresholds", {})
+    # Authoritative PASS/FAIL per judge, from the same detector the CLI exits
+    # on — the column below only picks which bound to display.
+    _breached = {r.judge_name
+                 for r in _detect_regressions(summary.get("judges", {}), thresholds)}
     bl_judges = baseline_summary.get("judges", {}) if baseline_summary else {}
     has_bl = bool(bl_judges)
 
@@ -1387,14 +1391,19 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
                 status_cls = "skip"
                 status_label = "SKIP"
         elif isinstance(thresh, dict):
+            # The column shows one representative bound; the authoritative
+            # verdict comes from score.py so a judge gated only on
+            # `min_win_rate` or `max_error_rate` is not reported as PASS.
             if "min_pass_rate" in thresh and pass_rate is not None:
                 thresh_str = f"&ge; {_pct(thresh['min_pass_rate'])}"
-                ok = pass_rate >= thresh["min_pass_rate"]
-                status_cls = "pass" if ok else "fail"
-                status_label = "PASS" if ok else "FAIL"
             elif "min_mean" in thresh and mean is not None:
                 thresh_str = f"&ge; {thresh['min_mean']}"
-                ok = mean >= thresh["min_mean"]
+            elif "min_win_rate" in thresh:
+                thresh_str = f"&ge; {_pct(thresh['min_win_rate'])}"
+            elif "max_error_rate" in thresh:
+                thresh_str = f"&le; {_pct(thresh['max_error_rate'])} errored"
+            if thresh_str != "—":
+                ok = judge_name not in _breached
                 status_cls = "pass" if ok else "fail"
                 status_label = "PASS" if ok else "FAIL"
 
@@ -1451,25 +1460,33 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
     return html
 
 
+def _detect_regressions(judges, thresholds):
+    """score.py's regression detector, or nothing if it can't be loaded.
+
+    score.py sits beside this file but is a script, not a package module, so
+    it is imported by name off the same directory.
+    """
+    try:
+        from score import detect_regressions
+    except ImportError:
+        return []
+    try:
+        return detect_regressions(judges, thresholds)
+    except Exception:
+        return []
+
+
 def _render_regressions(summary, config):
     judges = summary.get("judges", {})
     thresholds = config.get("thresholds", {})
     regressions = []
 
-    for judge_name, thresh in thresholds.items():
-        agg = judges.get(judge_name, {})
-        if not isinstance(agg, dict) or not isinstance(thresh, dict):
-            continue
-        if "min_pass_rate" in thresh:
-            rate = agg.get("pass_rate")
-            if rate is not None and rate < thresh["min_pass_rate"]:
-                regressions.append((judge_name, "pass_rate",
-                                    f">= {_pct(thresh['min_pass_rate'])}", _pct(rate)))
-        if "min_mean" in thresh:
-            mean = agg.get("mean")
-            if mean is not None and mean < thresh["min_mean"]:
-                regressions.append((judge_name, "mean",
-                                    f">= {thresh['min_mean']}", f"{mean:.2f}"))
+    # Reuse score.py's detector rather than restating it. This section had
+    # drifted to two of the four keys, so a `min_win_rate` or `max_error_rate`
+    # breach failed the run while the report showed no Regressions table at all.
+    for reg in _detect_regressions(judges, thresholds):
+        regressions.append((reg.judge_name, reg.metric,
+                            reg.baseline_value, reg.current_value))
 
     if not regressions:
         return ""

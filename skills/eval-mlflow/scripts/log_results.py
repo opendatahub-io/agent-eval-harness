@@ -46,6 +46,28 @@ from agent_eval.mlflow.trace_builder import build_trace, log_trace
 from agent_eval.harbor.results import _extract_transcript_metrics
 
 
+def _detect_regressions(judges, thresholds):
+    """score.py's regression detector, loaded by path.
+
+    The judge engine lives with the eval-run skill rather than in the
+    agent_eval package — same approach as agent_eval/harbor/reward.py. Returns
+    [] if it can't be loaded, so MLflow logging never fails on this.
+    """
+    import importlib.util
+    try:
+        root = Path(__file__).resolve().parent.parent.parent.parent
+        score_path = root / "skills" / "eval-run" / "scripts" / "score.py"
+        if not score_path.exists():
+            return []
+        spec = importlib.util.spec_from_file_location("_score_for_thresholds",
+                                                      score_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.detect_regressions(judges, thresholds)
+    except Exception:
+        return []
+
+
 def _resolve_skill(config: EvalConfig) -> str | None:
     """Skill name compatible with AEH v1.0.3 and newer EvalConfig APIs."""
     if hasattr(config, "resolve_skill"):
@@ -299,20 +321,11 @@ def main():
                     metric_count += 1
 
         # ── Tags ─────────────────────────────────────────────────
-        has_regressions = False
-        if config.thresholds:
-            for judge_name, threshold in config.thresholds.items():
-                agg = judges.get(judge_name, {})
-                if not isinstance(agg, dict):
-                    continue
-                if "min_pass_rate" in threshold:
-                    rate = agg.get("pass_rate")
-                    if rate is not None and rate < threshold["min_pass_rate"]:
-                        has_regressions = True
-                if "min_mean" in threshold:
-                    mean = agg.get("mean")
-                    if mean is not None and mean < threshold["min_mean"]:
-                        has_regressions = True
+        # Ask score.py rather than restating its rules: this had drifted to two
+        # of the four threshold keys, so a run that exited 1 on `min_win_rate`
+        # or `max_error_rate` was still tagged regressions_detected=no.
+        has_regressions = bool(
+            config.thresholds and _detect_regressions(judges, config.thresholds))
         mlflow.set_tag("regressions_detected", "yes" if has_regressions else "no")
         mlflow.set_tag("num_judges", str(len(judges)))
         # Disk handoff: harness-snapshot.json under run_dir → tags + artifact.
