@@ -127,6 +127,27 @@ def _parse_and_validate(formula: str, allowed_calls: set[str]) -> ast.Module:
     return tree
 
 
+def formula_judge_names(formula: str) -> set:
+    """Judge names an expression formula reads.
+
+    Excludes the safe builtins and any name the formula assigns to itself, so
+    ``gate = mean([a, b])\ngate * score`` yields {a, b, score}. Used to scope
+    the reward.score_range deprecation warning to judges a formula can
+    actually normalize. Returns an empty set for an unparseable formula —
+    `validate_formula` is what rejects those.
+    """
+    try:
+        tree = ast.parse(formula.strip())
+    except SyntaxError:
+        return set()
+    assigned = {t.id for node in ast.walk(tree)
+                if isinstance(node, ast.Assign)
+                for t in node.targets if isinstance(t, ast.Name)}
+    read = {node.id for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)}
+    return read - assigned - set(_SAFE_FUNCS)
+
+
 def _safe_eval_formula(formula: str, variables: dict[str, float],
                        safe_funcs: dict) -> float:
     """Evaluate a reward formula using AST validation (no raw exec/eval).
@@ -275,7 +296,7 @@ def compute_reward_from_config(per_judge: dict,
     - "weighted": weighted sum of ``weights``.
     - "<expression>": Python expression with judge names as variables.
     """
-    score_range = reward_cfg.score_range
+    score_range = reward_cfg.effective_score_range
     raw_judges = reward_cfg.raw
 
     if reward_cfg.gate:

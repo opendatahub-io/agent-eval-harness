@@ -718,3 +718,11 @@ def test_end_to_end_build_reward_honours_a_declared_range(tmp_path):
 
     payload = reward_mod.build_reward(config, case_dir)
     assert payload["reward"] == pytest.approx(1.0)
+
+
+def test_formula_judge_names_reads_only_judge_names():
+    f = reward_mod.formula_judge_names
+    assert f("0.5 * a + 0.5 * b") == {"a", "b"}
+    assert f("mean([a, b])") == {"a", "b"}          # `mean` is a safe builtin
+    assert f("gate = mean([a, b])\ngate * score") == {"a", "b", "score"}
+    assert f("a +") == set()                        # unparseable, not a crash

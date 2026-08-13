@@ -682,8 +682,9 @@ class JudgeConfig:
     # normalize this judge in the default reward composition. If omitted, LLM
     # judges are told [1, 5] and nothing is enforced — an inline check returning
     # a raw count keeps returning it. Set explicitly for judges on a non-default
-    # range (e.g. 0-2, 1-10, 0-100). Independent of `reward.score_range`, which
-    # governs the configured reward composition's normalization.
+    # range (e.g. 0-2, 1-10, 0-100). This is the scale EVERY reward composition
+    # normalizes the judge over; `reward.score_range` is only a fallback for
+    # composed judges that declare none.
     score_range: Optional[list] = None
     model: str = ""  # Override model for this judge (pairwise, LLM)
     # External code judge
@@ -736,12 +737,68 @@ class RewardConfig:
     formula: str = "weighted"
     weights: dict = field(default_factory=dict)
     gate: bool = True
-    score_range: list = field(default_factory=lambda: [1, 5])
+    # Fallback scale for composed numeric judges that declare no `score_range`
+    # of their own. DEPRECATED — declare the scale on the judge instead.
+    # `None` means "absent from the YAML", which is what makes the deprecation
+    # warning targetable. Read it through `effective_score_range`.
+    score_range: Optional[list] = None
     raw: list = field(default_factory=list)
     # Single-judge mode: name of the judge whose value is the reward.
     judge: Optional[str] = None
     # In judge mode, map the value from score_range instead of clamping as-is.
     normalize: bool = False
+
+    @property
+    def effective_score_range(self) -> list:
+        """The fallback range, resolved. Never ``None``."""
+        return list(self.score_range) if self.score_range else [1.0, 5.0]
+
+
+def _reward_normalized_judges(reward, judge_names: set) -> set:
+    """Judges whose value the reward composition normalizes over a range.
+
+    Excludes `raw` judges, a clamped single judge, and names a formula never
+    reads — none of those consult a range, so a range conflict cannot move
+    them, and warning about them would be noise.
+    """
+    if reward.judge is not None:
+        return {reward.judge} if reward.normalize else set()
+    formula = (reward.formula or "").strip()
+    if formula == "weighted":
+        named = set(reward.weights)
+    else:
+        from agent_eval.harbor.reward import formula_judge_names
+        named = formula_judge_names(formula) & judge_names
+    return named - set(reward.raw)
+
+
+def _warn_reward_range_precedence(config) -> None:
+    """Warn when a written `reward.score_range` no longer governs a judge.
+
+    Only fires when the key is present in the YAML AND a judge it would have
+    normalized declares a different range of its own — i.e. only where the
+    precedence change actually moves a number.
+    """
+    reward = config.reward
+    ranges = {j.name: [float(j.score_range[0]), float(j.score_range[1])]
+              for j in config.judges if getattr(j, "score_range", None)}
+    composed = _reward_normalized_judges(
+        reward, {j.name for j in config.judges if j.name})
+    fallback = reward.effective_score_range
+    shadowed = sorted(n for n in composed if n in ranges and ranges[n] != fallback)
+    if not shadowed:
+        return
+    still = sorted(n for n in composed if n not in ranges)
+    tail = (f"It still applies to {', '.join(repr(n) for n in still)}; drop it "
+            "once every composed judge declares a 'score_range'."
+            if still else
+            "No composed judge relies on it any more — delete it.")
+    import warnings
+    warnings.warn(
+        f"reward.score_range {fallback} is deprecated and no longer normalizes "
+        + ", ".join(f"'{n}' {ranges[n]}" for n in shadowed)
+        + ": a judge's own 'score_range' wins. " + tail,
+        stacklevel=2)
 
 
 @dataclass
@@ -1263,18 +1320,22 @@ class EvalConfig:
             reward_raw = raw.get("reward")
             if not isinstance(reward_raw, dict):
                 raise ValueError("reward must be a mapping when provided")
-            sr = reward_raw.get("score_range", [1, 5])
-            if not isinstance(sr, list) or len(sr) != 2:
-                raise ValueError("reward.score_range must be a [min, max] list")
-            try:
-                score_min = float(sr[0])
-                score_max = float(sr[1])
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    "reward.score_range values must be numeric") from exc
-            if not score_min < score_max:
-                raise ValueError(
-                    "reward.score_range must be increasing [min, max]")
+            sr = reward_raw.get("score_range")
+            reward_score_range = None
+            if sr is not None:
+                if not isinstance(sr, list) or len(sr) != 2:
+                    raise ValueError(
+                        "reward.score_range must be a [min, max] list")
+                try:
+                    score_min = float(sr[0])
+                    score_max = float(sr[1])
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        "reward.score_range values must be numeric") from exc
+                if not score_min < score_max:
+                    raise ValueError(
+                        "reward.score_range must be increasing [min, max]")
+                reward_score_range = [score_min, score_max]
             weights = reward_raw.get("weights", {}) or {}
             if not isinstance(weights, dict):
                 raise ValueError("reward.weights must be a mapping")
@@ -1331,11 +1392,13 @@ class EvalConfig:
                 formula=formula,
                 weights=weights,
                 gate=gate,
-                score_range=[score_min, score_max],
+                score_range=reward_score_range,
                 raw=[str(r) for r in raw_list],
                 judge=judge,
                 normalize=normalize,
             )
+            if sr is not None:
+                _warn_reward_range_precedence(config)
 
         # Thresholds
         config.thresholds = raw.get("thresholds", {})
