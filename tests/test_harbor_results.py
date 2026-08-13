@@ -368,3 +368,32 @@ def test_malformed_transcript_values_degrade_to_missing_metrics(tmp_path):
     assert metrics["duration_s"] is None
     assert metrics["token_usage"] == {"input": 0, "output": 4, "cache_read": 0}
     assert metrics["num_turns"] == 2
+
+
+def test_malformed_result_event_fields_degrade_to_missing_metrics(tmp_path):
+    # A dict-valued result event stores its fields directly; malformed
+    # values must come out as None (or drop), never as strings, and a
+    # bool must not pass an isinstance-int guard.
+    tp = tmp_path / "claude-code.txt"
+    tp.write_text(json.dumps({
+        "type": "result", "num_turns": "two", "total_cost_usd": True,
+        "duration_ms": "xyz",
+        "usage": {"input_tokens": "abc", "output_tokens": 7,
+                  "cache_read_input_tokens": None},
+        "modelUsage": {
+            "claude": {"inputTokens": "abc", "outputTokens": 3,
+                       "costUSD": "oops"},
+            "bad": "not-a-dict",
+        },
+    }) + "\n")
+
+    metrics = R._extract_transcript_metrics(tp)
+
+    assert metrics["num_turns"] is None
+    assert metrics["cost_usd"] is None
+    assert metrics["duration_s"] is None
+    assert metrics["token_usage"] == {
+        "input": None, "output": 7, "cache_read": None, "cache_create": None}
+    assert metrics["per_model_usage"] == {
+        "claude": {"input": 0, "output": 3, "cache_read": 0,
+                   "cache_create": 0, "cost_usd": None}}

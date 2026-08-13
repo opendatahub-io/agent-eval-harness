@@ -106,20 +106,20 @@ def _extract_transcript_metrics(transcript_path: Path) -> dict:
                 cost = ev.get("total_cost_usd")
                 if isinstance(cost, (int, float)) and not isinstance(cost, bool):
                     result["cost_usd"] = float(cost)
-                result["num_turns"] = ev.get("num_turns")
-                duration_ms = ev.get("duration_ms")
-                if isinstance(duration_ms, (int, float)) and not isinstance(
-                        duration_ms, bool):
+                result["num_turns"] = _number(ev, "num_turns")
+                duration_ms = _number(ev, "duration_ms")
+                if duration_ms is not None:
                     result["duration_s"] = duration_ms / 1000
                 usage = ev.get("usage", {})
                 if not isinstance(usage, dict):
                     usage = {}
                 if usage:
                     result["token_usage"] = {
-                        "input": usage.get("input_tokens"),
-                        "output": usage.get("output_tokens"),
-                        "cache_read": usage.get("cache_read_input_tokens"),
-                        "cache_create": usage.get("cache_creation_input_tokens"),
+                        "input": _number(usage, "input_tokens"),
+                        "output": _number(usage, "output_tokens"),
+                        "cache_read": _number(usage, "cache_read_input_tokens"),
+                        "cache_create": _number(
+                            usage, "cache_creation_input_tokens"),
                     }
                 # Per-model breakdown from the result event's modelUsage (same
                 # source the local runner uses in stream_capture.py) — enables
@@ -131,11 +131,12 @@ def _extract_transcript_metrics(transcript_path: Path) -> dict:
                         if not isinstance(st, dict):
                             continue
                         pmu[mname] = {
-                            "input": st.get("inputTokens", 0) or 0,
-                            "output": st.get("outputTokens", 0) or 0,
-                            "cache_read": st.get("cacheReadInputTokens", 0) or 0,
-                            "cache_create": st.get("cacheCreationInputTokens", 0) or 0,
-                            "cost_usd": st.get("costUSD"),
+                            "input": _number(st, "inputTokens") or 0,
+                            "output": _number(st, "outputTokens") or 0,
+                            "cache_read": _number(st, "cacheReadInputTokens") or 0,
+                            "cache_create": _number(
+                                st, "cacheCreationInputTokens") or 0,
+                            "cost_usd": _number(st, "costUSD"),
                         }
                     if pmu:
                         result["per_model_usage"] = pmu
