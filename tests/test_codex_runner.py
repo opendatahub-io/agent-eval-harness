@@ -3,6 +3,7 @@
 import json
 import shutil
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -374,6 +375,63 @@ def test_codex_missing_binary_returns_failed_result(tmp_path, monkeypatch):
     result = CodexRunner().execute(None, "p", tmp_path, "m")
     assert result.exit_code == -1
     assert "codex missing" in result.stderr
+
+
+def _fake_litellm(monkeypatch, known_models, rate=0.001):
+    import types
+    calls = []
+
+    def cost_per_token(*, model, prompt_tokens, completion_tokens,
+                       cache_read_input_tokens):
+        calls.append({"model": model, "prompt": prompt_tokens,
+                      "completion": completion_tokens,
+                      "cache_read": cache_read_input_tokens})
+        return prompt_tokens * rate, completion_tokens * rate
+
+    fake = types.ModuleType("litellm")
+    fake.model_cost = {name: {"input_cost_per_token": rate}
+                       for name in known_models}
+    fake.cost_per_token = cost_per_token
+    monkeypatch.setitem(sys.modules, "litellm", fake)
+    return calls
+
+
+def test_estimate_cost_prices_each_turn_with_harbor_field_mapping(monkeypatch):
+    from agent_eval.agent.codex import _estimate_cost_usd
+    calls = _fake_litellm(monkeypatch, {"gpt-5.6-luna"})
+    events = [
+        {"type": "turn.completed", "usage": {
+            "input_tokens": 100, "cached_input_tokens": 40,
+            "output_tokens": 10}},
+        {"type": "turn.completed", "usage": {
+            "input_tokens": 200, "cached_input_tokens": 0,
+            "output_tokens": 20}},
+        {"type": "item.completed", "item": {}},
+    ]
+
+    cost = _estimate_cost_usd(events, "openai/gpt-5.6-luna")
+
+    # Pricing key falls back to the last path segment, per Harbor.
+    assert [c["model"] for c in calls] == ["gpt-5.6-luna"] * 2
+    # prompt_tokens is the superset including cached, cache passed separately.
+    assert calls[0] == {"model": "gpt-5.6-luna", "prompt": 100,
+                        "completion": 10, "cache_read": 40}
+    assert cost == pytest.approx((100 + 10 + 200 + 20) * 0.001)
+
+
+def test_estimate_cost_degrades_to_none(monkeypatch):
+    from agent_eval.agent.codex import _estimate_cost_usd
+    events = [{"type": "turn.completed", "usage": {"input_tokens": 5}}]
+
+    _fake_litellm(monkeypatch, set())  # model absent from pricing table
+    assert _estimate_cost_usd(events, "unknown-model") is None
+
+    monkeypatch.setitem(sys.modules, "litellm", None)  # import fails
+    assert _estimate_cost_usd(events, "gpt-5.6-luna") is None
+
+    _fake_litellm(monkeypatch, {"gpt-5.6-luna"})
+    assert _estimate_cost_usd([], "gpt-5.6-luna") is None  # no turns
+    assert _estimate_cost_usd(events, None) is None  # no model
 
 
 def test_codex_interrupt_kills_process_group(tmp_path, monkeypatch):

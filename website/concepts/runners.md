@@ -174,8 +174,11 @@ the controls available in `codex exec`: `plan` uses `read-only`, explicit
 `workspace-write`. Fine-grained Claude Code tool allow/deny rules do not have an exact
 Codex equivalent, so the runner warns rather than silently claiming they are enforced.
 Likewise, Codex CLI does not expose the harness's dollar budget cap; a non-default
-`max_budget_usd` produces a warning. Local Codex JSONL reports tokens but not cost,
-so `cost_usd` remains `null`; Harbor may provide cost from its agent result metadata.
+`max_budget_usd` produces a warning. Codex JSONL reports tokens but not cost, so the
+runner estimates `cost_usd` from per-turn usage via LiteLLM's pricing table — the
+same mechanism Harbor's Codex agent uses, so local and Harbor runs price the same
+tokens the same way. When `litellm` is not installed (the `harbor` extra includes
+it) or the model has no pricing entry, `cost_usd` is `null` rather than a guess.
 
 Codex does not support `inputs.tools` interception. It also rejects
 `workspace_mode: repo`, where the harness cannot enforce repository answer-key

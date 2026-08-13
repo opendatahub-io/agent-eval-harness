@@ -242,6 +242,7 @@ class CodexRunner(EvalRunner):
                     stdout=normalized_stdout,
                     stderr=timeout_message,
                     duration_s=time.monotonic() - start,
+                    cost_usd=_estimate_cost_usd(events, model),
                     token_usage=usage["token_usage"],
                     num_turns=usage["num_turns"],
                     resolved_model=model or None,
@@ -277,6 +278,7 @@ class CodexRunner(EvalRunner):
             stdout=normalized_stdout,
             stderr=stderr or "",
             duration_s=time.monotonic() - start,
+            cost_usd=_estimate_cost_usd(events, model),
             token_usage=usage["token_usage"],
             num_turns=usage["num_turns"],
             resolved_model=model or None,
@@ -564,6 +566,49 @@ def _usage_count(usage: dict, key: str) -> int:
     """Read a token count defensively; agent-influenced events may be malformed."""
     value = usage.get(key)
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _estimate_cost_usd(events: list[dict], model: Optional[str]) -> Optional[float]:
+    """Estimate run cost from per-turn usage via LiteLLM's pricing table.
+
+    Mirrors Harbor's Codex agent so local and Harbor runs price the same
+    tokens the same way: the pricing key is the model name or its last path
+    segment, and each turn is priced individually because rates can depend
+    on the call's context size. Anything unpriceable — litellm absent, the
+    model missing from the table, a failed calculation — yields None rather
+    than a guessed or partial number.
+    """
+    if not model:
+        return None
+    try:
+        import litellm
+    except ImportError:
+        return None
+    key = next((k for k in (model, model.split("/", 1)[-1])
+                if litellm.model_cost.get(k)), None)
+    if key is None:
+        return None
+    total = 0.0
+    priced = False
+    for event in events:
+        if event.get("type") not in {"turn.completed", "turn_completed"}:
+            continue
+        usage = event.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        try:
+            input_cost, output_cost = litellm.cost_per_token(
+                model=key,
+                prompt_tokens=_usage_count(usage, "input_tokens"),
+                completion_tokens=_usage_count(usage, "output_tokens"),
+                cache_read_input_tokens=_usage_count(
+                    usage, "cached_input_tokens"),
+            )
+        except Exception:
+            return None
+        total += float(input_cost + output_cost)
+        priced = True
+    return total if priced else None
 
 
 def _extract_usage(events: list[dict]) -> dict:
