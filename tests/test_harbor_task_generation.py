@@ -19,6 +19,20 @@ def test_resolve_arguments_required_and_optional():
         '--headless --dry-run "do X" --p Critical'
 
 
+def test_copy_outputs_snippet_quotes_hostile_paths(tmp_path):
+    import shlex
+    cfg_path, config = _make_eval(tmp_path)
+    hostile = 'out dir/$(touch pwned)'
+    config.outputs[0].path = hostile
+
+    snippet = gen._copy_outputs_snippet(config, "/workspace")
+
+    src = shlex.quote(f"/workspace/{hostile}")
+    dst = shlex.quote(f"/logs/verifier/{hostile}")
+    assert snippet == (f'mkdir -p "$(dirname {dst})" && '
+                       f'cp -r {src} {dst} 2>/dev/null || true')
+
+
 def _make_eval(tmp_path, *, name=None, description=None):
     cases = tmp_path / "cases"
     (cases / "case-001").mkdir(parents=True)

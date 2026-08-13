@@ -175,6 +175,56 @@ class TestParseStreamEvents:
         assert _codex_command_read_paths("cat <(sort a.md)") == []
         assert _codex_command_read_paths("cat a.md &") == []
 
+    def test_codex_item_variants_map_to_flat_schema(self):
+        events = [
+            {"type": "item.completed", "item": {
+                "id": "r1", "type": "reasoning", "text": "thinking hard"}},
+            {"type": "item.completed", "item": {
+                "id": "m1", "type": "mcp_tool_call", "server": "jira",
+                "tool": "create_issue", "arguments": {"summary": "s"},
+                "result": "OCPBUGS-1"}},
+            {"type": "item.completed", "item": {
+                "id": "c1", "type": "collab_tool_call", "tool": "ask",
+                "prompt": "which?", "status": "failed", "message": "no reply"}},
+            {"type": "item.completed", "item": {
+                "id": "w1", "type": "web_search", "query": "harbor docs",
+                "result": "top hit"}},
+            {"type": "item.completed", "item": {
+                "id": "f1", "type": "file_change",
+                "changes": [{"path": "a.py", "kind": "update"}],
+                "status": "completed"}},
+        ]
+
+        parsed = parse_stream_events(_to_stdout(events))
+
+        assert [e["type"] for e in parsed] == [
+            "assistant",                    # reasoning
+            "assistant", "tool_result",     # mcp
+            "assistant", "tool_result",     # collab
+            "assistant", "tool_result",     # web_search
+            "assistant", "tool_result",     # file_change
+        ]
+        assert parsed[0]["thinking"] == "thinking hard"
+        assert parsed[1]["tools"][0]["name"] == "mcp__jira__create_issue"
+        assert parsed[2]["content"] == "OCPBUGS-1"
+        assert parsed[2]["is_error"] is False
+        assert parsed[3]["tools"][0]["name"] == "ask"
+        assert parsed[4]["is_error"] is True
+        assert parsed[5]["tools"][0]["name"] == "WebSearch"
+        assert parsed[5]["tools"][0]["input"] == {"query": "harbor docs"}
+        assert parsed[7]["tools"][0]["name"] == "Edit"
+        assert parsed[8]["is_error"] is False
+
+    def test_codex_read_paths_reject_unspaced_operators(self):
+        # shlex does not split on unquoted operators without whitespace, so
+        # these arrive as single tokens; substring detection must bail.
+        assert _codex_command_read_paths("cat docs/api.md|head -20") == []
+        assert _codex_command_read_paths("cat secret.txt;touch pwned") == []
+        assert _codex_command_read_paths("cat a.md&&cat b.md") == []
+        # Fused redirections are stripped before the operator scan, so the
+        # ampersand in 2>&1 must not trigger the bail.
+        assert _codex_command_read_paths("head -n5 a.md 2>&1") == ["a.md"]
+
     def test_timestamps_preserved(self):
         events = [make_assistant("msg_001", text="test")]
         result = parse_stream_events(_to_stdout(events))

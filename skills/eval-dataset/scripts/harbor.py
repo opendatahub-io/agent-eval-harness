@@ -39,6 +39,9 @@ def main() -> None:
     parser.add_argument("--judge-model", default=None,
                         help="Override models.judge in the bundled config (e.g. a "
                              "model published on the target Vertex/Bedrock deployment)")
+    parser.add_argument("--no-llm-judges", action="store_true",
+                        help="Stamp packages deterministic-only: drop model-calling "
+                             "judges from the bundled config")
     args = parser.parse_args()
 
     config_path = Path(args.config).resolve()
@@ -50,6 +53,7 @@ def main() -> None:
         arguments=args.arguments, skill=args.skill, workdir=args.workdir,
         cases=args.cases, verifier_timeout=args.verifier_timeout,
         agent_timeout=args.agent_timeout, judge_model=args.judge_model,
+        no_llm_judges=args.no_llm_judges,
     )
     print(f"Generated {len(tasks)} task package(s) in {args.out}")
 

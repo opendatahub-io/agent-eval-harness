@@ -540,8 +540,10 @@ def run_eval_on_harbor(
         return proc.returncode
 
     # 3. Locate the job dir Harbor just wrote (newest under jobs_dir).
+    # Harbor can exit 0 without creating jobs_dir (e.g. an empty task list),
+    # so a missing directory is a reportable condition, not a traceback.
     job_dirs = sorted((d for d in jobs_dir.iterdir() if d.is_dir()),
-                      key=lambda d: d.stat().st_mtime)
+                      key=lambda d: d.stat().st_mtime) if jobs_dir.is_dir() else []
     if not job_dirs:
         print(f"No Harbor job dir under {jobs_dir}", file=sys.stderr)
         return 1

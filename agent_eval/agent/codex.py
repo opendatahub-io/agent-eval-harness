@@ -105,6 +105,14 @@ class CodexRunner(EvalRunner):
                 f"Must be one of: {sorted(self._VALID_EFFORTS)}")
         if self._effort:
             self._config_overrides["model_reasoning_effort"] = self._effort
+        # Serialize once now so an unrepresentable settings value fails at
+        # construction (config-load time) instead of surfacing per case.
+        for key, value in self._config_overrides.items():
+            try:
+                _toml_value(value)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid Codex settings value for {key!r}: {exc}") from exc
 
         if self._permissions:
             warnings.warn(
@@ -240,6 +248,18 @@ class CodexRunner(EvalRunner):
                     models_used=[model] if model else None,
                     raw_output={"events": events},
                 )
+            except BaseException:
+                # KeyboardInterrupt or other cancellation: codex runs in its
+                # own session and never receives the terminal's SIGINT, so an
+                # interrupted eval would leave it running (and spending).
+                try:
+                    if os.name != "nt":
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    else:
+                        proc.kill()
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+                raise
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             return RunResult(
                 exit_code=-1, stdout="", stderr=str(exc),
@@ -298,7 +318,7 @@ class CodexRunner(EvalRunner):
         owner_marker = workspace / ".agents" / ".agent-eval-harness-codex-skills"
         manifest = {
             "created": [], "exclude": None, "owner_marker": owner_marker,
-            "active": bool(self._skill_roots),
+            "active": bool(self._skill_roots), "created_tree": False,
         }
         if not self._skill_roots:
             return manifest
@@ -325,6 +345,7 @@ class CodexRunner(EvalRunner):
                     f"owned by agent-eval-harness: {skills_dest}")
 
             manifest["exclude"] = self._ensure_agents_gitignored(workspace)
+            manifest["created_tree"] = True
             skills_dest.mkdir(parents=True, exist_ok=True)
             owner_marker.write_text("agent-eval-harness\n")
             for source_root in self._skill_roots:
@@ -437,11 +458,17 @@ class CodexRunner(EvalRunner):
                     destination.unlink(missing_ok=True)
                 elif destination.exists():
                     shutil.rmtree(destination, ignore_errors=True)
-        for directory in (workspace / ".agents" / "skills", workspace / ".agents"):
-            try:
-                directory.rmdir()
-            except OSError:
-                pass
+        # Remove the (now empty) staging directories only when this run owned
+        # or created them: when staging *refused* to touch a pre-existing
+        # unowned tree, deleting even an empty user directory would
+        # contradict that refusal.
+        if owns_tree or manifest.get("created_tree"):
+            for directory in (workspace / ".agents" / "skills",
+                              workspace / ".agents"):
+                try:
+                    directory.rmdir()
+                except OSError:
+                    pass
 
         exclude_info = manifest.get("exclude")
         if exclude_info:
@@ -520,10 +547,10 @@ def _toml_value(value) -> str:
     plain string on the Codex side.
     """
     if value is None:
-        raise TypeError("Codex TOML overrides do not support null values")
+        raise ValueError("Codex TOML overrides do not support null values")
     if isinstance(value, dict):
         if not all(isinstance(key, str) for key in value):
-            raise TypeError("Codex TOML override mapping keys must be strings")
+            raise ValueError("Codex TOML override mapping keys must be strings")
         inner = ", ".join(
             f"{json.dumps(key)} = {_toml_value(item)}"
             for key, item in value.items())

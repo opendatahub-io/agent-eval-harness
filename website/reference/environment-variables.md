@@ -49,6 +49,9 @@ Bedrock).
 | `ANTHROPIC_MODEL` | Default model hint forwarded to Harbor containers. |
 | `ANTHROPIC_DEFAULT_OPUS_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL` | Map the `opus`/`sonnet`/`haiku` aliases to specific model IDs. |
 | `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT` | Standard GCP credential/project vars, forwarded when set. |
+| `OPENAI_API_KEY` (and other `OPENAI_*`) | OpenAI credentials for `runner.type: codex`; forwarded to the `codex exec` subprocess and into Harbor containers running the Codex agent. |
+| `CODEX_HOME` | Codex CLI state directory, forwarded when set. |
+| `CODEX_API_KEY` | Alternative Codex credential, forwarded when set. |
 
 !!! warning "At least one auth path is required"
     `/eval-setup` passes preflight only when `ANTHROPIC_API_KEY` **or**

@@ -35,6 +35,7 @@ import copy
 import ast
 import json
 import re
+import shlex
 import shutil
 from pathlib import Path
 
@@ -199,6 +200,24 @@ def _unjudged_verifier(copy_outputs: str = "true") -> str:
     )
 
 
+def _copy_outputs_snippet(config, workdir: str) -> str:
+    """Verifier shell snippet copying declared output paths to /logs/verifier.
+
+    Output paths come from eval.yaml; quote them so whitespace or shell
+    metacharacters in a path cannot break — or rewrite — the generated
+    ``test.sh``.
+    """
+    lines = []
+    for out in config.outputs:
+        if out.path:
+            src = shlex.quote(f"{workdir}/{out.path}")
+            dst = shlex.quote(f"/logs/verifier/{out.path}")
+            lines.append(
+                f'mkdir -p "$(dirname {dst})" && '
+                f'cp -r {src} {dst} 2>/dev/null || true')
+    return "\n".join(lines) if lines else "true"
+
+
 def _format_skill_instruction(skill_name: str, arguments: str,
                               runner_type: str) -> str:
     """Render an explicit skill invocation for the selected agent family."""
@@ -276,15 +295,7 @@ def _write_multi_step_case_package(config, config_path, bundled_cfg, case_dir,
     task_dir.mkdir(parents=True, exist_ok=True)
 
     # Verifier snippet that surfaces the declared output paths to the host.
-    copy_lines = []
-    for out in config.outputs:
-        if out.path:
-            src = f'"{workdir}/{out.path}"'
-            dst = f'/logs/verifier/{out.path}'
-            copy_lines.append(
-                f'mkdir -p "$(dirname {dst})" && '
-                f'cp -r {src} {dst} 2>/dev/null || true')
-    copy_outputs = "\n".join(copy_lines) if copy_lines else "true"
+    copy_outputs = _copy_outputs_snippet(config, workdir)
 
     raw_judges = bundled_cfg.get("judges") or []
     for step in steps:
@@ -461,15 +472,7 @@ def generate_tasks(
         }), encoding="utf-8")
 
         # tests/test.sh + bundled eval.yaml (verifier)
-        copy_lines = []
-        for out in config.outputs:
-            if out.path:
-                src = f'"{workdir}/{out.path}"'
-                dst = f'/logs/verifier/{out.path}'
-                copy_lines.append(
-                    f'mkdir -p "$(dirname {dst})" && '
-                    f'cp -r {src} {dst} 2>/dev/null || true')
-        copy_outputs = "\n".join(copy_lines) if copy_lines else "true"
+        copy_outputs = _copy_outputs_snippet(config, workdir)
         if bundled_cfg.get("judges"):
             verifier = _render("test.sh.tmpl", {
                 "WORKDIR": workdir,

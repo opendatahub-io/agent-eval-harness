@@ -60,6 +60,37 @@ def test_parse_trial_none_without_reward(tmp_path):
     assert R.parse_trial(tmp_path / "empty") is None
 
 
+def test_single_step_falls_back_to_result_json_for_version_and_duration(
+        tmp_path):
+    # Codex transcripts carry no result/system-init event, so version and
+    # duration must come from Harbor's own result.json bookkeeping.
+    trial = _make_trial(tmp_path, "case-001__a", 1.0, {})
+    (trial / "result.json").write_text(json.dumps({
+        "agent_info": {"name": "codex", "version": "0.147.0"},
+        "agent_execution": {"started_at": "2026-08-13T10:00:00Z",
+                            "finished_at": "2026-08-13T10:02:30Z"},
+    }))
+
+    parsed = R.parse_trial(trial)
+
+    assert parsed["agent_version"] == "0.147.0"
+    assert parsed["duration_s"] == 150.0
+
+
+def test_parse_job_wall_clock_accepts_whole_second_timestamps(tmp_path):
+    job = tmp_path / "job"
+    job.mkdir()
+    _make_trial(job, "case-001__a", 1.0, {})
+    # Harbor may emit ISO timestamps without fractional seconds; strptime
+    # with a mandatory %f silently dropped the metric for those.
+    (job / "result.json").write_text(json.dumps({
+        "started_at": "2026-08-13T10:00:00Z",
+        "finished_at": "2026-08-13T10:05:00Z",
+    }))
+
+    assert R.parse_job(job)["duration_s"] == 300.0
+
+
 def test_parse_job_aggregates(tmp_path):
     job = tmp_path / "job"
     job.mkdir()

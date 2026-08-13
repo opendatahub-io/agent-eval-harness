@@ -297,14 +297,25 @@ def parse_trial(trial_dir: Path) -> dict | None:
         "per_model_usage": None,
     }
 
-    # Agent execution metrics from Harbor's trial result.json (cost/tokens).
+    # Agent execution metrics from Harbor's trial result.json (cost/tokens),
+    # plus agent_info/agent_execution fallbacks for agents whose transcripts
+    # carry no result event (Codex emits neither version nor duration there).
+    fallback_version = None
+    fallback_duration = None
     trial_result = trial_dir / "result.json"
     if trial_result.is_file():
         try:
-            ar = (json.loads(trial_result.read_text()).get("agent_result") or {})
+            parsed_result = json.loads(trial_result.read_text())
+            ar = parsed_result.get("agent_result") or {}
             normalized = _agent_result_metrics(ar)
             record["cost_usd"] = normalized["cost_usd"]
             record["token_usage"] = normalized["token_usage"]
+            info = parsed_result.get("agent_info") or {}
+            version = info.get("version") if isinstance(info, dict) else None
+            if isinstance(version, str) and version:
+                fallback_version = version
+            fallback_duration = _timing_duration(
+                parsed_result.get("agent_execution"))
         except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             pass
 
@@ -321,8 +332,10 @@ def parse_trial(trial_dir: Path) -> dict | None:
             if v is not None and record["token_usage"].get(k) is None:
                 record["token_usage"][k] = v
     record["num_turns"] = extracted.get("num_turns")
-    record["duration_s"] = extracted.get("duration_s")
-    record["agent_version"] = extracted.get("agent_version")
+    record["duration_s"] = (extracted.get("duration_s")
+                            if extracted.get("duration_s") is not None
+                            else fallback_duration)
+    record["agent_version"] = extracted.get("agent_version") or fallback_version
     record["per_model_usage"] = extracted.get("per_model_usage")
 
     # Richer sidecar (values + rationales) when present.
@@ -574,15 +587,11 @@ def parse_job(job_dir: Path) -> dict:
     result_file = job_dir / "result.json"
     if result_file.exists():
         try:
-            from datetime import datetime
             job_result = json.loads(result_file.read_text())
-            started = job_result.get("started_at")
-            finished = job_result.get("finished_at")
-            if started and finished:
-                fmt = "%Y-%m-%dT%H:%M:%S.%f"
-                t0 = datetime.strptime(started.rstrip("Z"), fmt)
-                t1 = datetime.strptime(finished.rstrip("Z"), fmt)
-                wall_clock_s = (t1 - t0).total_seconds()
+            # fromisoformat (via _timing_duration) accepts timestamps with or
+            # without fractional seconds; strptime's mandatory %f silently
+            # dropped the metric for whole-second timestamps.
+            wall_clock_s = _timing_duration(job_result)
         except Exception:
             pass
 

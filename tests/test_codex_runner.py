@@ -236,6 +236,25 @@ def test_codex_without_plugins_does_not_touch_workspace(tmp_path):
     assert not (workspace / ".agents").exists()
 
 
+def test_staging_refusal_leaves_preexisting_empty_dirs_alone(tmp_path):
+    # Refusing to replace an unowned tree and then rmdir'ing it in cleanup
+    # would contradict the refusal — even when the directories are empty.
+    plugin = _plugin(tmp_path, "parent")
+    workspace = tmp_path / "workspace"
+    (workspace / ".agents" / "skills").mkdir(parents=True)
+    runner = CodexRunner(plugin_dirs=[str(plugin)])
+
+    with pytest.raises(ValueError, match="not owned by agent-eval-harness"):
+        runner._stage_skills(workspace)
+
+    assert (workspace / ".agents" / "skills").is_dir()
+
+
+def test_invalid_settings_values_fail_at_construction():
+    with pytest.raises(ValueError, match="Invalid Codex settings value"):
+        CodexRunner(config_overrides={"web_search": None})
+
+
 @requires_git
 def test_repo_staging_does_not_dirty_git_status(tmp_path):
     plugin = _plugin(tmp_path, "parent")
@@ -329,9 +348,9 @@ def test_toml_value_serializes_mappings_codex_can_parse():
     encoded = _toml_value(value)
     assert tomllib.loads(f"value = {encoded}")["value"] == value
     assert encoded == '{"network access" = true, "nested" = {"x-y" = ["/tmp"]}}'
-    with pytest.raises(TypeError, match="null"):
+    with pytest.raises(ValueError, match="null"):
         _toml_value(None)
-    with pytest.raises(TypeError, match="keys must be strings"):
+    with pytest.raises(ValueError, match="keys must be strings"):
         _toml_value({1: "bad"})
 
 
@@ -355,6 +374,29 @@ def test_codex_missing_binary_returns_failed_result(tmp_path, monkeypatch):
     result = CodexRunner().execute(None, "p", tmp_path, "m")
     assert result.exit_code == -1
     assert "codex missing" in result.stderr
+
+
+def test_codex_interrupt_kills_process_group(tmp_path, monkeypatch):
+    # start_new_session=True detaches codex from the terminal's foreground
+    # group, so it never sees Ctrl-C itself; the runner must kill the group
+    # before propagating the interrupt or the agent keeps running unattended.
+    class FakeProcess:
+        pid = 7777
+        returncode = None
+
+        def communicate(self, input=None, timeout=None):
+            raise KeyboardInterrupt
+
+    killed = []
+    monkeypatch.setattr(
+        "agent_eval.agent.codex.subprocess.Popen", lambda *a, **k: FakeProcess())
+    monkeypatch.setattr("agent_eval.agent.codex.os.killpg",
+                        lambda pid, sig: killed.append((pid, sig)))
+
+    with pytest.raises(KeyboardInterrupt):
+        CodexRunner().execute(None, "p", tmp_path, "m", timeout_s=1)
+
+    assert killed and killed[0][0] == 7777
 
 
 def test_codex_timeout_kills_group_bounds_reap_and_keeps_partial_usage(

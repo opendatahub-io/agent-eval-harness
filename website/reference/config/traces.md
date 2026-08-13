@@ -100,12 +100,13 @@ falls back to reconstructing the conversation from `stdout.log`.
 `conversation` and `tool_trace` values that LLM judges render via
 `{{ conversation }}` and `{{ tool_trace }}`.
 
-!!! note "Structured `outputs["events"]` for judges is not yet implemented"
-    Exposing the parsed events as a first-class, structured `outputs["events"]`
-    field for inline `check` judges is on the roadmap, not shipped. Today
-    `events` produces `events.json` and feeds the conversation/tool-trace
-    rendering; judges cannot yet iterate a typed event list from the `outputs`
-    record. Because the stream is verbose, many configs set `events: false`
+!!! note "Judges receive the typed event list"
+    The parsed events are exposed to judges as a structured
+    `outputs["events"]` list — inline `check` judges can iterate it directly,
+    and builtin process judges (for example `process/consulted_docs`) are
+    built on it. Both Claude Code stream-json and Codex `exec --json` output
+    are translated into the same flat event schema. Because the stream is
+    verbose, many configs still set `events: false`
     (as the canonical [`eval.yaml`](https://github.com/opendatahub-io/agent-eval-harness/blob/main/eval.yaml)
     does) unless a judge needs behavioral tracing.
 

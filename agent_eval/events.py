@@ -86,10 +86,14 @@ def extract_read_calls(events, include_subagents=True, include_grep=True):
 
 
 def parse_stream_events(stdout_text, result_cap=DEFAULT_RESULT_CAP):
-    """Parse JSONL stream-json text into structured event dicts.
+    """Parse JSONL text into structured event dicts.
+
+    Understands both Claude Code stream-json (``assistant``/``user``/
+    ``result``/``system``) and Codex ``exec --json`` (``item.completed``/
+    ``turn.completed``) lines; both are translated into the same flat schema.
 
     Args:
-        stdout_text: Raw JSONL text from Claude Code stdout.
+        stdout_text: Raw JSONL text from the agent CLI's stdout.
         result_cap: Max characters per tool result/input string value.
 
     Returns:
@@ -276,11 +280,15 @@ def _codex_command_read_paths(command) -> list[str]:
             return []
 
     for token in tokens:
-        if token in {"|", "||", "&&", ";", "&"}:
-            return []
         if "$(" in token or "`" in token or token.startswith(("<(", ">(")):
             return []
     tokens = _strip_shell_redirections(tokens)
+    # After redirections are gone, any remaining operator character means a
+    # pipeline or compound command. Check inside tokens, not just for exact
+    # matches: shlex does not split on unquoted operators without whitespace,
+    # so ``cat a.md|head`` yields the single token ``a.md|head``.
+    if any(ch in token for token in tokens for ch in "|;&"):
+        return []
     if not tokens:
         return []
     command_name = Path(tokens[0]).name
