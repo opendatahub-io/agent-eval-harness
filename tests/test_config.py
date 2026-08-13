@@ -1,5 +1,6 @@
 """Config schema parsing tests."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -551,8 +552,32 @@ def test_resolve_plugin_dir_absolute_is_opt_in_but_must_exist(
         resolve_plugin_dir(cfg, str(tmp_path / "missing"))
 
 
+def test_plugin_manifest_must_be_a_json_object(tmp_path):
+    from agent_eval.config import resolve_plugin_skill_roots
+    plugin = tmp_path / "plugin"
+    (plugin / ".claude-plugin").mkdir(parents=True)
+    (plugin / ".claude-plugin" / "plugin.json").write_text('["skills"]')
+    with pytest.raises(ValueError, match="must be a JSON object"):
+        resolve_plugin_skill_roots(plugin)
+
+
+@pytest.mark.parametrize("entry", ["/etc", "../../outside", "escape-link"])
+def test_plugin_manifest_skill_roots_cannot_escape_plugin_dir(tmp_path, entry):
+    from agent_eval.config import resolve_plugin_skill_roots
+    outside = tmp_path / "outside"
+    (outside / "leak").mkdir(parents=True)
+    (outside / "leak" / "SKILL.md").write_text("leak")
+    plugin = tmp_path / "plugins" / "p"
+    (plugin / ".claude-plugin").mkdir(parents=True)
+    (plugin / "escape-link").symlink_to(outside, target_is_directory=True)
+    (plugin / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps({"skills": [entry]}))
+    with pytest.raises(ValueError, match="must stay beneath the plugin"):
+        resolve_plugin_skill_roots(plugin)
+
+
 def test_codex_rejects_unenforceable_tool_interception_and_repo_mode(tmp_path):
-    with pytest.raises(ValueError, match="does not support inputs.tools"):
+    with pytest.raises(ValueError, match=r"does not support inputs\.tools"):
         EvalConfig.from_yaml(_write(tmp_path, """
 name: t
 execution: {skill: s}

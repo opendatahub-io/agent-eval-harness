@@ -304,7 +304,14 @@ class CodexRunner(EvalRunner):
             return manifest
         try:
             if owner_marker.is_file():
-                if owner_marker.read_text() != "agent-eval-harness\n":
+                # The agent can scribble on workspace files, so an unreadable
+                # marker is "unrecognized", not a crash.
+                try:
+                    recognized = (
+                        owner_marker.read_text() == "agent-eval-harness\n")
+                except (OSError, UnicodeDecodeError):
+                    recognized = False
+                if not recognized:
                     raise ValueError(
                         f"Refusing unrecognized staged-skill marker: {owner_marker}")
                 if skills_dest.is_symlink():
@@ -412,7 +419,7 @@ class CodexRunner(EvalRunner):
         try:
             owns_tree = (owner_marker is not None and owner_marker.is_file()
                          and owner_marker.read_text() == "agent-eval-harness\n")
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             pass
         if owns_tree:
             skills_dest = workspace / ".agents" / "skills"

@@ -190,6 +190,9 @@ def resolve_plugin_skill_roots(plugin_dir: str | Path) -> list[Path]:
         except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
             raise ValueError(
                 f"Cannot read plugin manifest {manifest_path}: {exc}") from exc
+        if not isinstance(manifest, dict):
+            raise ValueError(
+                f"Plugin manifest {manifest_path} must be a JSON object")
         configured_roots = manifest.get("skills")
 
     if configured_roots is None:
@@ -204,7 +207,17 @@ def resolve_plugin_skill_roots(plugin_dir: str | Path) -> list[Path]:
             f"Plugin manifest {manifest_path} field 'skills' must be a "
             "non-empty string or list of non-empty strings")
 
-    roots = [(plugin / entry).resolve() for entry in entries]
+    roots = []
+    for entry in entries:
+        # The manifest is third-party content; its entries must not name
+        # host paths outside the plugin the operator actually opted into,
+        # whether spelled absolute, with ``..``, or through a symlink.
+        root = (plugin / entry).resolve()
+        if not root.is_relative_to(plugin):
+            raise ValueError(
+                "Plugin skill roots must stay beneath the plugin directory "
+                f"{plugin}: {entry!r} resolved to {root}")
+        roots.append(root)
     missing = [root for root in roots if not root.is_dir()]
     if missing:
         raise FileNotFoundError(
