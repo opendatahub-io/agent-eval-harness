@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "eval-run" / "s
 
 from agent_eval.events import (
     parse_stream_events, merge_subagent_transcripts, extract_conversation_text,
+    extract_read_calls,
 )
 from conftest import (
     make_assistant, make_result, make_system_init, make_user,
@@ -120,7 +121,7 @@ class TestParseStreamEvents:
                 "id": "item_0", "type": "agent_message", "text": "Starting"}},
             {"type": "item.completed", "item": {
                 "id": "item_1", "type": "command_execution",
-                "command": "sed -n '1,20p' README.md",
+                "command": "/bin/bash -lc \"sed -n '1,20p' README.md\"",
                 "aggregated_output": "contents", "exit_code": 0,
                 "status": "completed"}},
             {"type": "item.completed", "item": {
@@ -136,10 +137,15 @@ class TestParseStreamEvents:
             "assistant", "assistant", "tool_result", "assistant", "result"]
         assert parsed[1]["tools"] == [{
             "name": "Bash", "id": "item_1",
-            "input": {"command": "sed -n '1,20p' README.md"},
+            "input": {
+                "command": "/bin/bash -lc \"sed -n '1,20p' README.md\"",
+                "read_paths": ["README.md"],
+            },
         }]
         assert parsed[2]["content"] == "contents"
         assert extract_conversation_text(parsed) == "Starting\n\nDone"
+        assert extract_read_calls(parsed) == [{
+            "file_path": "README.md", "timestamp": None}]
 
     def test_timestamps_preserved(self):
         events = [make_assistant("msg_001", text="test")]

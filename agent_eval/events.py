@@ -5,6 +5,7 @@ judge consumption via ``outputs["events"]``.
 """
 
 import json
+import shlex
 from pathlib import Path
 
 DEFAULT_RESULT_CAP = 50000
@@ -14,9 +15,10 @@ def extract_read_calls(events, include_subagents=True, include_grep=True):
     """Extract file access tool calls from parsed events for documentation tracking.
 
     Tracks Read tool calls and optionally Grep tool calls (which also read
-    file contents). Bash commands like ``cat``, ``head``, ``tail`` are NOT
-    tracked — their file targets are ambiguous and parsing shell commands
-    reliably is fragile.
+    file contents). Generic Bash commands are not parsed here because their
+    file targets are ambiguous. Codex's JSONL translator does annotate
+    conservative, explicit file-reader commands with ``read_paths``; those
+    structured paths count.
 
     Args:
         events: List of event dicts from parse_stream_events().
@@ -67,6 +69,17 @@ def extract_read_calls(events, include_subagents=True, include_grep=True):
                     "file_path": path,
                     "timestamp": timestamp,
                 })
+
+            elif name == "Bash":
+                paths = tool_input.get("read_paths", [])
+                if not isinstance(paths, list):
+                    continue
+                for path in paths:
+                    if isinstance(path, str) and path:
+                        read_calls.append({
+                            "file_path": path,
+                            "timestamp": timestamp,
+                        })
 
     return read_calls
 
@@ -169,7 +182,11 @@ def _parse_codex_event(obj, result_cap):
     is_error = False
     if item_type == "command_execution":
         tool_name = "Bash"
-        tool_input = {"command": item.get("command", "")}
+        command = item.get("command", "")
+        tool_input = {"command": command}
+        read_paths = _codex_command_read_paths(command)
+        if read_paths:
+            tool_input["read_paths"] = read_paths
         tool_output = item.get("aggregated_output", "")
         exit_code = item.get("exit_code")
         is_error = (isinstance(exit_code, int) and not isinstance(exit_code, bool)
@@ -220,6 +237,87 @@ def _parse_codex_event(obj, result_cap):
         result["truncated"] = True
         result["original_length"] = truncated["original_length"]
     return [assistant, result]
+
+
+def _codex_command_read_paths(command) -> list[str]:
+    """Extract paths from simple, explicit file-reader shell commands.
+
+    This is deliberately narrow: it recognizes the command shapes Codex emits
+    for direct ``sed``/``cat``/``head``/``tail`` reads, but does not guess about
+    pipelines, substitutions, scripts, or arbitrary commands.
+    """
+    if not isinstance(command, str) or not command:
+        return []
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return []
+    if not tokens:
+        return []
+
+    shell = Path(tokens[0]).name
+    if shell in {"bash", "sh", "zsh", "dash"}:
+        if not any(flag.startswith("-") and "c" in flag
+                   for flag in tokens[1:-1]):
+            return []
+        try:
+            tokens = shlex.split(tokens[-1])
+        except ValueError:
+            return []
+        if not tokens:
+            return []
+
+    if any(token in {"|", "||", "&&", ";", ">", ">>", "<"}
+           for token in tokens):
+        return []
+    command_name = Path(tokens[0]).name
+
+    if command_name == "cat":
+        return [token for token in tokens[1:]
+                if token and not token.startswith("-")]
+
+    if command_name == "sed":
+        index = 1
+        program_seen = False
+        paths = []
+        while index < len(tokens):
+            token = tokens[index]
+            if token in {"-e", "--expression"}:
+                program_seen = True
+                index += 2
+                continue
+            if token in {"-f", "--file"}:
+                if index + 1 < len(tokens):
+                    paths.append(tokens[index + 1])
+                program_seen = True
+                index += 2
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            if not program_seen:
+                program_seen = True
+            else:
+                paths.append(token)
+            index += 1
+        return paths
+
+    if command_name in {"head", "tail"}:
+        paths = []
+        index = 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token in {"-n", "--lines", "-c", "--bytes"}:
+                index += 2
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            paths.append(token)
+            index += 1
+        return paths
+
+    return []
 
 
 def _extract_content_blocks(content_blocks, result_cap):

@@ -332,6 +332,23 @@ class TestEndToEndDocumentationTracking:
         assert read_calls[1]["offset"] == 0
         assert read_calls[1]["limit"] == 100
 
+    def test_codex_explicit_shell_reads_are_tracked(self):
+        docs = [f"/workspace/docs/doc-{index}.md" for index in range(5)]
+        stream = "\n".join(json.dumps({
+            "type": "item.completed",
+            "item": {
+                "id": f"item_{index}",
+                "type": "command_execution",
+                "command": f"/bin/bash -lc \"sed -n '1,200p' {path}\"",
+                "aggregated_output": "contents",
+                "exit_code": 0,
+            },
+        }) for index, path in enumerate(docs))
+
+        read_calls = extract_read_calls(parse_stream_events(stream))
+
+        assert [call["file_path"] for call in read_calls] == docs
+
     def test_read_calls_chronological_order(self):
         """Test that Read calls are returned in chronological order."""
         events = [
