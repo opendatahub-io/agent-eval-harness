@@ -20,7 +20,9 @@ RUN dnf install -y nodejs npm git tar && dnf clean all
 
 # Agent CLIs. Pin the versions exercised by this image and the runner tests;
 # unpinned npm installs make identical image sources produce different agents.
-RUN npm install -g @anthropic-ai/claude-code@2.1.228 @openai/codex@0.147.0
+RUN npm install -g --include=optional \
+        @anthropic-ai/claude-code@2.1.228 @openai/codex@0.147.0 \
+    && codex --version
 
 # Python deps for the judge engine + LLM judges (Vertex + direct API).
 # Installed BEFORE the source COPY so editing agent_eval/ doesn't invalidate
