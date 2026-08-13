@@ -117,7 +117,10 @@ def test_generate_tasks_can_drop_model_calling_judges(tmp_path):
     raw = yaml.safe_load(cfg_path.read_text())
     raw["judges"] += [
         {"name": "quality", "prompt": "score it"},
-        {"name": "builtin-unknown", "builtin": "quality/example"},
+        # A builtin whose registry kind is "llm" must be dropped with the
+        # prompt judges. (An unknown builtin name can no longer reach the
+        # bundler: EvalConfig.from_yaml rejects it at load.)
+        {"name": "builtin-llm", "builtin": "quality/output_completeness"},
     ]
     cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
     config = EvalConfig.from_yaml(cfg_path)
