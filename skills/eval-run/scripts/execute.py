@@ -558,6 +558,12 @@ def _extract_last_assistant_text(stdout, limit=4000):
     return text[:limit]
 
 
+def _cost_label(cost):
+    """Render a per-case cost, honestly showing unknown as such."""
+    return (f"${cost:.2f}" if isinstance(cost, (int, float))
+            and not isinstance(cost, bool) else "cost n/a")
+
+
 def _sum_reported_costs(case_results):
     """Sum measured case costs, preserving unknown when none were reported."""
     reported = [
@@ -777,7 +783,7 @@ def _run_single_case_in_repo(runner, skill_name, case_ws, output_dir,
     if repo_before != repo_after:
         status += " [REPO MODIFIED]"
     print(f"    → {case_id}: {status} | {result.duration_s:.0f}s | "
-          f"${result.cost_usd or 0:.2f}", file=sys.stderr)
+          f"{_cost_label(result.cost_usd)}", file=sys.stderr)
 
     return case_id, case_result
 
@@ -956,7 +962,7 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
 
     status = "OK" if result.exit_code == 0 else f"FAIL (exit {result.exit_code})"
     print(f"    → {case_id}: {status} | {result.duration_s:.0f}s | "
-          f"${result.cost_usd or 0:.2f}", file=sys.stderr)
+          f"{_cost_label(result.cost_usd)}", file=sys.stderr)
 
     return case_id, case_result
 
@@ -1135,7 +1141,7 @@ def _run_multi_step_case(runner, case_id, case_ws, output_dir, model,
                       else f"FAIL (exit {step_result.exit_code})")
             print(f"    → {case_id} step {step_id}: {status} | "
                   f"{step_result.duration_s:.0f}s | "
-                  f"${step_result.cost_usd or 0:.2f}", file=sys.stderr)
+                  f"{_cost_label(step_result.cost_usd)}", file=sys.stderr)
 
             if step_result.exit_code != 0 and step.on_failure == "fail":
                 aborted_at = step_id
@@ -1197,7 +1203,7 @@ def _run_multi_step_case(runner, case_id, case_ws, output_dir, model,
 
     print(f"    → {case_id}: {len(step_metrics)} step(s) | "
           f"{case_result['duration_s']:.0f}s | "
-          f"${case_result.get('cost_usd') or 0:.2f}", file=sys.stderr)
+          f"{_cost_label(case_result.get('cost_usd'))}", file=sys.stderr)
     return case_id, case_result
 
 
