@@ -5,6 +5,7 @@ judge consumption via ``outputs["events"]``.
 """
 
 import json
+import re
 import shlex
 from pathlib import Path
 
@@ -99,6 +100,8 @@ def parse_stream_events(stdout_text, result_cap=DEFAULT_RESULT_CAP):
 
     events = []
     tool_id_to_name = {}
+    codex_turns = 0
+    codex_turn_timestamp = None
 
     for line in stdout_text.splitlines():
         line = line.strip()
@@ -132,23 +135,28 @@ def parse_stream_events(stdout_text, result_cap=DEFAULT_RESULT_CAP):
             if event:
                 events.append(event)
 
-        elif event_type in {"item.completed", "turn.completed", "turn_completed"}:
+        elif event_type == "item.completed":
             events.extend(_parse_codex_event(obj, result_cap))
 
+        elif event_type in {"turn.completed", "turn_completed"}:
+            # Codex emits one of these per turn. Fold them into a single
+            # trailing result event so every transcript keeps the
+            # one-result-per-run shape consumers expect from Claude streams.
+            codex_turns += 1
+            codex_turn_timestamp = obj.get("timestamp")
+
+    if codex_turns:
+        events.append({
+            "type": "result",
+            "cost_usd": None,
+            "num_turns": codex_turns,
+            "timestamp": codex_turn_timestamp,
+        })
     return events
 
 
 def _parse_codex_event(obj, result_cap):
-    """Translate one Codex exec event into the harness's flat event schema."""
-    event_type = obj.get("type")
-    if event_type in {"turn.completed", "turn_completed"}:
-        return [{
-            "type": "result",
-            "cost_usd": None,
-            "num_turns": 1,
-            "timestamp": obj.get("timestamp"),
-        }]
-
+    """Translate one Codex ``item.completed`` event into the flat schema."""
     item = obj.get("item")
     if not isinstance(item, dict):
         return []
@@ -267,8 +275,13 @@ def _codex_command_read_paths(command) -> list[str]:
         if not tokens:
             return []
 
-    if any(token in {"|", "||", "&&", ";", ">", ">>", "<"}
-           for token in tokens):
+    for token in tokens:
+        if token in {"|", "||", "&&", ";", "&"}:
+            return []
+        if "$(" in token or "`" in token or token.startswith(("<(", ">(")):
+            return []
+    tokens = _strip_shell_redirections(tokens)
+    if not tokens:
         return []
     command_name = Path(tokens[0]).name
 
@@ -318,6 +331,30 @@ def _codex_command_read_paths(command) -> list[str]:
         return paths
 
     return []
+
+
+# Matches redirection operators whether detached (``>``, ``2>``) or fused to
+# their target (``>out``, ``2>/dev/null``, ``2>&1``, ``&>log``, ``<in``).
+_REDIRECT_OPERATOR = re.compile(r"(\d*|&)(>>?|<)")
+
+
+def _strip_shell_redirections(tokens):
+    """Drop redirections so ``cat notes.md 2>/dev/null`` still counts notes.md.
+
+    A detached operator consumes its following target token; a fused form is
+    dropped alone. ``<`` sources are dropped too — conservative, per the
+    narrow-parse policy above.
+    """
+    stripped = []
+    index = 0
+    while index < len(tokens):
+        match = _REDIRECT_OPERATOR.match(tokens[index])
+        if match:
+            index += 2 if match.end() == len(tokens[index]) else 1
+            continue
+        stripped.append(tokens[index])
+        index += 1
+    return stripped
 
 
 def _extract_content_blocks(content_blocks, result_cap):

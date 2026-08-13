@@ -90,8 +90,6 @@ def _resolve_harbor_skill_roots(config: EvalConfig) -> list[Path]:
     for configured in config.runner.plugin_dirs:
         path = resolve_plugin_dir(config, configured)
         roots.extend(resolve_plugin_skill_roots(path))
-    if config.runner.plugin_dirs and not roots:
-        raise ValueError("Configured Harbor Codex plugins export no skill roots")
     return roots
 
 
@@ -465,15 +463,18 @@ def run_eval_on_harbor(
         if ignored:
             raise ValueError(
                 "Pre-generated Harbor tasks cannot apply generation options "
-                f"{', '.join(ignored)}; pass --regenerate to rebuild them")
+                f"{', '.join(ignored)}; pass --regenerate --image IMAGE to "
+                "rebuild them")
         _validate_task_package_reuse(tasks_dir, config)
         print(f"Using {existing} pre-generated task package(s) in {tasks_dir} "
               f"(skipping generation; --regenerate to force)", file=sys.stderr)
     else:
         if not image:
             raise ValueError(
-                "No tasks in --tasks-dir and no --image to generate them. "
-                "Either pre-generate with /eval-dataset (scripts/harbor.py) "
+                ("--regenerate discards the existing task packages and needs "
+                 "--image to rebuild them. " if existing else
+                 "No tasks in --tasks-dir and no --image to generate them. ")
+                + "Either pre-generate with /eval-dataset (scripts/harbor.py) "
                 "or pass --image.")
         if no_llm_judges:
             filtered = tasks_mod._bundle_eval_config(

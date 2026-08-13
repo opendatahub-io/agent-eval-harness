@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "eval-run" / "s
 
 from agent_eval.events import (
     parse_stream_events, merge_subagent_transcripts, extract_conversation_text,
-    extract_read_calls,
+    extract_read_calls, _codex_command_read_paths,
 )
 from conftest import (
     make_assistant, make_result, make_system_init, make_user,
@@ -146,6 +146,34 @@ class TestParseStreamEvents:
         assert extract_conversation_text(parsed) == "Starting\n\nDone"
         assert extract_read_calls(parsed) == [{
             "file_path": "README.md", "timestamp": None}]
+
+    def test_codex_turns_fold_into_single_result_event(self):
+        events = [
+            {"type": "item.completed", "item": {
+                "id": "item_0", "type": "agent_message", "text": "One"}},
+            {"type": "turn.completed", "usage": {"input_tokens": 5}},
+            {"type": "item.completed", "item": {
+                "id": "item_1", "type": "agent_message", "text": "Two"}},
+            {"type": "turn.completed", "usage": {"input_tokens": 7}},
+        ]
+
+        parsed = parse_stream_events(_to_stdout(events))
+
+        assert [event["type"] for event in parsed] == [
+            "assistant", "assistant", "result"]
+        assert parsed[-1]["num_turns"] == 2
+        assert parsed[-1]["cost_usd"] is None
+
+    def test_codex_read_paths_skip_redirections_and_substitutions(self):
+        assert _codex_command_read_paths(
+            "cat notes.md 2>/dev/null") == ["notes.md"]
+        assert _codex_command_read_paths(
+            "cat notes.md > copy.md") == ["notes.md"]
+        assert _codex_command_read_paths("head -n5 a.md 2>&1") == ["a.md"]
+        assert _codex_command_read_paths("cat $(find . -name '*.md')") == []
+        assert _codex_command_read_paths("cat `ls docs`") == []
+        assert _codex_command_read_paths("cat <(sort a.md)") == []
+        assert _codex_command_read_paths("cat a.md &") == []
 
     def test_timestamps_preserved(self):
         events = [make_assistant("msg_001", text="test")]
