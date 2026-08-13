@@ -679,7 +679,7 @@ class JudgeConfig:
     # in the LLM judge's system prompt and tool schema, enforced on the returned
     # value (an off-scale value is recorded as an error sample, not clamped),
     # used by the report to color per-cell bands proportionally, and used to
-    # normalize this judge in the default reward composition. If omitted, LLM
+    # normalize this judge in the reward composition. If omitted, LLM
     # judges are told [1, 5] and nothing is enforced — an inline check returning
     # a raw count keeps returning it. Set explicitly for judges on a non-default
     # range (e.g. 0-2, 1-10, 0-100). This is the scale EVERY reward composition
@@ -718,10 +718,10 @@ class RewardConfig:
     1. ``judge``: a single judge whose value IS the reward. By default the
        value is used as-is, clamped to [0, 1] (for a judge that already emits
        a [0, 1] reward, e.g. a learned reward model). Set ``normalize: true``
-       to instead map it from ``score_range`` to [0, 1].
+       to instead map it from the judge's own ``score_range`` to [0, 1].
     2. ``formula`` (+ ``weights``): compose from multiple judges —
-       - "weighted": weighted sum of ``weights``, each normalized via
-         ``score_range`` (or clamped if listed in ``raw``).
+       - "weighted": weighted sum of ``weights``, each normalized over its own
+         declared ``score_range`` (or clamped if listed in ``raw``).
        - "<expression>": Python expression with judge names as variables.
 
     When gate is True, any boolean judge that returned False zeros the reward.
@@ -729,9 +729,11 @@ class RewardConfig:
     formula references it — so an ``<expression>`` that uses booleans as its
     own gate (e.g. ``passed * score``) usually wants ``gate: false`` to avoid
     double-gating. ``gate`` defaults to False in ``judge`` mode.
-    score_range normalizes numeric judge scores to [0, 1].
+    score_range: DEPRECATED fallback, used only for composed judges that
+         declare no ``score_range`` of their own ([1, 5] when absent — read it
+         through ``effective_score_range``).
     raw: list of judge names whose values are already in [0, 1] and should
-         NOT be normalized via score_range (e.g. efficiency).
+         be clamped rather than normalized over any range (e.g. efficiency).
     """
 
     formula: str = "weighted"
@@ -745,7 +747,8 @@ class RewardConfig:
     raw: list = field(default_factory=list)
     # Single-judge mode: name of the judge whose value is the reward.
     judge: Optional[str] = None
-    # In judge mode, map the value from score_range instead of clamping as-is.
+    # In judge mode, map the value from the judge's own score_range instead of
+    # clamping as-is.
     normalize: bool = False
 
     @property

@@ -144,7 +144,8 @@ harness trains on, so the number shown matches your configured
 formula). Numeric cells are green/amber/red by where the score falls in the
 judge's declared `score_range` — a value *off* that scale bands red rather than
 scoring past the top of it — and a bottom **Average** row summarises scored
-cases.
+cases. The Reward column reads those same declared ranges, so a cell near the
+top of its band and its contribution to the reward agree.
 
 !!! note "Only rendered with a reward config"
     The Per-Case Reward Overview is **omitted entirely** unless the config sets a

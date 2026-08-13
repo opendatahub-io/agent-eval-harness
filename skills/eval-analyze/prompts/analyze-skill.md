@@ -162,9 +162,11 @@ or single-judge evals — the default resolution works fine.
 Pick the mode that matches how a human would grade:
 
 - **One judge dominates** → `mode: judge`, name the judge, set `normalize: true`
-  when it scores on 1-5 (mapped from `score_range` to [0, 1]) or `normalize:
-  false` when it already emits [0, 1] (e.g. a learned reward model or a builtin
-  like `efficiency/cost_budget`).
+  whenever it scores on any scale other than [0, 1] (mapped from the judge's
+  own `score_range`) or `normalize: false` when it already emits [0, 1] (e.g. a
+  learned reward model or a builtin like `efficiency/cost_budget`). Clamping a
+  judge that declares a wider scale instead saturates — every score at or above
+  1 becomes the maximum reward — and warns at config load.
 - **Fixed weights across a few numeric judges** → `mode: weighted`, provide
   `weights: {name: weight}` summing to a sensible total (they'll be normalized).
 - **Non-linear composition** (e.g. gate one judge with another, or blend a

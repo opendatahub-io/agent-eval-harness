@@ -44,15 +44,23 @@ flowchart TD
       # gate: false               # default in judge mode
     ```
 
-    Set `normalize: true` to instead map the value from `score_range` to `[0, 1]`
-    (useful when the judge emits, say, a 1-5 rubric score):
+    Set `normalize: true` to instead map the value from the judge's own
+    [`score_range`](judges.md) to `[0, 1]` (useful when the judge emits, say, a
+    1-5 rubric score):
 
     ```yaml
+    judges:
+      - name: output_quality
+        score_range: [1, 5]     # the scale the value is mapped from
+
     reward:
       judge: output_quality
       normalize: true
-      score_range: [1, 5]
     ```
+
+    Without `normalize`, a judge that declares a wider scale saturates — every
+    value at or above `1` becomes the maximum reward. That combination warns at
+    config load (see [Load-time warnings](#load-time-warnings)).
 
     !!! warning "`judge` stands alone"
         `judge` cannot be combined with `formula`, `weights`, or `raw` —
@@ -72,13 +80,13 @@ flowchart TD
       weights:
         quality: 0.7
         efficiency: 0.3
-      score_range: [1, 5]     # numeric judges normalized from this range
       raw: [efficiency]       # already in [0, 1] — skip normalization
       gate: true              # default in formula mode
     ```
 
-    Weights must be numeric and non-negative. A judge with a missing value is
-    dropped from both the numerator and the weight sum.
+    Each normalized judge is mapped from its **own** declared `score_range` (see
+    [Precedence](#precedence)). Weights must be numeric and non-negative. A judge
+    with a missing value is dropped from both the numerator and the weight sum.
 
 === "Expression formula"
 
@@ -88,7 +96,6 @@ flowchart TD
     ```yaml
     reward:
       formula: "0.6 * quality + 0.4 * efficiency"
-      score_range: [1, 5]
       raw: [efficiency]
       gate: false             # see the double-gating note below
     ```
@@ -109,12 +116,26 @@ flowchart TD
 | Field | Type | Default | Applies to | Purpose |
 | --- | --- | --- | --- | --- |
 | `judge` | string | — | single-judge | Name of the judge whose value is the reward. Mutually exclusive with `formula`/`weights`/`raw`. |
-| `normalize` | bool | `false` | single-judge | `false` clamps the judge value to `[0, 1]` as-is; `true` maps it from `score_range`. |
+| `normalize` | bool | `false` | single-judge | `false` clamps the judge value to `[0, 1]` as-is; `true` maps it from the judge's own `score_range`. |
 | `formula` | string | `"weighted"` | formula | `"weighted"` or a Python expression over judge names. |
 | `weights` | map | `{}` | formula (`weighted`) | Per-judge weights (numeric, non-negative). |
-| `score_range` | `[min, max]` | `[1, 5]` | both | Range used to normalize numeric judge values to `[0, 1]`. Must be increasing. It overrides the judges' own [`score_range`](judges.md): every judge normalized on this path uses this one range (those in `raw` are not normalized at all). |
+| `score_range` | `[min, max]` | *unset* (effectively `[1, 5]`) | both | **Deprecated** fallback range, used only for composed judges that declare no [`score_range`](judges.md) of their own — a judge's own range wins. Must be increasing. Declare the scale on the judge instead. |
 | `raw` | list | `[]` | formula | Judges whose values are already in `[0, 1]`; clamped, not normalized. |
 | `gate` | bool | `true` formula / `false` single-judge | both | When `true`, any boolean judge that returned `false` zeros the reward. |
+
+## Precedence
+
+Turning one judge's value into a `[0, 1]` contribution follows the first rule
+that applies — identically **with and without** a `reward:` block:
+
+1. **Boolean** → `1.0` / `0.0`; no range is consulted. (With `gate` on, a
+   `false` has already zeroed the reward before this; in the default
+   composition a `true` only passes the gate and is not averaged.)
+2. **Clamped as-is** → a judge listed in `raw`, or the single `reward.judge`
+   without `normalize: true`; no range is consulted.
+3. The judge's own declared [`score_range`](judges.md).
+4. `reward.score_range` — the deprecated fallback.
+5. `[1, 5]`.
 
 ## Gating
 
@@ -148,13 +169,41 @@ case at run time.
     undefined judge name in an expression, a division by zero — are caught during
     scoring: they emit a warning and degrade to reward `0.0` for that case.
 
+## Load-time warnings
+
+Two `reward:` configurations load fine but no longer mean what they read like.
+Both warn from config load, so they print on every command that reads
+`eval.yaml`.
+
+A written `score_range` that a composed judge's own range now shadows:
+
+```text
+UserWarning: reward.score_range [1.0, 5.0] is deprecated and no longer normalizes
+'testability' [0.0, 2.0]: a judge's own 'score_range' wins. It still applies to
+'clarity'; drop it once every composed judge declares a 'score_range'.
+```
+
+It stays silent when the key is absent, when the ranges agree, for judges in
+`raw`, for judges the composition never names, and in single-judge mode without
+`normalize`.
+
+A single judge clamped off its own scale:
+
+```text
+UserWarning: reward.judge 'quality' declares score_range [0.0, 2.0] but 'normalize'
+is not set, so its value is clamped to [0, 1] — every score at or above 1 becomes
+the maximum reward. Set 'normalize: true' to map it from [0.0, 2.0].
+```
+
 ## Default when `reward` is omitted
 
 With no `reward` block, the harness falls back to a built-in composition:
 
 - any boolean judge returning `false` gates the reward to `0.0`;
 - otherwise each numeric judge is normalized over its **own** declared `score_range` —
-  falling back to `[1, 5]` only when it declares none — and the normalized values are averaged;
+  falling back to `[1, 5]`, since there is no `reward.score_range` on this path — and the
+  normalized values are averaged. This is the same [precedence](#precedence) a `reward:`
+  block applies;
 - if nothing scored because every scoring judge **errored** (e.g. values rejected as
   off-scale), the reward is `0.0`;
 - if the gate passed and nothing was normalized — no numeric judges, or every one of

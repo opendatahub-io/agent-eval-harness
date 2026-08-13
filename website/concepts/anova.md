@@ -53,13 +53,16 @@ ANOVA needs exactly one number per (condition, case). That number is the
 **composite score** in `[0, 1]`, computed by
 [`compose_reward`](https://github.com/opendatahub-io/agent-eval-harness/blob/main/agent_eval/harbor/reward.py)
 — the same function the [reward API](reward-api.md) uses. It honors an
-`eval.yaml` [`reward:`](../reference/config/reward.md) block if present; otherwise
-the default composition is:
+`eval.yaml` [`reward:`](../reference/config/reward.md) block if present.
+
+**Numeric judges are normalized** from their own declared `score_range`
+`[lo, hi]` via `(v − lo) / (hi − lo)`, clamped to `[0, 1]` (default range
+`[1, 5]`) — on either path, so a `reward:` block changes how the normalized
+values are combined, not what they are (its `raw` judges and an un-normalized
+single `judge` are clamped to `[0, 1]` instead). With no block the default
+composition averages them, and:
 
 - **Boolean gates fire first.** Any `false` boolean judge → `0.0` immediately.
-- **Numeric judges are normalized** from their `score_range` `[lo, hi]` via
-  `(v − lo) / (hi − lo)`, clamped to `[0, 1]` (default range `[1, 5]`), then
-  averaged.
 - **There is no "non-gate" boolean.** The default path has no pass-fraction
   multiplier: a `true` contributes nothing to the average, a `false` zeros the
   composite. (`agent_eval/anova/composite.py::composite_score` does apply such a

@@ -292,9 +292,15 @@ def compute_reward_from_config(per_judge: dict,
 
     Resolution within the section:
     - ``judge``: that single judge's value is the reward (clamped to [0, 1],
-      or normalized via score_range when ``normalize`` is set).
+      or normalized over that judge's own score_range when ``normalize`` is
+      set).
     - "weighted": weighted sum of ``weights``.
     - "<expression>": Python expression with judge names as variables.
+
+    ``judge_ranges`` maps judge name -> declared ``(lo, hi)``; a judge that
+    declares one is normalized over it, and ``reward_cfg.score_range`` (else
+    [1, 5]) covers only the rest. ``raw`` judges and a clamped single judge
+    consult no range at all.
     """
     score_range = reward_cfg.effective_score_range
     raw_judges = reward_cfg.raw

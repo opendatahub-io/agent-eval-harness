@@ -47,7 +47,7 @@ judges:
 
   - name: quality              # LLM judge, scored 1-5
     feedback_type: int
-    score_range: [1, 5]        # the judge's own scale — reward.score_range normalizes
+    score_range: [1, 5]        # the judge's own scale — the reward normalizes over it
     prompt: "Score the output 1-5 for completeness, clarity, and accuracy."
 
   - name: efficiency           # already normalized to [0, 1]
@@ -58,7 +58,6 @@ reward:
   weights:
     quality: 0.7
     efficiency: 0.3
-  score_range: [1, 5]          # numeric range used to normalize judges to [0, 1]
   raw: [efficiency]            # judges already in [0, 1] — skip normalization
   gate: true                   # any boolean judge returning false zeros the reward
 ```
@@ -69,8 +68,8 @@ How the pieces interact:
 | --- | --- |
 | `formula: weighted` | Reward = weighted sum of the judges named in `weights`, divided by the sum of the weights (result clamped to `[0, 1]`). |
 | `weights` | The judges to blend and their relative weights. Judges missing from a case (value `None`) drop out of both sums. |
-| `score_range` | The `[min, max]` used to normalize each numeric judge into `[0, 1]` before weighting. |
-| `raw` | Judges already in `[0, 1]` — listed here they are clamped as-is instead of being re-normalized through `score_range`. |
+| each judge's `score_range` | The `[min, max]` each numeric judge is normalized from into `[0, 1]` before weighting. A `reward.score_range` is only a deprecated fallback for judges that declare none. |
+| `raw` | Judges already in `[0, 1]` — listed here they are clamped as-is instead of being normalized at all. |
 | `gate: true` | Every boolean judge (e.g. `files_exist`) acts as a gate: any `false` zeros the reward, regardless of the weighted score. |
 
 !!! warning "`gate` gates on *every* boolean judge"
@@ -93,12 +92,11 @@ judges:
 
   - name: quality              # LLM judge, 1-5
     feedback_type: int
-    score_range: [1, 5]        # the judge's own scale — reward.score_range normalizes
+    score_range: [1, 5]        # the judge's own scale — the reward normalizes over it
     prompt: "Score the output 1-5 for overall quality."
 
 reward:
   formula: "passed * quality"  # boolean (0/1) multiplies the normalized quality
-  score_range: [1, 5]
   gate: false                  # do NOT double-gate: the formula already uses `passed`
 ```
 
@@ -128,7 +126,9 @@ reward:
 !!! note "Single-judge shortcut"
     If a learned reward model already emits a scalar, name it directly instead
     of writing a formula. `normalize: false` (the default) clamps its value to
-    `[0, 1]` as-is; `normalize: true` maps it from `score_range`.
+    `[0, 1]` as-is; `normalize: true` maps it from the judge's own
+    `score_range`. Leaving `normalize` off on a judge that declares a wider
+    scale saturates the reward, and warns at config load.
 
     ```yaml
     reward:

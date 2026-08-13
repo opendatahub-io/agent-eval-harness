@@ -48,7 +48,7 @@ config fails to load if you combine them.
     | `normalize` | Behavior |
     | --- | --- |
     | `false` *(default)* | Use the value directly, clamped to `[0, 1]`. |
-    | `true` | Map the value from `score_range` to `[0, 1]` first. |
+    | `true` | Map the value from the judge's own `score_range` to `[0, 1]` first. |
 
     A missing, skipped, or errored judge (value `None`) scores `0.0`.
 
@@ -60,9 +60,8 @@ config fails to load if you combine them.
     reward:
       formula: weighted
       weights:
-        quality: 0.7
+        quality: 0.7          # normalized from the judge's own score_range
         efficiency: 0.3
-      score_range: [1, 5]      # numeric judge range, normalized to [0, 1]
       raw: [efficiency]        # already [0, 1] — skip normalization
       gate: true
     ```
@@ -70,7 +69,6 @@ config fails to load if you combine them.
     ```yaml title="eval.yaml — Python expression"
     reward:
       formula: "0.6 * quality + 0.4 * efficiency"
-      score_range: [1, 5]
       raw: [efficiency]
       gate: false
     ```
@@ -84,42 +82,41 @@ config fails to load if you combine them.
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `judge` | str | — | Single-judge mode. Cannot combine with `formula`/`weights`/`raw`. Validated against defined judges at load. |
-| `normalize` | bool | `false` | Judge mode only. Map value from `score_range` instead of clamping as-is. |
+| `normalize` | bool | `false` | Judge mode only. Map value from the judge's `score_range` instead of clamping as-is. |
 | `formula` | str | `"weighted"` | `"weighted"` or a Python expression over judge names. |
 | `weights` | map | `{}` | Judge → weight. Values must be numeric and non-negative. Used by `weighted` only. |
-| `score_range` | `[lo, hi]` | `[1, 5]` | Range used to normalize numeric judge values. Must be increasing. |
-| `raw` | list | `[]` | Judge names already in `[0, 1]` — excluded from `score_range` normalization. |
+| `score_range` | `[lo, hi]` | `[1, 5]` | **Deprecated** fallback, used only for composed judges that declare no `score_range` of their own. Must be increasing. |
+| `raw` | list | `[]` | Judge names already in `[0, 1]` — clamped as-is, excluded from any normalization. |
 | `gate` | bool | `true` (formula) / `false` (judge) | Any boolean judge returning `false` zeros the reward. |
 
 !!! tip "`score_range` on the judge vs. on the reward"
-    **Without a `reward:` block**, each numeric judge is normalized over its
-    **own** declared `score_range`, falling back to `[1, 5]` when it declares
-    none.
+    **With or without a `reward:` block**, each numeric judge is normalized over
+    its **own** declared `score_range` — the same range that bands its report
+    cells. Two cases skip normalization altogether:
 
-    **With a `reward:` block**, per-judge ranges are not consulted — the
-    judge's own `score_range` still bands its report cells, but composition
-    uses `reward.score_range`. Two exceptions:
+    - in `formula` mode, judges listed in `raw` are already in `[0, 1]` and are
+      clamped as-is;
+    - in single-judge mode, the value is clamped as-is unless
+      `normalize: true`.
 
-    - in `formula` mode, judges listed in `raw` are already in `[0, 1]` and
-      skip normalization entirely;
-    - in single-judge mode, `reward.score_range` applies only when
-      `normalize: true`; otherwise the value is clamped to `[0, 1]` as-is.
-
-    So set `reward.score_range` to match your rubric whenever your composed
-    judges are not on the default scale.
+    `reward.score_range` is a **deprecated** fallback that covers only the
+    composed judges declaring no range of their own. Declare the scale on each
+    judge instead; writing `reward.score_range` where a composed judge already
+    declares a different one warns at config load.
 
 ## Value normalization
 
 Each judge value is turned into a `[0, 1]` float before composition. This table
 describes the `reward:`-block path; in the default composition (no `reward:`
 block) booleans are **gates only** — a `true` contributes nothing to the average
-— and each numeric judge is normalized over its own `score_range`:
+— and the numeric rows are identical, bar `raw`, which exists only inside a
+`reward:` block:
 
 | Judge value | Reward contribution |
 | --- | --- |
-| boolean `true` / `false` | `1.0` / `0.0` |
+| boolean `true` / `false` | `1.0` / `0.0` — no range is consulted |
 | numeric, name in `raw` | clamped to `[0, 1]` as-is |
-| numeric, otherwise | `(v - lo) / (hi - lo)`, clamped, using `score_range` |
+| numeric, otherwise | `(v - lo) / (hi - lo)`, clamped, over the judge's own `score_range` — else `reward.score_range`, else `[1, 5]` |
 | `None` — `if:`-skipped **or** errored (e.g. off its `score_range`) | `weighted`: dropped, and the remaining weights renormalize (the reward can go *up*). Expression: the name is **unbound**, the formula raises and the reward degrades to `0.0` with a warning on stderr. Single-judge: `0.0`. No `reward:` block: ignored if skipped, but a trial where *nothing* scored because a judge errored is `0.0`. |
 
 ## Gate semantics and the double-gating gotcha
@@ -145,7 +142,10 @@ hard structural gate: it fires before the formula runs.
 ## Resolution order
 
 1. **`reward:` section present** — use it. `judge` mode if `judge` is set,
-   otherwise the `formula`/`weights` composition.
+   otherwise the `formula`/`weights` composition. Normalization is unchanged by
+   the section: every numeric judge it normalizes still maps from its own
+   declared `score_range` (see the
+   [reward reference](../reference/config/reward.md#precedence)).
 2. **No `reward:` block (the default)** — boolean judges gate (any `false` →
    `0.0`); each numeric judge is normalized over its own declared `score_range`
    (falling back to `score_min`/`score_max`, default `1.0`/`5.0`) and the
@@ -156,7 +156,8 @@ hard structural gate: it fires before the formula runs.
    is not an error).
 
 ```python title="default composition (compose_reward)"
-# boolean judges gate, numeric judges normalized to [0,1] and averaged
+# boolean judges gate; each numeric judge is normalized to [0,1] over its own
+# declared score_range, then the results are averaged
 if not gate_ok:
     reward = 0.0
 elif normalized_scores:

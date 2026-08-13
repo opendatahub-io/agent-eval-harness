@@ -187,24 +187,23 @@ actually sees across cases.
 !!! note "Numeric range: declared vs. assumed"
     `score_range: [min, max]` is the judge's scale. When **declared**, it is stated in the
     LLM judge's system prompt and tool schema, colours report cells, normalizes the judge
-    in the default reward composition, and is enforced on **every** judge type — a value
+    in every reward composition, and is enforced on **every** judge type — a value
     off the scale is recorded as an error sample rather than counted. When **omitted**,
     LLM and agent judges are told `[1, 5]` but nothing is enforced (an inline `check`
     returning a raw count keeps returning it), and the report has no scale to band
     against, so those cells render neutral (uncoloured). Declare the range on every
-    numeric judge — omitting it on an LLM or agent judge warns at config load. This is
-    independent of
-    `reward.score_range` — see the [reward API](reward-api.md).
+    numeric judge — omitting it on an LLM or agent judge warns at config load. This range
+    wins over `reward.score_range`, which is only a deprecated fallback for judges
+    declaring none — see the [reward API](reward-api.md).
 
 !!! warning "Upgrading: scores move"
     A numeric LLM judge used to be asked for a `1–5` score whatever its `score_range`
     said, and an agent judge's off-scale verdict was silently clamped into range. The
     declared scale now reaches the model, and a value off it becomes an error sample
     excluded from the mean — so per-judge means shift and `thresholds.min_mean` needs
-    re-baselining. Composites move with those values, and an eval with **no** `reward:`
-    block moves twice over: that path now normalizes each numeric judge over its own
-    `score_range` instead of a flat `[1, 5]`, while a config with an explicit `reward:`
-    block still normalizes everything through `reward.score_range`. Don't compare runs
+    re-baselining. Composites move twice over, with or without a `reward:` block: every
+    composition now normalizes each numeric judge over its own `score_range` — instead of
+    a flat `[1, 5]`, or of `reward.score_range` where a block set one. Don't compare runs
     across the upgrade.
 
 ## Aggregation: `pass_rate` vs `mean`
