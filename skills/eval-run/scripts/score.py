@@ -1459,41 +1459,81 @@ def _warn_stale_inline_field_refs(judges, case_dirs, config, run_id=None):
         print(f"  Warning: stale-field check skipped: {exc}", file=sys.stderr)
 
 
+# How many cases the probe reads before giving up. One is too few — the first
+# case is often the one that failed to produce artifacts — and reading all of
+# them duplicates the scoring loop's own IO for no extra signal.
+_STALE_FIELD_PROBE_CASES = 3
+
+
 def _stale_inline_field_refs(judges, case_dirs, config, run_id=None):
     refs_by_judge = {}
-    for name, scorer, _condition, judge_type, _samples in judges:
+    for name, scorer, condition, judge_type, _samples in judges:
         if judge_type != "check":
             continue
         source = getattr(scorer, "_inline_check_source", "")
         refs = _extract_frontmatter_field_refs(source)
-        if refs:
-            refs_by_judge[name] = (
-                refs, _extract_frontmatter_content_keys(source)
-            )
+        content_keys = _extract_frontmatter_content_keys(source)
+        if refs and content_keys:
+            refs_by_judge[name] = (refs, content_keys, condition)
     if not refs_by_judge or not case_dirs:
         return
 
+    records = []
+    for case_dir in case_dirs[:_STALE_FIELD_PROBE_CASES]:
+        try:
+            records.append(load_case_record(case_dir, config, run_id=run_id))
+        except Exception:
+            continue
+    if records:
+        _emit_stale_field_warnings(refs_by_judge, records)
+
+
+def _judge_runs_on(condition, record):
+    """Whether an `if:`-gated judge would run on this case.
+
+    Errs towards running: an unevaluatable condition should not silence a
+    diagnostic, and a judge skipped on every probed case must not be reported
+    against artifacts it never looks at.
+    """
+    if not condition:
+        return True
     try:
-        record = load_case_record(case_dirs[0], config, run_id=run_id)
+        return bool(eval(condition, {"__builtins__": {}},
+                         {"annotations": record.get("annotations", {}),
+                          "outputs": record}))
     except Exception:
-        return
-
-    _emit_stale_field_warnings(refs_by_judge, record)
+        return True
 
 
-def _emit_stale_field_warnings(refs_by_judge, record):
-    for name, (refs, content_keys) in refs_by_judge.items():
-        available_by_source = _collect_frontmatter_keys(record, content_keys)
-        for source, available in available_by_source.items():
+def _emit_stale_field_warnings(refs_by_judge, records):
+    """Report a field only when EVERY probed case that runs the judge lacks it.
+
+    One case is weak evidence — a heterogeneous dataset, or a case that simply
+    produced nothing, would otherwise generate a warning about a field the rest
+    of the run has. A field absent everywhere is drift.
+    """
+    for name, (refs, content_keys, condition) in refs_by_judge.items():
+        seen = {}          # artifact -> keys observed across the probed cases
+        looked = False
+        for record in records:
+            if not _judge_runs_on(condition, record):
+                continue
+            for source, available in _collect_frontmatter_keys(
+                    record, content_keys).items():
+                looked = True
+                seen.setdefault(source, set()).update(available)
+        if not looked:
+            continue
+        for source, available in seen.items():
             missing = [ref for ref in refs if ref not in available]
             if not missing:
                 continue
-            available_text = ", ".join(sorted(available)) or "(none)"
-            missing_text = ", ".join(missing)
             print(
-                f"  Warning: inline judge '{name}' references "
-                f"frontmatter field(s) not found in {source}: {missing_text}. "
-                f"Available fields: {available_text}",
+                f"  Warning: inline judge '{name}' requires frontmatter "
+                f"field(s) absent from {source} in every case checked: "
+                f"{', '.join(missing)}. "
+                f"Present: {', '.join(sorted(available)) or '(none)'}. "
+                "If the skill renamed them, update the judge.",
                 file=sys.stderr,
             )
 

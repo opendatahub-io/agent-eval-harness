@@ -487,6 +487,62 @@ class TestInlineJudgeFieldValidation:
                       f"return bool({name}.get('title')), 'x'")
             assert refs(source) == ["title"], name
 
+    def _stale_field_config(self, condition=None):
+        config = EvalConfig(name="test", skill="test")
+        config.outputs = [OutputConfig(path="artifacts")]
+        config.judges = [
+            JudgeConfig(
+                name="frontmatter_valid",
+                condition=condition,
+                check=(
+                    "import yaml\n"
+                    "fm = yaml.safe_load("
+                    "outputs['artifacts_content'].split('---', 2)[1]) or {}\n"
+                    "if not fm.get('strat_key'):\n"
+                    "    return False, 'bad'\n"
+                    "return True, 'ok'"
+                ),
+            ),
+        ]
+        return config
+
+    def _run_cases(self, tmp_path, cases, condition=None):
+        dirs = []
+        for name, front in cases:
+            art = tmp_path / name / "artifacts"
+            art.mkdir(parents=True)
+            if front is not None:
+                (art / "r.md").write_text(f"---\n{front}\n---\nbody\n")
+            dirs.append(tmp_path / name)
+        config = self._stale_field_config(condition)
+        score_cases(load_judges(config), sorted(dirs), config)
+
+    def test_drift_across_every_case_warns(self, tmp_path, capsys):
+        self._run_cases(tmp_path, [("case-001", "source_key: a"),
+                                   ("case-002", "source_key: b")])
+        assert "strat_key" in capsys.readouterr().err
+
+    def test_one_empty_case_does_not_warn_for_the_whole_run(self, tmp_path,
+                                                            capsys):
+        """Probing only case-001 meant a case that produced nothing spoke for
+        every other case — and a partly-failed run is exactly when someone is
+        trying to tell a skill regression from a judge bug."""
+        self._run_cases(tmp_path, [("case-001", None),
+                                   ("case-002", "strat_key: b")])
+        assert "strat_key" not in capsys.readouterr().err
+
+    def test_a_healthy_run_is_silent(self, tmp_path, capsys):
+        self._run_cases(tmp_path, [("case-001", "strat_key: a"),
+                                   ("case-002", "strat_key: b")])
+        assert capsys.readouterr().err.count("requires frontmatter") == 0
+
+    def test_a_judge_skipped_everywhere_is_not_reported(self, tmp_path, capsys):
+        """An `if:`-gated judge that never runs cannot be stale against
+        artifacts it never reads."""
+        self._run_cases(tmp_path, [("case-001", "source_key: a")],
+                        condition="annotations.get('kind') == 'never'")
+        assert "strat_key" not in capsys.readouterr().err
+
     def test_unparseable_frontmatter_does_not_abort_the_run(self, tmp_path):
         """`yaml.safe_load` raises a bare ValueError — not YAMLError — for an
         out-of-range date, and the probe runs before any judge. Uncaught, it
