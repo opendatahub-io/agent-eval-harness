@@ -69,12 +69,17 @@ def _int_field(mapping: dict, key: str) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
-def _extract_transcript_metrics(transcript_path: Path) -> dict:
-    """Extract cost, tokens, turns, duration, version from a stream-json transcript."""
-    result: dict = {
+def _empty_transcript_metrics() -> dict:
+    """The 'nothing extracted' shape every transcript reader returns."""
+    return {
         "cost_usd": None, "token_usage": None, "per_model_usage": None,
         "num_turns": None, "duration_s": None, "agent_version": None,
     }
+
+
+def _extract_transcript_metrics(transcript_path: Path) -> dict:
+    """Extract cost, tokens, turns, duration, version from a stream-json transcript."""
+    result = _empty_transcript_metrics()
     if not transcript_path.is_file():
         return result
     codex_input = codex_output = codex_cache = codex_turns = 0
@@ -161,7 +166,7 @@ def _agent_transcript_metrics(agent_dir: Path) -> dict:
         path = agent_dir / name
         if path.is_file():
             return _extract_transcript_metrics(path)
-    return _extract_transcript_metrics(agent_dir / "claude-code.txt")
+    return _empty_transcript_metrics()
 
 
 def _number(mapping: dict, key: str):
