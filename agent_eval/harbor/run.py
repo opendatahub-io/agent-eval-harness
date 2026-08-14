@@ -80,17 +80,30 @@ _ENV_IMPORT_PATHS = {
 }
 
 
-def _resolve_harbor_skill_roots(config: EvalConfig) -> list[Path]:
+def _resolve_harbor_skill_roots(config: EvalConfig,
+                                agent_name: str) -> list[Path]:
     """Resolve plugin skill roots for Harbor's ``--skill`` option.
 
     Passing every manifest-declared skill root makes all sibling skills
     available, which is important for orchestrator skills whose dependencies
     are selected dynamically by the agent.
+
+    A plugin that exports no skills is fatal for Codex and tolerated for
+    everyone else: Codex consumes a plugin *only* through its skills, so an
+    empty one is a misconfiguration that would surface as a model-quality
+    failure. A Claude plugin may legitimately ship only commands, agents, or
+    hooks, and must not fail a run that never wanted skills from it.
     """
     roots: list[Path] = []
     for configured in config.runner.plugin_dirs:
         path = resolve_plugin_dir(config, configured)
-        roots.extend(resolve_plugin_skill_roots(path))
+        try:
+            roots.extend(resolve_plugin_skill_roots(path))
+        except (ValueError, FileNotFoundError):
+            if agent_name == "codex":
+                raise
+            print(f"WARNING: plugin exports no skills; not forwarding {path} "
+                  f"to the Harbor {agent_name} agent", file=sys.stderr)
     return roots
 
 
@@ -545,9 +558,12 @@ def run_eval_on_harbor(
         "-a", agent_name, "-m", model,
         "-n", str(n_concurrent), "-o", str(jobs_dir),
     ]
-    if agent_name == "codex":
-        for root in _resolve_harbor_skill_roots(config):
-            cmd += ["--skill", str(root)]
+    # --skill is agent-agnostic: skills_dir is a BaseAgent constructor argument
+    # (harbor/agents/base.py), and both stock agents copy it into the location
+    # their CLI reads. Gating this on one agent would silently run a
+    # claude-code trial without the very skills under test.
+    for root in _resolve_harbor_skill_roots(config, agent_name):
+        cmd += ["--skill", str(root)]
     for kwarg in _harbor_agent_kwargs(config, agent_name):
         cmd += ["--agent-kwarg", kwarg]
     agent_env_args, harbor_env = _harbor_agent_env_args(config)

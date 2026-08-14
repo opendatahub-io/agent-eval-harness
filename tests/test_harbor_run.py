@@ -264,7 +264,7 @@ def test_resolve_harbor_skill_roots_includes_whole_plugin(tmp_path):
     config = _config(tmp_path)
     config.runner.plugin_dirs = [str(plugin)]
 
-    assert run_mod._resolve_harbor_skill_roots(config) == [
+    assert run_mod._resolve_harbor_skill_roots(config, "codex") == [
         (plugin / "skills").resolve()]
 
 
@@ -279,8 +279,36 @@ def test_resolve_harbor_skill_roots_honors_plugin_manifest(tmp_path):
     config = _config(tmp_path)
     config.runner.plugin_dirs = [str(plugin)]
 
-    assert run_mod._resolve_harbor_skill_roots(config) == [
+    assert run_mod._resolve_harbor_skill_roots(config, "codex") == [
         (plugin / "custom-skills").resolve()]
+
+
+def test_skill_roots_resolve_for_claude_code_too(tmp_path):
+    # skills_dir is a BaseAgent argument in Harbor, not a Codex extra: the
+    # stock claude-code agent copies it into $CLAUDE_CONFIG_DIR/skills. A
+    # claude-code trial must not run without the skills under test.
+    plugin = tmp_path / "plugin"
+    skill = plugin / "skills" / "parent"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# parent\n")
+    config = _config(tmp_path)
+    config.runner.plugin_dirs = [str(plugin)]
+
+    assert run_mod._resolve_harbor_skill_roots(config, "claude-code") == [
+        (plugin / "skills").resolve()]
+
+
+def test_skill_less_plugin_is_fatal_for_codex_only(tmp_path):
+    # A Claude plugin may ship only commands/agents/hooks; Codex can consume a
+    # plugin *only* through skills, so an empty one is a misconfiguration.
+    plugin = tmp_path / "commands-only"
+    (plugin / "commands").mkdir(parents=True)
+    config = _config(tmp_path)
+    config.runner.plugin_dirs = [str(plugin)]
+
+    assert run_mod._resolve_harbor_skill_roots(config, "claude-code") == []
+    with pytest.raises((ValueError, FileNotFoundError)):
+        run_mod._resolve_harbor_skill_roots(config, "codex")
 
 
 def test_harbor_agent_env_resolves_references_and_redacts_log(tmp_path, monkeypatch):

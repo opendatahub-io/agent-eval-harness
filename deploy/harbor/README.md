@@ -78,8 +78,10 @@ PYTHONPATH="$(pwd)" harbor run -p harbor-tasks/<case> --agent claude-code -m <mo
     -n 1 -o harbor-jobs
 ```
 
-For Codex, pass the plugin's whole skill root so orchestrator skills can invoke
-their sibling dependencies, and pass large datasets as a bind mount:
+Pass the plugin's whole skill root so orchestrator skills can invoke their
+sibling dependencies, and pass large datasets as a bind mount. `--skill` is not
+Codex-specific — Harbor hands it to any agent as `skills_dir`, and the stock
+claude-code agent copies it into `$CLAUDE_CONFIG_DIR/skills/`:
 
 ```bash
 PYTHONPATH="$(pwd)" harbor run -p harbor-tasks/<case> \

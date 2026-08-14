@@ -91,6 +91,11 @@ Codex is selected by `runner.type: codex`. The wrapper automatically forwards
 every configured plugin's complete `skills/` root (including sibling/dependent
 skills) and translates `runner.effort` into Harbor's Codex agent option:
 
+Skill roots are forwarded for every Harbor agent, not just Codex — `--skill`
+becomes the agent's `skills_dir`, which the stock claude-code agent also reads.
+A plugin that exports no skills (commands only) is skipped with a warning for
+other agents, but fails fast for Codex, which can only consume a plugin's skills.
+
 ```yaml
 runner:
   type: codex
