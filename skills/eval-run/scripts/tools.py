@@ -128,9 +128,15 @@ def _handle_ask_user(tool_input, config, handler):
         if answer is None and options:
             answer = _llm_answer(text, options, prompt, model=hook_model)
 
-        # 3. Fallback
+        # 3. Fallback. Announce it: tiers 1 and 2 are the ones that answer
+        # *for this case*, so landing here means the agent under test was
+        # handed an arbitrary answer — and because the run still completes,
+        # nothing downstream distinguishes that from a real answer.
         if answer is None:
             answer = options[0]["label"] if options else "yes"
+            print(f"AskUserQuestion fallback: no case override and no LLM "
+                  f"answer for {text!r} — defaulting to {answer!r}",
+                  file=sys.stderr)
 
         answers[text] = answer
 
@@ -145,6 +151,33 @@ def _handle_ask_user(tool_input, config, handler):
         }
     }
     json.dump(output, sys.stdout)
+
+
+def _create_message(client, **kwargs):
+    """messages.create, retrying once without `temperature` if it is rejected.
+
+    Anthropic removed the sampling parameters on Opus 4.7 and later (and
+    Sonnet 5 accepts only the default), so `temperature=0` is a 400 there.
+    That matters more here than anywhere else in the harness: the caller
+    swallows every exception and falls back to the first option, so an
+    unhandled 400 would feed the agent under test an unvetted answer while
+    the eval still reported a pass.
+
+    The check is behavioral rather than a model-name allowlist on purpose —
+    `models.hook` may be a gateway alias (a LiteLLM virtual key, a vLLM
+    --served-model-name) that no substring test can classify.
+    """
+    try:
+        return client.messages.create(**kwargs)
+    except Exception as exc:
+        rejected = (getattr(exc, "status_code", None) == 400
+                    and "temperature" in str(exc).lower())
+        if not rejected or "temperature" not in kwargs:
+            raise
+        print(f"hook model {kwargs.get('model')!r} rejects 'temperature' — "
+              "retrying without it", file=sys.stderr)
+        return client.messages.create(
+            **{k: v for k, v in kwargs.items() if k != "temperature"})
 
 
 def _llm_answer(question, options, handler_prompt, model=None):
@@ -187,7 +220,8 @@ Reply with ONLY the option label text, nothing else."""
     try:
         import anthropic
         client = anthropic.Anthropic(timeout=30.0)
-        response = client.messages.create(
+        response = _create_message(
+            client,
             model=model or "claude-haiku-4-5-20251001",
             max_tokens=256,
             temperature=0,
