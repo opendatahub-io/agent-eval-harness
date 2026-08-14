@@ -632,6 +632,19 @@ class TestInlineJudgeFieldValidation:
         assert result["per_case"]["case-002"]["frontmatter_valid"]["value"] is True
         assert result["per_case"]["case-001"]["frontmatter_valid"]["value"] is None
 
+    def test_an_inline_delimiter_does_not_truncate_the_frontmatter(self):
+        """`split("---", 2)` also matches a `---` inside a scalar, so
+        everything below the first one read as absent — a warning naming a
+        field that is right there in the file. Agent-written markdown controls
+        this text, so it is reachable on a normal run."""
+        from score import _extract_yaml_frontmatter_keys as keys
+        assert keys("---\ntitle: foo --- bar\nstatus: ok\n---\nbody\n") == {
+            "title", "status"}
+        # Delimiters stay line-anchored across the other shapes.
+        assert keys("---\r\ntitle: a\r\n---\r\nb") == {"title"}   # CRLF
+        assert keys("---\ntitle: a\n---") == {"title"}          # ends at EOF
+        assert keys("----\ntitle: a\n----\nb") == {"title"}     # longer fence
+
     def test_unreadable_frontmatter_is_unknown_but_absent_is_empty(self):
         """Two different things. No frontmatter block means the fields really
         are absent, which is worth saying. Frontmatter that will not parse

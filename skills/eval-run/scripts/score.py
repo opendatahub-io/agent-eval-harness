@@ -1388,11 +1388,15 @@ def _extract_yaml_frontmatter_keys(text):
     stripped = text.lstrip("\ufeff \t\r\n")
     if not stripped.startswith("---"):
         return set()          # no frontmatter block at all
-    parts = stripped.split("---", 2)
-    if len(parts) < 3:
+    # Line-anchored. A plain `split("---", 2)` also matches a `---` inside a
+    # scalar, so `title: foo --- bar` truncates the block and everything below
+    # it reads as absent — a warning about a field that is right there.
+    match = re.match(r"-{3,}[ \t]*\r?\n(.*?)\r?\n-{3,}[ \t]*(?:\r?\n|\Z)",
+                     stripped, re.DOTALL)
+    if match is None:
         return None           # opened but never closed — malformed, unknown
     try:
-        frontmatter = yaml.safe_load(parts[1]) or {}
+        frontmatter = yaml.safe_load(match.group(1)) or {}
     except Exception:
         # Not just YAMLError: safe_load raises a bare ValueError for an
         # out-of-range date (`due: 2026-02-30`) or an over-long integer.
