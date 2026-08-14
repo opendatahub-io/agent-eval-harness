@@ -50,22 +50,20 @@ def _detect_regressions(judges, thresholds):
     """score.py's regression detector, loaded by path.
 
     The judge engine lives with the eval-run skill rather than in the
-    agent_eval package — same approach as agent_eval/harbor/reward.py. Returns
-    [] if it can't be loaded, so MLflow logging never fails on this.
+    agent_eval package — same approach as agent_eval/harbor/reward.py. Raises
+    if it cannot be loaded; the caller tags the run "unknown" rather than
+    claiming a clean one.
     """
     import importlib.util
-    try:
-        root = Path(__file__).resolve().parent.parent.parent.parent
-        score_path = root / "skills" / "eval-run" / "scripts" / "score.py"
-        if not score_path.exists():
-            return []
-        spec = importlib.util.spec_from_file_location("_score_for_thresholds",
-                                                      score_path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod.detect_regressions(judges, thresholds)
-    except Exception:
-        return []
+    root = Path(__file__).resolve().parent.parent.parent.parent
+    score_path = root / "skills" / "eval-run" / "scripts" / "score.py"
+    if not score_path.exists():
+        raise FileNotFoundError(f"Judge engine not found: {score_path}")
+    spec = importlib.util.spec_from_file_location("_score_for_thresholds",
+                                                  score_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.detect_regressions(judges, thresholds)
 
 
 def _resolve_skill(config: EvalConfig) -> str | None:
@@ -324,9 +322,20 @@ def main():
         # Ask score.py rather than restating its rules: this had drifted to two
         # of the four threshold keys, so a run that exited 1 on `min_win_rate`
         # or `max_error_rate` was still tagged regressions_detected=no.
-        has_regressions = bool(
-            config.thresholds and _detect_regressions(judges, config.thresholds))
-        mlflow.set_tag("regressions_detected", "yes" if has_regressions else "no")
+        # "unknown" is a third state on purpose — tagging a run clean because
+        # the detector could not run is the failure this whole change is about.
+        if not config.thresholds:
+            regressions_tag = "no"
+        else:
+            try:
+                regressions_tag = (
+                    "yes" if _detect_regressions(judges, config.thresholds)
+                    else "no")
+            except Exception as exc:
+                print(f"Warning: could not evaluate thresholds: {exc}",
+                      file=sys.stderr)
+                regressions_tag = "unknown"
+        mlflow.set_tag("regressions_detected", regressions_tag)
         mlflow.set_tag("num_judges", str(len(judges)))
         # Disk handoff: harness-snapshot.json under run_dir → tags + artifact.
         # Later readers should fetch the MLflow artifact (prefer_mlflow).

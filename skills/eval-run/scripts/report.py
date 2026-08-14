@@ -1304,8 +1304,15 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
     thresholds = config.get("thresholds", {})
     # Authoritative PASS/FAIL per judge, from the same detector the CLI exits
     # on — the column below only picks which bound to display.
-    _breached = {r.judge_name
-                 for r in _detect_regressions(summary.get("judges", {}), thresholds)}
+    try:
+        _breached = {r.judge_name
+                     for r in _detect_regressions(summary.get("judges", {}),
+                                                  thresholds)}
+        _breach_known = True
+    except Exception:
+        # Unknown, not clean: fall back to the metrics this table can compute
+        # rather than asserting PASS on a verdict we could not obtain.
+        _breached, _breach_known = set(), False
     bl_judges = baseline_summary.get("judges", {}) if baseline_summary else {}
     has_bl = bool(bl_judges)
 
@@ -1374,7 +1381,31 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
         status_cls = "skip"
         status_label = "—"
 
-        if pass_rate is None and mean is None:
+        # The column shows one representative bound; which one is cosmetic.
+        if isinstance(thresh, dict):
+            if "min_pass_rate" in thresh and pass_rate is not None:
+                thresh_str = f"&ge; {_pct(thresh['min_pass_rate'])}"
+            elif "min_mean" in thresh and mean is not None:
+                thresh_str = f"&ge; {thresh['min_mean']}"
+            elif "min_win_rate" in thresh:
+                thresh_str = f"&ge; {_pct(thresh['min_win_rate'])}"
+            elif "max_error_rate" in thresh:
+                thresh_str = f"&le; {_pct(thresh['max_error_rate'])} errored"
+
+        # A breach is authoritative and is checked FIRST, because the metric it
+        # gates on need not be one this table can display: a judge gated only
+        # on `min_win_rate`, or on `max_error_rate` with every case errored,
+        # has no mean and no pass_rate and used to fall through to SKIP while
+        # the same threshold failed CI.
+        if judge_name in _breached:
+            status_cls = "fail"
+            status_label = "FAIL"
+        elif thresh_str != "—" and _breach_known:
+            # A satisfied threshold is a PASS even when the metric it gates on
+            # isn't one this table displays (win_rate, error rate).
+            status_cls = "pass"
+            status_label = "PASS"
+        elif pass_rate is None and mean is None:
             # No aggregatable values — distinguish skip from error by
             # checking per-case results for this judge
             per_case = summary.get("per_case", {})
@@ -1390,22 +1421,6 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
             else:
                 status_cls = "skip"
                 status_label = "SKIP"
-        elif isinstance(thresh, dict):
-            # The column shows one representative bound; the authoritative
-            # verdict comes from score.py so a judge gated only on
-            # `min_win_rate` or `max_error_rate` is not reported as PASS.
-            if "min_pass_rate" in thresh and pass_rate is not None:
-                thresh_str = f"&ge; {_pct(thresh['min_pass_rate'])}"
-            elif "min_mean" in thresh and mean is not None:
-                thresh_str = f"&ge; {thresh['min_mean']}"
-            elif "min_win_rate" in thresh:
-                thresh_str = f"&ge; {_pct(thresh['min_win_rate'])}"
-            elif "max_error_rate" in thresh:
-                thresh_str = f"&le; {_pct(thresh['max_error_rate'])} errored"
-            if thresh_str != "—":
-                ok = judge_name not in _breached
-                status_cls = "pass" if ok else "fail"
-                status_label = "PASS" if ok else "FAIL"
 
         jtype, jmodel = judge_info.get(judge_name, (None, "—"))
         if jtype is None:
@@ -1461,19 +1476,15 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
 
 
 def _detect_regressions(judges, thresholds):
-    """score.py's regression detector, or nothing if it can't be loaded.
+    """score.py's regression detector.
 
     score.py sits beside this file but is a script, not a package module, so
-    it is imported by name off the same directory.
+    it is imported by name off the same directory. Raises rather than
+    returning [] — a detector that could not run is not a clean run, and
+    callers render that distinction.
     """
-    try:
-        from score import detect_regressions
-    except ImportError:
-        return []
-    try:
-        return detect_regressions(judges, thresholds)
-    except Exception:
-        return []
+    from score import detect_regressions
+    return detect_regressions(judges, thresholds)
 
 
 def _render_regressions(summary, config):
@@ -1484,9 +1495,16 @@ def _render_regressions(summary, config):
     # Reuse score.py's detector rather than restating it. This section had
     # drifted to two of the four keys, so a `min_win_rate` or `max_error_rate`
     # breach failed the run while the report showed no Regressions table at all.
-    for reg in _detect_regressions(judges, thresholds):
-        regressions.append((reg.judge_name, reg.metric,
-                            reg.baseline_value, reg.current_value))
+    try:
+        for reg in _detect_regressions(judges, thresholds):
+            regressions.append((reg.judge_name, reg.metric,
+                                reg.baseline_value, reg.current_value))
+    except Exception as exc:
+        # Say so. Rendering an empty section would read as "no regressions"
+        # while CI evaluates the same thresholds and may fail the run.
+        return ('<h2>Regressions</h2>\n<p class="fail">Could not evaluate '
+                f'thresholds: {_esc(str(exc))}. Check the scoring CLI output '
+                "— this report cannot confirm the run is clean.</p>\n")
 
     if not regressions:
         return ""
