@@ -270,7 +270,7 @@ For `runner.type: codex`, `run.py` selects Harbor's Codex agent, passes
 `runner.effort` as `reasoning_effort`, and passes every `runner.plugin_dirs`
 entry's complete manifest-declared skill roots. Do not narrow an orchestrator to its primary
 skill directory; sibling dependencies must remain discoverable. Use `--mount`
-with Podman for large historical datasets instead of copying them into each
+with Podman for large datasets instead of copying them into each
 task. Kubernetes requires cluster-visible storage rather than host paths.
 
 Cluster-specific config (namespace, credentials secret) is read from a

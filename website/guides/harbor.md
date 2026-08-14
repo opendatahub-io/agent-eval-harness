@@ -100,7 +100,7 @@ The output is the same `eval/runs/<id>/` layout as a local run (`summary.yaml`,
 !!! warning "Mounts are local-Podman only"
     Host bind mounts are implemented by the bundled Podman environment. Supplying
     `--mount` with Kubernetes/OpenShift or an unrelated custom environment is rejected
-    so historical data is never silently absent from an eval.
+    so mounted data is never silently absent from an eval.
 
 ## Generating task packages
 
@@ -131,7 +131,7 @@ PYTHONPATH="$(pwd)" harbor run -p eval/harbor-tasks \
 ```
 
 The harness wrapper can run the same task packages with the native Harbor Codex agent
-and a read-only historical-data mount:
+and a read-only data mount:
 
 ```bash
 python -m agent_eval.harbor.run \

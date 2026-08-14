@@ -79,7 +79,7 @@ PYTHONPATH="$(pwd)" harbor run -p harbor-tasks/<case> --agent claude-code -m <mo
 ```
 
 For Codex, pass the plugin's whole skill root so orchestrator skills can invoke
-their sibling dependencies, and pass large historical data as a bind mount:
+their sibling dependencies, and pass large datasets as a bind mount:
 
 ```bash
 PYTHONPATH="$(pwd)" harbor run -p harbor-tasks/<case> \

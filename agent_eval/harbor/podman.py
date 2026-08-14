@@ -237,7 +237,7 @@ class PodmanEnvironment(BaseEnvironment):
         # Harbor always supplies three internal log mounts. This environment
         # intentionally keeps those copy-based (capabilities.mounted=False),
         # while honoring any additional user bind mounts such as a large,
-        # read-only historical dataset that should not be copied per trial.
+        # read-only dataset that should not be copied per trial.
         external_mount_args = _external_bind_args(self._mounts)
         if external_mount_args:
             # Host data under $HOME commonly carries user_home_t. A container
