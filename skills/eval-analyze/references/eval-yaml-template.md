@@ -115,6 +115,8 @@ models:
   skill: claude-opus-4-6         # Default for eval runs (or pass --model)
   # subagent: claude-sonnet-4-6  # Defaults to skill model
   judge: claude-opus-4-6         # LLM and pairwise judges need a strong model
+  # judge_effort: medium         # low|medium|high|xhigh|max — omit to send no effort
+  #                              # at all (not every model accepts the parameter)
   # hook: claude-sonnet-4-6      # For AskUserQuestion answering (fast, cheaper than Opus)
 
 # Permissions for headless execution

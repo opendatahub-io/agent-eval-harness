@@ -477,6 +477,24 @@ class RunnerConfig:
     permission_mode: Optional[str] = None
 
 
+# Effort levels accepted by `output_config.effort` on the Anthropic Messages
+# API. Only the judge path validates against this list: the judge client is
+# always the Anthropic SDK, whereas `RunnerConfig.effort` is forwarded to
+# whichever agent CLI is configured and those define their own vocabularies.
+_JUDGE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def _validate_judge_effort(value, context):
+    """Return a validated effort level, or None when unset."""
+    if value is None or value == "":
+        return None
+    if value not in _JUDGE_EFFORT_LEVELS:
+        raise ValueError(
+            f"{context}: effort must be one of "
+            f"{', '.join(_JUDGE_EFFORT_LEVELS)}, got {value!r}")
+    return value
+
+
 def _parse_runner_config(runner_raw, *, context="runner"):
     """Parse a runner block into a RunnerConfig with validation.
 
@@ -575,12 +593,21 @@ class ModelsConfig:
     - subagent: CLI --subagent-model > models.subagent > skill model
     - judge: per-judge JudgeConfig.model > models.judge > EVAL_JUDGE_MODEL
       env var (must resolve to non-empty for LLM judges)
+    - judge_effort: per-judge JudgeConfig.effort > models.judge_effort >
+      unset (the parameter is omitted from the request entirely)
     """
 
     skill: Optional[str] = None
     subagent: Optional[str] = None
     judge: Optional[str] = None
     hook: Optional[str] = None
+    # Reasoning effort for single-call LLM judges, sent as
+    # ``output_config.effort``.  Agent judges have their own knob
+    # (``agent.runner.effort``); this closes the gap for the LLM ones.
+    # Deliberately unset by default: `effort` is not accepted on every model
+    # (Sonnet 4.5 and Haiku 4.5 reject it), so opting in is the user's call
+    # and an unset value changes no existing request.
+    judge_effort: Optional[str] = None
 
 
 @dataclass
@@ -701,6 +728,11 @@ class JudgeConfig:
     # Sampling — run this judge N times per case and reduce (median/majority).
     # Only meaningful for stochastic (LLM and agent) judges; ignored otherwise.
     samples: int = 1
+    # Reasoning effort for this judge, sent as ``output_config.effort`` on the
+    # single LLM call. Overrides ``models.judge_effort``. Unset means the
+    # parameter is omitted. Ignored by check/module/builtin-code judges, and by
+    # agent judges — those carry effort on their own ``agent.runner.effort``.
+    effort: Optional[str] = None
     # Agent judge — presence of this block upgrades an (otherwise LLM) judge to
     # a tool-using agent run through the runner abstraction, with read-only file
     # tools and a staged, isolated workspace. Permissive mapping (mirrors
@@ -1082,6 +1114,8 @@ class EvalConfig:
             subagent=models_raw.get("subagent"),
             judge=models_raw.get("judge"),
             hook=models_raw.get("hook"),
+            judge_effort=_validate_judge_effort(
+                models_raw.get("judge_effort"), "models.judge_effort"),
         )
 
         # MLflow block. Experiment defaults to the eval's top-level
@@ -1293,6 +1327,8 @@ class EvalConfig:
                     arguments=args_val,
                     step=j.get("step", "") or "",
                     samples=int(j.get("samples", 1)),
+                    effort=_validate_judge_effort(
+                        j.get("effort"), f"Judge '{j.get('name', '')}'"),
                     agent=agent_val,
                 )
             )
@@ -1341,6 +1377,21 @@ class EvalConfig:
                     f"Judge '{jc.name}': builtin LLM judge '{jc.builtin}' is "
                     "always scored as pass/fail, so 'feedback_type'/"
                     "'score_range' would be silently ignored")
+            # `effort` reaches the model only on the single-call LLM path.
+            # Reject it everywhere else rather than accept-and-ignore, which is
+            # the same failure mode the scale checks above exist to prevent.
+            if jc.effort:
+                if jc.agent:
+                    raise ValueError(
+                        f"Judge '{jc.name}': 'effort' is not read for an agent "
+                        "judge — set 'agent.runner.effort' instead")
+                is_llm = bool(jc.prompt or jc.prompt_file or jc.llm_rubric
+                              or builtin_kind == "llm")
+                if not is_llm:
+                    raise ValueError(
+                        f"Judge '{jc.name}': 'effort' only applies to LLM "
+                        "judges (prompt/prompt_file/llm_rubric or a builtin "
+                        "LLM judge); this judge makes no model call")
             # `feedback_type` is optional, and score.py's `_numeric_bounds`
             # treats anything that is not "bool" as numeric — so the judge that
             # most needs this warning is the one that declares neither field,

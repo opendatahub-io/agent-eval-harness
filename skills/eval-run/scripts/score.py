@@ -807,6 +807,7 @@ def _make_builtin_scorer(entry, jc, config):
         prompt_text = entry.prompt_path.read_text()
         arguments = jc.arguments
         judge_model = _resolve_judge_model(jc, config)
+        judge_effort = _resolve_judge_effort(jc, config)
 
         def scorer(outputs=None, **kwargs):
             out = outputs or {}
@@ -817,7 +818,7 @@ def _make_builtin_scorer(entry, jc, config):
             # `feedback_type`/`score_range` on one of these is rejected at load
             # rather than having the declaration silently dropped here.
             return _call_structured_judge(rendered, judge_model, "bool",
-                                          images=images)
+                                          images=images, effort=judge_effort)
 
         return scorer
 
@@ -1008,6 +1009,16 @@ def _judge_user_message(prompt, images=None):
     return parts
 
 
+def _effort_kwargs(effort):
+    """Build the ``output_config`` kwarg for a judge call, or nothing.
+
+    Kept as a dict-splat rather than an ``output_config=None`` default so an
+    unconfigured judge issues a byte-identical request to the one it issued
+    before this parameter existed.
+    """
+    return {"output_config": {"effort": effort}} if effort else {}
+
+
 def _call_judge_llm(prompt, model, system_prompt, images=None, max_tokens=4096):
     """Call the Anthropic API with a judge prompt. Returns raw response text.
 
@@ -1025,7 +1036,7 @@ def _call_judge_llm(prompt, model, system_prompt, images=None, max_tokens=4096):
 
 
 def _call_structured_judge(prompt, model, feedback_type, images=None,
-                           max_tokens=4096, bounds=None):
+                           max_tokens=4096, bounds=None, effort=None):
     """Call an LLM judge with forced tool output. Returns (value, rationale).
 
     feedback_type "bool" → (passed: bool, rationale); anything else →
@@ -1036,6 +1047,11 @@ def _call_structured_judge(prompt, model, feedback_type, images=None,
     instead of free-form text the model may format however it likes (opus-4-8
     routinely ignores "return JSON" instructions). Falls back to parsing any
     text in the response if no tool_use is returned.
+
+    `effort` (from `_resolve_judge_effort`) is sent as ``output_config.effort``
+    when set, and the key is omitted entirely when it is not — a model that
+    rejects the parameter only sees it if the config asked for it, and the
+    resulting error surfaces as an error sample rather than a silent verdict.
     """
     is_bool = (feedback_type == "bool")
     if bounds is None:
@@ -1052,6 +1068,7 @@ def _call_structured_judge(prompt, model, feedback_type, images=None,
         tools=[tool],
         tool_choice={"type": "tool", "name": tool["name"]},
         messages=[{"role": "user", "content": _judge_user_message(prompt, images)}],
+        **_effort_kwargs(effort),
     )
     for block in response.content:
         if getattr(block, "type", None) == "tool_use" and block.name == tool["name"]:
@@ -1066,6 +1083,17 @@ def _call_structured_judge(prompt, model, feedback_type, images=None,
                             rationale or "(no rationale provided)")
                 except (KeyError, TypeError, ValueError):
                     pass
+    # Truncated before the tool call landed — retry with a larger budget, as
+    # the pairwise judge already does. This matters most with `effort`: at the
+    # upper levels `max_tokens` bounds thinking AND text together, so the
+    # default 4096 can be spent reasoning and never reach `submit_*`. Without
+    # this the response falls through to the text parser below, where a
+    # truncated boolean judge is recorded as a *failing case* rather than an
+    # error — a fabricated FAIL that also zeroes a gated reward.
+    if getattr(response, "stop_reason", None) == "max_tokens" and max_tokens < 32768:
+        return _call_structured_judge(prompt, model, feedback_type, images=images,
+                                      max_tokens=max_tokens * 2, bounds=bounds,
+                                      effort=effort)
     # Fallback: model emitted text instead of a tool call (rare with tool_choice).
     text = "".join(getattr(b, "text", "") for b in response.content
                    if getattr(b, "type", None) == "text").strip()
@@ -1729,6 +1757,17 @@ def _resolve_judge_model(jc, config):
     return model
 
 
+def _resolve_judge_effort(jc, config):
+    """Resolve LLM judge effort: per-judge > models.judge_effort > None.
+
+    None means the parameter is omitted from the request, which is the only
+    safe default: `output_config.effort` is not accepted by every model, and
+    sending it where it was previously absent would change existing scores.
+    Both values are validated against the effort ladder at config load.
+    """
+    return getattr(jc, "effort", None) or getattr(config.models, "judge_effort", None)
+
+
 # ---------------------------------------------------------------------------
 # Agent judge — a tool-using judge run through the runner abstraction
 # ---------------------------------------------------------------------------
@@ -2069,6 +2108,7 @@ def _load_llm_judge(jc, config, project_root=None):
             or os.environ.get("ANTHROPIC_API_KEY")
             or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
         judge_model = _resolve_judge_model(jc, config)
+        judge_effort = _resolve_judge_effort(jc, config)
         feedback_type = "bool" if jc.feedback_type == "bool" else "score"
         bounds = _numeric_bounds(jc)
         arguments = jc.arguments
@@ -2078,7 +2118,8 @@ def _load_llm_judge(jc, config, project_root=None):
             rendered = _render_jinja2_template(prompt, arguments, out)
             images = _extract_images(out)
             return _call_structured_judge(rendered, judge_model, feedback_type,
-                                          images=images, bounds=bounds)
+                                          images=images, bounds=bounds,
+                                          effort=judge_effort)
 
         return scorer
 
@@ -2160,8 +2201,13 @@ class PairwiseResult:
 
 
 def compare_runs(run_a_dir, run_b_dir, config, case_ids,
-                 prompt=None, prompt_file=None, model=None):
-    """Compare two runs using position-swapped LLM judge."""
+                 prompt=None, prompt_file=None, model=None, effort=None):
+    """Compare two runs using position-swapped LLM judge.
+
+    `effort` falls back to `models.judge_effort` so the pairwise judge honors
+    the same default as the per-case LLM judges.
+    """
+    effort = effort or getattr(config.models, "judge_effort", None)
     comparison_prompt = prompt
     if not comparison_prompt and prompt_file:
         comparison_prompt = Path(prompt_file).read_text()
@@ -2193,7 +2239,8 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
         result = PairwiseResult(case_id=case_id)
 
         msg_ab = f"## Output A\n\n{output_a}\n\n## Output B\n\n{output_b}"
-        pref_ab, err = _call_judge(client, comparison_prompt, msg_ab, model)
+        pref_ab, err = _call_judge(client, comparison_prompt, msg_ab, model,
+                                   effort=effort)
         if pref_ab:
             result.pref_ab = pref_ab.get("preferred")
             result.reasoning_ab = pref_ab
@@ -2202,7 +2249,8 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
             return result
 
         msg_ba = f"## Output A\n\n{output_b}\n\n## Output B\n\n{output_a}"
-        pref_ba, err = _call_judge(client, comparison_prompt, msg_ba, model)
+        pref_ba, err = _call_judge(client, comparison_prompt, msg_ba, model,
+                                   effort=effort)
         if pref_ba:
             result.pref_ba = pref_ba.get("preferred")
             result.reasoning_ba = pref_ba
@@ -2382,10 +2430,12 @@ _PAIRWISE_TOOL = {
 }
 
 
-def _call_judge(client, system_prompt, user_message, model, max_tokens=16384):
+def _call_judge(client, system_prompt, user_message, model, max_tokens=16384,
+                effort=None):
     try:
         response = client.messages.create(
             model=model, max_tokens=max_tokens,
+            **_effort_kwargs(effort),
             system=("You are a blind judge comparing two outputs, A and B. "
                     "Call the submit_comparison tool exactly once with your verdict "
                     "and reasoning. Put ALL of your reasoning inside the tool input — "
@@ -2410,7 +2460,7 @@ def _call_judge(client, system_prompt, user_message, model, max_tokens=16384):
         # Retry once with a larger budget if the response was truncated.
         if response.stop_reason == "max_tokens" and max_tokens < 32768:
             return _call_judge(client, system_prompt, user_message, model,
-                               max_tokens=max_tokens * 2)
+                               max_tokens=max_tokens * 2, effort=effort)
         return None, (f"No submit_comparison tool_use in response "
                       f"(stop_reason={response.stop_reason})")
     except Exception as e:
@@ -2836,6 +2886,10 @@ def cmd_pairwise(args):
             prompt=pairwise_jc.prompt if pairwise_jc else None,
             prompt_file=prompt_file,
             model=model,
+            # Mirror the model chain: the selected pairwise judge's own
+            # `effort:` wins, then models.judge_effort (applied inside
+            # compare_runs), then nothing.
+            effort=(pairwise_jc.effort if pairwise_jc else None),
         )
         if "error" in r:
             print(f"ERROR: {r['error']}", file=sys.stderr)
