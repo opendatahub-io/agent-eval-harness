@@ -446,23 +446,34 @@ class TestInlineJudgeFieldValidation:
         assert "source_key" in captured.err
 
     @pytest.mark.parametrize("label,snippet,expected", [
-        # Required — the shape issue #33 is about, in its three spellings.
-        ("negated get", "if not fm.get('strat_key'): return False, 'b'",
-         ["strat_key"]),
-        ("bool get", "return bool(fm.get('strat_key')), 'x'", ["strat_key"]),
-        ("subscript", "return bool(fm['title']), 'x'", ["title"]),
-        # `"x" not in fm` is what README.md, the skill-batch cookbook and the
-        # eval.yaml template all use — the template seeds generated evals.
-        ("not in", "if 'score' not in fm: return False, 'm'", ["score"]),
-        ("in", "if 'score' in fm: return True, 'ok'", ["score"]),
-        # Not required, and warning here fires on a healthy run.
-        ("explicit default", "return True, fm.get('priority', 'normal')", []),
-        ("expects absence", "if fm.get('deprecated'): return False, 'd'", []),
+        # Every literal reference counts. Intent is deliberately NOT inferred:
+        # `if fm.get("x"): return True` and `... return False` are the same
+        # expression with opposite meanings, and the eval.yaml template tells
+        # authors to pass a default to every lookup, so a default says nothing
+        # either. Precision comes from only reporting judges that failed.
+        ("get", "return bool(fm.get('k')), 'x'", ["k"]),
+        ("get with default", "return True, fm.get('k', '')", ["k"]),
+        ("negated get", "if not fm.get('k'): return False, 'b'", ["k"]),
+        ("assert", "assert fm.get('k')", ["k"]),
+        ("subscript read", "return bool(fm['k']), 'x'", ["k"]),
+        ("not in", "if 'k' not in fm: return False, 'm'", ["k"]),
+        # Writes and deletes are not reads of a field the artifact must have.
+        ("subscript write", "fm['k'] = 1", []),
+        ("subscript del", "del fm['k']", []),
     ])
-    def test_which_references_count_as_required(self, label, snippet, expected):
+    def test_which_references_are_collected(self, label, snippet, expected):
         from score import _extract_frontmatter_field_refs
         source = f"fm = outputs['a_content']\n{snippet}\nreturn True, 'ok'"
         assert _extract_frontmatter_field_refs(source) == expected, label
+
+    def test_meta_is_not_treated_as_frontmatter(self):
+        """`meta` is the conventional name for parsed JSON too, and a JSON
+        judge has no YAML frontmatter to be missing from."""
+        from score import _extract_frontmatter_field_refs as refs
+        assert refs("meta = outputs['m_content']\n"
+                    "return bool(meta.get('run_id')), 'x'") == []
+        assert refs("frontmatter = outputs['a_content']\n"
+                    "return bool(frontmatter.get('k')), 'x'") == ["k"]
 
     def test_an_untraceable_frontmatter_source_stays_silent(self):
         """`fm` built by iterating outputs['files'] — the shape strat-creator
@@ -479,13 +490,6 @@ class TestInlineJudgeFieldValidation:
             "return bool(fm.get('title')), notes"
         )
         assert _extract_frontmatter_content_keys(source) == []
-
-    def test_the_conventional_aliases_are_recognised(self):
-        from score import _extract_frontmatter_field_refs as refs
-        for name in ("fm", "frontmatter", "meta"):
-            source = (f"{name} = outputs['a_content']\n"
-                      f"return bool({name}.get('title')), 'x'")
-            assert refs(source) == ["title"], name
 
     def _stale_field_config(self, condition=None):
         config = EvalConfig(name="test", skill="test")
@@ -517,18 +521,72 @@ class TestInlineJudgeFieldValidation:
         config = self._stale_field_config(condition)
         score_cases(load_judges(config), sorted(dirs), config)
 
+    def test_a_passing_judge_is_never_reported(self, tmp_path, capsys):
+        """The evidence gate, and the reason no intent inference is needed.
+
+        This judge asserts a field is GONE, so it passes precisely when the
+        field is absent — the condition that would otherwise look like drift.
+        """
+        config = EvalConfig(name="test", skill="test")
+        config.outputs = [OutputConfig(path="artifacts")]
+        config.judges = [JudgeConfig(name="j", check=(
+            "import yaml\n"
+            "fm = yaml.safe_load("
+            "outputs['artifacts_content'].split('---', 2)[1]) or {}\n"
+            "if 'legacy_key' in fm:\n"
+            "    return False, 'still there'\n"
+            "return True, 'clean'"))]
+        for name in ("case-001", "case-002"):
+            art = tmp_path / name / "artifacts"
+            art.mkdir(parents=True)
+            (art / "r.md").write_text("---\nnew_key: a\n---\nbody\n")
+        result = score_cases(load_judges(config),
+                             sorted(tmp_path.iterdir()), config)
+        assert result["aggregated"]["j"]["pass_rate"] == 1.0
+        assert "legacy_key" not in capsys.readouterr().err
+
+    def test_the_documented_get_with_default_style_still_warns(
+            self, tmp_path, capsys):
+        """`eval-yaml-template.md` tells authors to pass a default to every
+        lookup, so treating a default as "optional" would silence the feature
+        on the style the project recommends."""
+        config = EvalConfig(name="test", skill="test")
+        config.outputs = [OutputConfig(path="artifacts")]
+        config.judges = [JudgeConfig(name="j", check=(
+            "import yaml\n"
+            "fm = yaml.safe_load("
+            "outputs['artifacts_content'].split('---', 2)[1]) or {}\n"
+            "if not fm.get('strat_key', ''):\n"
+            "    return False, 'bad'\n"
+            "return True, 'ok'"))]
+        for name in ("case-001", "case-002"):
+            art = tmp_path / name / "artifacts"
+            art.mkdir(parents=True)
+            (art / "r.md").write_text("---\nsource_key: a\n---\nbody\n")
+        score_cases(load_judges(config), sorted(tmp_path.iterdir()), config)
+        assert "strat_key" in capsys.readouterr().err
+
     def test_drift_across_every_case_warns(self, tmp_path, capsys):
         self._run_cases(tmp_path, [("case-001", "source_key: a"),
                                    ("case-002", "source_key: b")])
         assert "strat_key" in capsys.readouterr().err
 
-    def test_one_empty_case_does_not_warn_for_the_whole_run(self, tmp_path,
-                                                            capsys):
-        """Probing only case-001 meant a case that produced nothing spoke for
-        every other case — and a partly-failed run is exactly when someone is
-        trying to tell a skill regression from a judge bug."""
+    def test_a_barren_first_case_does_not_hide_the_drift(self, tmp_path,
+                                                         capsys):
+        """Probing only case-001 loses the diagnostic whenever that case
+        produced nothing — and a partly-failed run is exactly when someone is
+        trying to tell a skill regression from a stale judge."""
         self._run_cases(tmp_path, [("case-001", None),
-                                   ("case-002", "strat_key: b")])
+                                   ("case-002", "source_key: b"),
+                                   ("case-003", "source_key: c")])
+        assert "strat_key" in capsys.readouterr().err
+
+    def test_unreadable_frontmatter_does_not_accuse_every_field(
+            self, tmp_path, capsys):
+        """One bad date must not turn into "every field you reference is
+        missing". Unreadable is unknown, and unknown stays quiet."""
+        self._run_cases(tmp_path, [("case-001", "due: 2026-02-30"),
+                                   ("case-002", "due: 2026-02-30")])
         assert "strat_key" not in capsys.readouterr().err
 
     def test_a_healthy_run_is_silent(self, tmp_path, capsys):

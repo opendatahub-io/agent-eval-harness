@@ -1252,47 +1252,24 @@ def _parse_inline_check_source(source):
 # Names an inline check conventionally binds the parsed frontmatter to. The
 # analysis is name-based, so anything else is simply not analysed — silence,
 # never a wrong warning.
-_FRONTMATTER_NAMES = {"fm", "frontmatter", "meta"}
+_FRONTMATTER_NAMES = {"fm", "frontmatter"}
 
 
 def _extract_frontmatter_field_refs(source):
-    """Fields an inline check REQUIRES from the frontmatter.
+    """Frontmatter field names an inline check mentions.
 
-    Three idioms count as a requirement — `fm.get("x")`, `fm["x"]`, and
-    `"x" in fm` / `"x" not in fm`, the last being the one the README, the
-    cookbook and the eval.yaml template all use.
-
-    Two do not, and skipping them is what keeps this quiet on healthy configs:
-    `fm.get("x", default)` states outright that the field is optional, and a
-    reference whose only use is a truth test (`if fm.get("x"): ...`) is an
-    absence assertion — it warns precisely when the skill is behaving.
+    Every literal reference counts — `fm.get("x")`, `fm.get("x", default)`,
+    `fm["x"]`, `"x" in fm`. Deliberately no attempt to infer whether the field
+    is *required*: intent is not in the syntax. `if fm.get("x"): return True`
+    and `if fm.get("x"): return False` are the same expression and opposite
+    requirements, and the project's own template tells authors to pass a
+    default to every lookup, so a default says nothing either. Precision comes
+    from only reporting judges that actually failed (see `score_cases`), not
+    from guessing here.
     """
     tree = _parse_inline_check_source(source)
     if tree is None:
         return []
-
-    # Polarity decides intent. `if fm.get("x")` asserts the field should be
-    # ABSENT — warning there fires when the skill is behaving. `if not
-    # fm.get("x")` is the opposite: it requires the field, and is the exact
-    # shape issue #33 is about. So collect POSITIVE truth tests only, and step
-    # over a `not` rather than through it.
-    optional = set()
-
-    def _mark_positive_tests(node):
-        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
-            return                      # negated: a requirement, keep it
-        if isinstance(node, ast.BoolOp):
-            for value in node.values:
-                _mark_positive_tests(value)
-            return
-        optional.add(id(node))
-
-    for node in ast.walk(tree):
-        for attr in ("test",):
-            test = getattr(node, attr, None)
-            if test is not None:
-                _mark_positive_tests(test)
-
     refs = set()
     for node in ast.walk(tree):
         name = None
@@ -1301,17 +1278,13 @@ def _extract_frontmatter_field_refs(source):
                 and node.func.attr == "get"
                 and _is_frontmatter_name(node.func.value)
                 and node.args):
-            if len(node.args) > 1:      # an explicit default = optional
-                continue
-            if id(node) in optional:    # `if fm.get("x")` = expects absence
-                continue
             name = _literal_string(node.args[0])
         elif (isinstance(node, ast.Subscript)
-              and _is_frontmatter_name(node.value)):
+              and _is_frontmatter_name(node.value)
+              and isinstance(node.ctx, ast.Load)):   # not a write or a del
             name = _literal_string(node.slice)
         elif isinstance(node, ast.Compare) and len(node.ops) == 1:
-            op = node.ops[0]
-            if (isinstance(op, (ast.In, ast.NotIn))
+            if (isinstance(node.ops[0], (ast.In, ast.NotIn))
                     and _is_frontmatter_name(node.comparators[0])):
                 name = _literal_string(node.left)
         if name:
@@ -1446,35 +1419,59 @@ def _collect_frontmatter_keys(record, content_keys):
             found[key] = keys
     return found
 
-def _warn_stale_inline_field_refs(judges, case_dirs, config, run_id=None):
-    """Warn when inline checks reference absent YAML frontmatter fields.
+# How many cases the probe reads. One is too few — the first case is often the
+# one that produced nothing — and reading every case duplicates the scoring
+# loop's IO for no extra signal.
+_STALE_FIELD_PROBE_CASES = 3
 
-    Advisory only. Every failure mode is swallowed: this runs before any judge
-    and after the agent has already been paid for, so a diagnostic that can
-    raise would destroy the run it exists to explain.
+
+def _warn_stale_inline_field_refs(judges, case_dirs, config, aggregated,
+                                  run_id=None):
+    """Explain a check judge that failed everywhere, if its fields moved.
+
+    Runs AFTER scoring and only for a judge whose every case returned False.
+    That is what makes it quiet: a passing judge is never reported, so no
+    amount of guessing about which references are "required" is needed — the
+    judge's own verdict is the evidence. Issue #33's symptom was exactly this
+    shape, a 0% pass rate that looked like a skill regression.
+
+    Advisory only, and swallows everything: this is a diagnostic printed after
+    the run has already been paid for.
     """
     try:
-        _stale_inline_field_refs(judges, case_dirs, config, run_id)
+        _stale_inline_field_refs(judges, case_dirs, config, aggregated, run_id)
     except Exception as exc:                      # pragma: no cover - guard
         print(f"  Warning: stale-field check skipped: {exc}", file=sys.stderr)
 
 
-# How many cases the probe reads before giving up. One is too few — the first
-# case is often the one that failed to produce artifacts — and reading all of
-# them duplicates the scoring loop's own IO for no extra signal.
-_STALE_FIELD_PROBE_CASES = 3
+def _judge_failed_every_case(agg):
+    """True when a judge never once succeeded — every case False, or errored.
+
+    Both are evidence. A judge whose field was renamed usually returns False,
+    but one that indexes into the frontmatter it can no longer find raises
+    instead, which is just as conclusive and is what the artifact-without-
+    frontmatter case does.
+    """
+    agg = agg or {}
+    values = [v for v in agg.get("values", []) if isinstance(v, bool)]
+    if values:
+        return not any(values)
+    return not agg.get("values") and bool(agg.get("errored_cases"))
 
 
-def _stale_inline_field_refs(judges, case_dirs, config, run_id=None):
+def _stale_inline_field_refs(judges, case_dirs, config, aggregated,
+                             run_id=None):
     refs_by_judge = {}
-    for name, scorer, condition, judge_type, _samples in judges:
+    for name, scorer, _condition, judge_type, _samples in judges:
         if judge_type != "check":
+            continue
+        if not _judge_failed_every_case(aggregated.get(name)):
             continue
         source = getattr(scorer, "_inline_check_source", "")
         refs = _extract_frontmatter_field_refs(source)
         content_keys = _extract_frontmatter_content_keys(source)
         if refs and content_keys:
-            refs_by_judge[name] = (refs, content_keys, condition)
+            refs_by_judge[name] = (refs, content_keys)
     if not refs_by_judge or not case_dirs:
         return
 
@@ -1488,52 +1485,27 @@ def _stale_inline_field_refs(judges, case_dirs, config, run_id=None):
         _emit_stale_field_warnings(refs_by_judge, records)
 
 
-def _judge_runs_on(condition, record):
-    """Whether an `if:`-gated judge would run on this case.
-
-    Errs towards running: an unevaluatable condition should not silence a
-    diagnostic, and a judge skipped on every probed case must not be reported
-    against artifacts it never looks at.
-    """
-    if not condition:
-        return True
-    try:
-        return bool(eval(condition, {"__builtins__": {}},
-                         {"annotations": record.get("annotations", {}),
-                          "outputs": record}))
-    except Exception:
-        return True
-
-
 def _emit_stale_field_warnings(refs_by_judge, records):
-    """Report a field only when EVERY probed case that runs the judge lacks it.
+    """Report a field only when every probed case lacks it.
 
-    One case is weak evidence — a heterogeneous dataset, or a case that simply
-    produced nothing, would otherwise generate a warning about a field the rest
-    of the run has. A field absent everywhere is drift.
+    Absent everywhere is drift; absent in one case is a case that failed.
     """
-    for name, (refs, content_keys, condition) in refs_by_judge.items():
-        seen = {}          # artifact -> keys observed across the probed cases
-        looked = False
+    for name, (refs, content_keys) in refs_by_judge.items():
+        seen = {}
         for record in records:
-            if not _judge_runs_on(condition, record):
-                continue
             for source, available in _collect_frontmatter_keys(
                     record, content_keys).items():
-                looked = True
                 seen.setdefault(source, set()).update(available)
-        if not looked:
-            continue
         for source, available in seen.items():
             missing = [ref for ref in refs if ref not in available]
             if not missing:
                 continue
             print(
-                f"  Warning: inline judge '{name}' requires frontmatter "
-                f"field(s) absent from {source} in every case checked: "
+                f"  Warning: judge '{name}' failed on every case and reads "
+                f"frontmatter field(s) absent from {source}: "
                 f"{', '.join(missing)}. "
                 f"Present: {', '.join(sorted(available)) or '(none)'}. "
-                "If the skill renamed them, update the judge.",
+                "If the skill renamed them, the judge is stale.",
                 file=sys.stderr,
             )
 
@@ -1547,7 +1519,6 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
     """
     if not case_dirs:
         return {"per_case": {}, "aggregated": {n: {"values": [], "mean": None, "pass_rate": None} for n, *_ in judges}}
-    _warn_stale_inline_field_refs(judges, case_dirs, config, run_id=run_id)
     per_case = {}
     aggregated = {name: {"values": [], "errored_cases": 0}
                   for name, *_ in judges}
@@ -1678,6 +1649,9 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
         else:
             aggregated[name]["mean"] = None
             aggregated[name]["pass_rate"] = None
+
+    _warn_stale_inline_field_refs(judges, case_dirs, config, aggregated,
+                                  run_id=run_id)
 
     # Per-judge stability across cases (only meaningful when sampled > 1):
     # how many cases gave a consistent score across all samples.
