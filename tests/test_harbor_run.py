@@ -445,6 +445,58 @@ def test_pregenerated_deterministic_tasks_rejected_for_full_run(tmp_path):
         run_mod._validate_task_package_reuse(tasks, config)
 
 
+def _config_det_thresholds(tmp_path):
+    raw = {
+        "name": "t",
+        "execution": {"skill": "rfe.speedrun"},
+        "dataset": {"path": ""},
+        "judges": [{"name": "files_exist", "check": "return (True, 'ok')\n"}],
+        "thresholds": {"files_exist": {"min_pass_rate": 1.0}},
+    }
+    p = tmp_path / "det-eval.yaml"
+    p.write_text(yaml.safe_dump(raw, sort_keys=False))
+    return EvalConfig.from_yaml(p)
+
+
+def test_deterministic_only_packages_reusable_for_no_llm_run(tmp_path):
+    config = _config_det_thresholds(tmp_path)
+    tasks = tmp_path / "tasks"
+    _write_pregenerated_task(tasks, judge_mode="deterministic-only",
+                             judges=("files_exist",))
+    run_mod._validate_task_package_reuse(tasks, config, no_llm_judges=True)
+
+
+def test_full_packages_rejected_for_no_llm_run(tmp_path):
+    config = _config(tmp_path)
+    tasks = tmp_path / "tasks"
+    _write_pregenerated_task(tasks)
+    with pytest.raises(ValueError, match="bundles model judges"):
+        run_mod._validate_task_package_reuse(tasks, config, no_llm_judges=True)
+
+
+def test_pregenerated_task_from_other_eval_rejected(tmp_path):
+    config = _config(tmp_path)
+    tasks = tmp_path / "tasks"
+    task = _write_pregenerated_task(tasks)
+    (task / "task.toml").write_text(
+        '[metadata]\neval_name = "other"\njudge_mode = "full"\n')
+    with pytest.raises(ValueError, match="generated for eval 'other'"):
+        run_mod._validate_task_package_reuse(tasks, config)
+
+
+def test_purge_task_packages_spares_non_package_entries(tmp_path):
+    tasks = tmp_path / "tasks"
+    _write_pregenerated_task(tasks, case_id="case-old")
+    (tasks / "notes.md").write_text("keep me")
+    (tasks / "not-a-package").mkdir()
+
+    run_mod._purge_task_packages(tasks)
+
+    assert not (tasks / "case-old").exists()
+    assert (tasks / "notes.md").is_file()
+    assert (tasks / "not-a-package").is_dir()
+
+
 def test_legacy_pregenerated_task_missing_thresholded_judge_is_rejected(tmp_path):
     config = _config(tmp_path)
     tasks = tmp_path / "tasks"

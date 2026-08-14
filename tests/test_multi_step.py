@@ -187,6 +187,48 @@ outputs:
         (cw / "input.yaml").write_text("id: '99'\n")
         return cw
 
+    def test_step_runner_system_prompt_override_wins(self, tmp_path, monkeypatch):
+        cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+runner: {type: claude-code, system_prompt: "Default charter."}
+execution:
+  mode: case
+  steps:
+    - {id: a, skill: s1, arguments: x}
+    - {id: b, skill: s2, arguments: y,
+       runner: {type: claude-code, system_prompt: "Step charter."}}
+dataset: {path: __TMP__/cases}
+outputs:
+  - path: output
+"""))
+        cw = self._case(tmp_path)
+        out = tmp_path / "run"
+        out.mkdir()
+        prompts = []
+
+        class _PromptFake(_FakeRunner):
+            @classmethod
+            def from_config(cls, config, **kw):
+                return cls(capture=prompts)
+
+            def execute(self, target=None, args="", workspace=None,
+                        model=None, system_prompt=None, **kw):
+                prompts.append({"target": target,
+                                "system_prompt": system_prompt})
+                ws = Path(workspace)
+                (ws / "output").mkdir(parents=True, exist_ok=True)
+                (ws / "output" / f"{target}.md").write_text("x")
+                return _result(exit_code=0, target=target)
+
+        monkeypatch.setitem(ex.RUNNERS, "claude-code", _PromptFake)
+        ex._run_multi_step_case(
+            _PromptFake(), "case-1", cw, out, "opus", None, None,
+            "Default charter.", 5.0, 600, 1, 1, cfg)
+
+        by_target = {p["target"]: p["system_prompt"] for p in prompts}
+        assert by_target["s1"] == "Default charter."
+        assert by_target["s2"] == "Step charter."
+
     def test_step_loop_templating_and_shared_workspace(self, tmp_path):
         cfg = self._cfg(tmp_path)
         cw = self._case(tmp_path)

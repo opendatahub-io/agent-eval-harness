@@ -591,9 +591,8 @@ def parse_job(job_dir: Path) -> dict:
     if result_file.exists():
         try:
             job_result = json.loads(result_file.read_text())
-            # fromisoformat (via _timing_duration) accepts timestamps with or
-            # without fractional seconds; strptime's mandatory %f silently
-            # dropped the metric for whole-second timestamps.
+            # fromisoformat (via _timing_duration) accepts timestamps
+            # with or without fractional seconds.
             wall_clock_s = _timing_duration(job_result)
         except Exception:
             pass

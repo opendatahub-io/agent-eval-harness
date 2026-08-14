@@ -23,6 +23,34 @@ def _run_script(script_name, args, cwd, env=None):
     return subprocess.run(cmd, capture_output=True, text=True, cwd=str(cwd), env=env)
 
 
+def test_agent_override_honors_codex_config_guards(tmp_path):
+    # EvalConfig.load rejects inputs.tools and workspace_mode: repo for a
+    # declared codex runner; an --agent codex override must not slip past
+    # the same guarantees.
+    project = tmp_path / "project"
+    (project / "cases").mkdir(parents=True)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (project / "eval.yaml").write_text(yaml.safe_dump({
+        "name": "t",
+        "execution": {"skill": "s"},
+        "runner": {"type": "claude-code"},
+        "dataset": {"path": "cases", "schema": "x"},
+        "inputs": {"tools": [{"match": "Bash", "prompt": "mock it"}]},
+    }))
+
+    result = _run_script("execute.py", [
+        "--workspace", str(workspace),
+        "--output", str(tmp_path / "out"),
+        "--config", str(project / "eval.yaml"),
+        "--agent", "codex",
+        "--model", "fake-model",
+    ], cwd=project)
+
+    assert result.returncode == 1
+    assert "does not support inputs.tools" in result.stderr
+
+
 @pytest.fixture
 def hook_eval_project(tmp_path):
     """Set up a minimal eval project with hooks at every lifecycle phase."""

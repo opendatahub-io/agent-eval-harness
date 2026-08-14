@@ -63,7 +63,7 @@ def test_parse_trial_none_without_reward(tmp_path):
 def test_multi_step_merges_every_steps_judges_sidecar(tmp_path):
     # Earlier steps' step-scoped judges must keep their values/rationales
     # in per_judge; only the final step's engine reward wins (strategy
-    # "final"). A reversed-iteration break used to drop earlier sidecars.
+    # "final").
     trial = tmp_path / "trial"
     for step, judge, reward in (("s1", "judge_s1", 1.0), ("s2", "judge_s2", 0.8)):
         v = trial / "steps" / step / "verifier"
@@ -101,8 +101,8 @@ def test_parse_job_wall_clock_accepts_whole_second_timestamps(tmp_path):
     job = tmp_path / "job"
     job.mkdir()
     _make_trial(job, "case-001__a", 1.0, {})
-    # Harbor may emit ISO timestamps without fractional seconds; strptime
-    # with a mandatory %f silently dropped the metric for those.
+    # Harbor may emit ISO timestamps with or without fractional
+    # seconds; both forms must parse into the duration.
     (job / "result.json").write_text(json.dumps({
         "started_at": "2026-08-13T10:00:00Z",
         "finished_at": "2026-08-13T10:05:00Z",

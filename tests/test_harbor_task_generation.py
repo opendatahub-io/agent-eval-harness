@@ -143,6 +143,21 @@ def test_instruction_includes_runner_system_prompt(tmp_path):
     assert "Use the payload-analysis skill with arguments:" in instruction
 
 
+def test_instruction_dialect_follows_effective_agent(tmp_path):
+    # --agent codex on a claude-code config must produce codex-dialect
+    # instructions; the declared runner type is not the job agent.
+    cfg_path, config = _make_eval(tmp_path)
+    gen.generate_tasks(
+        config, cfg_path, tmp_path / "tasks", image="img:latest",
+        arguments='"{prompt}"', skill="ci:payload-analysis",
+        cases=["case-001"], agent_name="codex")
+
+    instruction = (
+        tmp_path / "tasks" / "case-001" / "instruction.md").read_text()
+    assert instruction.startswith("Use the payload-analysis skill")
+    assert "/ci:payload-analysis" not in instruction
+
+
 def test_generate_tasks_case_subset(tmp_path):
     cfg_path, config = _make_eval(tmp_path)
     out = tmp_path / "harbor-tasks"
@@ -160,9 +175,9 @@ def test_generate_tasks_can_drop_model_calling_judges(tmp_path):
     raw = yaml.safe_load(cfg_path.read_text())
     raw["judges"] += [
         {"name": "quality", "prompt": "score it"},
-        # A builtin whose registry kind is "llm" must be dropped with the
-        # prompt judges. (An unknown builtin name can no longer reach the
-        # bundler: EvalConfig.from_yaml rejects it at load.)
+        # A builtin whose registry kind is "llm" must be dropped with
+        # the prompt judges. EvalConfig.from_yaml rejects unknown builtin
+        # names at load, so the bundler only sees registered ones.
         {"name": "builtin-llm", "builtin": "quality/output_completeness"},
     ]
     cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))

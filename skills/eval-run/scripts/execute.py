@@ -278,6 +278,19 @@ def main():
         print(f"ERROR: unknown runner '{agent}'. Available: {list(RUNNERS.keys())}",
               file=sys.stderr)
         sys.exit(1)
+    if agent == "codex":
+        # The config loader enforces these for a declared codex runner;
+        # an --agent override must not slip past the same guarantees.
+        if config.inputs.tools:
+            print("ERROR: runner 'codex' does not support inputs.tools "
+                  "interception; use claude-code or remove the tool "
+                  "interceptors", file=sys.stderr)
+            sys.exit(1)
+        if getattr(config.runner, "workspace_mode", None) == "repo":
+            print("ERROR: runner 'codex' does not support workspace_mode: "
+                  "repo because repository answer-key protections cannot "
+                  "be enforced", file=sys.stderr)
+            sys.exit(1)
     runner_cls = RUNNERS[agent]
 
     mlflow_experiment = args.mlflow_experiment or config.mlflow.experiment
@@ -1094,13 +1107,18 @@ def _run_multi_step_case(runner, case_id, case_ws, output_dir, model,
                     if hout.get("env"):
                         step_env.update(
                             {k: str(v) for k, v in hout["env"].items()})
+                step_system_prompt = system_prompt
+                if getattr(step, "runner", None) and step.runner.system_prompt:
+                    # Same precedence Harbor task generation applies: a
+                    # per-step runner override wins over the eval default.
+                    step_system_prompt = step.runner.system_prompt
                 step_result = step_runner.execute(
                     target=step_target,
                     args=resolved,
                     workspace=case_ws,
                     model=model,
                     settings_path=settings_path,
-                    system_prompt=system_prompt,
+                    system_prompt=step_system_prompt,
                     max_budget_usd=step_budget,
                     timeout_s=step_timeout,
                     extra_env=step_env or None,

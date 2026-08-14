@@ -235,12 +235,10 @@ def _format_skill_instruction(skill_name: str, arguments: str,
 def _instruction_text(system_prompt, command: str) -> str:
     """Compose a task instruction the way the local runners compose prompts.
 
-    The local runners prepend ``runner.system_prompt`` to every prompt.
-    Without the same composition here, a Harbor agent runs without the
-    eval's charter and behaves measurably differently from a local run of
-    the same case (observed: a payload-analysis system prompt directing
-    external correlation searches — the local agent performed them, the
-    Harbor agent never saw the instruction to).
+    The local runners prepend ``runner.system_prompt`` to every prompt;
+    the instruction must compose the same way or a Harbor agent runs
+    without the eval's charter and behaves differently from a local run
+    of the same case.
     """
     if system_prompt:
         return f"{system_prompt.rstrip()}\n\n{command}"
@@ -296,7 +294,8 @@ def _render_multistep_task_toml(*, task_name, task_desc, eval_name, case_id,
 def _write_multi_step_case_package(config, config_path, bundled_cfg, case_dir,
                                    case_id, input_file, input_data, out_dir,
                                    image, workdir, agent_timeout,
-                                   verifier_timeout, no_llm_judges=False):
+                                   verifier_timeout, no_llm_judges=False,
+                                   agent_name=None):
     """Write one Harbor multi-step task package (schema 1.4) for a case.
 
     Emits ``task.toml`` with a ``[[steps]]`` block per step, and per-step
@@ -329,7 +328,8 @@ def _write_multi_step_case_package(config, config_path, bundled_cfg, case_dir,
             raise ValueError(
                 f"Harbor generation: step '{sid}' arguments cannot be resolved "
                 f"from input alone ({e}).{hint}") from e
-        runner_type = step.runner.type if step.runner else config.runner.type
+        runner_type = (step.runner.type if step.runner
+                       else (agent_name or config.runner.type))
         cmd = (_format_skill_instruction(step.skill, resolved, runner_type)
                if is_skill else resolved)
         step_system_prompt = ((step.runner.system_prompt if step.runner
@@ -407,6 +407,7 @@ def generate_tasks(
     agent_timeout: float = 1800.0,
     judge_model: str | None = None,
     no_llm_judges: bool = False,
+    agent_name: str | None = None,
 ) -> list[Path]:
     """Generate one self-contained Harbor task package per dataset case."""
     # workdir is interpolated into generated shell (test.sh) and TOML;
@@ -457,7 +458,8 @@ def generate_tasks(
             task_dir = _write_multi_step_case_package(
                 config, Path(config_path), bundled_cfg, case_dir, case_id,
                 input_file, input_data, out_dir, image, workdir,
-                agent_timeout, verifier_timeout, no_llm_judges)
+                agent_timeout, verifier_timeout, no_llm_judges,
+                agent_name=agent_name)
             generated.append(task_dir)
             print(f"  {case_id}: {task_dir}")
             continue
@@ -467,7 +469,7 @@ def generate_tasks(
         else:
             resolved_args = resolve_arguments(args_template, input_data) if args_template else ""
             command = (_format_skill_instruction(
-                skill_name, resolved_args, config.runner.type)
+                skill_name, resolved_args, agent_name or config.runner.type)
                 if skill_name else resolved_args)
         command = _instruction_text(config.runner.system_prompt, command)
 

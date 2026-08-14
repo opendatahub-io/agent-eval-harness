@@ -18,6 +18,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -267,6 +268,20 @@ def build_summary(parsed_job: dict, config: EvalConfig) -> dict:
     return {"judges": judges, "per_case": per_case}
 
 
+def _purge_task_packages(tasks_dir: Path) -> None:
+    """Remove existing task packages before regeneration.
+
+    Harbor runs every package under ``-p``, so a package surviving a
+    selective regeneration would execute with stale config/image and
+    contaminate the reported run. Non-package files are left alone.
+    """
+    if not tasks_dir.is_dir():
+        return
+    for stale in sorted(d for d in tasks_dir.iterdir()
+                        if d.is_dir() and (d / "task.toml").is_file()):
+        shutil.rmtree(stale)
+
+
 def _count_task_packages(tasks_dir: Path) -> int:
     """Count Harbor task packages (subdirs with a task.toml) under tasks_dir."""
     if not tasks_dir.is_dir():
@@ -275,9 +290,11 @@ def _count_task_packages(tasks_dir: Path) -> int:
                if d.is_dir() and (d / "task.toml").is_file())
 
 
-def _validate_task_package_reuse(tasks_dir: Path, config: EvalConfig) -> None:
-    """Reject pre-generated packages whose judge provenance mismatches config."""
+def _validate_task_package_reuse(tasks_dir: Path, config: EvalConfig, *,
+                                 no_llm_judges: bool = False) -> None:
+    """Reject pre-generated packages whose provenance mismatches this run."""
     required = set(config.thresholds or {})
+    requested_mode = "deterministic-only" if no_llm_judges else "full"
     for task_dir in sorted(d for d in tasks_dir.iterdir() if d.is_dir()
                            and (d / "task.toml").is_file()):
         try:
@@ -290,17 +307,28 @@ def _validate_task_package_reuse(tasks_dir: Path, config: EvalConfig) -> None:
             raise ValueError(
                 f"Pre-generated Harbor task {task_dir} has invalid metadata; "
                 "regenerate it with --regenerate --image IMAGE")
+        eval_name = metadata.get("eval_name")
+        if eval_name is not None and config.name and eval_name != config.name:
+            raise ValueError(
+                f"Pre-generated Harbor task {task_dir} was generated for eval "
+                f"{eval_name!r}, not {config.name!r}; point --tasks-dir at "
+                "that eval's packages or pass --regenerate --image IMAGE")
         mode = metadata.get("judge_mode")
         if mode not in {None, "full", "deterministic-only"}:
             raise ValueError(
                 f"Pre-generated Harbor task {task_dir} has unknown judge_mode "
                 f"{mode!r}; regenerate it with --regenerate --image IMAGE")
-        if mode == "deterministic-only":
+        if (mode or "full") != requested_mode:
+            if mode == "deterministic-only":
+                raise ValueError(
+                    f"Pre-generated Harbor task {task_dir} was built with "
+                    "--no-llm-judges and cannot be reused for a full run; "
+                    "pass --regenerate --image IMAGE")
             raise ValueError(
-                f"Pre-generated Harbor task {task_dir} was built with "
-                "--no-llm-judges and cannot be reused for a full run; pass "
-                "--regenerate --image IMAGE")
-
+                f"Pre-generated Harbor task {task_dir} bundles model judges; "
+                "reusing it with --no-llm-judges would still run them. Pass "
+                "--regenerate --image IMAGE to rebuild deterministic-only "
+                "packages")
         bundled_judges = set()
         for bundled_path in task_dir.rglob("eval.yaml"):
             try:
@@ -449,6 +477,22 @@ def run_eval_on_harbor(
         else:
             agent_name = config.runner.type
 
+    if no_llm_judges:
+        # A threshold naming a model judge cannot be satisfied by a
+        # deterministic-only run, whether packages are generated or reused.
+        filtered = tasks_mod._bundle_eval_config(
+            Path(config_path), judge_model=judge_model, no_llm_judges=True)
+        kept_names = {
+            judge.get("name") for judge in filtered.get("judges", [])
+        }
+        removed_thresholds = sorted(
+            name for name in config.thresholds if name not in kept_names)
+        if removed_thresholds:
+            raise ValueError(
+                "--no-llm-judges would skip thresholded judge(s): "
+                f"{', '.join(removed_thresholds)}. Remove those thresholds "
+                "or run the model judges.")
+
     # 1. Use pre-generated task packages if present; else generate them.
     existing = _count_task_packages(tasks_dir)
     if existing and not regenerate:
@@ -461,14 +505,13 @@ def run_eval_on_harbor(
             ignored.append("--cases")
         if judge_model is not None:
             ignored.append("--judge-model")
-        if no_llm_judges:
-            ignored.append("--no-llm-judges")
         if ignored:
             raise ValueError(
                 "Pre-generated Harbor tasks cannot apply generation options "
                 f"{', '.join(ignored)}; pass --regenerate --image IMAGE to "
                 "rebuild them")
-        _validate_task_package_reuse(tasks_dir, config)
+        _validate_task_package_reuse(
+            tasks_dir, config, no_llm_judges=no_llm_judges)
         print(f"Using {existing} pre-generated task package(s) in {tasks_dir} "
               f"(skipping generation; --regenerate to force)", file=sys.stderr)
     else:
@@ -479,24 +522,13 @@ def run_eval_on_harbor(
                  "No tasks in --tasks-dir and no --image to generate them. ")
                 + "Either pre-generate with /eval-dataset (scripts/harbor.py) "
                 "or pass --image.")
-        if no_llm_judges:
-            filtered = tasks_mod._bundle_eval_config(
-                Path(config_path), judge_model=judge_model,
-                no_llm_judges=True)
-            kept_names = {
-                judge.get("name") for judge in filtered.get("judges", [])
-            }
-            removed_thresholds = sorted(
-                name for name in config.thresholds if name not in kept_names)
-            if removed_thresholds:
-                raise ValueError(
-                    "--no-llm-judges would skip thresholded judge(s): "
-                    f"{', '.join(removed_thresholds)}. Remove those thresholds "
-                    "or run the model judges.")
+        if regenerate:
+            _purge_task_packages(tasks_dir)
         tasks_mod.generate_tasks(
             config, Path(config_path), tasks_dir, image,
             arguments=arguments, skill=skill, workdir=workdir, cases=cases,
             judge_model=judge_model, no_llm_judges=no_llm_judges,
+            agent_name=agent_name,
         )
 
     # 2. Run on Harbor (one job over the tasks dir).
