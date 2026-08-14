@@ -445,6 +445,48 @@ class TestInlineJudgeFieldValidation:
         assert "strat_key" in captured.err
         assert "source_key" in captured.err
 
+    @pytest.mark.parametrize("label,snippet,expected", [
+        # Required — the shape issue #33 is about, in its three spellings.
+        ("negated get", "if not fm.get('strat_key'): return False, 'b'",
+         ["strat_key"]),
+        ("bool get", "return bool(fm.get('strat_key')), 'x'", ["strat_key"]),
+        ("subscript", "return bool(fm['title']), 'x'", ["title"]),
+        # `"x" not in fm` is what README.md, the skill-batch cookbook and the
+        # eval.yaml template all use — the template seeds generated evals.
+        ("not in", "if 'score' not in fm: return False, 'm'", ["score"]),
+        ("in", "if 'score' in fm: return True, 'ok'", ["score"]),
+        # Not required, and warning here fires on a healthy run.
+        ("explicit default", "return True, fm.get('priority', 'normal')", []),
+        ("expects absence", "if fm.get('deprecated'): return False, 'd'", []),
+    ])
+    def test_which_references_count_as_required(self, label, snippet, expected):
+        from score import _extract_frontmatter_field_refs
+        source = f"fm = outputs['a_content']\n{snippet}\nreturn True, 'ok'"
+        assert _extract_frontmatter_field_refs(source) == expected, label
+
+    def test_an_untraceable_frontmatter_source_stays_silent(self):
+        """`fm` built by iterating outputs['files'] — the shape strat-creator
+        and the docs use. The artifact cannot be identified, so the old
+        fallback blamed an unrelated `*_content` read and printed ITS keys as
+        available. Silence is the only honest output."""
+        from score import _extract_frontmatter_content_keys
+        source = (
+            "files = outputs.get('files', {})\n"
+            "rev = next((c for p, c in files.items() "
+            "if p.endswith('-review.md')), None)\n"
+            "notes = outputs['notes_content']\n"
+            "fm = yaml.safe_load(rev.split('---', 2)[1])\n"
+            "return bool(fm.get('title')), notes"
+        )
+        assert _extract_frontmatter_content_keys(source) == []
+
+    def test_the_conventional_aliases_are_recognised(self):
+        from score import _extract_frontmatter_field_refs as refs
+        for name in ("fm", "frontmatter", "meta"):
+            source = (f"{name} = outputs['a_content']\n"
+                      f"return bool({name}.get('title')), 'x'")
+            assert refs(source) == ["title"], name
+
     def test_unparseable_frontmatter_does_not_abort_the_run(self, tmp_path):
         """`yaml.safe_load` raises a bare ValueError — not YAMLError — for an
         out-of-range date, and the probe runs before any judge. Uncaught, it

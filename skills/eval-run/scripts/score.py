@@ -1249,24 +1249,79 @@ def _parse_inline_check_source(source):
         return None
 
 
+# Names an inline check conventionally binds the parsed frontmatter to. The
+# analysis is name-based, so anything else is simply not analysed — silence,
+# never a wrong warning.
+_FRONTMATTER_NAMES = {"fm", "frontmatter", "meta"}
+
+
 def _extract_frontmatter_field_refs(source):
-    """Return fm.get("field") references from an inline check snippet."""
+    """Fields an inline check REQUIRES from the frontmatter.
+
+    Three idioms count as a requirement — `fm.get("x")`, `fm["x"]`, and
+    `"x" in fm` / `"x" not in fm`, the last being the one the README, the
+    cookbook and the eval.yaml template all use.
+
+    Two do not, and skipping them is what keeps this quiet on healthy configs:
+    `fm.get("x", default)` states outright that the field is optional, and a
+    reference whose only use is a truth test (`if fm.get("x"): ...`) is an
+    absence assertion — it warns precisely when the skill is behaving.
+    """
     tree = _parse_inline_check_source(source)
     if tree is None:
         return []
+
+    # Polarity decides intent. `if fm.get("x")` asserts the field should be
+    # ABSENT — warning there fires when the skill is behaving. `if not
+    # fm.get("x")` is the opposite: it requires the field, and is the exact
+    # shape issue #33 is about. So collect POSITIVE truth tests only, and step
+    # over a `not` rather than through it.
+    optional = set()
+
+    def _mark_positive_tests(node):
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return                      # negated: a requirement, keep it
+        if isinstance(node, ast.BoolOp):
+            for value in node.values:
+                _mark_positive_tests(value)
+            return
+        optional.add(id(node))
+
+    for node in ast.walk(tree):
+        for attr in ("test",):
+            test = getattr(node, attr, None)
+            if test is not None:
+                _mark_positive_tests(test)
+
     refs = set()
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call)
+        name = None
+        if (isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "get"
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "fm"):
-            continue
-        if (node.args
-                and isinstance(node.args[0], ast.Constant)
-                and isinstance(node.args[0].value, str)):
-            refs.add(node.args[0].value)
-    return sorted(set(refs))
+                and _is_frontmatter_name(node.func.value)
+                and node.args):
+            if len(node.args) > 1:      # an explicit default = optional
+                continue
+            if id(node) in optional:    # `if fm.get("x")` = expects absence
+                continue
+            name = _literal_string(node.args[0])
+        elif (isinstance(node, ast.Subscript)
+              and _is_frontmatter_name(node.value)):
+            name = _literal_string(node.slice)
+        elif isinstance(node, ast.Compare) and len(node.ops) == 1:
+            op = node.ops[0]
+            if (isinstance(op, (ast.In, ast.NotIn))
+                    and _is_frontmatter_name(node.comparators[0])):
+                name = _literal_string(node.left)
+        if name:
+            refs.add(name)
+    return sorted(refs)
+
+
+def _is_frontmatter_name(node):
+    """The parsed-frontmatter variable, by the conventional names."""
+    return isinstance(node, ast.Name) and node.id in _FRONTMATTER_NAMES
 
 
 def _extract_frontmatter_content_keys(source):
@@ -1298,7 +1353,7 @@ def _extract_frontmatter_content_keys(source):
     def _record_assignment(target, sources):
         if not isinstance(target, ast.Name):
             return
-        if target.id == "fm":
+        if target.id in _FRONTMATTER_NAMES:
             fm_sources.update(sources)
         elif sources:
             var_sources[target.id] = sources
@@ -1326,24 +1381,13 @@ def _extract_frontmatter_content_keys(source):
 
     function = tree.body[0]
     _visit_statements(function.body)
-    if fm_sources:
-        return sorted(fm_sources)
-
-    keys = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Subscript) and _is_outputs_name(node.value):
-            key = _literal_string(node.slice)
-            if key and key.endswith("_content"):
-                keys.add(key)
-        elif (isinstance(node, ast.Call)
-              and isinstance(node.func, ast.Attribute)
-              and node.func.attr == "get"
-              and _is_outputs_name(node.func.value)
-              and node.args):
-            key = _literal_string(node.args[0])
-            if key and key.endswith("_content"):
-                keys.add(key)
-    return sorted(keys)
+    # No fallback on purpose. If the assignment could not be traced we do not
+    # know which artifact holds the frontmatter, and guessing from every
+    # `*_content` read in the snippet blames artifacts the judge never parsed —
+    # reporting THEIR keys as "available". Silence is the correct output, and
+    # it makes every gap in the walk above (nested defs, tuple targets, loop
+    # variables) degrade to a no-op rather than a wrong accusation.
+    return sorted(fm_sources)
 
 
 def _is_outputs_name(node):
@@ -1385,33 +1429,22 @@ def _extract_yaml_frontmatter_keys(text):
     return {str(k) for k in frontmatter}
 
 
-def _collect_frontmatter_keys(record, content_keys=None):
-    """Collect YAML frontmatter keys from loaded text artifacts."""
-    if content_keys:
-        found = {}
-        for key in content_keys:
-            if key not in record:
-                continue
-            keys = _extract_yaml_frontmatter_keys(record.get(key))
-            if keys is not None:      # None = unreadable, so we know nothing
-                found[key] = keys
-        return found
+def _collect_frontmatter_keys(record, content_keys):
+    """Frontmatter keys per artifact the judge actually parses.
 
-    keys = set()
-    found_artifact = False
-    for content in record.get("files", {}).values():
-        parsed = _extract_yaml_frontmatter_keys(content)
-        if parsed is not None:
-            found_artifact = True
-            keys.update(parsed)
-    for name, content in record.items():
-        if name.endswith("_content"):
-            parsed = _extract_yaml_frontmatter_keys(content)
-            if parsed is not None:
-                found_artifact = True
-                keys.update(parsed)
-    return {"collected artifacts": keys} if found_artifact else {}
-
+    Only the artifacts `content_keys` names. The union-everything path this
+    replaced swept in the dataset answer key (`annotations_*_content`) and the
+    staged input copies — the files most likely to still carry the OLD field
+    name after a rename, so the union hid exactly the drift being looked for.
+    """
+    found = {}
+    for key in content_keys or ():
+        if key not in record:
+            continue
+        keys = _extract_yaml_frontmatter_keys(record.get(key))
+        if keys is not None:      # None = unreadable, so we know nothing
+            found[key] = keys
+    return found
 
 def _warn_stale_inline_field_refs(judges, case_dirs, config, run_id=None):
     """Warn when inline checks reference absent YAML frontmatter fields.
