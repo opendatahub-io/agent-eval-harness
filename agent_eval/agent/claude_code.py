@@ -34,10 +34,15 @@ def _per_model_turns(subagent_dir, stream_ids_by_model):
     return counts or None
 
 
+# Public effort vocabulary — importable by Harbor orchestration without
+# reaching into a protected class attribute (mirrors CODEX_EFFORTS).
+CLAUDE_CODE_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
+
+
 class ClaudeCodeRunner(EvalRunner):
     """Runs skills using the Claude Code CLI in non-interactive mode."""
 
-    _VALID_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+    _VALID_EFFORTS = CLAUDE_CODE_EFFORTS
     _VALID_PERMISSION_MODES = {
         "default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions",
     }

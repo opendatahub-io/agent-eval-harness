@@ -109,7 +109,7 @@ Parsed from `$ARGUMENTS` at Step 0. CLI flags override the corresponding `eval.y
 | `--baseline <run-id>` | — | Add a pairwise A/B comparison against a prior run under the same eval-name |
 | `--no-llm-judges` | false | Skip every judge that calls a model — `llm` (`prompt`, `prompt_file`, `llm_rubric`), `agent`, and LLM builtins; run only deterministic judges |
 | `--gold` | false | After scoring, save collected artifacts back to the dataset cases as gold references |
-| `--effort <level>` | `runner.effort` | Claude Code reasoning effort (`low`…`max`). Claude Code only — ignored by other runners |
+| `--effort <level>` | `runner.effort` | Reasoning effort. Applied by `claude-code` (`low`…`max`) and `codex` (`minimal`…`xhigh`); ignored by runners without an effort control |
 | `--runner <type>` | `local` | `local` (default pipeline), `harbor` (containerized), or `evalhub` (platform) |
 | `--env <name>` | `kubernetes` | Harbor execution environment: `podman`, `kubernetes`, `openshift` (only with `--runner harbor`) |
 

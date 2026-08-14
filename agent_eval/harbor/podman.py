@@ -83,7 +83,10 @@ def _external_bind_args(mounts: list[dict]) -> list[str]:
             raise ValueError(f"Podman mount target must be absolute: {target}")
         if source == Path("/"):
             raise ValueError("Refusing to mount the host filesystem root")
-        if Path(target).resolve() == Path("/"):
+        # normpath, not resolve(): the target is a container path, and
+        # resolving it against the host filesystem would follow unrelated
+        # host symlinks. Lexical normalization catches /data/../ spellings.
+        if os.path.normpath(target) == "/":
             raise ValueError("Refusing to mount over the container filesystem root")
         # Harbor's ServiceVolumeConfig types read_only as
         # NotRequired[Literal[True]] (Compose semantics: omission means

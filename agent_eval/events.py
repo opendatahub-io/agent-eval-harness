@@ -226,7 +226,14 @@ def _parse_codex_event(obj, result_cap):
         tool_output = item.get("result") or ""
     elif item_type == "file_change":
         tool_name = "Edit"
-        tool_input = {"changes": item.get("changes", [])}
+        changes = item.get("changes", [])
+        tool_input = {"changes": changes}
+        # Surface the first changed path as file_path so the shared tool
+        # trace / files-written extraction render a path instead of "?".
+        if (isinstance(changes, list) and changes
+                and isinstance(changes[0], dict)
+                and isinstance(changes[0].get("path"), str)):
+            tool_input["file_path"] = changes[0]["path"]
         tool_output = item.get("status") or ""
         is_error = item.get("status") == "failed"
     else:
@@ -624,7 +631,9 @@ def merge_subagent_transcripts(events, subagent_dir, result_cap=DEFAULT_RESULT_C
 
     if new_events:
         events.extend(new_events)
-        events.sort(key=lambda e: (0, e["timestamp"])
+        # str() guards the comparison: transcripts are agent-influenced, and
+        # one numeric timestamp among ISO strings must not crash the merge.
+        events.sort(key=lambda e: (0, str(e["timestamp"]))
                      if e.get("timestamp") else (1, ""))
 
     return events

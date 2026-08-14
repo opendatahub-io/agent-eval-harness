@@ -60,6 +60,26 @@ def test_parse_trial_none_without_reward(tmp_path):
     assert R.parse_trial(tmp_path / "empty") is None
 
 
+def test_multi_step_merges_every_steps_judges_sidecar(tmp_path):
+    # Earlier steps' step-scoped judges must keep their values/rationales
+    # in per_judge; only the final step's engine reward wins (strategy
+    # "final"). A reversed-iteration break used to drop earlier sidecars.
+    trial = tmp_path / "trial"
+    for step, judge, reward in (("s1", "judge_s1", 1.0), ("s2", "judge_s2", 0.8)):
+        v = trial / "steps" / step / "verifier"
+        v.mkdir(parents=True)
+        (v / "reward.json").write_text(json.dumps({"reward": reward}))
+        (v / "judges.json").write_text(json.dumps({
+            "reward": reward,
+            "per_judge": {judge: {"value": reward, "rationale": step}}}))
+
+    parsed = R.parse_trial(trial)
+
+    assert parsed["per_judge"]["judge_s1"]["value"] == 1.0
+    assert parsed["per_judge"]["judge_s2"]["value"] == 0.8
+    assert parsed["reward"] == 0.8
+
+
 def test_single_step_falls_back_to_result_json_for_version_and_duration(
         tmp_path):
     # Codex transcripts carry no result/system-init event, so version and

@@ -213,6 +213,7 @@ class TestParseStreamEvents:
         assert parsed[5]["tools"][0]["name"] == "WebSearch"
         assert parsed[5]["tools"][0]["input"] == {"query": "harbor docs"}
         assert parsed[7]["tools"][0]["name"] == "Edit"
+        assert parsed[7]["tools"][0]["input"]["file_path"] == "a.py"
         assert parsed[8]["is_error"] is False
 
     def test_codex_read_paths_reject_unspaced_operators(self):

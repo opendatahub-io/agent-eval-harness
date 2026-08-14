@@ -6,6 +6,7 @@ resolved per-case command, the verifier wiring, and a sanitized bundled config.
 
 import tomllib
 
+import pytest
 import yaml
 
 from agent_eval.config import EvalConfig
@@ -113,6 +114,16 @@ def test_generate_tasks_uses_codex_skill_instruction(tmp_path):
     assert "Use the payload-analysis skill with arguments:" in instruction
     assert "/history/Verify model signatures at serving" in instruction
     assert "/ci:payload-analysis" not in instruction
+
+@pytest.mark.parametrize("workdir", [
+    "relative/path", "/work$(touch pwned)", "/work;rm -rf /", '/work"dir',
+])
+def test_generate_tasks_rejects_unsafe_workdir(tmp_path, workdir):
+    cfg_path, config = _make_eval(tmp_path)
+    with pytest.raises(ValueError, match="workdir must be an absolute path"):
+        gen.generate_tasks(config, cfg_path, tmp_path / "tasks",
+                           image="img:latest", workdir=workdir)
+
 
 def test_instruction_includes_runner_system_prompt(tmp_path):
     cfg_path, _ = _make_eval(tmp_path)

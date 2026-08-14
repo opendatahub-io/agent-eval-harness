@@ -25,7 +25,7 @@ from pathlib import Path
 
 import yaml
 
-from agent_eval.agent.claude_code import ClaudeCodeRunner
+from agent_eval.agent.claude_code import CLAUDE_CODE_EFFORTS
 from agent_eval.agent.codex import CODEX_EFFORTS
 from agent_eval.config import (
     EvalConfig, resolve_plugin_dir, resolve_plugin_skill_roots,
@@ -117,7 +117,10 @@ def _parse_bind_mount(spec: str) -> dict:
         raise ValueError(f"Mount target must be absolute: {target}")
     if source == Path("/"):
         raise ValueError("Refusing to mount the host filesystem root")
-    if Path(target).resolve() == Path("/"):
+    # normpath, not resolve(): the target is a container path, and
+    # resolving it against the host filesystem would follow unrelated
+    # host symlinks. Lexical normalization catches /data/../ spellings.
+    if os.path.normpath(target) == "/":
         raise ValueError("Refusing to mount over the container filesystem root")
 
     mount = {"type": "bind", "source": str(source), "target": target}
@@ -139,7 +142,7 @@ def _harbor_agent_effort(config: EvalConfig, agent_name: str) -> str | None:
         valid, label = CODEX_EFFORTS, "Codex"
     elif agent_name == "claude-code":
         effort = config.runner.effort
-        valid, label = ClaudeCodeRunner._VALID_EFFORTS, "claude-code"
+        valid, label = CLAUDE_CODE_EFFORTS, "claude-code"
     else:
         return None
     if effort and effort not in valid:
@@ -535,7 +538,12 @@ def run_eval_on_harbor(
     child_env.update(harbor_env)
     proc = subprocess.Popen(cmd, env=child_env)
     def _forward_signal(signum, frame):
-        proc.send_signal(signum)
+        try:
+            proc.send_signal(signum)
+        except (ProcessLookupError, OSError):
+            # Harbor may exit in the window between the signal arriving and
+            # the forward; the wait()/result mapping below must still run.
+            pass
     prev_term = signal.signal(signal.SIGTERM, _forward_signal)
     prev_int = signal.signal(signal.SIGINT, _forward_signal)
     try:

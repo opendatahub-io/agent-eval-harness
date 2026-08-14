@@ -256,6 +256,29 @@ def test_invalid_settings_values_fail_at_construction():
         CodexRunner(config_overrides={"web_search": None})
 
 
+def test_invalid_permission_mode_rejected():
+    # permission_mode is the harness's runner-agnostic vocabulary (Claude
+    # Code mode names). Codex CLI surface flags are not accepted here —
+    # codex's --yolo capability is spelled "bypassPermissions", which the
+    # runner translates to --dangerously-bypass-approvals-and-sandbox.
+    with pytest.raises(ValueError, match="Invalid permission_mode"):
+        CodexRunner(permission_mode="not-a-mode")
+
+
+def test_duplicate_skill_name_across_plugin_roots_raises(tmp_path):
+    plugin_a = _plugin(tmp_path / "a", "shared")
+    plugin_b = _plugin(tmp_path / "b", "shared")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runner = CodexRunner(plugin_dirs=[str(plugin_a), str(plugin_b)])
+
+    with pytest.raises(ValueError, match="Duplicate Codex skill name"):
+        runner._stage_skills(workspace)
+
+    # Cleanup ran: the partially staged tree is gone.
+    assert not (workspace / ".agents").exists()
+
+
 @requires_git
 def test_repo_staging_does_not_dirty_git_status(tmp_path):
     plugin = _plugin(tmp_path, "parent")
@@ -417,6 +440,9 @@ def test_estimate_cost_prices_each_turn_with_harbor_field_mapping(monkeypatch):
     assert calls[0] == {"model": "gpt-5.6-luna", "prompt": 100,
                         "completion": 10, "cache_read": 40}
     assert cost == pytest.approx((100 + 10 + 200 + 20) * 0.001)
+    # Multi-segment identifiers fall through to the bare last segment.
+    assert _estimate_cost_usd(
+        events[:1], "azure/openai/gpt-5.6-luna") is not None
 
 
 def test_estimate_cost_degrades_to_none(monkeypatch):

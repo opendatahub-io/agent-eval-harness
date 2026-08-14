@@ -584,7 +584,11 @@ def _estimate_cost_usd(events: list[dict], model: Optional[str]) -> Optional[flo
         import litellm
     except ImportError:
         return None
-    key = next((k for k in (model, model.split("/", 1)[-1])
+    # Candidate order mirrors Harbor (full name, then everything after the
+    # first slash); the bare last segment is a final fallback for
+    # multi-segment identifiers like provider/region/model.
+    key = next((k for k in (model, model.split("/", 1)[-1],
+                            model.rsplit("/", 1)[-1])
                 if litellm.model_cost.get(k)), None)
     if key is None:
         return None

@@ -484,7 +484,11 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
 
     # If any step has a judges.json (from the full judge engine), merge those
     # judges into per_judge — they provide richer scoring than step rewards.
-    for step_dir in reversed(step_dirs):
+    # Merge every step's judges.json sidecar so earlier steps' step-scoped
+    # judges keep their values and rationales in the report; iterating in
+    # step order lets the final step's engine reward win, matching the
+    # ``multi_step_reward_strategy = final`` semantics of generated tasks.
+    for step_dir in step_dirs:
         judges_path = step_dir / "verifier" / "judges.json"
         if judges_path.is_file():
             try:
@@ -495,7 +499,6 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
                     engine_reward = jdata.get("reward")
                     if isinstance(engine_reward, (int, float)):
                         mean_reward = engine_reward
-                    break
             except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 pass
 

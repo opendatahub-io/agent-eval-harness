@@ -409,6 +409,14 @@ def generate_tasks(
     no_llm_judges: bool = False,
 ) -> list[Path]:
     """Generate one self-contained Harbor task package per dataset case."""
+    # workdir is interpolated into generated shell (test.sh) and TOML;
+    # constrain it to a plain absolute path so a config value cannot
+    # smuggle shell metacharacters into the verifier script.
+    if not workdir.startswith("/") or not re.fullmatch(r"[A-Za-z0-9/_.\-]+", workdir):
+        raise ValueError(
+            "Harbor workdir must be an absolute path without shell "
+            f"metacharacters: {workdir!r}")
+
     args_template = arguments if arguments is not None else config.execution.arguments
     # Resolve through EvalConfig.resolve_skill() so configs authored with only
     # execution.skill (no top-level skill) still generate /skill tasks rather
