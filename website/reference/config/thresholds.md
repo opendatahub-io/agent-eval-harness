@@ -34,6 +34,13 @@ still reports a `mean` over the survivors and passes `min_mean`. Declare
 is off unless declared — one flaky judge run should not fail a suite by
 default.
 
+!!! tip "Boolean judges error rather than fail on an unreadable verdict"
+    A `feedback_type: bool` judge whose response carries no readable verdict
+    (a truncated reply, a model that ignored the forced tool) is recorded as
+    an **error sample**, not as `False`. It leaves `pass_rate` alone and shows
+    up in `error_rate` instead — so `max_error_rate` is the gate that catches
+    a judge which is silently failing to produce verdicts at all.
+
 You may set more than one key per judge; each is checked independently. The
 three `min_*` keys are compared with `<` and `max_error_rate` with `>`, so a
 metric exactly equal to its threshold **passes** either way.

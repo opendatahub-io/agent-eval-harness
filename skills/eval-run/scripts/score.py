@@ -1092,13 +1092,22 @@ def _parse_bool_response(text):
     When no structured `rationale` field is present, fall back to the full
     response text (it renders as markdown in the report) rather than a
     200-char slice that truncates mid-word.
+
+    Raises `ValueError` when no verdict can be read — matching
+    `_parse_score_response` and `_enforce_bounds`, which also refuse to invent
+    a value. This used to return ``(False, "Could not parse …")``, which put a
+    parse failure into `pass_rate` as a genuine failing case: indistinguishable
+    in the report from a judge that looked and said no, and enough to zero a
+    gated reward. An unparseable response is an *error sample* — it drops out
+    of the denominator and shows up under `max_error_rate` instead.
     """
     match = re.search(r'"passed"\s*:\s*(true|false)', text, re.IGNORECASE)
     if match:
         passed = match.group(1).lower() == "true"
         rationale = _rationale_field(text) or text.strip()
         return (passed, rationale)
-    return (False, f"Could not parse judge response: {text.strip() or '(empty)'}")
+    raise ValueError(
+        f"Could not parse judge response: {text.strip() or '(empty)'}")
 
 
 def _parse_score_response(text, bounds=None):
