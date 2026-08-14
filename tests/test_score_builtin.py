@@ -445,6 +445,69 @@ class TestInlineJudgeFieldValidation:
         assert "strat_key" in captured.err
         assert "source_key" in captured.err
 
+    def test_unparseable_frontmatter_does_not_abort_the_run(self, tmp_path):
+        """`yaml.safe_load` raises a bare ValueError — not YAMLError — for an
+        out-of-range date, and the probe runs before any judge. Uncaught, it
+        destroyed a run that main completes with a per-case error."""
+        config = EvalConfig(name="test", skill="test")
+        config.outputs = [OutputConfig(path="artifacts")]
+        config.judges = [
+            JudgeConfig(
+                name="frontmatter_valid",
+                check=(
+                    "import yaml\n"
+                    "fm = yaml.safe_load("
+                    "outputs['artifacts_content'].split('---', 2)[1]) or {}\n"
+                    "return bool(fm.get('title')), 'checked'"
+                ),
+            ),
+        ]
+        cases = []
+        for name, front in (("case-001", "due: 2026-02-30\ntitle: a"),
+                            ("case-002", "title: b")):
+            art = tmp_path / name / "artifacts"
+            art.mkdir(parents=True)
+            (art / "r.md").write_text(f"---\n{front}\n---\nbody\n")
+            cases.append(tmp_path / name)
+
+        result = score_cases(load_judges(config), cases, config)
+
+        # The good case still scores; the bad one errors, as it does on main.
+        assert result["per_case"]["case-002"]["frontmatter_valid"]["value"] is True
+        assert result["per_case"]["case-001"]["frontmatter_valid"]["value"] is None
+
+    def test_unreadable_frontmatter_is_unknown_but_absent_is_empty(self):
+        """Two different things. No frontmatter block means the fields really
+        are absent, which is worth saying. Frontmatter that will not parse
+        means we know nothing — reporting every field missing there is a wall
+        of warnings caused by one bad date."""
+        from score import _extract_yaml_frontmatter_keys as keys
+        assert keys("body, no frontmatter") == set()          # absent
+        assert keys("---\ndue: 2026-02-30\n---\nb") is None    # unreadable
+        assert keys("---\ntitle: a\nbody") is None             # unclosed
+        assert keys("---\ntitle: a\n---\nb") == {"title"}
+
+    def test_a_bad_artifact_does_not_silence_the_warning_for_others(
+            self, tmp_path, capsys):
+        config = EvalConfig(name="test", skill="test")
+        config.outputs = [OutputConfig(path="artifacts")]
+        config.judges = [
+            JudgeConfig(
+                name="frontmatter_valid",
+                check=(
+                    "import yaml\n"
+                    "fm = yaml.safe_load("
+                    "outputs['artifacts_content'].split('---', 2)[1]) or {}\n"
+                    "return bool(fm.get('strat_key')), 'x'"
+                ),
+            ),
+        ]
+        art = tmp_path / "case-001" / "artifacts"
+        art.mkdir(parents=True)
+        (art / "r.md").write_text("---\nsource_key: a\n---\nbody\n")
+        score_cases(load_judges(config), [tmp_path / "case-001"], config)
+        assert "strat_key" in capsys.readouterr().err
+
     def test_warning_probe_does_not_abort_scoring_on_loader_error(
             self, tmp_path):
         config = EvalConfig(name="test", skill="test")
