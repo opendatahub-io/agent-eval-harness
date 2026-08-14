@@ -139,8 +139,7 @@ class TestPluginDirResolution:
         config_dir.mkdir(parents=True, exist_ok=True)
         monkeypatch.chdir(repo)
 
-        assert validate_eval._resolve_plugin_dir(
-            "plugins/ci", config_dir) == plugin.resolve()
+        assert validate_eval._resolve_plugin_dir("plugins/ci") == plugin.resolve()
 
     def test_uses_repo_root_even_when_config_relative_path_exists(
             self, tmp_path, monkeypatch):
@@ -151,8 +150,7 @@ class TestPluginDirResolution:
         plugin.mkdir()
         monkeypatch.chdir(repo)
 
-        assert validate_eval._resolve_plugin_dir(
-            "plugin", config_dir) == (repo / "plugin").resolve()
+        assert validate_eval._resolve_plugin_dir("plugin") == (repo / "plugin").resolve()
 
     def test_allows_declared_parent_path_outside_project(self, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
@@ -161,8 +159,7 @@ class TestPluginDirResolution:
         config_dir.mkdir(parents=True)
         outside.mkdir()
         monkeypatch.chdir(repo)
-        assert validate_eval._resolve_plugin_dir(
-            "../outside", config_dir, repo) == outside.resolve()
+        assert validate_eval._resolve_plugin_dir("../outside", repo) == outside.resolve()
 
     def test_rejects_relative_symlink_escape(self, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
@@ -172,7 +169,7 @@ class TestPluginDirResolution:
         (repo / "plugin-link").symlink_to(outside, target_is_directory=True)
         monkeypatch.chdir(repo)
         with pytest.raises(ValueError, match="must not escape"):
-            validate_eval._resolve_plugin_dir("plugin-link", repo, repo)
+            validate_eval._resolve_plugin_dir("plugin-link", repo)
 
     def test_does_not_prefer_existing_path_from_unrelated_cwd(
             self, tmp_path, monkeypatch):
@@ -184,8 +181,7 @@ class TestPluginDirResolution:
         config_plugin.mkdir(parents=True)
         unrelated_plugin.mkdir(parents=True)
         monkeypatch.chdir(unrelated)
-        assert validate_eval._resolve_plugin_dir(
-            "plugin", config_dir, repo) == (repo / "plugin").resolve()
+        assert validate_eval._resolve_plugin_dir("plugin", repo) == (repo / "plugin").resolve()
 
 
 def _check(prompt):

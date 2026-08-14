@@ -38,14 +38,15 @@ STANDARD_TEMPLATE_VARS = {
 }
 
 
-def _resolve_plugin_dir(raw, config_dir, project_root=None):
+def _resolve_plugin_dir(raw, project_root=None):
     """Delegate to the shared trust-boundary resolver in agent_eval.config.
 
     The validator and the runtime runners must enforce identical plugin-path
-    rules, so this must never grow its own copy of them.
+    rules, so this must never grow its own copy of them. The project root is
+    the only resolution base, matching the runners.
     """
     from agent_eval.config import resolve_plugin_path
-    return resolve_plugin_path(raw, project_root or Path.cwd(), config_dir)
+    return resolve_plugin_path(raw, project_root or Path.cwd())
 
 
 def _extract_template_variables(template_text):
@@ -710,7 +711,7 @@ def validate_config(path="eval.yaml"):
         if runner_type not in {"claude-code", "codex"}:
             continue
         try:
-            pp = _resolve_plugin_dir(pd, config_dir, Path.cwd())
+            pp = _resolve_plugin_dir(pd, Path.cwd())
         except ValueError as exc:
             errors.append(f"runner.plugin_dirs[{i}] {exc}")
             continue
