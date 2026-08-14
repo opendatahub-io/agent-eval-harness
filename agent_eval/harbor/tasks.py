@@ -232,6 +232,21 @@ def _format_skill_instruction(skill_name: str, arguments: str,
     return f"/{skill_name} {arguments}".strip()
 
 
+def _instruction_text(system_prompt, command: str) -> str:
+    """Compose a task instruction the way the local runners compose prompts.
+
+    The local runners prepend ``runner.system_prompt`` to every prompt.
+    Without the same composition here, a Harbor agent runs without the
+    eval's charter and behaves measurably differently from a local run of
+    the same case (observed: a payload-analysis system prompt directing
+    external correlation searches — the local agent performed them, the
+    Harbor agent never saw the instruction to).
+    """
+    if system_prompt:
+        return f"{system_prompt.rstrip()}\n\n{command}"
+    return command
+
+
 def _render_multistep_task_toml(*, task_name, task_desc, eval_name, case_id,
                                 image, workdir, step_specs,
                                 reward_strategy="final", judge_mode="full"):
@@ -317,6 +332,9 @@ def _write_multi_step_case_package(config, config_path, bundled_cfg, case_dir,
         runner_type = step.runner.type if step.runner else config.runner.type
         cmd = (_format_skill_instruction(step.skill, resolved, runner_type)
                if is_skill else resolved)
+        step_system_prompt = ((step.runner.system_prompt if step.runner
+                               else None) or config.runner.system_prompt)
+        cmd = _instruction_text(step_system_prompt, cmd)
 
         step_dir = task_dir / "steps" / sid
         (step_dir / "tests").mkdir(parents=True, exist_ok=True)
@@ -443,6 +461,7 @@ def generate_tasks(
             command = (_format_skill_instruction(
                 skill_name, resolved_args, config.runner.type)
                 if skill_name else resolved_args)
+        command = _instruction_text(config.runner.system_prompt, command)
 
         task_dir = out_dir / case_id
         (task_dir / "tests").mkdir(parents=True, exist_ok=True)

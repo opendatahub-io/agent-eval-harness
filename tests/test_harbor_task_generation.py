@@ -114,6 +114,24 @@ def test_generate_tasks_uses_codex_skill_instruction(tmp_path):
     assert "/history/Verify model signatures at serving" in instruction
     assert "/ci:payload-analysis" not in instruction
 
+def test_instruction_includes_runner_system_prompt(tmp_path):
+    cfg_path, _ = _make_eval(tmp_path)
+    raw = yaml.safe_load(cfg_path.read_text())
+    raw["runner"] = {"type": "codex",
+                     "system_prompt": "You are a careful engineer.\n"}
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    config = EvalConfig.from_yaml(cfg_path)
+
+    gen.generate_tasks(
+        config, cfg_path, tmp_path / "tasks", image="img:latest",
+        arguments='"{prompt}"', skill="ci:payload-analysis", cases=["case-001"])
+
+    instruction = (
+        tmp_path / "tasks" / "case-001" / "instruction.md").read_text()
+    assert instruction.startswith("You are a careful engineer.\n\n")
+    assert "Use the payload-analysis skill with arguments:" in instruction
+
+
 def test_generate_tasks_case_subset(tmp_path):
     cfg_path, config = _make_eval(tmp_path)
     out = tmp_path / "harbor-tasks"
