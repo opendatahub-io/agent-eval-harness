@@ -96,6 +96,11 @@ becomes the agent's `skills_dir`, which the stock claude-code agent also reads.
 A plugin that exports no skills (commands only) is skipped with a warning for
 other agents, but fails fast for Codex, which can only consume a plugin's skills.
 
+Omitting `effort:` does not mean the trial runs without one: Harbor's Codex agent
+defaults `reasoning_effort` to `high`. Run metadata records that effective value,
+so a matrix cell with no `effort:` is not treated as a different condition from
+an explicit `effort: high`.
+
 ```yaml
 runner:
   type: codex

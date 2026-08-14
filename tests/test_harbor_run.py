@@ -283,6 +283,26 @@ def test_resolve_harbor_skill_roots_honors_plugin_manifest(tmp_path):
         (plugin / "custom-skills").resolve()]
 
 
+def test_codex_records_the_effort_harbor_defaults_to(tmp_path):
+    # Harbor's Codex agent declares CliFlag("reasoning_effort", default="high").
+    # Forwarding nothing still runs the trial at high, so run metadata must not
+    # claim the cell had no effort — /eval-anova would otherwise treat it as a
+    # different condition from an explicit effort: high.
+    config = _config(tmp_path)
+    config.runner.effort = None
+    assert run_mod._harbor_agent_kwargs(config, "codex") == []
+    assert run_mod._harbor_agent_effort(config, "codex") is None
+    assert run_mod._harbor_effective_effort(config, "codex") == "high"
+
+    # claude-code's flag has no default, so there is nothing to record.
+    assert run_mod._harbor_effective_effort(config, "claude-code") is None
+    assert run_mod._harbor_effective_effort(config, "opencode") is None
+
+    # An explicit effort still wins and is forwarded.
+    config.runner.effort = "minimal"
+    assert run_mod._harbor_effective_effort(config, "codex") == "minimal"
+
+
 def test_skill_roots_resolve_for_claude_code_too(tmp_path):
     # skills_dir is a BaseAgent argument in Harbor, not a Codex extra: the
     # stock claude-code agent copies it into $CLAUDE_CONFIG_DIR/skills. A

@@ -143,12 +143,20 @@ def _parse_bind_mount(spec: str) -> dict:
     return mount
 
 
+# Effort a stock Harbor agent applies when the harness forwards none. Harbor's
+# Codex agent declares CliFlag("reasoning_effort", default="high"); its
+# claude-code counterpart declares the same flag with no default. Recording the
+# agent default keeps run metadata honest about what a trial actually ran at.
+_HARBOR_AGENT_DEFAULT_EFFORT = {"codex": "high"}
+
+
 def _harbor_agent_effort(config: EvalConfig, agent_name: str) -> str | None:
-    """Effort value actually forwarded to the Harbor agent, validated per agent.
+    """Effort value the harness forwards to the Harbor agent, validated per agent.
 
     Both stock Harbor agents expose a ``reasoning_effort`` kwarg but accept
-    different vocabularies. Agents without an effort kwarg return None so run
-    metadata never records an effort that was not applied.
+    different vocabularies. Agents without an effort kwarg return None so the
+    harness never forwards a kwarg the agent cannot take. This is what to pass
+    to Harbor — use ``_harbor_effective_effort`` for what to record.
     """
     if agent_name == "codex":
         effort = (config.runner.effort
@@ -164,6 +172,18 @@ def _harbor_agent_effort(config: EvalConfig, agent_name: str) -> str | None:
             f"Invalid {label} effort '{effort}'. "
             f"Must be one of: {sorted(valid)}")
     return effort or None
+
+
+def _harbor_effective_effort(config: EvalConfig, agent_name: str) -> str | None:
+    """Effort the trial actually runs at, including Harbor's own agent default.
+
+    Forwarding nothing does not mean the trial ran without an effort setting —
+    Harbor applies its agent default. Run metadata records this value so a
+    matrix cell with no ``effort:`` is not compared against an explicit one as
+    though the two were different conditions.
+    """
+    return (_harbor_agent_effort(config, agent_name)
+            or _HARBOR_AGENT_DEFAULT_EFFORT.get(agent_name))
 
 
 def _harbor_agent_kwargs(config: EvalConfig, agent_name: str) -> list[str]:
@@ -621,7 +641,7 @@ def run_eval_on_harbor(
         "exit_code": 0 if parsed["n_errored"] == 0 else 1,
         "execution_mode": "harbor",
         "agent": f"harbor:{agent_name}",
-        "effort": _harbor_agent_effort(config, agent_name),
+        "effort": _harbor_effective_effort(config, agent_name),
         "agent_version": parsed.get("agent_version"),
         "model": model,
         "num_cases": parsed["n_completed"],
