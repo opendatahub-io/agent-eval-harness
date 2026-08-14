@@ -15,6 +15,9 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+# Stands in for a step id on single-step trials, which have no steps/ dir.
+_WHOLE_TASK = "(whole task)"
+
 
 def _case_id_from_dir(trial_dir: Path) -> str:
     """Recover the full task case ID, falling back to Harbor's trial slug.
@@ -291,7 +294,9 @@ def parse_trial(trial_dir: Path) -> dict | None:
         "per_judge": {},
         "errored": False,
         "infra_error_steps": [],
-        "unjudged_steps": ["step-1"] if unjudged else [],
+        # A single-step trial has no step id; name the task itself so the run
+        # output reads correctly next to real step names from the multi-step path.
+        "unjudged_steps": [_WHOLE_TASK] if unjudged else [],
         "cost_usd": None,
         "token_usage": None,
         "per_model_usage": None,
@@ -552,6 +557,14 @@ def parse_job(job_dir: Path) -> dict:
     trial_errors = [(t["case_id"], t["trial_error"])
                     for t in trials if t.get("trial_error")]
 
+    # Steps/tasks whose verifier deliberately recorded no judgement — a setup
+    # step no judge targets, or --no-llm-judges leaving nothing to run. Unlike
+    # an infra error nothing failed, but the reward is absent either way, so
+    # the run has to say so rather than let the case read as scored.
+    unjudged_steps = [(t["case_id"], step)
+                      for t in trials
+                      for step in t.get("unjudged_steps", [])]
+
     # Aggregate each metric across trials (mean), mirroring score.py's shape.
     aggregated: dict[str, dict] = {}
     for trial in trials:
@@ -607,6 +620,8 @@ def parse_job(job_dir: Path) -> dict:
         "n_infra_errors": len(infra_errors),
         "trial_errors": trial_errors,
         "n_trial_errors": len(trial_errors),
+        "unjudged_steps": unjudged_steps,
+        "n_unjudged_steps": len(unjudged_steps),
         "aggregated": aggregated,
         "cost_usd": total_cost,
         "token_usage": token_usage or None,

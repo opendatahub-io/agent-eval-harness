@@ -201,6 +201,27 @@ def test_multistep_unjudged_placeholder_maps_to_none_not_pass_or_infra(tmp_path)
     assert record["infra_error_steps"] == []
     assert "setup" not in parsed["aggregated"]
     assert record["reward"] == 1.0
+    # Aggregated for the run, like infra errors — a per-trial field nothing
+    # reads cannot tell an operator that a step went unscored.
+    assert parsed["unjudged_steps"] == [("case-001", "setup")]
+    assert parsed["n_unjudged_steps"] == 1
+
+
+def test_single_step_unjudged_task_is_aggregated(tmp_path):
+    job = tmp_path / "job"
+    job.mkdir()
+    tdir = job / "case-001__a"
+    (tdir / "verifier").mkdir(parents=True)
+    (tdir / "verifier" / "reward.json").write_text(
+        json.dumps({"reward": 0.0, "agent_eval_unjudged": 1}))
+
+    parsed = R.parse_job(job)
+    assert parsed["trials"][0]["reward"] is None
+    assert parsed["mean_reward"] is None
+    assert parsed["n_unjudged_steps"] == 1
+    # No steps/ dir means there is no step id to report; the placeholder must
+    # read as the task rather than invent a step that never existed.
+    assert parsed["unjudged_steps"] == [("case-001", "(whole task)")]
 
 
 def test_multistep_infra_excluded_from_step_mean(tmp_path):

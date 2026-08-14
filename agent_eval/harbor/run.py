@@ -656,6 +656,8 @@ def run_eval_on_harbor(
         "infra_errors": parsed.get("infra_errors", []),
         "n_trial_errors": parsed.get("n_trial_errors", 0),
         "trial_errors": parsed.get("trial_errors", []),
+        "n_unjudged_steps": parsed.get("n_unjudged_steps", 0),
+        "unjudged_steps": parsed.get("unjudged_steps", []),
     }
     (output_dir / "run_result.json").write_text(json.dumps(run_meta, indent=2) + "\n")
     (output_dir / "summary.yaml").write_text(
@@ -680,6 +682,13 @@ def run_eval_on_harbor(
               f"a reward (e.g. pod never Ready):", file=sys.stderr)
         for case_id, reason in trial_errs:
             print(f"  [{case_id}] {reason}", file=sys.stderr)
+    unjudged = parsed.get("unjudged_steps", [])
+    if unjudged:
+        print(f"UNJUDGED: {len(unjudged)} step(s) recorded no judgement "
+              f"(no judge targeted them; excluded from the reward, not scored 0):",
+              file=sys.stderr)
+        for case_id, step in unjudged:
+            print(f"  [{case_id}] {step}", file=sys.stderr)
 
     # 6. Regression detection (suite-level), mirroring score.py regression.
     score = _load_score_module()
@@ -696,7 +705,8 @@ def run_eval_on_harbor(
         return 1
     print(f"Mapped {parsed['n_completed']} case(s) → {output_dir}/summary.yaml "
           f"(mean_reward={parsed['mean_reward']}); "
-          f"REGRESSIONS: 0; INFRA-ERRORS: {len(infra)}; TRIAL-ERRORS: {len(trial_errs)}")
+          f"REGRESSIONS: 0; INFRA-ERRORS: {len(infra)}; TRIAL-ERRORS: {len(trial_errs)}; "
+          f"UNJUDGED: {len(unjudged)}")
     return 0
 
 
