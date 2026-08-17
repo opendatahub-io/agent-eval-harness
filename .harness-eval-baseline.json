@@ -4,7 +4,7 @@
     {
       "rule_id": "content/token-budget",
       "file": "skills/eval-analyze/SKILL.md",
-      "message_hash": "41f9f92019333319"
+      "message_hash": "2c08f768cffeef1d"
     },
     {
       "rule_id": "content/broken-references",
@@ -23,33 +23,33 @@
     },
     {
       "rule_id": "content/circular-references",
-      "file": "skills/eval-run/SKILL.md",
-      "message_hash": "5b07b702728ec845"
+      "file": "skills/eval-mlflow/SKILL.md",
+      "message_hash": "738bf2e30c184637"
     },
     {
       "rule_id": "content/circular-references",
       "file": "skills/eval-analyze/SKILL.md",
-      "message_hash": "38fbe5ed6b5fe3d8"
+      "message_hash": "0f833c2ee6073178"
     },
     {
       "rule_id": "content/circular-references",
-      "file": "skills/eval-optimize/SKILL.md",
-      "message_hash": "9161ead627a621e4"
-    },
-    {
-      "rule_id": "content/circular-references",
-      "file": "skills/eval-optimize/SKILL.md",
-      "message_hash": "a1f541d7baaf0d6c"
+      "file": "skills/eval-review/SKILL.md",
+      "message_hash": "a605d7ee47da1e93"
     },
     {
       "rule_id": "content/circular-references",
       "file": "skills/eval-run/SKILL.md",
-      "message_hash": "80f9af02b845bf1f"
+      "message_hash": "e994e5ef6017c8e7"
     },
     {
       "rule_id": "content/circular-references",
       "file": "skills/eval-analyze/SKILL.md",
-      "message_hash": "43d5c0533b266308"
+      "message_hash": "7cd34bbc8112af29"
+    },
+    {
+      "rule_id": "content/circular-references",
+      "file": "skills/eval-run/SKILL.md",
+      "message_hash": "be434a9fcb628aae"
     },
     {
       "rule_id": "content/circular-references",
@@ -89,12 +89,12 @@
     {
       "rule_id": "security/cross-component-flow",
       "file": "skills/eval-anova/SKILL.md",
-      "message_hash": "f0ed67f054c2c002"
+      "message_hash": "1b7ab55b1eca1bdd"
     },
     {
       "rule_id": "security/cross-component-flow",
       "file": "skills/eval-anova/SKILL.md",
-      "message_hash": "1b7ab55b1eca1bdd"
+      "message_hash": "f0ed67f054c2c002"
     },
     {
       "rule_id": "security/cross-component-flow",
@@ -129,7 +129,7 @@
     {
       "rule_id": "content/description-length",
       "file": "skills/eval-analyze/SKILL.md",
-      "message_hash": "578af37da78810c4"
+      "message_hash": "f9db35697ddd118e"
     },
     {
       "rule_id": "security/ast-behavioral",
@@ -144,7 +144,7 @@
     {
       "rule_id": "content/description-length",
       "file": "skills/eval-anova/SKILL.md",
-      "message_hash": "2be1fb57b3a31151"
+      "message_hash": "60d8e9dfc15a8bf3"
     },
     {
       "rule_id": "content/broken-references",
@@ -164,7 +164,7 @@
     {
       "rule_id": "content/description-length",
       "file": "skills/eval-check/SKILL.md",
-      "message_hash": "060518fcb09b8e95"
+      "message_hash": "a5ccdc7abd10cd33"
     },
     {
       "rule_id": "security/mcp-least-privilege",
@@ -182,14 +182,9 @@
       "message_hash": "e7909091f3d9a900"
     },
     {
-      "rule_id": "content/description-length",
-      "file": "skills/eval-compare/SKILL.md",
-      "message_hash": "fde1338e25713ff0"
-    },
-    {
       "rule_id": "content/token-budget",
       "file": "skills/eval-dataset/SKILL.md",
-      "message_hash": "3ddad484d00443cb"
+      "message_hash": "52461a5ae97d1fa2"
     },
     {
       "rule_id": "content/broken-references",
@@ -224,7 +219,7 @@
     {
       "rule_id": "content/description-length",
       "file": "skills/eval-dataset/SKILL.md",
-      "message_hash": "92953171e5dc0f8e"
+      "message_hash": "6cf1d3639621af33"
     },
     {
       "rule_id": "content/broken-references",
@@ -247,11 +242,6 @@
       "message_hash": "0fa4b7ebda734600"
     },
     {
-      "rule_id": "content/description-length",
-      "file": "skills/eval-mlflow/SKILL.md",
-      "message_hash": "48b0d4950f101b5f"
-    },
-    {
       "rule_id": "security/unbounded-delegation",
       "file": "skills/eval-optimize/SKILL.md",
       "message_hash": "e5002bebc9d600b8"
@@ -269,7 +259,7 @@
     {
       "rule_id": "content/description-length",
       "file": "skills/eval-optimize/SKILL.md",
-      "message_hash": "b92f13ed61ff3556"
+      "message_hash": "ea034311bf4f912e"
     },
     {
       "rule_id": "content/broken-references",
@@ -299,12 +289,12 @@
     {
       "rule_id": "content/description-length",
       "file": "skills/eval-review/SKILL.md",
-      "message_hash": "22c07828b0749dff"
+      "message_hash": "ea034311bf4f912e"
     },
     {
       "rule_id": "content/token-budget",
       "file": "skills/eval-run/SKILL.md",
-      "message_hash": "459288623bbd0f51"
+      "message_hash": "724f2211c947443c"
     },
     {
       "rule_id": "content/broken-references",
@@ -454,7 +444,7 @@
     {
       "rule_id": "content/description-length",
       "file": "skills/eval-run/SKILL.md",
-      "message_hash": "c6c08ae6a2033568"
+      "message_hash": "daeef27ca2ce2b72"
     },
     {
       "rule_id": "security/ast-behavioral",
@@ -479,7 +469,7 @@
     {
       "rule_id": "content/description-length",
       "file": "skills/eval-setup/SKILL.md",
-      "message_hash": "d5f68719f9377cde"
+      "message_hash": "9eec58b6ba652bd9"
     }
   ]
 }
