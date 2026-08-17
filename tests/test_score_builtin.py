@@ -152,11 +152,16 @@ class TestParsers:
         result = _parse_bool_response('{"passed": false, "rationale": "found issues"}')
         assert result == (False, "found issues")
 
-    def test_parse_bool_unparseable(self):
+    def test_parse_bool_unparseable_raises(self):
+        """An unreadable verdict is an error sample, not a failing case.
+
+        Returning `(False, ...)` here put parse failures into `pass_rate`
+        indistinguishably from a judge that looked and said no — and zeroed a
+        gated reward. Mirrors `_parse_score_response`, which already raises.
+        """
         from score import _parse_bool_response
-        passed, rationale = _parse_bool_response("no json here")
-        assert passed is False
-        assert "Could not parse" in rationale
+        with pytest.raises(ValueError, match="Could not parse"):
+            _parse_bool_response("no json here")
 
     def test_parse_score_json(self):
         from score import _parse_score_response

@@ -520,7 +520,7 @@ def validate_config(path="eval.yaml"):
     valid_judge_fields = {
         "name", "description", "builtin", "check", "prompt", "prompt_file",
         "module", "function", "arguments", "context", "model", "if", "llm_rubric",
-        "feedback_type", "samples", "score_range", "step", "agent",
+        "feedback_type", "samples", "score_range", "step", "agent", "effort",
     }
 
     for j in judges:
