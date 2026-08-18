@@ -2,6 +2,8 @@
 
 import os
 
+import pytest
+
 from conftest import make_assistant, make_result, make_user
 
 from agent_eval.agent.claude_code import (
@@ -142,6 +144,24 @@ class TestDetectUnknownCommand:
     def test_requires_a_slash_command(self):
         assert _detect_unknown_command(
             self._result(result="Unknown command: epic-decompose")) is None
+
+    @pytest.mark.parametrize("turns", [0, None, False, "0", 0.0, [], {}])
+    def test_no_evidence_of_work_still_detects(self, turns):
+        """Absent/null/non-numeric counts must not be read as "had turns" — the
+        leading phrase is the signal, and a stricter reading would silently stop
+        detecting the bug if the payload shape changed."""
+        assert _detect_unknown_command(
+            self._result(num_turns=turns)) == "/epic-decompose"
+
+    def test_missing_turn_count_key_still_detects(self):
+        obj = self._result()
+        del obj["num_turns"]
+        assert _detect_unknown_command(obj) == "/epic-decompose"
+
+    @pytest.mark.parametrize("turns", [1, 12, 2.5, True])
+    def test_positive_turn_count_suppresses(self, turns):
+        """Any positive count is evidence real work happened."""
+        assert _detect_unknown_command(self._result(num_turns=turns)) is None
 
     def test_handles_missing_or_odd_payloads(self):
         assert _detect_unknown_command(None) is None

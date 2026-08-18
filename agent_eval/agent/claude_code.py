@@ -518,8 +518,19 @@ def _detect_unknown_command(result_obj) -> Optional[str]:
 
     ``num_turns`` guards the match: a real run that merely quotes the phrase has
     turns, an unrecognised command never does.
+
+    The guard suppresses only on *positive evidence of work*. A missing, null or
+    non-numeric count is deliberately not read as "zero turns", but neither does
+    it suppress — the leading-phrase match below is the actual signal. Demanding
+    a literal integer ``0`` would trade a far-fetched false positive (a partial
+    payload whose result text also begins with "Unknown command: /") for a false
+    negative that silently restores the original green-but-broken run if the
+    payload shape ever changes.
     """
-    if not isinstance(result_obj, dict) or result_obj.get("num_turns"):
+    if not isinstance(result_obj, dict):
+        return None
+    turns = result_obj.get("num_turns")
+    if isinstance(turns, (int, float)) and turns > 0:
         return None
     text = result_obj.get("result")
     if not isinstance(text, str):
