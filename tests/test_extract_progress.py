@@ -1,8 +1,13 @@
 """Tests for _extract_progress and _extract_denial_list in claude_code.py."""
 
+import os
+
 from conftest import make_assistant, make_result, make_user
 
-from agent_eval.agent.claude_code import _extract_denial_list, _extract_progress
+from agent_eval.agent.claude_code import (
+    ClaudeCodeRunner, _detect_unknown_command, _extract_denial_list,
+    _extract_progress,
+)
 
 
 def test_root_assistant_shows_tool():
@@ -93,3 +98,123 @@ def test_denial_list_empty_when_no_denials():
 def test_denial_list_none_when_both_absent():
     """No result_obj and no streaming count returns None."""
     assert _extract_denial_list(None, 0) is None
+
+
+class TestDetectUnknownCommand:
+    """An unrecognised slash command is reported by the CLI as a *successful*
+    run — exit 0, subtype "success", is_error false, 0 turns, $0.00 — so without
+    this detection a misconfigured skill reads as "ran, produced nothing" and a
+    whole eval completes green in seconds.
+
+    Shape pinned against a real `claude --print --output-format stream-json` run.
+    """
+
+    def _result(self, **over):
+        obj = {"type": "result", "subtype": "success", "is_error": False,
+               "num_turns": 0, "total_cost_usd": 0,
+               "result": "Unknown command: /epic-decompose"}
+        obj.update(over)
+        return obj
+
+    def test_detects_unknown_slash_command(self):
+        assert _detect_unknown_command(self._result()) == "/epic-decompose"
+
+    def test_tolerates_surrounding_whitespace(self):
+        assert _detect_unknown_command(
+            self._result(result="  Unknown command: /foo\n")) == "/foo"
+
+    def test_ignores_a_normal_successful_run(self):
+        assert _detect_unknown_command(
+            self._result(num_turns=12, result="Created 4 epics.")) is None
+
+    def test_turns_guard_prevents_false_positive(self):
+        """A real run that merely quotes the phrase must not be failed."""
+        assert _detect_unknown_command(self._result(
+            num_turns=7,
+            result="The user typed Unknown command: /foo, so I explained it.",
+        )) is None
+
+    def test_phrase_must_lead_the_message(self):
+        assert _detect_unknown_command(self._result(
+            result="Everything worked. Unknown command: /foo was not needed.",
+        )) is None
+
+    def test_requires_a_slash_command(self):
+        assert _detect_unknown_command(
+            self._result(result="Unknown command: epic-decompose")) is None
+
+    def test_handles_missing_or_odd_payloads(self):
+        assert _detect_unknown_command(None) is None
+        assert _detect_unknown_command({}) is None
+        assert _detect_unknown_command({"result": None, "num_turns": 0}) is None
+        assert _detect_unknown_command({"result": 42, "num_turns": 0}) is None
+
+
+class TestUnknownCommandFailsTheRun:
+    """End-to-end through ClaudeCodeRunner.run_skill with a stub `claude` on PATH,
+    reproducing the exact stream a real CLI emits for an unrecognised command.
+
+    execute.py derives its per-case OK/FAIL purely from RunResult.exit_code, so
+    flipping it here is what turns a silently-green run into a visible failure.
+    """
+
+    STREAM = (
+        '{"type":"system","subtype":"init","session_id":"s1"}\n'
+        '{"type":"assistant","message":{"content":[{"type":"text",'
+        '"text":"Unknown command: /epic-decompose"}]},"session_id":"s1"}\n'
+        '{"type":"result","subtype":"success","is_error":false,"num_turns":0,'
+        '"total_cost_usd":0,"result":"Unknown command: /epic-decompose",'
+        '"session_id":"s1"}\n'
+    )
+
+    OK_STREAM = (
+        '{"type":"system","subtype":"init","session_id":"s1"}\n'
+        '{"type":"result","subtype":"success","is_error":false,"num_turns":3,'
+        '"total_cost_usd":0.5,"result":"Wrote 4 epics.","session_id":"s1"}\n'
+    )
+
+    def _stub_claude(self, tmp_path, monkeypatch, stream):
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        stub = bindir / "claude"
+        stub.write_text(
+            "#!/bin/sh\ncat > /dev/null\n"
+            f"cat <<'STREAM_EOF'\n{stream}STREAM_EOF\n"
+        )
+        stub.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+
+    # Single-object payload: without a log prefix the runner asks for
+    # --output-format json and parses one object instead of a stream.
+    JSON_UNKNOWN = ('{"type":"result","subtype":"success","is_error":false,'
+                    '"num_turns":0,"total_cost_usd":0,'
+                    '"result":"Unknown command: /epic-decompose"}\n')
+
+    def _run(self, tmp_path, log_prefix=None):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        return ClaudeCodeRunner(log_prefix=log_prefix).execute(
+            target="epic-decompose", args="", workspace=ws,
+            model="m", timeout_s=60,
+        )
+
+    def test_unknown_command_fails_the_streaming_path(self, tmp_path, monkeypatch):
+        """eval-run always passes a log prefix, so this is the production path."""
+        self._stub_claude(tmp_path, monkeypatch, self.STREAM)
+        result = self._run(tmp_path, log_prefix="test")
+        assert result.exit_code != 0, "an unrecognised skill must fail the case"
+        assert "/epic-decompose" in result.stderr
+        assert "runner.plugin_dirs" in result.stderr
+
+    def test_unknown_command_fails_the_json_path(self, tmp_path, monkeypatch):
+        self._stub_claude(tmp_path, monkeypatch, self.JSON_UNKNOWN)
+        result = self._run(tmp_path)
+        assert result.exit_code != 0, "an unrecognised skill must fail the case"
+        assert "/epic-decompose" in result.stderr
+
+    def test_normal_run_still_succeeds(self, tmp_path, monkeypatch):
+        """Guard against failing healthy runs."""
+        self._stub_claude(tmp_path, monkeypatch, self.OK_STREAM)
+        result = self._run(tmp_path, log_prefix="test")
+        assert result.exit_code == 0, result.stderr
+        assert "Unknown command" not in (result.stderr or "")

@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -406,6 +407,21 @@ class ClaudeCodeRunner(EvalRunner):
                           f"denial(s) detected during execution")
             stderr = (stderr or "") + denial_msg
 
+        # An unrecognised slash command is reported by the CLI as a successful
+        # run. Fail the case instead of letting a never-started skill look like
+        # a skill that produced nothing.
+        exit_code = proc.returncode
+        unknown_command = _detect_unknown_command(result_obj)
+        if unknown_command and exit_code == 0:
+            exit_code = 1
+            stderr = (stderr or "") + (
+                f"\nERROR: the agent did not recognise '{unknown_command}' "
+                f"(0 turns, no work performed). The skill is not discoverable "
+                f"at runtime — check the skill name, and set runner.plugin_dirs "
+                f"if it is packaged as a plugin rather than living in "
+                f".claude/skills."
+            )
+
         # Clean up temporary settings file if created
         if cleanup_settings and cleanup_settings.exists():
             try:
@@ -414,7 +430,7 @@ class ClaudeCodeRunner(EvalRunner):
                 pass  # Best effort cleanup
 
         return RunResult(
-            exit_code=proc.returncode,
+            exit_code=exit_code,
             stdout=stdout_text,
             stderr=stderr or "",
             duration_s=duration,
@@ -481,6 +497,35 @@ class ClaudeCodeRunner(EvalRunner):
         if self._mlflow_tracking_uri:
             env["MLFLOW_TRACKING_URI"] = self._mlflow_tracking_uri
         return env
+
+
+_UNKNOWN_COMMAND_RE = re.compile(r"^Unknown command:\s*(/\S+)")
+
+
+def _detect_unknown_command(result_obj) -> Optional[str]:
+    """Return the slash command the CLI did not recognise, if that is what happened.
+
+    Claude Code answers an unrecognised slash command with plain text and still
+    reports success::
+
+        {"type": "result", "subtype": "success", "is_error": false,
+         "num_turns": 0, "total_cost_usd": 0, "result": "Unknown command: /x"}
+
+    The process exits 0, so an eval whose skill never resolves (a plugin-packaged
+    skill with no runner.plugin_dirs, a typo, a plugin that failed to load) finishes
+    in seconds with every case marked OK and no artifacts — indistinguishable from a
+    skill that ran and produced nothing.
+
+    ``num_turns`` guards the match: a real run that merely quotes the phrase has
+    turns, an unrecognised command never does.
+    """
+    if not isinstance(result_obj, dict) or result_obj.get("num_turns"):
+        return None
+    text = result_obj.get("result")
+    if not isinstance(text, str):
+        return None
+    match = _UNKNOWN_COMMAND_RE.match(text.strip())
+    return match.group(1) if match else None
 
 
 def _extract_denial_list(result_obj, streaming_count):
