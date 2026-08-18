@@ -234,3 +234,95 @@ class TestJudgeTemplateValidation:
         hint = "\n".join(errors)
         assert "inputs" in hint
         assert "events" not in hint
+
+
+class TestPluginLayoutRequiresPluginDirs:
+    """A plugin-packaged skill is invisible to the agent runtime without
+    --plugin-dir, and the resulting run is silently green: every case returns
+    "Unknown command: /<skill>", 0 turns, $0.00 and exit code 0. find_skill()
+    resolves such a skill happily (it searches plugin manifests and a top-level
+    skills/ directory), so the config used to validate clean while being
+    unrunnable. These pin the gap shut.
+    """
+
+    CONFIG = """\
+name: t
+execution:
+  mode: case
+  skill: myskill
+  arguments: "{prompt}"
+__RUNNER__
+models:
+  skill: m
+  judge: m
+dataset:
+  path: cases
+  schema: one case dir per test
+outputs:
+  - path: out
+    schema: artifacts
+judges:
+  - name: j
+    description: d
+    check: |
+      return (True, "ok")
+"""
+
+    def _project(self, tmp_path, *, plugin_layout, plugin_dirs):
+        repo = tmp_path / "repo"
+        if plugin_layout:
+            (repo / "skills" / "myskill").mkdir(parents=True)
+            (repo / "skills" / "myskill" / "SKILL.md").write_text("---\nname: myskill\n---\n")
+            (repo / ".claude-plugin").mkdir(parents=True)
+            (repo / ".claude-plugin" / "plugin.json").write_text('{"name": "p"}')
+        else:
+            (repo / ".claude" / "skills" / "myskill").mkdir(parents=True)
+            (repo / ".claude" / "skills" / "myskill" / "SKILL.md").write_text(
+                "---\nname: myskill\n---\n")
+        (repo / "cases" / "case-001").mkdir(parents=True)
+        (repo / "cases" / "case-001" / "input.yaml").write_text("prompt: hi\n")
+        runner = "runner:\n  type: claude-code\n"
+        if plugin_dirs:
+            runner += "  plugin_dirs:\n    - \".\"\n"
+        (repo / "eval.yaml").write_text(self.CONFIG.replace("__RUNNER__", runner.rstrip()))
+        return repo
+
+    def _run(self, repo, monkeypatch, capsys):
+        monkeypatch.chdir(repo)
+        try:
+            validate_eval.validate_config("eval.yaml")
+        except SystemExit as exc:
+            return exc.code, capsys.readouterr().out
+        return 0, capsys.readouterr().out
+
+    def test_plugin_layout_without_plugin_dirs_is_an_error(
+            self, tmp_path, monkeypatch, capsys):
+        repo = self._project(tmp_path, plugin_layout=True, plugin_dirs=False)
+        code, out = self._run(repo, monkeypatch, capsys)
+        assert code == 1, out
+        assert "runner.plugin_dirs" in out, out
+        assert "Unknown command: /myskill" in out, out
+
+    def test_plugin_layout_with_plugin_dirs_passes(
+            self, tmp_path, monkeypatch, capsys):
+        repo = self._project(tmp_path, plugin_layout=True, plugin_dirs=True)
+        _, out = self._run(repo, monkeypatch, capsys)
+        assert "runner.plugin_dirs" not in out, out
+
+    def test_dot_claude_skills_layout_needs_no_plugin_dirs(
+            self, tmp_path, monkeypatch, capsys):
+        """The conventional layout is auto-discovered, so it must not be flagged."""
+        repo = self._project(tmp_path, plugin_layout=False, plugin_dirs=False)
+        _, out = self._run(repo, monkeypatch, capsys)
+        assert "runner.plugin_dirs" not in out, out
+
+    def test_unresolvable_skill_stays_a_warning(
+            self, tmp_path, monkeypatch, capsys):
+        """A skill that resolves nowhere is a different failure — don't upgrade
+        it to a plugin-layout error."""
+        repo = self._project(tmp_path, plugin_layout=False, plugin_dirs=False)
+        import shutil
+        shutil.rmtree(repo / ".claude" / "skills" / "myskill")
+        _, out = self._run(repo, monkeypatch, capsys)
+        assert "not found in project" in out, out
+        assert "runner.plugin_dirs" not in out, out

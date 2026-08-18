@@ -478,8 +478,37 @@ def validate_config(path="eval.yaml"):
     # --- Skill reference check ---
     # Check execution.skill first, then fall back to top-level skill
     skill_name = execution.get("skill", "") or config.get("skill", "")
-    if skill_name and not find_skill(skill_name):
+    resolved_skill = find_skill(skill_name) if skill_name else None
+    if skill_name and not resolved_skill:
         warnings.append(f"skill '{skill_name}' not found in project")
+
+    # --- Plugin-layout check ---
+    # find_skill() searches plugin manifests and a top-level skills/ directory,
+    # but the agent runtime does not: Claude Code only auto-discovers skills under
+    # <project>/.claude/skills.  A skill packaged as a plugin (skills/ +
+    # .claude-plugin/plugin.json) is therefore invisible unless the plugin is
+    # loaded explicitly, which the runner does from runner.plugin_dirs.
+    #
+    # This fails silently and expensively: without --plugin-dir every case returns
+    # "Unknown command: /<skill>", 0 turns, $0.00 and exit code 0, so the run looks
+    # like a skill that produced no artifacts rather than one that never started.
+    if resolved_skill and not (config.get("runner") or {}).get("plugin_dirs"):
+        auto_discovered = Path.cwd() / ".claude" / "skills"
+        try:
+            resolved_skill.resolve().relative_to(auto_discovered.resolve())
+        except (ValueError, OSError):
+            try:
+                shown = resolved_skill.resolve().relative_to(Path.cwd().resolve())
+            except ValueError:
+                shown = resolved_skill
+            errors.append(
+                f"skill '{skill_name}' resolves to '{shown}', which the agent "
+                f"runtime will not auto-discover — only <project>/.claude/skills "
+                f"is searched. Set runner.plugin_dirs (e.g. ['.'] for a plugin "
+                f"rooted at the project) so the runner passes --plugin-dir; "
+                f"otherwise every case fails with 'Unknown command: /{skill_name}' "
+                f"at 0 turns and exit code 0."
+            )
 
     # --- File reference checks (resolve relative to config file location) ---
     dataset_path = dataset.get("path", "")
