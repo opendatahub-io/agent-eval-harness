@@ -268,7 +268,7 @@ judges:
       return (True, "ok")
 """
 
-    def _project(self, tmp_path, *, plugin_layout, plugin_dirs):
+    def _project(self, tmp_path, *, plugin_layout, plugin_dirs, unrelated_plugin=False):
         repo = tmp_path / "repo"
         if plugin_layout:
             (repo / "skills" / "myskill").mkdir(parents=True)
@@ -279,11 +279,20 @@ judges:
             (repo / ".claude" / "skills" / "myskill").mkdir(parents=True)
             (repo / ".claude" / "skills" / "myskill" / "SKILL.md").write_text(
                 "---\nname: myskill\n---\n")
+        if unrelated_plugin:
+            other = repo / "plugins" / "other"
+            (other / "skills" / "somethingelse").mkdir(parents=True)
+            (other / "skills" / "somethingelse" / "SKILL.md").write_text(
+                "---\nname: somethingelse\n---\n")
+            (other / ".claude-plugin").mkdir(parents=True)
+            (other / ".claude-plugin" / "plugin.json").write_text('{"name": "other"}')
         (repo / "cases" / "case-001").mkdir(parents=True)
         (repo / "cases" / "case-001" / "input.yaml").write_text("prompt: hi\n")
         runner = "runner:\n  type: claude-code\n"
         if plugin_dirs:
-            runner += "  plugin_dirs:\n    - \".\"\n"
+            runner += "  plugin_dirs:\n"
+            for d in (plugin_dirs if isinstance(plugin_dirs, list) else ["."]):
+                runner += f"    - \"{d}\"\n"
         (repo / "eval.yaml").write_text(self.CONFIG.replace("__RUNNER__", runner.rstrip()))
         return repo
 
@@ -326,3 +335,34 @@ judges:
         _, out = self._run(repo, monkeypatch, capsys)
         assert "not found in project" in out, out
         assert "runner.plugin_dirs" not in out, out
+
+    def test_plugin_dirs_that_do_not_export_the_skill_are_an_error(
+            self, tmp_path, monkeypatch, capsys):
+        """A non-empty plugin_dirs must not blanket-suppress the diagnostic: the
+        runner only passes --plugin-dir for those directories, so a plugin that
+        exports unrelated skills leaves this one just as undiscoverable."""
+        repo = self._project(tmp_path, plugin_layout=True,
+                             plugin_dirs=["plugins/other"], unrelated_plugin=True)
+        code, out = self._run(repo, monkeypatch, capsys)
+        assert code == 1, out
+        assert "none of the configured runner.plugin_dirs" in out, out
+        assert "plugins/other" in out, out
+
+    def test_plugin_dirs_that_export_the_skill_pass(
+            self, tmp_path, monkeypatch, capsys):
+        """The matching directory alongside an unrelated one is accepted."""
+        repo = self._project(tmp_path, plugin_layout=True,
+                             plugin_dirs=["plugins/other", "."],
+                             unrelated_plugin=True)
+        code, out = self._run(repo, monkeypatch, capsys)
+        assert code == 0, out
+        assert "plugin_dirs" not in out, out
+
+    def test_uninspectable_plugin_dir_does_not_error(
+            self, tmp_path, monkeypatch, capsys):
+        """A missing plugin dir is a real misconfiguration, but the runner fails
+        fast on it with a better message — don't guess here."""
+        repo = self._project(tmp_path, plugin_layout=True,
+                             plugin_dirs=["plugins/does-not-exist"])
+        _, out = self._run(repo, monkeypatch, capsys)
+        assert "none of the configured runner.plugin_dirs" not in out, out

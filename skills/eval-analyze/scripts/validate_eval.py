@@ -49,6 +49,49 @@ def _resolve_plugin_dir(raw, project_root=None):
     return resolve_plugin_path(raw, project_root or Path.cwd())
 
 
+def _is_auto_discoverable(skill_path):
+    """True when the agent runtime finds this skill without being told to.
+
+    Claude Code searches ``<project>/.claude/skills`` only; anything else needs
+    the plugin to be loaded explicitly via --plugin-dir.
+    """
+    try:
+        skill_path.resolve().relative_to((Path.cwd() / ".claude" / "skills").resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _plugin_dirs_export_skill(plugin_dirs, skill_name):
+    """Does any configured plugin dir actually export ``skill_name``?
+
+    Returns True/False, or None when a directory cannot be inspected (missing,
+    unreadable, or an invalid manifest). Those are real misconfigurations, but
+    the runner already fails fast on them with a more precise message, so the
+    validator stays quiet rather than guessing.
+
+    Mirrors find_skill()'s naming tolerance: "plugin:skill" also matches a
+    directory named "skill".
+    """
+    from agent_eval.config import resolve_plugin_skill_roots
+
+    candidates = [skill_name]
+    if ":" in skill_name:
+        candidates.append(skill_name.split(":", 1)[1])
+
+    unknown = False
+    for raw in plugin_dirs:
+        try:
+            roots = resolve_plugin_skill_roots(_resolve_plugin_dir(raw))
+        except Exception:
+            unknown = True
+            continue
+        for root in roots:
+            if any((root / candidate / "SKILL.md").is_file() for candidate in candidates):
+                return True
+    return None if unknown else False
+
+
 def _extract_template_variables(template_text):
     """Extract undeclared root variable names from a Jinja2 template.
 
@@ -492,22 +535,28 @@ def validate_config(path="eval.yaml"):
     # This fails silently and expensively: without --plugin-dir every case returns
     # "Unknown command: /<skill>", 0 turns, $0.00 and exit code 0, so the run looks
     # like a skill that produced no artifacts rather than one that never started.
-    if resolved_skill and not (config.get("runner") or {}).get("plugin_dirs"):
-        auto_discovered = Path.cwd() / ".claude" / "skills"
+    if resolved_skill and not _is_auto_discoverable(resolved_skill):
         try:
-            resolved_skill.resolve().relative_to(auto_discovered.resolve())
-        except (ValueError, OSError):
-            try:
-                shown = resolved_skill.resolve().relative_to(Path.cwd().resolve())
-            except ValueError:
-                shown = resolved_skill
+            shown = resolved_skill.resolve().relative_to(Path.cwd().resolve())
+        except ValueError:
+            shown = resolved_skill
+        plugin_dirs = (config.get("runner") or {}).get("plugin_dirs") or []
+        symptom = (f"every case fails with 'Unknown command: /{skill_name}' "
+                   f"at 0 turns and exit code 0")
+        if not plugin_dirs:
             errors.append(
                 f"skill '{skill_name}' resolves to '{shown}', which the agent "
                 f"runtime will not auto-discover — only <project>/.claude/skills "
                 f"is searched. Set runner.plugin_dirs (e.g. ['.'] for a plugin "
                 f"rooted at the project) so the runner passes --plugin-dir; "
-                f"otherwise every case fails with 'Unknown command: /{skill_name}' "
-                f"at 0 turns and exit code 0."
+                f"otherwise {symptom}."
+            )
+        elif _plugin_dirs_export_skill(plugin_dirs, skill_name) is False:
+            errors.append(
+                f"skill '{skill_name}' resolves to '{shown}', but none of the "
+                f"configured runner.plugin_dirs ({', '.join(map(str, plugin_dirs))}) "
+                f"export it. The runner only passes --plugin-dir for those "
+                f"directories, so the skill stays undiscoverable and {symptom}."
             )
 
     # --- File reference checks (resolve relative to config file location) ---
