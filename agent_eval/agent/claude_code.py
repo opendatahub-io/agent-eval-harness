@@ -22,7 +22,10 @@ _print_lock = threading.Lock()
 
 # Conventional directories plugin discovery reads besides the manifest and
 # the manifest-declared skill roots. Copied only when present.
-_PLUGIN_OPTIONAL_DIRS = ("commands", "agents", "hooks")
+# scripts/ is included because skills commonly invoke
+# ${CLAUDE_PLUGIN_ROOT}/scripts/... or ${CLAUDE_SKILL_DIR}/../../scripts/...
+# at runtime; a staged copy without it would break those plugins.
+_PLUGIN_OPTIONAL_DIRS = ("commands", "agents", "hooks", "scripts")
 
 # Bulk plugin discovery never reads — keeps the staged copy small.
 _PLUGIN_IGNORE = shutil.ignore_patterns(".git", "node_modules", "__pycache__")
@@ -130,7 +133,6 @@ class ClaudeCodeRunner(EvalRunner):
         return cls(
             permissions=overrides.get("permissions", config.permissions),
             plugin_dirs=resolved_plugin_dirs,
-            stage_plugins=config.runner.stage_plugins,
             env=config.runner.env,
             system_prompt=config.runner.system_prompt,
             subagent_model=overrides.get("subagent_model"),
@@ -147,7 +149,6 @@ class ClaudeCodeRunner(EvalRunner):
         permissions: Optional[dict] = None,
         subagent_model: Optional[str] = None,
         plugin_dirs: Optional[list] = None,
-        stage_plugins: bool = False,
         env: Optional[dict] = None,
         system_prompt: Optional[str] = None,
         mlflow_experiment: Optional[str] = None,
@@ -159,7 +160,6 @@ class ClaudeCodeRunner(EvalRunner):
         self._permissions = permissions or {}
         self._subagent_model = subagent_model
         self._plugin_dirs = plugin_dirs or []
-        self._stage_plugins = stage_plugins
         self._env = env or {}
         self._system_prompt = system_prompt
         self._mlflow_experiment = mlflow_experiment
@@ -225,9 +225,12 @@ class ClaudeCodeRunner(EvalRunner):
             cmd.extend(["--permission-mode", self._permission_mode])
 
         plugin_dirs = self._plugin_dirs
-        if self._stage_plugins and plugin_dirs:
-            # Pass a workspace-local copy so the real plugin path never
-            # enters the session context (see stage_plugin_dir).
+        if plugin_dirs:
+            # Always pass a workspace-local copy so the real plugin path never
+            # enters the session context (see stage_plugin_dir). A plugin that
+            # already lives inside the workspace is passed through unchanged —
+            # which also covers workspace_mode: repo, where the workspace IS
+            # the project and staging would write junk into the user's repo.
             try:
                 plugin_dirs = self._staged_plugin_dirs(workspace)
             except (OSError, ValueError, FileNotFoundError) as e:
@@ -552,12 +555,21 @@ class ClaudeCodeRunner(EvalRunner):
         """
         staged = []
         seen: dict = {}
+        ws = Path(workspace).resolve()
         for configured in self._plugin_dirs:
             plugin = Path(configured).resolve()
+            # A plugin already inside the workspace is passed through: its
+            # path discloses nothing outside the sandbox, and re-staging it
+            # would be pointless. This also covers workspace_mode: repo,
+            # where the workspace IS the project — staging there would write
+            # .staged-plugins/ into the user's repo.
+            if plugin == ws or plugin.is_relative_to(ws):
+                staged.append(str(plugin))
+                continue
             previous = seen.setdefault(plugin.name, plugin)
             if previous != plugin:
                 raise ValueError(
-                    "stage_plugins cannot stage two different plugins with "
+                    "plugin staging cannot stage two different plugins with "
                     f"the same directory name: {previous} and {plugin}")
             staged.append(str(stage_plugin_dir(plugin, workspace)))
         return staged

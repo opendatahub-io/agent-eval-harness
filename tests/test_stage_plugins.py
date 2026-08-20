@@ -169,8 +169,7 @@ class TestClaudeCodeRunnerStaging:
         plugin = make_plugin(tmp_path / "plugins")
         ws = tmp_path / "ws"
         ws.mkdir()
-        runner = ClaudeCodeRunner(
-            plugin_dirs=[str(plugin)], stage_plugins=True)
+        runner = ClaudeCodeRunner(plugin_dirs=[str(plugin)])
         result = runner.execute(
             target="epic-decompose", args="", workspace=ws,
             model="m", timeout_s=60)
@@ -183,8 +182,9 @@ class TestClaudeCodeRunnerStaging:
             "the real plugin path must never enter the session")
         assert (Path(staged) / "skills" / "my-skill" / "SKILL.md").is_file()
 
-    def test_default_passes_real_path_through(self, tmp_path, monkeypatch):
-        """Opt-in: without stage_plugins existing users see no change."""
+    def test_staging_is_the_default_behavior(self, tmp_path, monkeypatch):
+        """No opt-in flag: isolation is the harness's contract, so any plugin
+        living outside the workspace is always staged."""
         self._stub_claude(tmp_path, monkeypatch)
         plugin = make_plugin(tmp_path / "plugins")
         ws = tmp_path / "ws"
@@ -194,8 +194,43 @@ class TestClaudeCodeRunnerStaging:
             target="epic-decompose", args="", workspace=ws,
             model="m", timeout_s=60)
         assert result.exit_code == 0, result.stderr
-        assert self._plugin_dir_args(self._argv(ws)) == [str(plugin)]
+        [staged] = self._plugin_dir_args(self._argv(ws))
+        assert staged.startswith(str(ws))
+        assert (ws / ".staged-plugins").exists()
+
+    def test_plugin_inside_workspace_passes_through(self, tmp_path, monkeypatch):
+        """A plugin already inside the workspace discloses nothing outside the
+        sandbox and is passed through unchanged — this is also what makes
+        workspace_mode: repo safe (the workspace IS the project there, and
+        staging would write .staged-plugins/ into the user's repo)."""
+        self._stub_claude(tmp_path, monkeypatch)
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        plugin = make_plugin(ws / "vendored")
+        runner = ClaudeCodeRunner(plugin_dirs=[str(plugin)])
+        result = runner.execute(
+            target="epic-decompose", args="", workspace=ws,
+            model="m", timeout_s=60)
+        assert result.exit_code == 0, result.stderr
+        assert self._plugin_dir_args(self._argv(ws)) == [str(plugin.resolve())]
         assert not (ws / ".staged-plugins").exists()
+
+    def test_plugin_root_scripts_are_staged(self, tmp_path, monkeypatch):
+        """Skills commonly run ${CLAUDE_PLUGIN_ROOT}/scripts/... at runtime; a
+        staged copy without scripts/ would break them."""
+        self._stub_claude(tmp_path, monkeypatch)
+        plugin = make_plugin(tmp_path / "plugins")
+        (plugin / "scripts").mkdir()
+        (plugin / "scripts" / "helper.py").write_text("print('hi')\n")
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        runner = ClaudeCodeRunner(plugin_dirs=[str(plugin)])
+        result = runner.execute(
+            target="epic-decompose", args="", workspace=ws,
+            model="m", timeout_s=60)
+        assert result.exit_code == 0, result.stderr
+        [staged] = self._plugin_dir_args(self._argv(ws))
+        assert (Path(staged) / "scripts" / "helper.py").is_file()
 
     def test_duplicate_plugin_basenames_fail_loud(self, tmp_path, monkeypatch):
         self._stub_claude(tmp_path, monkeypatch)
@@ -203,67 +238,9 @@ class TestClaudeCodeRunnerStaging:
         second = make_plugin(tmp_path / "b", name="pkg")
         ws = tmp_path / "ws"
         ws.mkdir()
-        runner = ClaudeCodeRunner(
-            plugin_dirs=[str(first), str(second)], stage_plugins=True)
+        runner = ClaudeCodeRunner(plugin_dirs=[str(first), str(second)])
         result = runner.execute(
             target="epic-decompose", args="", workspace=ws,
             model="m", timeout_s=60)
         assert result.exit_code == -1
         assert "same directory name" in result.stderr
-
-
-class TestStagePluginsConfig:
-    """Config parsing and from_config plumbing."""
-
-    def _write(self, tmp_path, body):
-        p = tmp_path / "eval.yaml"
-        p.write_text(body)
-        return p
-
-    def test_defaults_to_false(self, tmp_path):
-        cfg = EvalConfig.from_yaml(self._write(tmp_path, """
-name: t
-execution:
-  skill: s
-runner:
-  type: claude-code
-"""))
-        assert cfg.runner.stage_plugins is False
-
-    def test_parses_true(self, tmp_path):
-        cfg = EvalConfig.from_yaml(self._write(tmp_path, """
-name: t
-execution:
-  skill: s
-runner:
-  type: claude-code
-  stage_plugins: true
-"""))
-        assert cfg.runner.stage_plugins is True
-
-    def test_rejects_non_boolean(self, tmp_path):
-        with pytest.raises(ValueError, match="stage_plugins"):
-            EvalConfig.from_yaml(self._write(tmp_path, """
-name: t
-execution:
-  skill: s
-runner:
-  type: claude-code
-  stage_plugins: "yes please"
-"""))
-
-    def test_from_config_plumbs_to_runner(self, tmp_path):
-        plugin = make_plugin(tmp_path / "plugins")
-        cfg = EvalConfig.from_yaml(self._write(tmp_path, f"""
-name: t
-execution:
-  skill: s
-runner:
-  type: claude-code
-  stage_plugins: true
-  plugin_dirs:
-    - {plugin}
-"""))
-        runner = ClaudeCodeRunner.from_config(cfg)
-        assert runner._stage_plugins is True
-        assert runner._plugin_dirs == [str(plugin)]
