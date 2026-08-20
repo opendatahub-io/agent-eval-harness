@@ -302,3 +302,65 @@ class TestDenialAggregationAcrossSegments:
             target="x", args="", workspace=ws, model="m", timeout_s=60)
         assert result.permission_denials is not None
         assert [d["tool_use_id"] for d in result.permission_denials] == ["tu_esc"]
+
+
+class TestBackgroundKillAndCostTruth:
+    """A case whose background agents are killed at the CLI's bg-wait ceiling
+    exits 0 with a "success" result event; and total_cost_usd counts only the
+    conversation, not the killed agent's tokens. On a real run this published
+    a dead case as "OK | $0.30" while modelUsage recorded $1.47."""
+
+    KILLED_STREAM = (
+        '{"type":"system","subtype":"init","session_id":"s1"}\n'
+        '{"type":"result","subtype":"success","is_error":false,"num_turns":12,'
+        '"total_cost_usd":0.2981,'
+        '"modelUsage":{"claude-opus-4-6":{"inputTokens":9000,"outputTokens":30803,'
+        '"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":1.4695}},'
+        '"result":"Waiting for it to complete.","session_id":"s1"}\n'
+    )
+    KILL_STDERR = ("Background tasks still running after 600s; terminating. "
+                   "Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait indefinitely.")
+
+    HEALTHY_STREAM = (
+        '{"type":"system","subtype":"init","session_id":"s1"}\n'
+        '{"type":"result","subtype":"success","is_error":false,"num_turns":12,'
+        '"total_cost_usd":1.4695,'
+        '"modelUsage":{"claude-opus-4-6":{"inputTokens":9000,"outputTokens":30803,'
+        '"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":1.4695}},'
+        '"result":"done","session_id":"s1"}\n'
+    )
+
+    def _run(self, tmp_path, monkeypatch, stream, stderr_text=""):
+        import os
+        bindir = tmp_path / "bin"
+        bindir.mkdir(exist_ok=True)
+        stub = bindir / "claude"
+        stub.write_text(
+            "#!/bin/sh\ncat > /dev/null\n"
+            + (f"echo '{stderr_text}' >&2\n" if stderr_text else "")
+            + f"cat <<'STREAM_EOF'\n{stream}STREAM_EOF\n")
+        stub.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+        ws = tmp_path / "ws"
+        ws.mkdir(exist_ok=True)
+        return ClaudeCodeRunner(log_prefix="test").execute(
+            target="x", args="", workspace=ws, model="m", timeout_s=60)
+
+    def test_bg_kill_fails_the_case(self, tmp_path, monkeypatch):
+        result = self._run(tmp_path, monkeypatch, self.KILLED_STREAM,
+                           stderr_text=self.KILL_STDERR)
+        assert result.exit_code != 0, "a killed pipeline must not read as OK"
+        assert "bg-wait ceiling" in result.stderr
+
+    def test_cost_prefers_model_usage_when_higher(self, tmp_path, monkeypatch):
+        result = self._run(tmp_path, monkeypatch, self.KILLED_STREAM,
+                           stderr_text=self.KILL_STDERR)
+        assert result.cost_usd is not None
+        assert abs(result.cost_usd - 1.4695) < 1e-6, (
+            "cost must include the killed background agent's tokens")
+
+    def test_healthy_run_untouched(self, tmp_path, monkeypatch):
+        result = self._run(tmp_path, monkeypatch, self.HEALTHY_STREAM)
+        assert result.exit_code == 0
+        assert abs(result.cost_usd - 1.4695) < 1e-6
+        assert "bg-wait ceiling" not in (result.stderr or "")

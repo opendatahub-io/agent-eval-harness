@@ -403,6 +403,17 @@ class ClaudeCodeRunner(EvalRunner):
         if not cost_usd and isinstance(result_obj, dict):
             cost_usd = result_obj.get("total_cost_usd")
 
+        # total_cost_usd covers the CONVERSATION; modelUsage covers every
+        # token billed, including a background agent killed after the final
+        # turn. Normally they agree to the cent — when modelUsage is higher,
+        # the difference is real spend the conversation never saw (a real
+        # case published $0.30 while burning $1.47). Trust the larger figure.
+        per_model_total = sum(
+            (v or {}).get("cost_usd") or 0
+            for v in (per_model_usage or {}).values())
+        if per_model_total and per_model_total > (cost_usd or 0) + 0.01:
+            cost_usd = per_model_total
+
         # Add subagent turns from captured transcripts, deduplicating
         # against IDs already seen in the stream (Claude Code >= 2.1.108
         # streams subagent messages in stdout too)
@@ -422,6 +433,20 @@ class ClaudeCodeRunner(EvalRunner):
         # run. Fail the case instead of letting a never-started skill look like
         # a skill that produced nothing.
         exit_code = proc.returncode
+        # The CLI kills background tasks that outlive the final turn by the
+        # bg-wait ceiling (default 600s) and still exits 0 with a "success"
+        # result event. For pipeline skills whose real work happens in
+        # background agents, that is a dead case wearing an OK label: on a
+        # real run the killed agent left half-written artifacts and the case
+        # was published as "OK | exit 0". Fail it honestly.
+        if _BG_KILL_RE.search(stderr or "") and exit_code == 0:
+            exit_code = 1
+            stderr = (stderr or "") + (
+                "\nERROR: the CLI terminated still-running background tasks at "
+                "the bg-wait ceiling — their work is incomplete and artifacts "
+                "may be half-written. Raise CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS "
+                "(0 = wait indefinitely) for long-running pipeline skills."
+            )
         unknown_command = _detect_unknown_command(result_obj)
         if unknown_command and exit_code == 0:
             exit_code = 1
@@ -511,6 +536,10 @@ class ClaudeCodeRunner(EvalRunner):
 
 
 _UNKNOWN_COMMAND_RE = re.compile(r"^Unknown command:\s*(/\S+)")
+
+# Emitted on stderr when the CLI gives up waiting for background tasks
+# (message text as of Claude Code 2.1.x; keep the match loose).
+_BG_KILL_RE = re.compile(r"Background tasks still running after .*terminating", re.S)
 
 
 def _detect_unknown_command(result_obj) -> Optional[str]:
