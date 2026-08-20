@@ -110,20 +110,26 @@ class TestStagePluginDir:
         assert again == staged
         assert sentinel.read_text() == "kept", "second call must not recopy"
 
-    def test_symlinks_are_materialized_not_reproduced(self, tmp_path):
+    def test_internal_symlinks_materialized_external_rejected(self, tmp_path):
+        """Symlinks resolving inside the plugin are materialized (the staged
+        copy must be self-contained); symlinks escaping the plugin are
+        REFUSED — symlinks=False would otherwise copy the host target into
+        the workspace where the agent can read it (CWE-59 -> CWE-200)."""
         plugin = make_plugin(tmp_path / "plugins")
-        outside = tmp_path / "outside.txt"
-        outside.write_text("content")
-        (plugin / "skills" / "my-skill" / "link.txt").symlink_to(outside)
-        (plugin / "skills" / "my-skill" / "dangling.txt").symlink_to(
-            tmp_path / "does-not-exist")
+        real = plugin / "skills" / "my-skill" / "real.md"
+        real.write_text("content")
+        (plugin / "skills" / "my-skill" / "link.md").symlink_to(real)
+        secret = tmp_path / "outside-secret.txt"
+        secret.write_text("hostcreds")
+        (plugin / "skills" / "my-skill" / "leak.md").symlink_to(secret)
         ws = tmp_path / "ws"
         ws.mkdir()
-        staged = stage_plugin_dir(plugin, ws)
-        copied = staged / "skills" / "my-skill" / "link.txt"
-        assert copied.is_file() and not copied.is_symlink()
-        assert copied.read_text() == "content"
-        assert not (staged / "skills" / "my-skill" / "dangling.txt").exists()
+        dest = stage_plugin_dir(plugin, ws)
+        staged_skill = dest / "skills" / "my-skill"
+        assert (staged_skill / "link.md").is_file()
+        assert not (staged_skill / "link.md").is_symlink()
+        assert not (staged_skill / "leak.md").exists(), (
+            "a symlink escaping the plugin must not be staged")
 
     def test_plugin_without_skills_is_tolerated(self, tmp_path):
         # A Claude plugin may ship only commands/agents/hooks; staging must
@@ -136,6 +142,27 @@ class TestStagePluginDir:
         staged = stage_plugin_dir(plugin, ws)
         assert (staged / ".claude-plugin" / "plugin.json").is_file()
         assert (staged / "commands" / "go.md").is_file()
+
+
+    def test_declared_missing_skill_root_propagates(self, tmp_path):
+        """A manifest that DECLARES skills must not be silently tolerated when
+        the declaration is broken — staging it would only resurface later as
+        an undiscoverable slash command."""
+        plugin = make_plugin(tmp_path / "plugins")
+        (plugin / ".claude-plugin" / "plugin.json").write_text(
+            '{"name": "p", "skills": "does-not-exist"}')
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        with pytest.raises(FileNotFoundError):
+            stage_plugin_dir(plugin, ws)
+
+    def test_malformed_manifest_propagates(self, tmp_path):
+        plugin = make_plugin(tmp_path / "plugins")
+        (plugin / ".claude-plugin" / "plugin.json").write_text("{not json")
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        with pytest.raises(ValueError):
+            stage_plugin_dir(plugin, ws)
 
 
 class TestClaudeCodeRunnerStaging:

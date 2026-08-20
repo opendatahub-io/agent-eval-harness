@@ -31,6 +31,30 @@ _PLUGIN_OPTIONAL_DIRS = ("commands", "agents", "hooks", "scripts")
 _PLUGIN_IGNORE = shutil.ignore_patterns(".git", "node_modules", "__pycache__")
 
 
+def _plugin_ignore(plugin: Path):
+    """copytree ignore callback: bulk dirs, plus any symlink whose resolved
+    target escapes the plugin. ``symlinks=False`` MATERIALIZES link targets,
+    so a third-party plugin could otherwise plant a link to a host file
+    (credentials, source data) and have staging copy it into the workspace
+    where the agent can read it (CWE-59 -> CWE-200).
+    """
+    def ignore(src, names):
+        ignored = set(_PLUGIN_IGNORE(src, names))
+        for name in names:
+            if name in ignored:
+                continue
+            entry = Path(src) / name
+            if entry.is_symlink():
+                try:
+                    resolved = entry.resolve(strict=True)
+                except OSError:
+                    continue  # dangling — copytree already skips these
+                if not resolved.is_relative_to(plugin):
+                    ignored.add(name)
+        return ignored
+    return ignore
+
+
 def stage_plugin_dir(plugin_dir: Path, workspace: Path) -> Path:
     """Copy one plugin's discoverable content into the case workspace.
 
@@ -61,14 +85,27 @@ def stage_plugin_dir(plugin_dir: Path, workspace: Path) -> Path:
         return dest
 
     sources = [plugin / ".claude-plugin"]
-    try:
+    # A Claude plugin may legitimately export no skills (commands, agents or
+    # hooks only). Tolerate exactly that layout — no 'skills' declaration in
+    # the manifest AND no conventional skills/ directory — and let every
+    # other error from resolve_plugin_skill_roots propagate: a malformed
+    # manifest or a declared-but-missing root staged "successfully" would
+    # only resurface later as an undiscoverable slash command, the silent
+    # failure mode this staging exists to prevent.
+    declares_skills = False
+    manifest_path = plugin / ".claude-plugin" / "plugin.json"
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            # Malformed manifest: let the authoritative resolver raise its
+            # own, clearer error below.
+            manifest = None
+            declares_skills = True
+        if isinstance(manifest, dict) and manifest.get("skills") is not None:
+            declares_skills = True
+    if declares_skills or (plugin / "skills").is_dir():
         sources.extend(resolve_plugin_skill_roots(plugin))
-    except (ValueError, FileNotFoundError):
-        # A Claude plugin may legitimately export no skills (commands,
-        # agents or hooks only) — same tolerance as Harbor's skill-root
-        # forwarding. Without staging, Claude Code would receive the real
-        # directory and load whatever is discoverable; mirror that.
-        pass
     sources.extend(plugin / name for name in _PLUGIN_OPTIONAL_DIRS)
 
     staging = dest.parent / f".{plugin.name}.partial"
@@ -81,7 +118,7 @@ def stage_plugin_dir(plugin_dir: Path, workspace: Path) -> Path:
                 continue
             shutil.copytree(
                 source, staging / source.relative_to(plugin),
-                symlinks=False, ignore=_PLUGIN_IGNORE,
+                symlinks=False, ignore=_plugin_ignore(plugin),
                 ignore_dangling_symlinks=True, dirs_exist_ok=True)
         try:
             staging.replace(dest)
