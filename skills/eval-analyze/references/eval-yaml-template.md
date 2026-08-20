@@ -105,6 +105,10 @@ runner:
   # workspace_mode: repo    # Set ONLY when testing requires full repo access (see above)
   # settings: {}            # Runner-specific settings overrides
   # plugin_dirs: []         # Plugin dirs the evaluated skill needs
+  # hermetic_plugins: true  # The operator's personal plugins otherwise load into every
+  #                         # case session; no enabledPlugins wildcard exists upstream, so
+  #                         # the harness enumerates the installed plugins and disables
+  #                         # each one — explicit runner.settings.enabledPlugins entries win
   # env:                     # Extra env vars for the runner ($VAR resolves from caller)
   #   CUSTOM_AUTH_TOKEN: "$CUSTOM_AUTH_TOKEN"
   # system_prompt: ""       # Appended to harness system prompt

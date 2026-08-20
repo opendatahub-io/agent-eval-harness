@@ -720,7 +720,18 @@ def _apply_runner_settings(settings, config):
     Lets users add Claude Code settings (model defaults, env, MCP servers,
     etc.) to a runner without forking the harness. Merged after harness
     defaults so user overrides win for scalar keys; lists are extended.
+
+    When `runner.hermetic_plugins` is set, the synthesized denylist for the
+    operator's user-installed plugins (see agent_eval.tools.hermetic) is
+    merged first — an explicit `runner.settings.enabledPlugins` entry
+    therefore wins, letting the operator re-enable a specific plugin.
     """
+    if getattr(config.runner, "hermetic_plugins", False):
+        from agent_eval.tools.hermetic import hermetic_enabled_plugins
+
+        denylist = hermetic_enabled_plugins()
+        if denylist:
+            _deep_merge(settings, {"enabledPlugins": denylist})
     user_settings = getattr(config.runner, "settings", None) or {}
     if user_settings:
         _deep_merge(settings, user_settings)
