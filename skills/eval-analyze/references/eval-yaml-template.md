@@ -105,6 +105,10 @@ runner:
   # workspace_mode: repo    # Set ONLY when testing requires full repo access (see above)
   # settings: {}            # Runner-specific settings overrides
   # plugin_dirs: []         # Plugin dirs the evaluated skill needs
+  # stage_plugins: true     # claude-code: copy plugin content into the throwaway
+  #                         # workspace and pass that path — otherwise the real
+  #                         # plugin path leaks into the session context, where
+  #                         # Bash (not path-gated) can follow it out of the workspace
   # env:                     # Extra env vars for the runner ($VAR resolves from caller)
   #   CUSTOM_AUTH_TOKEN: "$CUSTOM_AUTH_TOKEN"
   # system_prompt: ""       # Appended to harness system prompt

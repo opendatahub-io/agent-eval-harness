@@ -467,6 +467,14 @@ class RunnerConfig:
     workspace_mode: Optional[str] = None  # repo | None (default: isolated workspace)
     settings: dict = field(default_factory=dict)
     plugin_dirs: list = field(default_factory=list)
+    # Claude Code: stage each plugin's discoverable content inside the
+    # throwaway case workspace and pass the staged copy to --plugin-dir.
+    # Without this the real plugin path appears verbatim in every session's
+    # context (the stream-json init event registers the plugin under that
+    # path), and Bash — which is not path-gated by the workspace's
+    # additionalDirectories read gate — can follow it out of the workspace.
+    # Opt-in so existing configurations see no behavior change.
+    stage_plugins: bool = False
     env: dict = field(default_factory=dict)
     system_prompt: Optional[str] = None
     # Claude Code: low..max; Codex: minimal..xhigh (runner validates precisely).
@@ -499,12 +507,19 @@ def _parse_runner_config(runner_raw, *, context="runner"):
     if workspace_mode is not None and workspace_mode not in ("repo",):
         raise ValueError(
             f"{context}.workspace_mode must be None or 'repo', got: {workspace_mode!r}")
+    # Strict boolean so a quoted "true" fails loud instead of staying truthy
+    # forever (or a quoted "false" silently enabling staging).
+    stage_plugins = runner_raw.get("stage_plugins", False)
+    if not isinstance(stage_plugins, bool):
+        raise ValueError(
+            f"{context}.stage_plugins must be a boolean, got: {stage_plugins!r}")
     return RunnerConfig(
         type=runner_raw.get("type", "claude-code"),
         command=command,
         workspace_mode=workspace_mode,
         settings=runner_raw.get("settings", {}) or {},
         plugin_dirs=runner_raw.get("plugin_dirs", []) or [],
+        stage_plugins=stage_plugins,
         env=runner_raw.get("env", {}) or {},
         system_prompt=runner_raw.get("system_prompt"),
         effort=runner_raw.get("effort"),

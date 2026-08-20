@@ -16,9 +16,82 @@ from .stream_capture import (
     count_subagent_turns, count_subagent_turns_by_model, setup_subagent_hook,
 )
 from agent_eval.tools.permissions import compile_permission_rules
-from agent_eval.config import resolve_plugin_dir
+from agent_eval.config import resolve_plugin_dir, resolve_plugin_skill_roots
 
 _print_lock = threading.Lock()
+
+# Conventional directories plugin discovery reads besides the manifest and
+# the manifest-declared skill roots. Copied only when present.
+_PLUGIN_OPTIONAL_DIRS = ("commands", "agents", "hooks")
+
+# Bulk plugin discovery never reads — keeps the staged copy small.
+_PLUGIN_IGNORE = shutil.ignore_patterns(".git", "node_modules", "__pycache__")
+
+
+def stage_plugin_dir(plugin_dir: Path, workspace: Path) -> Path:
+    """Copy one plugin's discoverable content into the case workspace.
+
+    WHY: ``--plugin-dir <real path>`` lands verbatim in every session's
+    system context — the stream-json init event registers the plugin under
+    that path. In the 2026-08-19 eval run on the epic-creator project, two
+    of 30 case dispatchers followed that leaked path, cd'd into the real
+    project repo, and ran pipeline phases there: one delivered an incomplete
+    artifact (unscored epics), the other left mid-pipeline state files in
+    the repo. The workspace's per-case staging hook gates the Read tool via
+    additionalDirectories, but Bash is not path-gated, so the leaked path is
+    a standing escape vector. Staging the plugin inside the throwaway
+    workspace and passing THAT path keeps the real path out of the session.
+
+    Copies only what plugin discovery needs: the ``.claude-plugin/``
+    manifest, every skill root declared by the manifest (via
+    ``resolve_plugin_skill_roots``, which validates containment), and the
+    conventional ``commands/``, ``agents/`` and ``hooks/`` directories when
+    they exist at the plugin root. Symlinks are not reproduced — their
+    content is copied and dangling ones are skipped — so the staged tree
+    cannot point back outside the workspace. Idempotent per workspace: an
+    existing destination is reused; a partial copy never becomes the
+    destination (copy into a temp sibling, then rename).
+    """
+    plugin = Path(plugin_dir).resolve()
+    dest = workspace / ".staged-plugins" / plugin.name
+    if dest.exists():
+        return dest
+
+    sources = [plugin / ".claude-plugin"]
+    try:
+        sources.extend(resolve_plugin_skill_roots(plugin))
+    except (ValueError, FileNotFoundError):
+        # A Claude plugin may legitimately export no skills (commands,
+        # agents or hooks only) — same tolerance as Harbor's skill-root
+        # forwarding. Without staging, Claude Code would receive the real
+        # directory and load whatever is discoverable; mirror that.
+        pass
+    sources.extend(plugin / name for name in _PLUGIN_OPTIONAL_DIRS)
+
+    staging = dest.parent / f".{plugin.name}.partial"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    try:
+        for source in sources:
+            if not source.is_dir():
+                continue
+            shutil.copytree(
+                source, staging / source.relative_to(plugin),
+                symlinks=False, ignore=_PLUGIN_IGNORE,
+                ignore_dangling_symlinks=True, dirs_exist_ok=True)
+        try:
+            staging.replace(dest)
+        except OSError:
+            # Another stager won the rename race; its complete copy stands.
+            if dest.is_dir():
+                shutil.rmtree(staging, ignore_errors=True)
+                return dest
+            raise
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return dest
 
 
 def _per_model_turns(subagent_dir, stream_ids_by_model):
@@ -57,6 +130,7 @@ class ClaudeCodeRunner(EvalRunner):
         return cls(
             permissions=overrides.get("permissions", config.permissions),
             plugin_dirs=resolved_plugin_dirs,
+            stage_plugins=config.runner.stage_plugins,
             env=config.runner.env,
             system_prompt=config.runner.system_prompt,
             subagent_model=overrides.get("subagent_model"),
@@ -73,6 +147,7 @@ class ClaudeCodeRunner(EvalRunner):
         permissions: Optional[dict] = None,
         subagent_model: Optional[str] = None,
         plugin_dirs: Optional[list] = None,
+        stage_plugins: bool = False,
         env: Optional[dict] = None,
         system_prompt: Optional[str] = None,
         mlflow_experiment: Optional[str] = None,
@@ -84,6 +159,7 @@ class ClaudeCodeRunner(EvalRunner):
         self._permissions = permissions or {}
         self._subagent_model = subagent_model
         self._plugin_dirs = plugin_dirs or []
+        self._stage_plugins = stage_plugins
         self._env = env or {}
         self._system_prompt = system_prompt
         self._mlflow_experiment = mlflow_experiment
@@ -148,7 +224,18 @@ class ClaudeCodeRunner(EvalRunner):
         if self._permission_mode:
             cmd.extend(["--permission-mode", self._permission_mode])
 
-        for plugin_dir in self._plugin_dirs:
+        plugin_dirs = self._plugin_dirs
+        if self._stage_plugins and plugin_dirs:
+            # Pass a workspace-local copy so the real plugin path never
+            # enters the session context (see stage_plugin_dir).
+            try:
+                plugin_dirs = self._staged_plugin_dirs(workspace)
+            except (OSError, ValueError, FileNotFoundError) as e:
+                return RunResult(
+                    exit_code=-1, stdout="",
+                    stderr=f"Plugin staging failed: {e}", duration_s=0.0,
+                )
+        for plugin_dir in plugin_dirs:
             cmd.extend(["--plugin-dir", str(plugin_dir)])
 
         effective_prompt = system_prompt or self._system_prompt
@@ -455,6 +542,25 @@ class ClaudeCodeRunner(EvalRunner):
             permission_denials=denial_list,
             raw_output=raw_output,
         )
+
+    def _staged_plugin_dirs(self, workspace: Path) -> list:
+        """Stage every configured plugin into the workspace; return the copies.
+
+        The staged path is keyed by the plugin's directory name, so two
+        different plugins sharing a basename would silently collapse into
+        one copy — fail loud instead.
+        """
+        staged = []
+        seen: dict = {}
+        for configured in self._plugin_dirs:
+            plugin = Path(configured).resolve()
+            previous = seen.setdefault(plugin.name, plugin)
+            if previous != plugin:
+                raise ValueError(
+                    "stage_plugins cannot stage two different plugins with "
+                    f"the same directory name: {previous} and {plugin}")
+            staged.append(str(stage_plugin_dir(plugin, workspace)))
+        return staged
 
     @staticmethod
     def _cleanup_session(workspace: Path) -> None:
