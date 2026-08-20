@@ -475,6 +475,13 @@ class RunnerConfig:
     # Passed as --permission-mode (a CLI flag), so it applies even in untrusted
     # isolated workspaces where settings-file permissions are trust-gated.
     permission_mode: Optional[str] = None
+    # Claude Code: keep the operator's user-installed plugins out of case
+    # sessions. There is no enabledPlugins wildcard upstream and an absent
+    # entry means enabled, so the harness enumerates the installed-plugin
+    # registry and merges `enabledPlugins: {id: false}` for every entry into
+    # the workspace settings; explicit runner.settings.enabledPlugins entries
+    # win over the generated denylist. See issue #193.
+    hermetic_plugins: bool = False
 
 
 def _parse_runner_config(runner_raw, *, context="runner"):
@@ -499,6 +506,13 @@ def _parse_runner_config(runner_raw, *, context="runner"):
     if workspace_mode is not None and workspace_mode not in ("repo",):
         raise ValueError(
             f"{context}.workspace_mode must be None or 'repo', got: {workspace_mode!r}")
+    # Strict boolean — a truthy string like "false" silently enabling (or a
+    # "yes" YAML 1.1 leftover) would change which plugins load in every case.
+    hermetic_plugins = runner_raw.get("hermetic_plugins", False)
+    if not isinstance(hermetic_plugins, bool):
+        raise ValueError(
+            f"{context}.hermetic_plugins must be a boolean, "
+            f"got: {hermetic_plugins!r}")
     return RunnerConfig(
         type=runner_raw.get("type", "claude-code"),
         command=command,
@@ -509,6 +523,7 @@ def _parse_runner_config(runner_raw, *, context="runner"):
         system_prompt=runner_raw.get("system_prompt"),
         effort=runner_raw.get("effort"),
         permission_mode=runner_raw.get("permission_mode"),
+        hermetic_plugins=hermetic_plugins,
     )
 
 

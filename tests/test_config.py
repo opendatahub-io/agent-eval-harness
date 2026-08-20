@@ -63,6 +63,33 @@ def test_runner_type_default(tmp_path):
     assert cfg.runner.type == "claude-code"
 
 
+def test_runner_hermetic_plugins_parses(tmp_path):
+    cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution:
+  skill: s
+runner:
+  hermetic_plugins: true
+"""))
+    assert cfg.runner.hermetic_plugins is True
+
+
+def test_runner_hermetic_plugins_defaults_off(tmp_path):
+    cfg = EvalConfig.from_yaml(_write(tmp_path, "name: t\nexecution:\n  skill: s\n"))
+    assert cfg.runner.hermetic_plugins is False
+
+
+def test_runner_hermetic_plugins_rejects_non_boolean(tmp_path):
+    with pytest.raises(ValueError, match="hermetic_plugins must be a boolean"):
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution:
+  skill: s
+runner:
+  hermetic_plugins: "true"
+"""))
+
+
 def test_models_block_defaults(tmp_path):
     cfg = EvalConfig.from_yaml(_write(tmp_path, """
 name: t
