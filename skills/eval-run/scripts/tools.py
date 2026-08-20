@@ -31,9 +31,13 @@ except ImportError:
 try:
     import yaml
 except ImportError:
+    # Report only the confirmed failure: the bootstrap import above may have
+    # succeeded — what is certain here is that PyYAML cannot be imported.
     print(
-        "tools.py: PyYAML unavailable and agent_eval venv not importable — "
-        "tool interception is DISABLED for this call (pass-through).",
+        "tools.py: PyYAML is not importable — tool interception is DISABLED "
+        "for this call (pass-through). Install PyYAML for the interpreter "
+        "running hooks, or make the agent_eval venv importable so the "
+        "bootstrap can activate it.",
         file=sys.stderr,
     )
     sys.exit(0)

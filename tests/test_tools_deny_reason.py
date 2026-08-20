@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 TOOLS_PY = REPO_ROOT / "skills" / "eval-run" / "scripts" / "tools.py"
 
 
-def _run_hook(tmp_path, tool_name, tool_input):
+def _run_hook(tmp_path, tool_name, tool_input, env=None):
     (tmp_path / "tool_handlers.yaml").write_text(yaml.safe_dump({
         "handlers": [{
             "match": "network fetch skipped - files are pre-provisioned; "
@@ -35,7 +35,7 @@ def _run_hook(tmp_path, tool_name, tool_input):
     proc = subprocess.run(
         [sys.executable, str(hook)],
         input=json.dumps({"tool_name": tool_name, "tool_input": tool_input}),
-        capture_output=True, text=True, cwd=tmp_path,
+        capture_output=True, text=True, cwd=tmp_path, env=env,
     )
     return proc
 
@@ -58,12 +58,24 @@ def test_unmatched_bash_passes_through_silently(tmp_path):
     assert proc.stdout.strip() == ""
 
 
-def test_hook_runs_without_agent_eval_importable(tmp_path):
-    """The copied hook must work as a bare python3 script: agent_eval is not
-    importable from a workspace, and a crashing PreToolUse hook is silently
-    treated as pass-through by the CLI — which disabled ALL interception on a
-    real run."""
+def test_hook_denies_even_when_bootstrap_import_fails(tmp_path):
+    """The copied hook must survive `import agent_eval._bootstrap` failing —
+    a crashing PreToolUse hook is silently treated as pass-through by the CLI,
+    which disabled ALL interception on a real run. Force the failure with an
+    import blocker so the test proves it even on machines where agent_eval is
+    pip-installed, and assert interception still WORKS (deny emitted): the
+    bootstrap is a convenience, not a dependency."""
+    import os
+    blocker = tmp_path / "blocker" / "agent_eval"
+    blocker.mkdir(parents=True)
+    (blocker / "__init__.py").write_text(
+        'raise ImportError("agent_eval blocked for test")\n')
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(tmp_path / "blocker")
     proc = _run_hook(tmp_path, "Bash",
-                     {"command": "python3 scripts/fetch_strategy.py fetch-one X-1"})
+                     {"command": "python3 scripts/fetch_strategy.py fetch-one X-1"},
+                     env=env)
     assert proc.returncode == 0, proc.stderr
     assert "Traceback" not in proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
