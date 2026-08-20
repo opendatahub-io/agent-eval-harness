@@ -238,3 +238,67 @@ class TestUnknownCommandFailsTheRun:
         result = self._run(tmp_path, log_prefix="test")
         assert result.exit_code == 0, result.stderr
         assert "Unknown command" not in (result.stderr or "")
+
+
+class TestDenialAggregationAcrossSegments:
+    """A CLI-resumed session emits one result event PER segment, each carrying
+    only that segment's permission_denials. Reading only the final event lost
+    7 denials on a real run (the final segment's list was empty), which hid a
+    workspace escape from run_result.json."""
+
+    def test_collected_segments_are_unioned(self):
+        seg1 = [{"tool_name": "Read", "tool_use_id": "tu_a", "tool_input": {}}]
+        seg2 = [{"tool_name": "Read", "tool_use_id": "tu_b", "tool_input": {}}]
+        final = make_result(permission_denials=[])  # last segment: empty
+        got = _extract_denial_list(final, 0, collected=seg1 + seg2)
+        assert got == seg1 + seg2
+
+    def test_collected_wins_over_empty_final_event(self):
+        collected = [{"tool_name": "Write", "tool_use_id": "tu_x", "tool_input": {}}]
+        assert _extract_denial_list(make_result(), 0, collected=collected) == collected
+
+    def test_cumulative_reporting_is_deduplicated(self):
+        """If a CLI version reports cumulatively, the same tool_use_id must
+        not be double-counted."""
+        d = {"tool_name": "Read", "tool_use_id": "tu_a", "tool_input": {}}
+        got = _extract_denial_list(None, 0, collected=[d, dict(d)])
+        assert got == [d]
+
+    def test_entries_without_ids_are_kept(self):
+        anon = [{"tool_name": "unknown"}, {"tool_name": "unknown"}]
+        assert _extract_denial_list(None, 0, collected=list(anon)) == anon
+
+    def test_no_collected_falls_back_to_final_then_streaming(self):
+        denials = [{"tool_name": "Bash", "tool_use_id": "tu_1", "tool_input": {}}]
+        assert _extract_denial_list(make_result(permission_denials=denials), 0) == denials
+        assert len(_extract_denial_list(make_result(), 4)) == 4
+
+    def test_runner_unions_denials_from_stream(self, tmp_path, monkeypatch):
+        """End-to-end: two result events in the stream, denials only in the
+        first — RunResult must still carry them."""
+        import os
+        seg1_denial = ('[{"tool_name":"Read","tool_use_id":"tu_esc",'
+                       '"tool_input":{"file_path":"/repo/secret"}}]')
+        stream = (
+            '{"type":"system","subtype":"init","session_id":"s1"}\n'
+            '{"type":"result","subtype":"success","is_error":false,"num_turns":5,'
+            f'"total_cost_usd":0.5,"result":"partial","permission_denials":{seg1_denial},'
+            '"session_id":"s1"}\n'
+            '{"type":"system","subtype":"init","session_id":"s1"}\n'
+            '{"type":"result","subtype":"success","is_error":false,"num_turns":2,'
+            '"total_cost_usd":0.6,"result":"done","permission_denials":[],'
+            '"session_id":"s1"}\n'
+        )
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        stub = bindir / "claude"
+        stub.write_text("#!/bin/sh\ncat > /dev/null\n"
+                        f"cat <<'STREAM_EOF'\n{stream}STREAM_EOF\n")
+        stub.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        result = ClaudeCodeRunner(log_prefix="test").execute(
+            target="x", args="", workspace=ws, model="m", timeout_s=60)
+        assert result.permission_denials is not None
+        assert [d["tool_use_id"] for d in result.permission_denials] == ["tu_esc"]

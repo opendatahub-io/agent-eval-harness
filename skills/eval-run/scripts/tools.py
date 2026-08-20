@@ -11,15 +11,32 @@ Supports:
 - Filtering Bash commands by content patterns
 """
 
-import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
-
 import json
 import os
 import re
 import sys
 from pathlib import Path
 
-import yaml
+# This script is COPIED into <workspace>/hooks/ and executed by the Claude
+# Code hook runner as a bare `python3 .../tools.py` — agent_eval is usually
+# not importable there, and a PreToolUse hook that crashes is treated as
+# pass-through by the CLI, which silently disables ALL interception (observed
+# on a real eval run). The bootstrap is only a venv-activation convenience:
+# use it when available, never require it.
+try:
+    import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
+except ImportError:
+    pass
+
+try:
+    import yaml
+except ImportError:
+    print(
+        "tools.py: PyYAML unavailable and agent_eval venv not importable — "
+        "tool interception is DISABLED for this call (pass-through).",
+        file=sys.stderr,
+    )
+    sys.exit(0)
 
 
 def main():
@@ -247,11 +264,19 @@ Reply with ONLY the option label text, nothing else."""
 
 
 def _deny(reason):
-    """Deny the tool call with a reason."""
+    """Deny the tool call with a reason.
+
+    Claude Code reads ``permissionDecisionReason``; emitting only ``reason``
+    (the old key) makes the agent see the generic "Hook PreToolUse denied this
+    tool" with the handler's carefully crafted guidance silently dropped — on
+    a real eval run the agents had to reverse-engineer why the call was
+    blocked. Keep ``reason`` too for anything still reading the old key.
+    """
     output = {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
             "reason": reason,
         }
     }

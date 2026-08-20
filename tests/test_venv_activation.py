@@ -81,7 +81,20 @@ def _imports(nodes):
 
 
 def _toplevel_imports(tree):
-    return _imports(tree.body)
+    """Module-body imports, descending into module-level try/except blocks.
+
+    A guarded `try: import agent_eval._bootstrap / except ImportError: pass`
+    is the pattern for scripts that are COPIED out of the repo (e.g. the
+    PreToolUse interceptor lands in <workspace>/hooks/): the venv is activated
+    when reachable, and the script degrades explicitly when it is not. Such an
+    import still counts, both as the bootstrap and for ordering.
+    """
+    body = []
+    for node in tree.body:
+        body.append(node)
+        if isinstance(node, ast.Try):
+            body.extend(node.body)
+    return _imports(body)
 
 
 def _all_imports(tree):
@@ -182,7 +195,12 @@ def test_orchestrate_does_not_leak_the_sentinel_to_children():
 
 def _imports_bootstrap(tree, lineno):
     """True if the import at `lineno` is specifically agent_eval._bootstrap."""
+    body = []
     for node in tree.body:
+        body.append(node)
+        if isinstance(node, ast.Try):
+            body.extend(node.body)
+    for node in body:
         if getattr(node, "lineno", None) != lineno:
             continue
         if isinstance(node, ast.Import):

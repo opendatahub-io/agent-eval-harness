@@ -283,6 +283,7 @@ class ClaudeCodeRunner(EvalRunner):
             result_obj = None
             resolved_model = None
             permission_denials = 0
+            result_denials = []
 
             for line in proc.stdout:
                 if time.monotonic() > deadline:
@@ -307,6 +308,16 @@ class ClaudeCodeRunner(EvalRunner):
                                 print(f"  {self._log_prefix} | {msg}", flush=True)
                         if obj.get("type") == "result":
                             result_obj = obj
+                            # A session the CLI resumes (e.g. after background
+                            # task notifications) emits one result event PER
+                            # segment, each carrying only that segment's
+                            # denials. Keeping just the last event drops every
+                            # earlier segment's list — a real run lost 7
+                            # denials that way, hiding a workspace escape from
+                            # run_result.json.
+                            seg = obj.get("permission_denials")
+                            if isinstance(seg, list):
+                                result_denials.extend(seg)
                     except json.JSONDecodeError:
                         pass
                 stdout_lines.append(line)
@@ -330,7 +341,7 @@ class ClaudeCodeRunner(EvalRunner):
             per_model_turns = _per_model_turns(
                 workspace / "subagents", stream_ids_by_model)
             timeout_stderr = f"Timed out after {timeout_s}s"
-            denial_list = _extract_denial_list(result_obj, permission_denials)
+            denial_list = _extract_denial_list(result_obj, permission_denials, result_denials)
             if denial_list:
                 timeout_stderr += (f"\nWARNING: {len(denial_list)} permission "
                                    f"denial(s) detected during execution")
@@ -401,7 +412,7 @@ class ClaudeCodeRunner(EvalRunner):
         per_model_turns = _per_model_turns(
             workspace / "subagents", stream_ids_by_model)
 
-        denial_list = _extract_denial_list(result_obj, permission_denials)
+        denial_list = _extract_denial_list(result_obj, permission_denials, result_denials)
         if denial_list:
             denial_msg = (f"\nWARNING: {len(denial_list)} permission "
                           f"denial(s) detected during execution")
@@ -539,18 +550,34 @@ def _detect_unknown_command(result_obj) -> Optional[str]:
     return match.group(1) if match else None
 
 
-def _extract_denial_list(result_obj, streaming_count):
+def _extract_denial_list(result_obj, streaming_count, collected=None):
     """Build the permission_denials list for RunResult.
 
-    Prefers the structured ``permission_denials`` array from the CLI
-    ``result`` event (available since Claude Code 2.x).  Falls back to
-    a synthetic list derived from the streaming keyword counter when the
-    result event is absent (e.g. timeout before result is emitted).
+    Prefers the structured ``permission_denials`` arrays from the CLI
+    ``result`` events (available since Claude Code 2.x). ``collected`` is the
+    union across ALL result events of the session — a resumed session emits
+    one result event per segment, each with only that segment's denials, so
+    reading only the final event under-reports. Deduplicated by tool_use_id
+    where present, in case a CLI version ever reports cumulatively. Falls back
+    to a synthetic list derived from the streaming keyword counter when no
+    result event carried denials (e.g. timeout before a result is emitted).
     """
-    if isinstance(result_obj, dict):
-        denials = result_obj.get("permission_denials")
-        if isinstance(denials, list) and denials:
-            return denials
+    denials = list(collected) if collected else []
+    if not denials and isinstance(result_obj, dict):
+        final = result_obj.get("permission_denials")
+        if isinstance(final, list):
+            denials = list(final)
+    if denials:
+        seen = set()
+        unique = []
+        for d in denials:
+            key = d.get("tool_use_id") if isinstance(d, dict) else None
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            unique.append(d)
+        return unique
     if streaming_count:
         return [{"tool_name": "unknown"}] * streaming_count
     return None
