@@ -785,6 +785,10 @@ def _run_single_case_in_repo(runner, skill_name, case_ws, output_dir,
         "num_turns": result.num_turns,
         "per_model_usage": result.per_model_usage,
         "per_model_turns": result.per_model_turns,
+        # Denials happen in the runner's stream but were never persisted:
+        # a real run's only denial (a workspace-escape attempt) survived
+        # solely in raw stdout.log, invisible to every downstream reader.
+        "permission_denials": result.permission_denials or [],
         "repo_modified": repo_dirty,
     }
 
@@ -967,6 +971,10 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
         "num_turns": result.num_turns,
         "per_model_usage": result.per_model_usage,
         "per_model_turns": result.per_model_turns,
+        # Denials happen in the runner's stream but were never persisted:
+        # a real run's only denial (a workspace-escape attempt) survived
+        # solely in raw stdout.log, invisible to every downstream reader.
+        "permission_denials": result.permission_denials or [],
     }
 
     with open(case_output / "run_result.json", "w") as f:
@@ -1149,6 +1157,7 @@ def _run_multi_step_case(runner, case_id, case_ws, output_dir, model,
                 "num_turns": step_result.num_turns,
                 "per_model_usage": step_result.per_model_usage,
                 "per_model_turns": step_result.per_model_turns,
+                "permission_denials": step_result.permission_denials or [],
             }
             steps_ctx[step_id] = {
                 "output": _extract_last_assistant_text(step_result.stdout),
@@ -1614,6 +1623,10 @@ def _save_result(result, args, output_dir, runner, model, eval_params=None):
         "per_model_usage": result.per_model_usage,
         "num_turns": result.num_turns,
         "per_model_turns": result.per_model_turns,
+        # Denials happen in the runner's stream but were never persisted:
+        # a real run's only denial (a workspace-escape attempt) survived
+        # solely in raw stdout.log, invisible to every downstream reader.
+        "permission_denials": result.permission_denials or [],
         "model": full_model,
         "subagent_model": subagent_model_str,
         "agent": runner.name,
