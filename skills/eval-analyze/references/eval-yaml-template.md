@@ -112,6 +112,16 @@ runner:
   # the sandbox. Plugins already inside the workspace are passed through
   # unchanged, and workspace_mode: repo skips staging entirely (the workspace
   # IS the real project there — nothing to isolate).
+  # Plugin hermeticity: isolated workspaces disable ALL of the operator's
+  # user-installed plugins by DEFAULT (the harness enumerates the installed
+  # registry and merges enabledPlugins: {id: false}; repo mode disables
+  # nothing). Steer it in settings.enabledPlugins — explicit entries win:
+  # settings:
+  #   enabledPlugins:
+  #     "*": false                      # explicit hermetic (also in repo mode)
+  #     memsearch@my-marketplace: true  # re-enable one plugin by exact id
+  # "*" is harness-interpreted (upstream has no wildcard) and stripped
+  # before settings.json is written; "*": true opts out of hermeticity.
   # env:                    # Extra env vars for the runner ($VAR resolves from caller)
   #   CUSTOM_AUTH_TOKEN: "$CUSTOM_AUTH_TOKEN"
   # system_prompt: ""       # Appended to harness system prompt

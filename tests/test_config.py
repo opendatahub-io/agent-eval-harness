@@ -63,6 +63,33 @@ def test_runner_type_default(tmp_path):
     assert cfg.runner.type == "claude-code"
 
 
+def test_enabled_plugins_wildcard_parses(tmp_path):
+    cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution:
+  skill: s
+runner:
+  settings:
+    enabledPlugins:
+      "*": false
+      memsearch@user-marketplace: true
+"""))
+    assert cfg.runner.settings["enabledPlugins"]["*"] is False
+
+
+def test_enabled_plugins_wildcard_rejects_non_boolean(tmp_path):
+    with pytest.raises(ValueError, match=r'enabledPlugins."\*" must be a boolean'):
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution:
+  skill: s
+runner:
+  settings:
+    enabledPlugins:
+      "*": "false"
+"""))
+
+
 def test_models_block_defaults(tmp_path):
     cfg = EvalConfig.from_yaml(_write(tmp_path, """
 name: t

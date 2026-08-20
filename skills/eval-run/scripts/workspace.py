@@ -720,8 +720,35 @@ def _apply_runner_settings(settings, config):
     Lets users add Claude Code settings (model defaults, env, MCP servers,
     etc.) to a runner without forking the harness. Merged after harness
     defaults so user overrides win for scalar keys; lists are extended.
+
+    Plugin hermeticity: in an isolated workspace (workspace_mode is not
+    "repo") the operator's user-installed plugins are disabled by DEFAULT —
+    the harness synthesizes `enabledPlugins: {id: false}` for every entry of
+    the installed-plugin registry (see agent_eval.tools.hermetic) and merges
+    it first, so explicit `runner.settings.enabledPlugins` entries win.
+    Isolation is the workspace's contract; the operator's personal plugins
+    loading into case sessions is contamination (issue #193). repo mode runs
+    in the user's real environment, so nothing is disabled there.
+
+    The `enabledPlugins` pseudo-entry `"*"` makes the policy explicit:
+    `"*": false` forces hermeticity (even in repo mode), `"*": true` opts
+    out. It is harness-interpreted — upstream has no wildcard — and is
+    stripped here so the CLI never sees a key it does not understand.
     """
-    user_settings = getattr(config.runner, "settings", None) or {}
+    user_settings = dict(getattr(config.runner, "settings", None) or {})
+    enabled_plugins = user_settings.get("enabledPlugins")
+    wildcard = None
+    if isinstance(enabled_plugins, dict) and "*" in enabled_plugins:
+        enabled_plugins = dict(enabled_plugins)
+        wildcard = enabled_plugins.pop("*")
+        user_settings["enabledPlugins"] = enabled_plugins
+    isolated = getattr(config.runner, "workspace_mode", None) != "repo"
+    if wildcard is False or (wildcard is None and isolated):
+        from agent_eval.tools.hermetic import hermetic_enabled_plugins
+
+        denylist = hermetic_enabled_plugins()
+        if denylist:
+            _deep_merge(settings, {"enabledPlugins": denylist})
     if user_settings:
         _deep_merge(settings, user_settings)
 

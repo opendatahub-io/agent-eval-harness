@@ -503,6 +503,17 @@ def _parse_runner_config(runner_raw, *, context="runner"):
     if workspace_mode is not None and workspace_mode not in ("repo",):
         raise ValueError(
             f"{context}.workspace_mode must be None or 'repo', got: {workspace_mode!r}")
+    # settings.enabledPlugins."*" is the harness-interpreted wildcard that
+    # steers hermetic plugin isolation (no upstream wildcard exists; it is
+    # stripped before settings.json is written). Strict boolean — a string
+    # like "false" silently flipping the policy would change which plugins
+    # load in every case.
+    enabled_plugins = (runner_raw.get("settings") or {}).get("enabledPlugins")
+    if isinstance(enabled_plugins, dict) and "*" in enabled_plugins:
+        if not isinstance(enabled_plugins["*"], bool):
+            raise ValueError(
+                f'{context}.settings.enabledPlugins."*" must be a boolean, '
+                f'got: {enabled_plugins["*"]!r}')
     return RunnerConfig(
         type=runner_raw.get("type", "claude-code"),
         command=command,
