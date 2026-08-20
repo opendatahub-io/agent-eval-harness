@@ -364,3 +364,31 @@ class TestBackgroundKillAndCostTruth:
         assert result.exit_code == 0
         assert abs(result.cost_usd - 1.4695) < 1e-6
         assert "bg-wait ceiling" not in (result.stderr or "")
+
+    def test_timeout_path_applies_cost_rule(self, tmp_path, monkeypatch):
+        """An evaluator timeout after the CLI emitted usage data must not
+        under-report the billed cost either (same rule as the bg-kill path,
+        via the shared _billed_cost helper)."""
+        import os
+        bindir = tmp_path / "bin"
+        bindir.mkdir(exist_ok=True)
+        stub = bindir / "claude"
+        # Emit the stream (low total_cost_usd, higher modelUsage), then stall
+        # past the runner deadline and emit one more line so the reader's
+        # deadline check fires and raises TimeoutExpired.
+        stub.write_text(
+            "#!/bin/sh\ncat > /dev/null\n"
+            f"cat <<'STREAM_EOF'\n{self.KILLED_STREAM}STREAM_EOF\n"
+            "sleep 4\n"
+            "echo '{\"type\":\"system\",\"subtype\":\"late\"}'\n")
+        stub.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+        ws = tmp_path / "ws"
+        ws.mkdir(exist_ok=True)
+        result = ClaudeCodeRunner(log_prefix="test").execute(
+            target="x", args="", workspace=ws, model="m", timeout_s=2)
+        assert result.exit_code == -1, "timeout path expected"
+        assert "Timed out" in result.stderr
+        assert result.cost_usd is not None
+        assert abs(result.cost_usd - 1.4695) < 1e-6, (
+            "timeout path must include background-agent cost from modelUsage")

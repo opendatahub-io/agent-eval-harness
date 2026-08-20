@@ -340,6 +340,9 @@ class ClaudeCodeRunner(EvalRunner):
                 num_turns = (num_turns or 0) + subagent_turns
             per_model_turns = _per_model_turns(
                 workspace / "subagents", stream_ids_by_model)
+            # An evaluator timeout can land after the CLI already emitted
+            # usage data — same under-reporting risk as the bg-kill path.
+            cost_usd = _billed_cost(cost_usd, per_model_usage)
             timeout_stderr = f"Timed out after {timeout_s}s"
             denial_list = _extract_denial_list(result_obj, permission_denials, result_denials)
             if denial_list:
@@ -403,16 +406,7 @@ class ClaudeCodeRunner(EvalRunner):
         if not cost_usd and isinstance(result_obj, dict):
             cost_usd = result_obj.get("total_cost_usd")
 
-        # total_cost_usd covers the CONVERSATION; modelUsage covers every
-        # token billed, including a background agent killed after the final
-        # turn. Normally they agree to the cent — when modelUsage is higher,
-        # the difference is real spend the conversation never saw (a real
-        # case published $0.30 while burning $1.47). Trust the larger figure.
-        per_model_total = sum(
-            (v or {}).get("cost_usd") or 0
-            for v in (per_model_usage or {}).values())
-        if per_model_total and per_model_total > (cost_usd or 0) + 0.01:
-            cost_usd = per_model_total
+        cost_usd = _billed_cost(cost_usd, per_model_usage)
 
         # Add subagent turns from captured transcripts, deduplicating
         # against IDs already seen in the stream (Claude Code >= 2.1.108
@@ -533,6 +527,23 @@ class ClaudeCodeRunner(EvalRunner):
         if self._mlflow_tracking_uri:
             env["MLFLOW_TRACKING_URI"] = self._mlflow_tracking_uri
         return env
+
+
+def _billed_cost(cost_usd, per_model_usage):
+    """The larger of conversation cost and per-model billed cost.
+
+    total_cost_usd covers the CONVERSATION; modelUsage covers every token
+    billed, including a background agent killed after the final turn (or
+    still running at an evaluator timeout). Normally they agree to the cent —
+    when modelUsage is higher, the difference is real spend the conversation
+    never saw (a real case published $0.30 while burning $1.47).
+    """
+    per_model_total = sum(
+        (v or {}).get("cost_usd") or 0
+        for v in (per_model_usage or {}).values())
+    if per_model_total and per_model_total > (cost_usd or 0) + 0.01:
+        return per_model_total
+    return cost_usd
 
 
 _UNKNOWN_COMMAND_RE = re.compile(r"^Unknown command:\s*(/\S+)")
