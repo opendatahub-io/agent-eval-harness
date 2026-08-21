@@ -47,8 +47,11 @@ def _plugin_ignore(plugin: Path):
             if entry.is_symlink():
                 try:
                     resolved = entry.resolve(strict=True)
-                except OSError:
-                    continue  # dangling — copytree already skips these
+                except (OSError, RuntimeError):
+                    # Dangling or looping (loops raise RuntimeError on
+                    # Python 3.11/3.12, OSError after) — not stageable.
+                    ignored.add(name)
+                    continue
                 if not resolved.is_relative_to(plugin):
                     ignored.add(name)
         return ignored
@@ -115,6 +118,17 @@ def stage_plugin_dir(plugin_dir: Path, workspace: Path) -> Path:
     try:
         for source in sources:
             if not source.is_dir():
+                continue
+            # copytree with symlinks=False follows a source dir that is
+            # ITSELF a symlink, and the ignore callback only sees entries
+            # inside walked directories — an escaping link at the copy root
+            # (e.g. scripts -> ~/.secrets) would be materialized wholesale.
+            # Apply the same containment rule to the roots.
+            try:
+                resolved = source.resolve(strict=True)
+            except (OSError, RuntimeError):
+                continue
+            if not resolved.is_relative_to(plugin):
                 continue
             shutil.copytree(
                 source, staging / source.relative_to(plugin),

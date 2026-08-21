@@ -129,6 +129,44 @@ class TestStagePluginDir:
         assert not (staged_skill / "leak.md").exists(), (
             "a symlink escaping the plugin must not be staged")
 
+    def test_escaping_symlinked_copy_root_is_refused(self, tmp_path):
+        """copytree(symlinks=False) follows a source dir that is ITSELF a
+        symlink, and the ignore callback only sees entries inside walked
+        directories — an escaping link at the copy root (scripts ->
+        external dir) would otherwise materialize the external tree
+        wholesale (CWE-59 -> CWE-200)."""
+        plugin = make_plugin(tmp_path / "plugins")
+        external = tmp_path / "outside"
+        external.mkdir()
+        (external / "secret.txt").write_text("hostcreds")
+        (plugin / "scripts").symlink_to(external)
+        internal = plugin / "tools"
+        internal.mkdir()
+        (internal / "helper.py").write_text("print('ok')\n")
+        (plugin / "hooks").symlink_to(internal)
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        dest = stage_plugin_dir(plugin, ws)
+        assert not (dest / "scripts").exists(), (
+            "a copy root symlinked outside the plugin must not be staged")
+        assert "hostcreds" not in "".join(
+            p.read_text() for p in dest.rglob("*") if p.is_file())
+        assert (dest / "hooks" / "helper.py").is_file(), (
+            "a copy root symlinked WITHIN the plugin is materialized")
+
+    def test_symlink_loop_is_skipped_not_fatal(self, tmp_path):
+        """A self-referential link raises RuntimeError from resolve() on
+        Python 3.11/3.12 and OSError(ELOOP) later — either way staging must
+        skip it, not crash the case."""
+        plugin = make_plugin(tmp_path / "plugins")
+        loop = plugin / "skills" / "my-skill" / "loop"
+        loop.symlink_to(loop)
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        dest = stage_plugin_dir(plugin, ws)
+        assert (dest / "skills" / "my-skill" / "SKILL.md").is_file()
+        assert not (dest / "skills" / "my-skill" / "loop").exists()
+
     def test_plugin_without_skills_is_tolerated(self, tmp_path):
         # A Claude plugin may ship only commands/agents/hooks; staging must
         # not fail a configuration the unstaged path would have accepted.
