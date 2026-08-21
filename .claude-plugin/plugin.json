@@ -1,6 +1,6 @@
 {
   "name": "agent-eval-harness",
-  "version": "1.40.1",
+  "version": "1.40.2",
   "description": "Agent and skill evaluation harness with MLflow integration",
   "author": {
     "name": "opendatahub-io"
@@ -22,6 +22,17 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/ensure_deps.py\" \"${CLAUDE_PLUGIN_DATA}\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/eval_stop_guard.py\"",
+            "timeout": 30
           }
         ]
       }
