@@ -87,6 +87,8 @@ Python package. The package is where the harness logic actually lives.
 agent_eval/
 ├── config.py          # eval.yaml → EvalConfig (+ strict validation)
 ├── state.py           # shared key-value state persistence
+├── reliability.py     # chance-corrected IRR (pure stdlib): Krippendorff alpha,
+│                      #   Fleiss/Cohen kappa, Figure-1 metric selection, bootstrap CIs
 ├── agent/             # runners: the EvalRunner abstraction
 │   ├── base.py        #   EvalRunner ABC + RunResult
 │   ├── claude_code.py #   Claude Code CLI runner (claude --print)

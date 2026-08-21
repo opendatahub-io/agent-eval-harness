@@ -61,6 +61,7 @@ Prompt mode provides direct agent invocation with LLM rubric judges and flexible
 agent_eval/              # Python package (config, runner, state)
   config.py              # EvalConfig from eval.yaml
   state.py               # Shared state persistence (key-value store)
+  reliability.py         # Chance-corrected IRR (pure stdlib): Krippendorff alpha, Fleiss/Cohen kappa, Figure-1 metric selection, bootstrap CI
   agent/
     base.py              # EvalRunner ABC + RunResult
     claude_code.py       # Claude Code CLI runner (claude --print)
