@@ -89,7 +89,7 @@ Each run writes to `$AGENT_EVAL_RUNS_DIR/<eval-name>/<run-id>/`, where:
 $AGENT_EVAL_RUNS_DIR/
 └── <eval-name>/
     └── <run-id>/
-        ├── run_result.json     # exit_code, duration_s, token usage, cost_usd
+        ├── run_result.json     # exit_code, duration_s, token usage, cost_usd, permission_denials
         ├── stdout.log          # full skill stdout (stream-json)
         ├── stderr.log
         ├── collection.json     # per-case artifact counts

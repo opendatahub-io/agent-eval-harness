@@ -121,7 +121,8 @@ The runner reads the stream line by line, injecting timestamps and printing live
 progress (skill invocations, tool calls, permission denials, final cost). A watchdog
 thread kills the process at the deadline. From the stream it extracts usage, cost,
 turn counts, resolved model(s), and the structured `permission_denials` array from
-the `result` event. Reported `cost_usd` is the *billed* cost: the conversation's
+the `result` event, which is persisted per case into `run_result.json`
+(see [runs directory](../reference/runs-directory.md)). Reported `cost_usd` is the *billed* cost: the conversation's
 `total_cost_usd`, raised to the per-model `modelUsage` sum when that exceeds it
 by more than $0.01 (background agents killed after the final turn — or still running at an evaluator
 timeout — burn billed tokens the conversation total never sees), so it can exceed

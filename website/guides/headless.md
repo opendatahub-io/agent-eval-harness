@@ -168,7 +168,9 @@ permissions:
 !!! warning "Add `Skill` if the skill under test calls sub-skills"
     The `Skill` tool requires explicit permission in `--print` mode. If the skill's
     `allowed-tools` frontmatter lists `Skill`, add `"Skill"` to `permissions.allow` —
-    otherwise nested skill calls silently fail.
+    otherwise nested skill calls silently fail. A denied nested call shows up per
+    case in `run_result.json` under `permission_denials` (tool name + input),
+    so check there when a sub-skill never ran.
 
 Path-scoped deny rules (`Read`, `Edit`, `Grep`, `Glob`) are compiled by the harness
 (`agent_eval/tools/permissions.py`) so a directory like `eval/` is denied recursively.

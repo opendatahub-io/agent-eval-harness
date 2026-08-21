@@ -74,6 +74,8 @@ is no CLI flag for it.
       thread pool. Each case gets a log prefix like `eval:case-003`.
     - `run_result.json` records `execution_mode: "case"`, a `per_case` breakdown,
       `duration_s` (sum of per-case durations), and `wall_clock_s` (actual elapsed time).
+      Each `per_case` entry also carries `permission_denials` — tool calls denied by
+      permissions during that case.
 
 === "batch"
 
@@ -209,7 +211,7 @@ majority vote, numeric by median. See [pairwise & sampling](../concepts/pairwise
 The run directory (`$AGENT_EVAL_RUNS_DIR/<eval-name>/<run-id>/`) contains:
 
 ```text
-run_result.json     # exit_code, durations, token usage, cost, per_case breakdown
+run_result.json     # exit_code, durations, token usage, cost, permission denials, per_case breakdown
 collection.json     # per-case artifact counts
 summary.yaml        # judges (mean/pass_rate), per_case, pairwise
 analysis.md         # LLM interpretation, leading with a Recommendation

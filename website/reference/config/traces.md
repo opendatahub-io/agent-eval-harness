@@ -20,7 +20,7 @@ traces:
 | `stdout` | `true` | Raw agent standard output | `stdout.log` |
 | `stderr` | `true` | Raw agent standard error | `stderr.log` |
 | `events` | `true` | Structured events (tool calls, reasoning, results) parsed from the stream-json stdout | `events.json` |
-| `metrics` | `true` | Exit code, duration, token usage, cost, turn count | `run_result.json` |
+| `metrics` | `true` | Exit code, duration, token usage, cost, turn count, permission denials | `run_result.json` |
 
 !!! note "Omitting the block keeps everything on"
     `traces` is optional. When absent, `TracesConfig` defaults apply and all
@@ -62,6 +62,10 @@ enriched with execution-metadata keys pulled from `run_result.json`
 | `token_usage` | Input/output token counts |
 | `cost_usd` | Dollar cost of the invocation |
 | `num_turns` | Number of agent turns |
+
+> `permission_denials` is persisted in `run_result.json` but is **not** added
+> to the judge `outputs` record — a check judge that needs it can read the
+> per-case copy at `Path(outputs["case_dir"]) / "run_result.json"`.
 
 A cost- or efficiency-oriented judge reads these directly:
 
