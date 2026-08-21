@@ -105,8 +105,9 @@ runner:
   # workspace_mode: repo    # Set ONLY when testing requires full repo access (see above)
   # settings: {}            # Runner-specific settings overrides
   # plugin_dirs: []         # Plugin dirs the evaluated skill needs
-  # Plugin dirs listed above are ALWAYS staged into the case workspace and the
-  # staged copy is what --plugin-dir receives: the real project path otherwise
+  # Plugin dirs outside the case workspace are staged into it (no opt-out
+  # flag) and the staged copy is what --plugin-dir receives: the real project
+  # path otherwise
   # lands in session context, where non-path-gated Bash can follow it out of
   # the sandbox. Plugins already inside the workspace are passed through
   # unchanged, and workspace_mode: repo skips staging entirely (the workspace

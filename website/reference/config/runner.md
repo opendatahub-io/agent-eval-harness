@@ -39,7 +39,7 @@ Not every runner reads every field. The matrix below shows where each field land
 | `effort` | `str` (enum) | `--effort` flag | `model_reasoning_effort` | `{effort}` placeholder | — |
 | `permission_mode` | `str` (enum) | `--permission-mode` flag | mapped to Codex sandbox mode | — | — |
 | `settings` | `dict` | merged into workspace `.claude/settings.json` | `-c` config overrides for `codex exec` | — | connection settings (see below) |
-| `plugin_dirs` | `list[str]` | staged into the workspace, one `--plugin-dir` per staged copy | skills copied into `.agents/skills` | — | — |
+| `plugin_dirs` | `list[str]` | one `--plugin-dir` per entry (workspace-staged copy for out-of-workspace paths) | skills copied into `.agents/skills` | — | — |
 | `env` | `dict` | injected on the safe allowlist | injected on the safe allowlist | — (uses `execution.env`) | — |
 | `system_prompt` | `str` | `--append-system-prompt` | prepended to the prompt | `{system_prompt}` placeholder | `developer` message |
 | `command` | `str` \| `list[str]` | — | — | **required** — command template | — |

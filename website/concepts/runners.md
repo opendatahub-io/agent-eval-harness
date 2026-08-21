@@ -111,7 +111,7 @@ claude --print \
   --max-budget-usd "$BUDGET" \
   --verbose \                      # only with live logging
   --effort high \                  # only if runner.effort set
-  --plugin-dir <dir> \             # workspace-staged copy per runner.plugin_dirs entry
+  --plugin-dir <dir> \             # per runner.plugin_dirs entry (see Plugin staging)
   --append-system-prompt "..." \   # if system_prompt set
   --settings <path>                # permissions/hooks/env
 # the prompt (/skill args, or raw prompt) is piped on stdin
