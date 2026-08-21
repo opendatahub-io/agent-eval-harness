@@ -1,0 +1,248 @@
+{
+ "pr_sequence": [
+  {
+   "order": 1,
+   "workstreams": [
+    "WS1 \u2014 reliability core module (agent_eval/reliability.py)"
+   ],
+   "rationale": "Zero-dependency foundation: pure-stdlib IRR math + Figure-1 selection + bootstrap CIs, no shared-file overlap beyond one architecture-tree line in CLAUDE.md/AGENTS.md/website. Hard prerequisite for WS2/WS6/WS8 and soft for WS9. Lands the oracle fixtures (replication-repo + Krippendorff 2011) that every downstream suite pins against."
+  },
+  {
+   "order": 2,
+   "workstreams": [
+    "WS2 \u2014 IRR wiring into scoring + consequence-tier gates (V3-1)"
+   ],
+   "rationale": "Completes Phase-1 'measurement over existing data'. Critically, PR2 is the CONVENTION-SETTER for four later PRs: it lands (a) the final detect_regressions keyword-only signature shape (*, pairwise=None, include_irr=True \u2014 WS9 later appends simulator=None), (b) the THRESHOLD_KEYS registry in config.py that WS6/WS8/WS9 each extend, (c) the three-state gate pattern (breach / degenerate-pass via reason_code / unavailable-regression), (d) the include_irr Harbor+EvalHub scoping mechanism, and (e) the test_threshold_consumers parity harness every later key adds rows to. Sequencing it before WS6/WS8/WS9 eliminates the worst collision class."
+  },
+  {
+   "order": 3,
+   "workstreams": [
+    "WS3 \u2014 simulator answer-provenance ledger + builtin judge (V2-1)"
+   ],
+   "rationale": "No code dependency on PR1/PR2 (disjoint score.py/report.py regions: load_case_record + _render_per_case vs WS2's aggregation/detector regions) \u2014 can be developed in parallel and merged third. Must land before WS9, and its hook_answers.jsonl record schema must be frozen with WS9's field names (source/calibration/shadows) reserved before merge. CUT LINE A: after PR3 the harness has chance-corrected IRR + consequence gates + a measured simulator \u2014 the paper's Phase 1, a fully coherent stopping point."
+  },
+  {
+   "order": 4,
+   "workstreams": [
+    "WS4 \u2014 dataset audit + generation manifest (v1-1 mandatory scope only; v1-3 deferred)"
+   ],
+   "rationale": "Independent of PR1-PR3 (new module + eval-dataset scripts + a workspace.py preflight in a function nobody else touches). Ship only the mandatory v1-1 scope; the optional v1-3 construct-fidelity screen is deferred to a post-sequence follow-up per its own recommendation (unverified design, new LLM cost surface, new hard-fail path)."
+  },
+  {
+   "order": 5,
+   "workstreams": [
+    "WS5 \u2014 null-agent solvability probe (v1-2)"
+   ],
+   "rationale": "Depends on PR4's audit_dataset.py and dataset_audit.yaml merge semantics \u2014 drop WS5's create-the-file-itself fallback since the sequence guarantees WS4 first. NullRunner half is trivial and independent. CUT LINE B: after PR5 the V1 layer is done (audit + manifest + null probe) alongside Phase 1 \u2014 a coherent 'dataset validity' release."
+  },
+  {
+   "order": 6,
+   "workstreams": [
+    "WS6 \u2014 human-anchored judge calibration via /eval-review (V3-2)"
+   ],
+   "rationale": "The paper's highest-leverage intervention (~16x V_total). Needs WS1 (cohen_kappa/select_irr_metric) and must AMEND its own 'no config.py changes' claim: after PR2, min_human_agreement must be appended to THRESHOLD_KEYS or every calibrated config warns at load. Adopts PR2's shared _irr_level/_judge_scale helper and reason_code vocabulary (rename its 'degenerate' field, see naming)."
+  },
+  {
+   "order": 7,
+   "workstreams": [
+    "WS7 \u2014 validity report section + MLflow/anova/compare routing (V3-3 + gaps 4, 6, 8)"
+   ],
+   "rationale": "Consumes WS2's stability.irr keys and WS6's human_agreement passthrough, so it goes after both (it degrades gracefully but sequencing avoids shipping dash-only rows). Creates agent_eval/model_families.py (replacing its planned score.py-local _provider_family) as the single family-inference home WS8/WS9 import. Also routes validity to MLflow (gap 6) and lands cross-replication ICC in eval-anova. CUT LINE C: after PR7 all eight prescriptions except P4 are shipped end-to-end with reporting \u2014 the natural 'paper-complete minus cross-family' release."
+  },
+  {
+   "order": 8,
+   "workstreams": [
+    "WS8 \u2014 cross-family judge panels (P4) + instrument-clarity subcommand (gap 3)"
+   ],
+   "rationale": "The one true prescription gap; L-sized so it gets its own PR. Amendments vs its plan: infer_model_family moves to model_families.py (created PR7) instead of reliability.py; min_panel_alpha joins THRESHOLD_KEYS and rides PR2's include_irr scoping instead of a second RELIABILITY_THRESHOLD_KEYS strip mechanism (and must scope evalhub/runner.py:218, absent from its plan); the B.4 same-family advisory ships here via model_families.same_family_advisory (WS9-PR2 extends, never re-implements); panel/clarity blocks adopt the {metric, value, reason_code} shape."
+  },
+  {
+   "order": 9,
+   "workstreams": [
+    "WS9 slice 1 \u2014 simulator calibration shadow + simulator summary block + thresholds.simulator (V2-2)"
+   ],
+   "rationale": "Stacked on WS3's ledger (hard) and PR2's detector conventions. Adds the simulator=None kw-only kwarg to detect_regressions and the reserved 'simulator' thresholds key. MANDATORY amendment: the reserved-key strip must also cover agent_eval/evalhub/runner.py:216-218 (verified call site), not just harbor/run.py \u2014 otherwise every EvalHub run with thresholds.simulator regresses. Must also bound total in-hook LLM time under the PreToolUse timeout (see risks)."
+  },
+  {
+   "order": 10,
+   "workstreams": [
+    "WS9 slice 2 \u2014 cross-family shadow simulators + same-family advisory extension (V2-3)"
+   ],
+   "rationale": "Stacked on PR9; after PR8 so it EXTENDS model_families.same_family_advisory (hook_shadow suppression + DEFAULT_HOOK_MODEL drift guard) rather than duplicating it. Per WS9's own open question, holding PR10 until one real eval has exercised the PR9 calibration shadow (field-proving the ledger schema before a second consumer freezes it) is acceptable and recommended. CUT LINE D: full program."
+  },
+  {
+   "order": 11,
+   "workstreams": [
+    "Docs consolidation PR (cross-cutting)"
+   ],
+   "rationale": "Website concepts/guides/glossary narrative sweep + docs/paper-validity-analysis.md status marks + the parked docs-PR follow-ups from project memory (hooks, workspace.files, judges.samples/score_range, stale traces.events bullet). Reference/config KEY TABLES do NOT wait for this PR \u2014 they ride each feature PR (see cross_cutting); this PR is narrative-only so no feature PR blocks on prose."
+  }
+ ],
+ "shared_file_conflicts": [
+  {
+   "file": "skills/eval-run/scripts/score.py",
+   "workstreams": [
+    "WS2",
+    "WS3",
+    "WS6",
+    "WS7",
+    "WS8",
+    "WS9"
+   ],
+   "resolution": "Hottest file; three collision classes. (1) detect_regressions (:2516, verified single per-judge loop today) is edited by WS2/WS6/WS8/WS9 \u2014 WS2 (PR2) owns the region and lands the final keyword-only signature (current_results, thresholds, baseline_results=None, *, pairwise=None, include_irr=True) plus the three-state pattern; WS6 adds only a min_human_agreement branch (absent-key = silent skip, no signature change); WS8 adds a min_panel_alpha branch UNDER the include_irr guard (drop its separate RELIABILITY_THRESHOLD_KEYS strip); WS9 appends simulator=None (kw-only) and the reserved-key split. Each later PR adds parity rows to test_threshold_consumers.py. (2) cmd_judges (:2687) is edited by WS2 (effective_thresholds + IRR print), WS7 (validity merge \u2014 moves the run_result load above the merges), WS9 (simulator aggregate merge): compose sequentially with fixed merge order per_case \u2192 validity \u2192 simulator \u2192 regression-exit; land in PR order so each rebase is one hunk. (3) Level selection: WS2's _irr_level, WS6's _judge_scale, WS8's inline derivation are three copies of bool\u2192nominal / int-range\u2192ordinal / float\u2192interval \u2014 WS2 lands the ONE shared helper, WS6/WS8 call it. Disjoint additions compose freely: WS3 load_case_record (:196), WS6 calibration section + subcommand, WS7 build_validity_block, WS8 _PanelScorer/_load_llm_judge (:2030)/cmd_clarity, WS9 aggregate_simulator. WS2 (stability block :1660-1676) and WS8 (panel aggregation appended after :1676) touch adjacent lines \u2014 textual conflict only, sequential rebase."
+  },
+  {
+   "file": "agent_eval/config.py",
+   "workstreams": [
+    "WS2",
+    "WS8",
+    "WS9",
+    "WS4 (deferred v1-3 only)"
+   ],
+   "resolution": "Three same-region collisions, all resolved by ordering + one registry. (1) JudgeConfig dataclass + explicit-kwargs construction site (:1281-1301, verified): WS2 adds consequence=, WS8 adds panel_models= + model-list parsing \u2014 same constructor call, compose semantically; PR2 then PR8, one-hunk rebase. (2) Judge validation loop (:1325-1360): WS2 consequence checks, WS8 panel checks, WS9 reserved-name 'simulator' rejection \u2014 additive blocks in one loop, land in PR order. (3) Thresholds parsing (:1451, today a raw passthrough \u2014 verified): WS2's THRESHOLD_KEYS validation and WS9's _parse_thresholds simulator-mapping validation would collide \u2014 WS2 (PR2) introduces the single _parse_thresholds helper with an extensible THRESHOLD_KEYS registry; WS6 (PR6) appends min_human_agreement, WS8 (PR8) appends min_panel_alpha, WS9 (PR9) adds the reserved 'simulator' mapping branch to the SAME helper. (4) B.4 same-family advisory is specced twice (WS8 inline in config.py, WS9-PR2 via model_families) \u2014 implement ONCE: PR8 wires model_families.same_family_advisory into from_yaml; PR10 extends the function, never adds a second warnings.warn. ModelsConfig.hook_shadow (:1083-1089) and ToolInputConfig.calibration (:1207-1216) are WS9-only. v1-3's ValidationConfig is deferred out of the sequence."
+  },
+  {
+   "file": "skills/eval-run/scripts/report.py",
+   "workstreams": [
+    "WS2",
+    "WS3",
+    "WS6",
+    "WS7",
+    "WS8",
+    "WS9"
+   ],
+   "resolution": "Four seams. (1) _detect_regressions wrapper (:1478-1487): WS2 (pairwise, include_irr) and WS9 (simulator) edit the same 10-line function \u2014 PR2 lands it forwarding **kwargs-style so PR9 is a one-line addition; both render callers (_render_scoring_summary :1309 and _render_regressions) must thread the new args in the SAME PR that adds each kwarg (verified: the summary table's PASS/FAIL comes from this detector). (2) Badge seam in _render_scoring_summary after the stability bar (:1358-1364, verified) is appended to by WS2 (_irr_badge), WS6 (human annotation), WS8 (panel + clarity badges), WS7 (precision title attr): fix the append order when PR2 lands \u2014 stability bar \u2192 irr badge \u2192 panel badge \u2192 human agreement \u2192 clarity \u2014 and each PR appends after the previous marker; the threshold elif-chain (:1385-1393) gains min_alpha (PR2), min_human_agreement (PR6), min_panel_alpha (PR8) in sequence. (3) generate_report assembly (verified: _render_scoring_summary then _render_regressions back-to-back): WS7 and WS9 both insert at the same anchor \u2014 fixed section order decided now: Scoring Summary \u2192 Simulator Calibration (WS9) \u2192 Validity & Reliability (WS7) \u2192 Regressions \u2192 (WS6's Human Calibration between Regressions and Shared Outputs). Since PR7 < PR9, WS9 inserts ABOVE the validity section at merge time. (4) _render_per_case: WS3 (sim-user line after the judge-table close) and WS6 (human badges inside the judge-table loop :2601-2674) are adjacent but disjoint \u2014 compose."
+  },
+  {
+   "file": "skills/eval-run/scripts/tools.py",
+   "workstreams": [
+    "WS3",
+    "WS9"
+   ],
+   "resolution": "Same three functions (_handle_ask_user, _llm_answer, _create_message \u2014 verified current single-tier loop at :124-162). Strictly sequential: WS3 (PR3) lands the ledger writer + (label, meta) return shape; WS9 (PR9) builds on it. BEFORE PR3 merges, freeze the JSONL record schema with WS9's fields reserved: source, calibration{gold, shadow, agree, held_out, error, decoding}, shadows[] \u2014 and WS9 adopts WS3's field name temperature_stripped inside its decoding object (not 'stripped'). WS3 also owns the never-crash envelope pattern WS9's additions must stay inside. Both must respect the PreToolUse wall-clock budget (see risks)."
+  },
+  {
+   "file": "skills/eval-run/scripts/collect.py",
+   "workstreams": [
+    "WS3 (owner)",
+    "WS5/WS9 (consumers only)"
+   ],
+   "resolution": "Single-writer: only WS3 edits it (_collect_case_ledger + batch run-root copy). WS9 consumes the collected ledgers via score.py; WS5's open question about creating run case dirs in batch mode would touch collect.py later \u2014 explicitly deferred, keep collect.py single-owner through the sequence."
+  },
+  {
+   "file": "agent_eval/harbor/run.py + agent_eval/evalhub/runner.py",
+   "workstreams": [
+    "WS2",
+    "WS8",
+    "WS9"
+   ],
+   "resolution": "harbor/run.py:695 is edited by three PRs with three DIFFERENT scoping mechanisms in the plans (WS2 include_irr=False; WS8 RELIABILITY_THRESHOLD_KEYS strip; WS9 'simulator' key strip) \u2014 unify: PR2 establishes include_irr=False + raw config.thresholds at BOTH :695 and evalhub/runner.py:218 (verified call), with one skip-notice print; PR8 folds min_panel_alpha under the same include_irr guard inside detect_regressions (no second strip, no extra harbor edit beyond extending the notice condition); PR9 adds the reserved 'simulator' strip at harbor :329/:521/:695 AND \u2014 amendment to WS9's plan \u2014 at evalhub/runner.py:216-218, extending the same notice. Never mutate or resolve tiers into config.thresholds anywhere near :329 (required-judges set, verified). One combined stderr notice enumerating skipped reliability gates instead of three stacked prints."
+  },
+  {
+   "file": "skills/eval-mlflow/scripts/log_results.py",
+   "workstreams": [
+    "WS2",
+    "WS7",
+    "WS9"
+   ],
+   "resolution": "The _detect_regressions wrapper (:49-66, verified) is edited by WS2 (pairwise + include_irr + effective_thresholds + execution_mode read) and WS9 (simulator kwarg) \u2014 PR2 lands it forwarding all detector kwargs; PR9 adds one. WS7's _validity_mlflow_fields is a new pure helper + wiring after the judge-metrics loop \u2014 disjoint, composes. The regressions_detected tag site (~:325-337) is touched by WS2 and WS9: sequential one-hunk rebases."
+  },
+  {
+   "file": "skills/eval-run/scripts/workspace.py",
+   "workstreams": [
+    "WS4",
+    "WS9"
+   ],
+   "resolution": "Disjoint functions: WS4 adds _dataset_audit_preflight called from main() (~:73); WS9 rewrites _setup_in_repo_tool_hooks (:509-551, verified inline builder) to build_handlers + merge_calibration_knobs. No collision \u2014 compose in any order."
+  },
+  {
+   "file": "skills/eval-run/SKILL.md + skills/eval-dataset/SKILL.md",
+   "workstreams": [
+    "WS3",
+    "WS6",
+    "WS7",
+    "WS8",
+    "WS9 (eval-run)",
+    "WS4",
+    "WS5 (eval-dataset)"
+   ],
+   "resolution": "eval-run SKILL.md: WS6 and WS7 both rewrite the SAME summary-sections sentence (verified at :212 'summary.yaml has three sections') \u2014 PR6 rewrites it to an extensible list ('judges, per_case, pairwise, calibration, \u2026'), PR7 appends 'validity', PR9 appends 'simulator'; WS3 (:195 judge-record field list), WS8 (scoring paragraph + new clarity step), WS9 (Step 3a at :119-129) are disjoint paragraphs. eval-dataset SKILL.md: WS4 owns Steps 6/7; WS5 inserts Step 6.5 between them \u2014 strictly sequential (PR4 then PR5), trivial compose."
+  },
+  {
+   "file": "agent_eval/reliability.py + agent_eval/model_families.py",
+   "workstreams": [
+    "WS1 (owner)",
+    "WS7",
+    "WS8",
+    "WS9"
+   ],
+   "resolution": "WS1 solely owns reliability.py (IRR math only). The family-inference function is specced in THREE places (WS7 _provider_family in score.py, WS8 infer_model_family added to reliability.py, WS9 infer_family in model_families.py) \u2014 consolidate: PR7 creates agent_eval/model_families.py (stdlib) with infer_model_family using WS8's more complete table (regex-anchored openai so 'olmo' never matches, Bedrock vendor-dot prefixes, cohere/amazon) and score.py imports it; PR8 adds same_family_advisory + family_composition there; PR10 adds DEFAULT_HOOK_MODEL + hook_shadow suppression. reliability.py stays family-free."
+  },
+  {
+   "file": "tests/test_threshold_consumers.py",
+   "workstreams": [
+    "WS2",
+    "WS6",
+    "WS8",
+    "WS9"
+   ],
+   "resolution": "All four extend the CASES table \u2014 this is the intended pattern (the file exists to force CLI/report/MLflow parity), so conflicts are additive rows: land in PR order, each PR rebases its rows. WS9's rows need the parametrization to pass full summaries (simulator lives outside judges) \u2014 WS9 makes that harness change; earlier PRs keep the current shape."
+  },
+  {
+   "file": "CLAUDE.md + AGENTS.md",
+   "workstreams": [
+    "WS1",
+    "WS2",
+    "WS3",
+    "WS4",
+    "WS5",
+    "WS6",
+    "WS7",
+    "WS8",
+    "WS9"
+   ],
+   "resolution": "Every PR edits only ITS bullets in the same PR as the code (house invariant: config enumerations match code). Known hot bullets: thresholds valid-keys line (WS2 \u2192 WS6 \u2192 WS8 \u2192 WS9 each append one key \u2014 trivial sequential conflicts), judges bullet (WS2 consequence, WS8 model-list), inputs.tools bullet (WS3 ledger, WS9 calibration), models bullet (WS9 hook_shadow), architecture tree (WS1, WS4, WS5, WS7). AGENTS.md mirrors every CLAUDE.md edit in the same commit."
+  }
+ ],
+ "naming_coherence": [
+  "Family inference \u2014 ONE implementation: agent_eval/model_families.py::infer_model_family(model_id) -> str|None (created in PR7). Kill WS7's score.py-local _provider_family, relocate WS8's reliability.py addition, and rename WS9's infer_family. Adopt WS8's table (anchored ^(gpt-|chatgpt|o[134](?:-|$)) so 'olmo' never matches; Bedrock 'anthropic.'/'us.anthropic.' handling; cohere/amazon/xai rows) merged with WS9's LiteLLM route-prefix stripping. Contract everywhere: None = unknown = stay silent, never warn, never claim single- or cross-family.",
+  "B.4 same-family advisory \u2014 implemented ONCE as model_families.same_family_advisory(models_cfg, judges): PR8 wires it into EvalConfig.from_yaml (covering roles + judge panel members, fires at most once per load); PR10 extends it with hook_shadow suppression and the DEFAULT_HOOK_MODEL constant (drift-guard test against the tools.py literal). WS8's inline config.py version and WS9's duplicate are both replaced by calls to this function.",
+  "THRESHOLD_KEYS \u2014 single extensible registry in agent_eval/config.py, introduced by WS2 as {min_mean, min_pass_rate, min_win_rate, max_error_rate, min_alpha}; WS6 MUST append min_human_agreement (amending its 'no config.py changes' claim \u2014 otherwise every calibrated config warns 'unknown threshold key' after PR2), WS8 appends min_panel_alpha, WS9 adds the reserved mapping key 'simulator' with sub-keys {max_fallback_rate, min_gold_agreement, min_cross_simulator_agreement} validated in the same _parse_thresholds helper.",
+  "detect_regressions final signature \u2014 (current_results, thresholds, baseline_results=None, *, pairwise=None, include_irr=True, simulator=None), all new params keyword-only. WS9's simulator kwarg becomes kw-only to match WS2's convention; every wrapper (report.py _detect_regressions, log_results.py _detect_regressions) forwards all three from PR2 onward.",
+  "Harbor/EvalHub scoping \u2014 one mechanism, not three: include_irr=False (WS2) is the master switch for sampling-derived judge-level keys and covers BOTH min_alpha and min_panel_alpha (WS8 drops its RELIABILITY_THRESHOLD_KEYS strip in favor of routing min_panel_alpha under include_irr); the reserved 'simulator' key is stripped at the harbor AND evalhub call sites (WS9 \u2014 evalhub added by amendment); min_human_agreement needs no scoping at all (absent-key silent skip is its designed three-state rule). One combined skip notice per path.",
+  "Degenerate encoding \u2014 machine-readable snake_case reason_code is the ONLY gate-consumed degenerate signal in every summary block: stability.irr.reason_code (WS2), human_agreement (WS6 renames its 'degenerate' field to reason_code: perfect_agreement), panel and clarity (WS8 replaces its reason.startswith('perfect agreement') string match \u2014 exactly the string-matching WS2 forbids \u2014 with reason_code == 'perfect_agreement'). Value vocabulary: perfect_agreement | insufficient_data | undefined | below_floor. WS1's hyphenated IRRResult reason constants stay module-internal; score.py adapters map them once.",
+  "Coefficient block shape \u2014 harmonize all four summary coefficient blocks to {metric, level, value, reason_code, reason, n_units, label, rationale}: WS8 renames panel.alpha\u2192panel.value and panel.alpha_metric\u2192panel.metric (and clarity.alpha\u2192clarity.value); WS6 renames its 'scale' field to 'level' and 'n' to 'n_units'. This makes WS7's _judge_irr accessor, the report badges, and _validity_mlflow_fields uniform across stability.irr / panel / human_agreement / clarity.",
+  "stability.irr key shape \u2014 WS2 writes a NESTED judges.<name>.stability.irr dict; WS7's plan reads flat stability.irr_* keys. Canonical: the nested WS2 shape wins; WS7's _judge_irr accessor reads agg['stability']['irr'] (its own plan flags this as a one-line adaptation point \u2014 exercise it).",
+  "Consequence tiers \u2014 CONSEQUENCE_TIER_MIN_ALPHA {exploratory: 0.67, safety: 0.70, gating: 0.80} lives once in agent_eval/config.py (WS2); WS7's _alpha_threshold imports it instead of re-declaring the literals; tier names are final (exploratory|safety|gating).",
+  "Ledger scope vocabulary \u2014 WS3's hook_answers_scope: case|run is canonical; WS9 renames its summary field ledger_mode: case|batch|missing to ledger_scope: case|run|missing ('run' not 'batch' \u2014 the ledger lives at the run root in batch mode and the two names currently describe the same file).",
+  "hook_answers.jsonl schema \u2014 WS3 freezes {ts, question, options, answer, tier: override|llm|fallback|disabled, hook_model, match, llm_raw, error, temperature_stripped} (+disabled{reason,cwd}) with WS9's extensions reserved at freeze time: source: human|agent, calibration{gold, shadow, agree, held_out, error, decoding{temperature, temperature_stripped}}, shadows[{model, answer, error, held_out}]. WS9 uses temperature_stripped inside decoding, never 'stripped'.",
+  "'calibration' is overloaded \u2014 WS6's judge-vs-human artifacts vs WS9's simulator calibration in the same summary.yaml: rename WS6's run-level detail block from summary['calibration'] to summary['human_calibration'] (the per-judge key human_agreement and the `score.py calibration` subcommand stay); WS9's stays nested at simulator.calibration. Glossary entry (PR11) disambiguates the full family: stability (raw within-run agreement) / stability.irr (single-judge self-consistency alpha, upper bound on IRR) / panel (cross-model inter-judge alpha) / human_agreement (criterion validity vs one reviewer) / simulator.calibration (V2 shadow-vs-human) / anova.json reliability (cross-replication pipeline test-retest ICC).",
+  "Near-collision to document, not rename \u2014 thresholds.simulator (WS9 reserved key) vs thresholds.simulator_provenance (WS3's builtin-judge recipe): distinct keys, one docs sentence placed next to each so users don't conflate them; WS9's load-time rejection of a judge literally named 'simulator' lands in PR9.",
+  "Judge/label hygiene invariants shared by all PRs (grep-enforced in WS1/WS2/WS7 tests, adopted repo-wide): no Landis-Koch adjectives anywhere; 'single-judge self-consistency alpha (upper bound on inter-rater reliability)' verbatim label; paper citations use Sec 5.3/10.2/10.4/11.3/A.1/B.4/B.5, never 'Sec 6.4'; every uncorrected percent-agreement number carries the word 'uncorrected'."
+ ],
+ "cumulative_config_surface": "## Cumulative NEW eval.yaml surface (WS1\u2013WS9). Everything is opt-in: omitting all\n## keys below leaves existing configs behaviorally byte-identical.\n## WS1 (IRR math), WS4 (dataset audit \u2014 CLI flags only), WS5 (null probe),\n## WS7 (validity report / MLflow routing) add NO eval.yaml keys.\n\njudges:\n  - name: task_quality\n    llm_rubric: \"Rate the response quality...\"\n    score_range: [1, 5]\n    samples: 3                  # existing key; >=2 unlocks stability.irr (WS2/PR2)\n    consequence: safety         # WS2 \u00b7 opt-in \u00b7 exploratory|safety|gating ->\n                                #   tier-default min_alpha 0.67/0.70/0.80 resolved at\n                                #   detection time (config.thresholds never mutated);\n                                #   0.70/0.80 author-proposed, only 0.67 literature-backed;\n                                #   load warning when samples: 1\n    model:                      # WS8 \u00b7 opt-in \u00b7 string stays valid (default, unchanged);\n      - claude-sonnet-4-5       #   a LIST declares a judge panel: k samples PER model,\n      - gpt-4o                  #   majority/median reduction, cases x models Krippendorff\n      - gemini-2.5-pro          #   alpha + family label. Non-Anthropic ids are gateway\n                                #   aliases via ANTHROPIC_BASE_URL (single Anthropic-\n                                #   Messages client; make_judge fallback rejects panels)\n\n  - name: simulator_provenance  # WS3 \u00b7 opt-in \u00b7 builtin judge, zero new config keys\n    builtin: process/simulator_provenance\n\nthresholds:\n  task_quality:\n    min_alpha: 0.75             # WS2 \u00b7 self-consistency alpha gate (upper bound on IRR).\n                                #   reason_code perfect_agreement PASSES; samples:1 /\n                                #   all-errored / insufficient data FAILS. Local scoring\n                                #   path only \u2014 skipped with a notice on harbor/evalhub\n    min_human_agreement: 0.60   # WS6 \u00b7 judge-vs-human kappa/alpha, post-hoc: absent\n                                #   human_agreement key (not yet calibrated) NEVER regresses\n    min_panel_alpha: 0.67       # WS8 \u00b7 cross-model panel alpha (requires model: list);\n                                #   same degenerate carve-out + harbor/evalhub skip\n  pairwise_judge_name:\n    min_alpha: 0.7              # WS2 \u00b7 gates pairwise verdict-stability alpha\n                                #   (requires pairwise --samples > 1)\n  simulator_provenance:\n    min_pass_rate: 1.0          # WS3 \u00b7 existing key \u2014 no case may run on fallback/\n                                #   disabled/unrecorded simulated-user answers\n  simulator:                    # WS9 \u00b7 RESERVED key (judge named 'simulator' rejected\n    max_fallback_rate: 0.0      #   at load). Configured-but-unavailable = regression on\n    min_gold_agreement: 0.80    #   the local path; stripped with a notice on harbor AND\n                                #   evalhub. min_gold_agreement gates the HUMAN-provenance\n                                #   override stratum only (agent pairs never satisfy it)\n    min_cross_simulator_agreement: 0.70   # WS9-PR2 \u00b7 requires models.hook_shadow\n    # min_self_consistency: REJECTED today \u2014 reserved for the samples:k follow-up\n\ninputs:\n  tools:\n    - match: \"Questions asked to the user via AskUserQuestion.\"\n      prompt: \"Answer from input.yaml guidance.\"\n      calibration: true         # WS9 \u00b7 opt-in (default false) \u00b7 shadow-runs the LLM tier\n                                #   on override-answered questions, HELD-OUT (answers.yaml\n                                #   stripped); logged to hook_answers.jsonl, never injected\n      # samples: k              # DEFERRED \u2014 temperature-0 pin makes self-consistency\n                                #   vacuous; ledger records decoding config now\n\nmodels:\n  hook: claude-haiku-4-5\n  hook_shadow:                  # WS9-PR2 \u00b7 opt-in, max 2 \u00b7 cross-family shadow simulators;\n    - gemini-2.5-flash          #   answers logged for cross_simulator agreement, never\n                                #   injected; gateway aliases for non-Anthropic families\n\n# DEFERRED out of this sequence (WS4's optional v1-3 slice \u2014 follow-up PR):\n# generation:\n#   validation:                 # only with strategy: synthetic (load-time ValueError else)\n#     screen_model: ...         # LLM-proxied construct-fidelity screen (labeled as such)\n#     samples: 3\n#     min_valid_fraction: 0.9   # advisory only\n#     review: optional          # optional|required ('required' => workspace refusal)\n\n## Adjacent non-eval.yaml surfaces, for completeness:\n##  tool_handlers.yaml (WS9): case_overrides_source: human|agent \u00b7 per-entry\n##    {answer, source} \u00b7 hook_model \u00b7 hook_shadow_models (merged from eval.yaml;\n##    agent's Step 3a rewrite must preserve these harness-owned keys)\n##  review.yaml (WS6): reviewer_id \u00b7 blind \u00b7 selection \u00b7 verdicts{case: {judge: value}}\n##  dataset root (WS4/WS5): dataset_audit.yaml + manifest.yaml (files \u2014 invisible to\n##    all five dir-only case-discovery sites)",
+ "cross_cutting": [
+  "Harbor/EvalHub SCOPING rides each gate PR (never deferred): PR2 lands include_irr=False + skip notice at BOTH harbor/run.py:695 and evalhub/runner.py:218; PR8's min_panel_alpha inherits that switch (amend WS8 to state the evalhub coverage explicitly); PR9 strips the reserved 'simulator' key on BOTH paths (amendment: WS9's plan covers harbor only \u2014 evalhub/runner.py:216-218 is a verified unguarded call). True execution-path PARITY (computing IRR/panel/simulator blocks from Harbor's in-container reward data, gap 5) is an explicitly tracked post-PR10 follow-up, out of this sequence \u2014 every skip is honest (stderr notice + report 'not computed' rendering), never silent.",
+  "MLflow routing of the validity/reliability fields (gap 6) lands ONCE, in PR7 (_validity_mlflow_fields: {judge}/irr_value metrics + validity/* tags; summary.yaml artifact carries full fidelity for free). WS2 deliberately adds no alpha metrics in PR2 (its plan says so) \u2014 do not let PR2 or PR8 sneak partial MLflow routing in earlier. WS6's HUMAN-source verdict assessments ({case}/{judge}/human via attach_feedback.py) ride PR6 since they are review-channel, not validity-block, routing.",
+  "CHANGELOG.md: every feature PR (PR1\u2013PR10) adds its own entry in the same PR \u2014 only WS2's plan currently lists this; extend the convention to all nine workstreams. PR11 adds no CHANGELOG entry (docs-only).",
+  "CLAUDE.md + AGENTS.md config-enumeration bullets are updated in the SAME PR as the code that changes the surface (house invariant; AGENTS.md mirrors every edit). Hot bullets and their owners per PR: thresholds valid-keys (PR2, PR6, PR8, PR9 \u2014 one appended key each), judges (PR2 consequence, PR8 model-list), inputs.tools (PR3 ledger, PR9 calibration), models (PR9-PR2 hook_shadow), architecture tree (PR1, PR4, PR5, PR7).",
+  "website/MkDocs split into two tiers: (a) reference/config KEY TABLES (thresholds.md, judges.md, models.md, inputs-tools.md, eval-yaml.md, builtin-judges.md) update in the feature PR that adds the key \u2014 the site builds strict, and a shipped key missing from its reference table is a docs bug; (b) narrative pages (concepts/*, guides/*, glossary, get-started/reading-the-report) consolidate in PR11, merged with the PARKED docs-PR follow-ups from project memory (hooks, workspace.files, judges.samples + score_range, stale traces.events bullet) so the validity keys and the parked gaps ride one coherent docs effort as the memory intends.",
+  "PR11 also carries: the glossary disambiguation entry for the six reliability concepts (stability / stability.irr / panel / human_agreement / simulator.calibration / anova reliability), the thresholds.simulator vs thresholds.simulator_provenance adjacency note, ci.md gating examples for all new keys, and optional status marks in docs/paper-validity-analysis.md (untracked analysis doc \u2014 maintainer's call).",
+  "Test-oracle cross-check against the paper's Apache-2.0 replication repo (gap 7) lives entirely in PR1's fixtures; PR2/PR6 pin the SAME expected numbers (their plans already say to coordinate) \u2014 no later PR introduces new oracle values.",
+  "eval-anova/eval-compare consumers: the anova.json 'reliability' key and compare.py's ICC table land together in PR7 (keeping compare.py's read-only no-stats-libs pattern); the eval-anova deep report (skills/eval-anova/scripts/report.py) rendering the same key is WS7's own open question \u2014 defer to PR11 or a follow-up, noted as a known minor inconsistency."
+ ],
+ "risks": [
+  "detect_regressions is extended by four PRs (WS2/WS6/WS8/WS9) with three distinct unavailability semantics (unavailable-is-regression for min_alpha/min_panel_alpha/simulator.*, silent-skip for absent min_human_agreement, degenerate-pass for perfect_agreement) \u2014 highest drift risk in the program. Mitigation: PR2 lands the canonical three-state pattern as a doc-comment IN the function plus the test_threshold_consumers parity harness; no later reliability key merges without parity rows and a reason_code-based (never string-matched) degenerate check.",
+  "WS9's plan misses EvalHub: evalhub/runner.py:218 calls detect_regressions(summary['judges'], config.thresholds) with no simulator kwarg (verified), so once PR9's 'configured-but-no-simulator-block = explicit regression' rule lands, ANY thresholds.simulator config fails every EvalHub run. Must be fixed inside PR9 (strip + notice), not as a follow-up.",
+  "PreToolUse wall-clock: WS9's worst case is ~65s of LLM calls per question (30s primary + 15s calibration + 2x10s shadows) and AskUserQuestion carries multiple questions per call, while workspace.py writes the hook entry with NO explicit timeout (verified :540-549) \u2014 Claude Code's default hook timeout kills it, silently disabling ALL interception (an external kill that even WS3's disabled-record cannot ledger). PR9 must set an explicit hook timeout in generated settings and enforce an overall in-hook deadline budget; PR3's docs should name the external-kill blind spot.",
+  "Judges-block rewrite invalidation compounds across PRs: score.py judges re-runs wholesale-rewrite summary['judges'] (score.py:2741-2744), silently dropping WS6's human_agreement AND WS8's clarity (both merged into that block by design, per verdict V3-2 #1) and staling WS7's validity block. Each plan documents its own case; nobody documents the combination. Mitigation: one shared 're-scoring invalidates calibration/clarity/validity \u2014 re-run those subcommands' note in cmd_judges output + SKILL.md (PR7), and consistent re-run ordering in docs.",
+  "THRESHOLD_KEYS sequencing hazard: after PR2, configs using min_human_agreement/min_panel_alpha (documented in later PRs) warn 'unknown threshold key' until PR6/PR8 extend the registry \u2014 acceptable (warn-not-error) but WS6's explicit 'No config.py changes' claim is now WRONG and will ship a warning regression if merged unamended.",
+  "Three family-inference implementations (WS7 score.py, WS8 reliability.py, WS9 model_families.py) with slightly different tables would give the SAME model different family labels in the validity block vs panel labels vs simulator advisory \u2014 a credibility bug in a validity feature. Consolidation into model_families.py (PR7) is load-bearing, not cosmetic; add one table-driven test all three consumers import.",
+  "summary.yaml schema churn vs consumers: verified tolerant today \u2014 analyze.py reads per_case judge dicts via .get('value') and compose_reward ignores extra keys (analyze.py:280), compare.py treats summaries opaquely, log_results iterates judges defensively \u2014 so all new keys are additive-safe; residual risk is WS8's per_case 'panel' records interacting with WS7's judge:: column coercion (panel records keep 'value', so safe) and pre-1.38 summaries lacking scored_cases hitting WS7's precision annotation (WS7 already guards). Keep the regression sweeps each plan lists.",
+  "Merge-conflict tax on the shared seams (report badge region :1358-1393, config constructor :1281-1301, harbor :695, test CASES, CLAUDE.md thresholds bullet): purely textual but hits 4-6 PRs \u2014 land strictly in sequence, keep each PR unbatched, and expect a one-hunk rebase per successor; pairing workstreams into bigger PRs would make this worse, not better.",
+  "Hidden behavior changes inside 'additive' PRs need explicit review sign-off: WS4's --force refusal breaks the documented synthetic re-run flow for existing users (docs ship same PR); WS2's cmd_pairwise gaining a nonzero exit (its own open question \u2014 recommend gating only via score.py regression unless the user opts in); WS8's B.4 advisory warns on every all-Anthropic multi-model config, i.e. the harness's default posture (recommend shipping it in PR8 behind the panels feature with WS8's proposed ack knob decided before merge, or downgrading to a report-only caveat until then).",
+  "WS3\u2192WS9 ledger schema freeze: WS9 extends the per-question record (source/calibration/shadows) after WS3's judge and report renderer are already consuming the file \u2014 if field names aren't reserved before PR3 merges, PR9 becomes a breaking schema rev of a shipped artifact. The reserved-fields list in naming_coherence is the contract; put it in tool-interception.md in PR3.",
+  "Scoring-path purity erosion: six PRs add score.py/config.py imports under the ensure_deps constraint (no scipy/pandas/pingouin in .eval-venv). WS1 ast-guards reliability.py only; extend the mechanical guard (grep/ast test over score.py + model_families.py + dataset_audit.py) in PR2 so later PRs fail fast \u2014 WS9's plan already greps, make it a pytest.",
+  "WS1 oracle fragility and licensing: vendored fixtures derived from the Apache-2.0 replication repo need attribution comments (planned), and the 3-decimal pins across 7+ values are sensitive to coincidence-matrix implementation details \u2014 the authoring-time cross-check vs PyPI krippendorff is mandatory before PR1 merges, since every downstream suite (WS2, WS6) pins the same numbers."
+ ]
+}
