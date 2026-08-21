@@ -62,6 +62,7 @@ agent_eval/              # Python package (config, runner, state)
   config.py              # EvalConfig from eval.yaml
   state.py               # Shared state persistence (key-value store)
   reliability.py         # Chance-corrected IRR (pure stdlib): Krippendorff alpha, Fleiss/Cohen kappa, Figure-1 metric selection, bootstrap CI
+  dataset_audit.py       # Deterministic dataset audit (contamination, duplicates, composition, branch coverage) + soft execution-path preflight; dataset_audit.yaml/manifest.yaml live at the dataset root
   agent/
     base.py              # EvalRunner ABC + RunResult
     claude_code.py       # Claude Code CLI runner (claude --print)
@@ -120,7 +121,8 @@ skills/eval-dataset/     # Skill: generate test cases
   SKILL.md               # Bootstrap, expand, or extract cases from traces (skill mode)
                          # OR synthetic generation from seeds (prompt mode)
   scripts/
-    generate_synthetic.py # Synthetic test case generation (prompt mode)
+    generate_synthetic.py # Synthetic test case generation (prompt mode); writes manifest.yaml provenance; --force replaces the case-NNN set
+    audit_dataset.py     # CLI: deterministic dataset audit → dataset_audit.yaml at the dataset root (agent_eval/dataset_audit.py engine)
     list_prompts.py      # List builtin generation prompts (from agent_eval/prompts/)
     harbor.py            # CLI: generate Harbor task packages (thin wrapper → harbor.tasks)
   # Builtin generation prompts live in agent_eval/prompts/ (like builtin judges)

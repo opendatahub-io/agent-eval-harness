@@ -83,6 +83,10 @@ See the [generation config reference](../reference/config/generation.md) and the
     The `synthetic` strategy is fully declarative — the number of cases comes from
     each seed's `count` in `generation.seeds`. To resize a synthetic dataset, edit
     the seed counts in `eval.yaml` and re-run `/eval-dataset`, not `--count`.
+    Regeneration **replaces the whole `case-NNN` set** (numbering restarts at
+    `case-001`), so the generation script refuses to overwrite existing generated
+    cases unless it is re-run with `--force` — hand-edits such as `TODO_`
+    replacements are lost and must be reapplied.
 
 ## What a case looks like
 
@@ -213,7 +217,12 @@ The generator uses `models.judge` (falling back to a default) and authenticates 
 `ANTHROPIC_API_KEY` or `ANTHROPIC_VERTEX_PROJECT_ID`. It writes each case's
 `input.yaml` (only what the agent sees) and `annotations.yaml` (all evaluation
 metadata), auto-moving any `expected_*` fields the LLM misplaces into `input` back
-into `annotations`.
+into `annotations`. It also persists a **`manifest.yaml`** at the dataset root —
+generation provenance: the generator model and temperature, a sha256 of each seed's
+resolved prompt and of `generation.context`, the realized per-seed case counts
+(what the LLM returned vs. what validation kept), and per-case provenance. The
+manifest is a root-level file, invisible to directory-only case discovery, and is
+rewritten on every (`--force`) regeneration.
 
 See [Skill vs. prompt mode](skill-vs-prompt.md) and the
 [agentic-docs walkthrough](../get-started/agentic-docs.md) for where synthetic
@@ -223,11 +232,16 @@ generation fits.
 
 These steps run for **every** provenance:
 
-1. **Validate** — the skill reads a case back and checks it matches
-   `dataset.schema`: required files present, every `{field}` placeholder covered,
-   companion files present, no empty or placeholder-text files, and both branches
-   of conditional judges covered.
-2. **Report** — cases created, provenance (fresh vs. augment), coverage, what's
+1. **Audit + validate** — a deterministic audit script (`audit_dataset.py`) writes
+   `dataset_audit.yaml` at the dataset root. It mechanizes the duplicate,
+   contamination, composition, and conditional-judge branch-coverage checks (plus
+   argument-field presence, structural issues, and reference resolution — the
+   latter labeled *necessary, not sufficient*, for answerability). Conformance to
+   the natural-language `dataset.schema` and companion-file review remain
+   agent/human review. `/eval-run` warns before scoring when the audit is missing
+   or stale (per-case content hashes).
+2. **Report** — cases created, provenance (fresh vs. augment), the audit summary
+   and artifact paths (`dataset_audit.yaml`, `manifest.yaml`), coverage, what's
    still missing, and every `TODO_` placeholder to replace.
 3. **Harbor packaging** *(if `--harbor`)* — emit self-contained task packages for
    containerized execution.

@@ -30,6 +30,28 @@ How data flows from dataset cases through execution, collection, and scoring.
   skills/ → symlink
 ```
 
+### Dataset-root artifacts (never enter workspaces)
+
+Two provenance/audit artifacts live at the **dataset root as files**:
+
+- `dataset_audit.yaml` — written by `audit_dataset.py` (`/eval-dataset` Step 6):
+  deterministic audit findings (contamination, near-duplicates, composition,
+  conditional-judge branch coverage, reference resolution) plus per-case
+  **content hashes** (sha256 over each case dir's file contents).
+- `manifest.yaml` — synthetic-generation provenance (generator model, temperature,
+  per-seed resolved-prompt hashes, realized counts, per-case provenance).
+
+Case discovery is **directory-only** everywhere (workspace.py, collect.py, Harbor
+task generation, EvalHub, dataset sync), so these root-level files never become
+cases, never enter workspaces, and are never collected.
+
+Before creating workspaces, `workspace.py` runs a **soft preflight**: it WARNS on
+stderr when `dataset_audit.yaml` is missing, or when a selected case's recorded
+content hash no longer matches (stale audit — an in-place edit changes the content
+hash even though the dir mtime is unchanged). It never fails or blocks the run.
+The Harbor task-generation path (`agent_eval/harbor/tasks.py`) emits the same
+warning for execution-path parity.
+
 ### Case Mode (execution.mode: case)
 
 When `execution.mode` is `case` (default), workspace.py creates a separate workspace per case:

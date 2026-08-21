@@ -37,6 +37,7 @@ import json
 import re
 import shlex
 import shutil
+import sys
 from pathlib import Path
 
 import yaml
@@ -393,6 +394,16 @@ def _write_multi_step_case_package(config, config_path, bundled_cfg, case_dir,
     return task_dir
 
 
+def _dataset_audit_preflight(cases_root, case_dirs):
+    """Soft dataset-audit preflight (parity with workspace.py): warn, never fail."""
+    try:
+        from agent_eval.dataset_audit import audit_preflight_warnings
+        for warning in audit_preflight_warnings(cases_root, case_dirs):
+            print(f"WARNING: {warning}", file=sys.stderr)
+    except Exception:  # pragma: no cover — defensive; a nudge, never a gate
+        pass
+
+
 def generate_tasks(
     config: EvalConfig,
     config_path: Path,
@@ -440,6 +451,9 @@ def generate_tasks(
         case_dirs = [d for d in case_dirs if d.name in wanted]
     if not case_dirs:
         raise ValueError("No matching cases found")
+
+    # Soft dataset-audit preflight (V1 task validity) — warn, never fail.
+    _dataset_audit_preflight(cases_root, case_dirs)
 
     bundled_cfg = _bundle_eval_config(
         config_path, judge_model=judge_model, no_llm_judges=no_llm_judges)

@@ -199,18 +199,59 @@ case-005-ambiguous-phrasing/
 
 ## Step 6: Validate
 
-After generating, verify the cases:
+After generating, run the deterministic dataset audit, then triage its findings:
 
-1. Read one generated case back and check it matches the schema
-2. Count files per case — do they match what `dataset.schema` describes?
-3. If `execution.mode` is `case`, verify that input.yaml contains all fields referenced by `{field}` placeholders in `execution.arguments`
-4. If companion files are expected, verify they exist in each case directory
-5. Check for obvious issues (empty files, placeholder text, wrong field names)
-6. If judges have `if` conditions referencing annotations, verify that the generated cases cover both branches — at least one case where the condition is true and one where it's false. Warn if any conditional judge would never run (or always run) across the entire dataset.
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/audit_dataset.py --config <config>
+```
+
+The script writes `dataset_audit.yaml` at the **dataset root** (a file — case
+discovery is directory-only, so it never becomes a case) and prints a per-check
+summary with skew tables. It **mechanizes** items 3 and 5 below, the
+annotations-only part of item 6, and adds duplicate/contamination/composition
+checks that a manual read-through misses:
+
+- **Argument fields** (item 3): every `{field}` placeholder in `execution.arguments`
+  present and non-empty per case (Jinja templates checked best-effort; complex
+  expressions are reported indeterminate)
+- **Structural issues** (item 5): empty/whitespace-only files, unparseable input,
+  leftover `TODO_` placeholders, answer-key fields misplaced into input.yaml
+- **Contamination**: verbatim/normalized-substring leakage of `answers.yaml` /
+  `expected_*` annotation content into agent-visible files (input.yaml + companion
+  files). The sanctioned `answers.yaml` workspace copy is NOT a finding — only
+  leakage into input/companion files counts. Paraphrased leakage is out of scope.
+- **Near-duplicates**: pairwise input similarity (difflib + token Jaccard;
+  `--duplicate-threshold`, default 0.85)
+- **Composition**: realized category counts vs `generation.seeds`, difficulty
+  distribution (vocabulary validated only when a `difficulty` field is present —
+  its absence is never a finding)
+- **Conditional-judge branch coverage** (the annotations-only part of item 6):
+  judges whose `if:` references only `annotations` are branch-tallied per case with
+  the same evaluation semantics score.py uses. Conditions referencing `outputs` (or
+  containing `{{` templates) depend on execution results that do not exist at
+  dataset time — they are reported **indeterminate**, never as uncovered.
+- **Reference resolution**: `annotations.expected_files` entries resolved against
+  the eval config directory. Honest label: existence is **necessary, not
+  sufficient**, for answerability — a file that exists is not verified to answer
+  the question.
+
+The audit does NOT replace your review. Items 1, 2, and 4 **remain agent review** —
+a deterministic script cannot check conformance to a natural-language schema:
+
+1. Read one generated case back and check it matches the schema *(agent review)*
+2. Count files per case — do they match what `dataset.schema` describes? *(agent review)*
+3. If `execution.mode` is `case`, verify that input.yaml contains all fields referenced by `{field}` placeholders in `execution.arguments` *(mechanized by the audit)*
+4. If companion files are expected, verify they exist in each case directory and their content makes sense *(agent review)*
+5. Check for obvious issues (empty files, placeholder text, wrong field names) *(mechanized by the audit)*
+6. If judges have `if` conditions referencing annotations, verify that the generated cases cover both branches — at least one case where the condition is true and one where it's false. Warn if any conditional judge would never run (or always run) across the entire dataset. *(mechanized for annotations-only conditions; `outputs`-dependent conditions are indeterminate at dataset time)*
 
 ```bash
 ls <dataset_path>/case-001-*/ 
 ```
+
+The audit exits 0 even with findings (they are triage input, not a gate); pass
+`--strict` to make any warning/error exit 1 (CI). `/eval-run` warns before scoring
+when the audit is missing or its per-case content hashes are stale.
 
 ## Step 7: Report
 
@@ -218,6 +259,8 @@ Tell the user what was created:
 
 - **Cases generated**: N new cases at `<path>`
 - **Provenance**: skill / from-traces; and whether this was a fresh set or an augment
+- **Audit summary**: per-check finding counts from Step 6 (errors / warnings / info) and the `dataset_audit.yaml` path at the dataset root
+- **Manifest** (synthetic provenance only): the `manifest.yaml` path at the dataset root — generator model, temperature, per-seed prompt hashes, realized per-seed counts, per-case provenance
 - **Coverage**: What scenarios are now covered (simple, complex, edge cases)
 - **What's missing**: Reference outputs (if not generated), any gaps still remaining
 - **External-state placeholders**: If any `TODO_` placeholder values were generated, list each one with which case it's in, which external system it references, and what kind of value is needed (e.g., "case-001/input.yaml `TODO_JIRA_PROJECT_KEY` — needs a real Jira project key from your test instance"). These MUST be replaced with real values before running `/eval-run`.

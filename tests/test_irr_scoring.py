@@ -315,7 +315,8 @@ _FORBIDDEN_SCORING_IMPORTS = {
 @pytest.mark.parametrize("path", [
     REPO_ROOT / "agent_eval" / "reliability.py",
     REPO_ROOT / "skills" / "eval-run" / "scripts" / "score.py",
-], ids=["reliability", "score"])
+    REPO_ROOT / "agent_eval" / "dataset_audit.py",
+], ids=["reliability", "score", "dataset_audit"])
 def test_scoring_path_purity_static_scan(path):
     """The scoring path stays free of heavyweight stats stacks — ensure_deps
     installs only pyyaml/mlflow/anthropic/jinja2."""

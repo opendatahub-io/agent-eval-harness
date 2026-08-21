@@ -72,6 +72,9 @@ def main():
         print("ERROR: no cases found", file=sys.stderr)
         sys.exit(1)
 
+    # Soft dataset-audit preflight (V1 task validity) — warn, never fail.
+    _dataset_audit_preflight(cases_dir, case_dirs)
+
     # Validate run-id
     if not re.fullmatch(r"[A-Za-z0-9._-]+", args.run_id):
         print("ERROR: run-id must match [A-Za-z0-9._-]+", file=sys.stderr)
@@ -210,6 +213,23 @@ def main():
     print(f"WORKSPACE: {workspace}")
     print(f"CASES: {len(case_dirs)}")
     print(f"BATCH: {workspace / 'batch.yaml'}")
+
+
+def _dataset_audit_preflight(cases_dir, case_dirs):
+    """Soft preflight: WARN when the dataset audit is missing or stale.
+
+    Compares per-case CONTENT hashes stored in dataset_audit.yaml (never dir
+    mtimes — an in-place input.yaml edit changes the hash, not the mtime).
+    A nudge, never a gate: stderr only, exit code unaffected, and any
+    failure here must not block workspace creation.
+    """
+    try:
+        from agent_eval.dataset_audit import audit_preflight_warnings
+
+        for warning in audit_preflight_warnings(cases_dir, case_dirs):
+            print(f"WARNING: {warning}", file=sys.stderr)
+    except Exception as e:  # pragma: no cover — defensive
+        print(f"DEBUG: dataset audit preflight skipped: {e}", file=sys.stderr)
 
 
 def _create_per_case_workspace(workspace, case_dirs, config, args):
