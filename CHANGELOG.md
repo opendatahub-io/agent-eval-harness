@@ -1,3 +1,11 @@
+## [1.40.2](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.40.1...v1.40.2) (2026-08-21)
+
+
+### Bug Fixes
+
+* **execute:** persist permission_denials into run_result.json ([e7f48cf](https://github.com/opendatahub-io/agent-eval-harness/commit/e7f48cf0bf16c3631d9b8fd8392db84a724a68cd))
+* **execute:** surface denials in aggregates; broaden the contract test ([f7db702](https://github.com/opendatahub-io/agent-eval-harness/commit/f7db702973aba2ef63c8cc7b4c4389e65bde28ba))
+
 ## [1.40.1](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.40.0...v1.40.1) (2026-08-21)
 
 

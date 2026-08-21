@@ -163,6 +163,15 @@ permissions:
     - { path: "tmp/",       tools: ["Read", "Edit"] }
 ```
 
+!!! tip "Auditing what was actually denied"
+    Every tool call denied by these rules is persisted per case in
+    `run_result.json` as `permission_denials` (`[{tool_name, tool_use_id,
+    tool_input}]` — inside `per_case` entries in case mode, top-level in batch
+    mode). Check it after a run to spot over-strict rules (e.g. a nested
+    `Skill` call missing from `permissions.allow`) or attempted answer-key
+    reads, instead of grepping `stdout.log`. See
+    [runs directory](../runs-directory.md).
+
 !!! tip "Answer-key protection is why path rules exist"
     Prompt-mode evals and `workspace_mode: repo` runs execute the agent inside
     the real repository, where the dataset, `eval.yaml`, and reference outputs

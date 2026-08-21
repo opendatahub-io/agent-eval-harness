@@ -80,7 +80,10 @@ cat $AGENT_EVAL_RUNS_DIR/<eval-name>/<id>/run_result.json
 ```
 
 Key fields: `exit_code`, `duration_s`, `wall_clock_s` (lower when parallelism is
-used), `cost_usd`, `num_turns`, `per_model_usage`, `per_model_turns`.
+used), `cost_usd`, `num_turns`, `per_model_usage`, `per_model_turns`,
+`permission_denials` (structured list of tool calls denied by permissions,
+`[{tool_name, tool_use_id, tool_input}]`, `[]` when none; in case mode each
+`per_case` entry carries its own list and the top level the concatenation).
 `cost_usd` is billed cost: when the `per_model_usage` sum exceeds the
 conversation total by more than $0.01 (background agents killed at the bg-wait
 ceiling, or still running at an evaluator timeout), the larger figure is
@@ -89,7 +92,10 @@ published.
 If `exit_code` is non-zero, report the failure with the exit code, duration, and
 the first and last few lines of `stderr.log` (harness-appended `ERROR:` notes,
 such as the background-task bg-wait-ceiling kill, land at the end). Do not
-continue to scoring.
+continue to scoring. Also check `permission_denials` per case: a non-empty
+list with exit_code 0 means the agent was silently blocked from tool calls
+(e.g. a nested Skill call missing from `permissions.allow`) and may have
+partially completed without failing.
 
 ## CLI flag fallbacks
 

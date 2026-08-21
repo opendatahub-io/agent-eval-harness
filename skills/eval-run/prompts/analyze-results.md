@@ -7,7 +7,7 @@ You will be given:
 2. Per-case results (which cases passed/failed which judges)
 3. The skill being evaluated (what it does)
 4. Run metrics (`summary.yaml.run_metrics`): workload-agnostic cost figures — `cost_per_turn_usd`, `output_tokens_per_turn`, `cache_hit_rate`, `cost_per_mtok_usd`. Stable across runs of the same model + effort.
-5. Run result (`run_result.json`): headline cost, duration, turns, token usage, model, effort.
+5. Run result (`run_result.json`): headline cost, duration, turns, token usage, model, effort, per-case `permission_denials` (structured denied tool calls).
 6. Collection summary (`collection.json`): per-case artifact counts — the actual output volumes the skill produced.
 7. Eval config (`eval.yaml`): in particular the `outputs` block, which describes what artifacts the skill is expected to produce.
 8. Optionally: a baseline comparison (what changed vs previous run)
@@ -28,7 +28,9 @@ You will be given:
 For each failure pattern, hypothesize WHY:
 - Is the skill not producing expected artifacts? (execution issue)
 - Is the skill producing artifacts but with quality issues? (quality issue)
-- Is the skill partially completing? (timeout, budget, permission issue, or
+- Is the skill partially completing? (timeout, budget, permission issue —
+  confirm via each case's `permission_denials` in `run_result.json`, whose
+  entries name the denied tool and input — or
   background tasks killed at the bg-wait ceiling -- exit_code=1 with an
   `ERROR: ... bg-wait ceiling` note at the end of stderr)
 - Does the failure correlate with input complexity? (scaling issue)

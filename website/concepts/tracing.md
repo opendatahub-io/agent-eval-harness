@@ -55,7 +55,7 @@ traces:
 | `stdout` | `stdout.log` — the full `stream-json` event log | `true` |
 | `stderr` | `stderr.log` | `true` |
 | `events` | `events.json` — parsed JSONL events | `true` |
-| `metrics` | `run_result.json` — exit code, duration, tokens, cost, model, per-model usage | `true` |
+| `metrics` | `run_result.json` — exit code, duration, tokens, cost, model, per-model usage, permission denials | `true` |
 
 !!! warning "The trace builder needs the raw stream-json"
     Hierarchical traces are reconstructed from `stdout.log`. If `stdout` capture is off (or the log is missing), `build_trace()` returns `None` and no trace is pushed. See the [traces config reference](../reference/config/traces.md).
