@@ -43,6 +43,8 @@ and gives each its own throwaway workspace under
 - symlinks to project resources (`scripts`, `skills`, `.context`, `CLAUDE.md`, …),
 - freshly-generated output directories from the `outputs` block,
 - a per-workspace `.claude/settings.json` (permissions, hooks, injected env),
+- staged copies of out-of-workspace `runner.plugin_dirs` under
+  `.staged-plugins/` (claude-code runner — see [Runners](runners.md)),
 - an initialized git repo so [lifecycle hooks](lifecycle-hooks.md) and `collect`
   can diff for in-place edits.
 

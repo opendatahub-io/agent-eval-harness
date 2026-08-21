@@ -27,6 +27,8 @@ How data flows from dataset cases through execution, collection, and scoring.
   .claude/ → symlink (or generated)
   CLAUDE.md → symlink
   skills/ → symlink
+  .staged-plugins/        # Staged copies of out-of-workspace runner.plugin_dirs
+                          # (claude-code runner; skipped in workspace_mode: repo)
 ```
 
 ### Case Mode (execution.mode: case)
@@ -44,6 +46,7 @@ When `execution.mode` is `case` (default), workspace.py creates a separate works
       {output_dirs}/      # Empty dirs for skill outputs
       .claude/settings.json  # Generated (hooks + permissions)
       subagents/           # SubagentStop hook target
+      .staged-plugins/     # Staged copies of out-of-workspace runner.plugin_dirs
       scripts/ → symlink
       CLAUDE.md → symlink
       skills/ → symlink
@@ -115,7 +118,7 @@ $AGENT_EVAL_RUNS_DIR/{id}/
 
 ### In-place file edits
 
-Skills that modify input files using the Edit tool (rather than writing to an output directory) are handled automatically. `workspace.py` creates a git commit of the initial workspace state before execution. After execution, `collect.py` runs `git diff HEAD` to detect modified files and copies them to a `_modified/` directory under each case's run output. No extra `outputs` config is needed.
+Skills that modify input files using the Edit tool (rather than writing to an output directory) are handled automatically. `workspace.py` creates a git commit of the initial workspace state before execution. After execution, `collect.py` runs `git diff HEAD` (plus `git ls-files --others` for new files) to detect modified files and copies them to a `_modified/` directory under each case's run output. No extra `outputs` config is needed. Harness-created paths (`.claude/`, `.git/`, `.work/`, `.staged-plugins/`, `subagents/`, `hooks/`, logs) and directories declared in `outputs[].path` are excluded, so only files the skill itself modified or created appear in `_modified/`.
 
 ## 4. Collection → Scoring
 
