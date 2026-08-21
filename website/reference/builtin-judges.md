@@ -107,6 +107,9 @@ judges:
 !!! warning "Cost data must be captured"
     `cost_usd` comes from run metrics. If [`traces.metrics`](config/traces.md) is off (or
     the runner reports no cost), the judge returns `False` with `"No cost data available"`.
+    For the claude-code runner, `cost_usd` is the *billed* cost — it can exceed the
+    conversation total the CLI prints when background agents burned tokens after the
+    final turn. Budget against billed spend, not the CLI final-cost line.
 
 ## process/consulted_docs
 

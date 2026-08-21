@@ -154,7 +154,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/execute.py \
 
 **Launch with `run_in_background: true` and do NOT redirect its output** (no `>`, `|`, `tee`, `2>&1`) — a redirect diverts the stream Claude Code's background viewer reads and leaves it blank. You don't need one: `execute.py` mirrors its live console to `<output_dir>/console.log`.
 
-**Poll until the task completes — do not end your turn while execute.py is running**, or the idle session kills the background task and CI reports the empty result as green. Check progress every 2–3 minutes via the Bash output-file path or `tail -20 <output_dir>/console.log` (never a self-created redirect); this also keeps the session active. When it finishes, read `run_result.json` — if `exit_code` is non-zero, report the failure and stop. For session-lifecycle details, polling patterns, problem detection, and CLI fallbacks, see [`references/execution-monitoring.md`](references/execution-monitoring.md).
+When it finishes, read `run_result.json` — if `exit_code` is non-zero, report the failure and stop. If `stderr.log` ends with an `ERROR:` about background tasks terminated at the bg-wait ceiling, the fix is configuration, not the skill: raise `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` (e.g. `"0"` = wait indefinitely) via `runner.env:` in eval.yaml and rerun — see [`references/execution-monitoring.md`](references/execution-monitoring.md). For session-lifecycle details, polling patterns, problem detection, and CLI fallbacks, see [`references/execution-monitoring.md`](references/execution-monitoring.md).
 
 ## Step 5: Collect Artifacts
 

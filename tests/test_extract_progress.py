@@ -392,3 +392,13 @@ class TestBackgroundKillAndCostTruth:
         assert result.cost_usd is not None
         assert abs(result.cost_usd - 1.4695) < 1e-6, (
             "timeout path must include background-agent cost from modelUsage")
+
+
+def test_bg_wait_ceiling_env_propagates(monkeypatch):
+    """The bg-kill failure note tells users to raise
+    CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS — the exact-name env allowlist must
+    therefore pass an exported value through, or the advice is a lie."""
+    from agent_eval.agent.claude_code import ClaudeCodeRunner
+    monkeypatch.setenv("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", "0")
+    env = ClaudeCodeRunner()._build_env()
+    assert env.get("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS") == "0"

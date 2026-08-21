@@ -28,7 +28,9 @@ You will be given:
 For each failure pattern, hypothesize WHY:
 - Is the skill not producing expected artifacts? (execution issue)
 - Is the skill producing artifacts but with quality issues? (quality issue)
-- Is the skill partially completing? (timeout, budget, or permission issue)
+- Is the skill partially completing? (timeout, budget, permission issue, or
+  background tasks killed at the bg-wait ceiling -- exit_code=1 with an
+  `ERROR: ... bg-wait ceiling` note at the end of stderr)
 - Does the failure correlate with input complexity? (scaling issue)
 
 ### 4. Regression Analysis (if baseline provided)
@@ -38,9 +40,17 @@ For each failure pattern, hypothesize WHY:
 
 ### 4b. Cost Attribution
 
-The headline cost (`cost_usd` in `run_result.json`) mixes two independent effects:
+The headline cost (`cost_usd` in `run_result.json`) mixes three independent effects:
 - **Model/runner cost** — how much each turn or token costs. Surfaced in `run_metrics`: `cost_per_turn_usd`, `cost_per_mtok_usd`, `cache_hit_rate`. These stay flat across runs of the same model + effort, so any drift here is a model, runner-version, or effort change — **not** the skill doing different work.
 - **Workload cost** — how much work the skill did. Stochastic per run: more revisions, splits, retries, or fan-out subagents → higher cost without any model/runner change.
+- **Billed-vs-conversation gap** -- `cost_usd` is billed cost: when background
+  agents are killed at the bg-wait ceiling or still running at an evaluator
+  timeout, their tokens are billed but produce no conversation turns, inflating
+  `cost_per_turn_usd` with no model/runner change. Check the end of stderr.log
+  for the bg-kill ERROR note and compare the `per_model_usage` sum against the
+  headline. Baselines from harness versions predating the billed-cost rule
+  under-report cost -- treat cross-boundary cost jumps as a measurement
+  correction, not a regression.
 
 Attribute the gap by deriving a **skill-specific cost-per-unit-of-work** metric on the fly:
 

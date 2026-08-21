@@ -57,7 +57,7 @@ enriched with execution-metadata keys pulled from `run_result.json`
 
 | Key in `outputs` | Meaning |
 | --- | --- |
-| `exit_code` | Agent process exit code |
+| `exit_code` | Exit code of the invocation. `0` = clean run; the runner reports `1` for failures it detects even when the agent process exited 0 (e.g. background tasks killed at the CLI bg-wait ceiling, unknown slash command); `-1` = timeout |
 | `duration_s` | Wall-clock duration in seconds |
 | `token_usage` | Input/output token counts |
 | `cost_usd` | Dollar cost of the invocation |

@@ -85,6 +85,7 @@ General harness knobs, read by the skills and runner directly.
 | `AGENT_EVAL_RUNS_DIR` | `eval/runs` | Base directory where each run's workspace, artifacts, scores, and `report.html` are written. See [the runs directory](runs-directory.md). |
 | `EVAL_JUDGE_MODEL` | *(none)* | Fallback model for LLM and pairwise judges. Resolution order: per-judge `model:` **>** `models.judge` **>** this variable. |
 | `CLAUDE_CODE_SUBAGENT_MODEL` | *(none)* | Model used for subagents spawned by the skill under test. Set automatically from `models.subagent` when configured. |
+| `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` | `600000` | How long the Claude Code CLI waits for background tasks that outlive the final turn before terminating them (`0` = wait indefinitely). Tasks killed at this ceiling fail the case (exit 1) since their artifacts may be half-written — raise it for long-running pipeline skills, via export (on the env allowlist) or `runner.env:`. |
 
 !!! note "Workspace env allowlist"
     The Claude Code runner does **not** forward your whole environment into an

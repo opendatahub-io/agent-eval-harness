@@ -63,8 +63,8 @@ Each case gets ALL files from the dataset case directory (not just input.yaml), 
 - Passes `batch.yaml` content as the skill prompt via stdin
 - Captures stdout (stream-json events) and stderr
 - Writes `stdout.log` and `stderr.log` to `$AGENT_EVAL_RUNS_DIR/{id}/`
-- Parses the final `result` event for token usage and cost
-- Writes `run_result.json` with exit_code, duration_s, token_usage, cost_usd
+- Parses the final `result` event for token usage and cost; `cost_usd` is the **billed** cost — the larger of the conversation `total_cost_usd` and the summed per-model `modelUsage` costs (background agents killed after the final turn, or still running at an evaluator timeout, burn billed tokens the conversation total never sees)
+- Writes `run_result.json` with exit_code, duration_s, token_usage, cost_usd — `exit_code` reflects case truth, not the raw process code: the runner reports 1 when the CLI killed background tasks that outlived the final turn (or ran an unknown command) even though the process exited 0, with the reason appended as an ERROR note in stderr
 
 **What the skill sees (batch mode)**:
 - Working directory: the workspace
@@ -256,6 +256,8 @@ For each judge across all cases:
 | `stderr: true` | Capture full stderr | `stderr.log` in case/run dir | `outputs["stderr"]` |
 | `events: true` | Parse JSONL into events.json | Parsed from stdout.log at collection time | `outputs["events"]` (list of event dicts). Tool results/inputs capped at 50K chars |
 | `metrics: true` | Capture execution metadata | `run_result.json` | `outputs["exit_code"]`, `["duration_s"]`, `["cost_usd"]`, `["num_turns"]`, `["token_usage"]` |
+
+> `exit_code` reflects case truth, not the raw process code: the runner reports 1 when the CLI killed background tasks that outlived the final turn (or ran an unknown command) even though the process exited 0 — the reason is appended as an ERROR note in `outputs["stderr"]`. `cost_usd` is billed cost — the max of the conversation total and the per-model `modelUsage` sum — so it includes tokens burned by killed or still-running background agents.
 
 Note: `events.json` is generated at collection time by `collect.py` and includes merged subagent transcripts from `subagents/*.jsonl`. Tool calls in `outputs["tool_calls"]` are derived from events.
 

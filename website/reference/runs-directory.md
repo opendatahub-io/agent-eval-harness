@@ -67,6 +67,13 @@ breakdown; judges read it when `traces.metrics` is on.
 | `execution_mode` | `case` or `batch` |
 | `per_case` | Per-case dict of the same metrics, keyed by case ID |
 
+!!! note "Adjusted, not raw, per-case values"
+    For the claude-code runner, per-case `exit_code` is `1` (not `0`) when the
+    CLI killed background tasks at its bg-wait ceiling — the ERROR note appended
+    to `stderr.log` explains why — and `cost_usd` is the billed cost, which can
+    exceed the conversation total shown in `stdout.log` when background agents
+    burned tokens after the final turn.
+
 ### `collection.json`
 
 Written by `collect.py` — a map of case ID to per-output-path artifact counts, e.g.
@@ -135,6 +142,10 @@ where noted.
 | --- | --- | --- | --- |
 | `stdout: true` | Raw agent output | `stdout.log` | `outputs["stdout"]` (debugging; large) |
 | `stderr: true` | Captured stderr | `stderr.log` | `outputs["stderr"]` |
+
+> `stderr.log` may end with harness-appended `ERROR:`/`WARNING:` lines explaining
+> why a case was failed (e.g. background tasks killed at the bg-wait ceiling,
+> with advice to raise `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`).
 | `events: true` | Parsed JSONL event stream | `events.json` | `outputs["events"]` (tool results capped at 50K chars) |
 | `metrics: true` | Execution metadata | `run_result.json` | `outputs["exit_code"]`, `["duration_s"]`, `["cost_usd"]`, `["num_turns"]`, `["token_usage"]` |
 

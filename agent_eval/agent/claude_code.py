@@ -587,7 +587,8 @@ class ClaudeCodeRunner(EvalRunner):
                 "\nERROR: the CLI terminated still-running background tasks at "
                 "the bg-wait ceiling — their work is incomplete and artifacts "
                 "may be half-written. Raise CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS "
-                "(0 = wait indefinitely) for long-running pipeline skills."
+                "(0 = wait indefinitely) for long-running pipeline skills, via "
+                "the environment or runner.env in eval.yaml."
             )
         unknown_command = _detect_unknown_command(result_obj)
         if unknown_command and exit_code == 0:
@@ -680,6 +681,10 @@ class ClaudeCodeRunner(EvalRunner):
         "ANTHROPIC_DEFAULT_HAIKU_MODEL",
         "CLOUD_ML_REGION", "CLAUDE_CODE_USE_VERTEX",
         "CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_CODE_SUBAGENT_MODEL",
+        # The bg-kill failure note tells users to raise this; an exact-name
+        # allowlist would otherwise swallow the export and make that advice
+        # a lie. runner.env also works and wins on collision.
+        "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS",
         "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT",
         "CLOUDSDK_CONFIG", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
         "MLFLOW_TRACKING_URI", "MLFLOW_EXPERIMENT_NAME",
