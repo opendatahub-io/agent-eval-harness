@@ -154,6 +154,44 @@ class TestStagePluginDir:
         assert (dest / "hooks" / "helper.py").is_file(), (
             "a copy root symlinked WITHIN the plugin is materialized")
 
+    def test_copy_reads_from_checked_canonical_path(self, tmp_path, monkeypatch):
+        """The containment check resolves each copy root; the copy must read
+        from that SAME canonical path. Copying from the symlink would
+        re-follow it at copy time — a check/use race (CWE-367) where a
+        concurrent writer swaps the link between resolve() and copytree()."""
+        import shutil as shutil_mod
+
+        import agent_eval.agent.claude_code as claude_code_mod
+
+        plugin = make_plugin(tmp_path / "plugins")
+        internal = plugin / "tools"
+        internal.mkdir()
+        (internal / "helper.py").write_text("print('ok')\n")
+        (plugin / "scripts").symlink_to(internal)
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        seen = []
+
+        # Proxy only the module-under-test's shutil reference: copytree
+        # recurses into itself positionally, so patching the global would
+        # intercept (and break) its internal recursive calls too.
+        class ShutilProxy:
+            def __getattr__(self, name):
+                return getattr(shutil_mod, name)
+
+            @staticmethod
+            def copytree(src, dst, **kwargs):
+                seen.append(Path(src))
+                return shutil_mod.copytree(src, dst, **kwargs)
+
+        monkeypatch.setattr(claude_code_mod, "shutil", ShutilProxy())
+        dest = stage_plugin_dir(plugin, ws)
+        assert (dest / "scripts" / "helper.py").is_file()
+        assert seen, "copytree was not invoked"
+        for src in seen:
+            assert not src.is_symlink(), (
+                f"copy must read the checked canonical path, not a symlink: {src}")
+
     def test_symlink_loop_is_skipped_not_fatal(self, tmp_path):
         """A self-referential link raises RuntimeError from resolve() on
         Python 3.11/3.12 and OSError(ELOOP) later — either way staging must

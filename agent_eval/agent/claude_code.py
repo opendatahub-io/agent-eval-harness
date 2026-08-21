@@ -130,8 +130,11 @@ def stage_plugin_dir(plugin_dir: Path, workspace: Path) -> Path:
                 continue
             if not resolved.is_relative_to(plugin):
                 continue
+            # Copy from the CHECKED canonical path, not the symlink: copying
+            # from `source` would re-follow the link at copy time, letting a
+            # concurrent writer swap it between check and use (CWE-367).
             shutil.copytree(
-                source, staging / source.relative_to(plugin),
+                resolved, staging / source.relative_to(plugin),
                 symlinks=False, ignore=_plugin_ignore(plugin),
                 ignore_dangling_symlinks=True, dirs_exist_ok=True)
         try:
