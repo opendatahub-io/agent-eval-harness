@@ -88,7 +88,7 @@ Whatever the runtime, results are normalized into one `RunResult` dataclass:
 | `stdout` / `stderr` | `str` | Captured output |
 | `duration_s` | `float` | Wall-clock seconds |
 | `token_usage` | `dict` | `{"input": N, "output": N}` |
-| `cost_usd` | `float` | Billed API spend — at least the conversation `total_cost_usd`, raised to the per-model usage sum when background agents burned tokens the conversation total never saw |
+| `cost_usd` | `float` | Billed API spend — the conversation `total_cost_usd`, raised to the per-model usage sum when that exceeds it by more than $0.01 (background agents burning tokens the conversation total never saw) |
 | `num_turns` | `int` | Assistant turns (incl. subagents where captured) |
 | `resolved_model` | `str` | Full model ID observed at runtime |
 | `models_used` | `list` | All distinct models observed |
@@ -122,8 +122,8 @@ progress (skill invocations, tool calls, permission denials, final cost). A watc
 thread kills the process at the deadline. From the stream it extracts usage, cost,
 turn counts, resolved model(s), and the structured `permission_denials` array from
 the `result` event. Reported `cost_usd` is the *billed* cost: the conversation's
-`total_cost_usd`, raised to the per-model `modelUsage` sum when that is higher
-(background agents killed after the final turn — or still running at an evaluator
+`total_cost_usd`, raised to the per-model `modelUsage` sum when that exceeds it
+by more than $0.01 (background agents killed after the final turn — or still running at an evaluator
 timeout — burn billed tokens the conversation total never sees), so it can exceed
 the cost the CLI printed.
 

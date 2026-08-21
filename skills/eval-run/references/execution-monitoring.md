@@ -62,9 +62,12 @@ pipeline may be stuck. Common signs:
   skills) outlived the final turn and were killed after
   `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` (default 600s); their artifacts may be
   half-written, and the harness fails the case (`exit_code=1`) even though the
-  CLI exited 0. Fix by raising the ceiling -- `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: "0"`
-  (wait indefinitely) via `runner.env:` in eval.yaml or exported in the
-  environment (the key is on the runner's env allowlist)
+  CLI exited 0. First check whether the skill MEANT to end its turn there: a
+  dispatcher that should have awaited its agents has a turn-discipline defect
+  to fix in the skill. Only for intentionally long-running background work,
+  raise the ceiling -- `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` via `runner.env:`
+  in eval.yaml or exported (the key is on the runner's env allowlist); keep
+  `execution.timeout` finite as the backstop rather than defaulting to `"0"`
 
 Report issues with the relevant output lines rather than waiting for completion.
 
@@ -79,8 +82,9 @@ cat $AGENT_EVAL_RUNS_DIR/<eval-name>/<id>/run_result.json
 Key fields: `exit_code`, `duration_s`, `wall_clock_s` (lower when parallelism is
 used), `cost_usd`, `num_turns`, `per_model_usage`, `per_model_turns`.
 `cost_usd` is billed cost: when the `per_model_usage` sum exceeds the
-conversation total (background agents killed at the bg-wait ceiling, or still
-running at an evaluator timeout), the larger figure is published.
+conversation total by more than $0.01 (background agents killed at the bg-wait
+ceiling, or still running at an evaluator timeout), the larger figure is
+published.
 
 If `exit_code` is non-zero, report the failure with the exit code, duration, and
 the first and last few lines of `stderr.log` (harness-appended `ERROR:` notes,
