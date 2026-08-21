@@ -1,6 +1,6 @@
 {
   "name": "agent-eval-harness",
-  "version": "1.39.5",
+  "version": "1.40.0",
   "description": "Agent and skill evaluation harness with MLflow integration",
   "author": {
     "name": "opendatahub-io"

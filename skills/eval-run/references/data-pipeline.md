@@ -27,6 +27,8 @@ How data flows from dataset cases through execution, collection, and scoring.
   .claude/ → symlink (or generated)
   CLAUDE.md → symlink
   skills/ → symlink
+  .staged-plugins/        # Staged copies of out-of-workspace runner.plugin_dirs
+                          # (claude-code runner; skipped in workspace_mode: repo)
 ```
 
 ### Case Mode (execution.mode: case)
@@ -44,6 +46,7 @@ When `execution.mode` is `case` (default), workspace.py creates a separate works
       {output_dirs}/      # Empty dirs for skill outputs
       .claude/settings.json  # Generated (hooks + permissions)
       subagents/           # SubagentStop hook target
+      .staged-plugins/     # Staged copies of out-of-workspace runner.plugin_dirs
       scripts/ → symlink
       CLAUDE.md → symlink
       skills/ → symlink
@@ -60,8 +63,8 @@ Each case gets ALL files from the dataset case directory (not just input.yaml), 
 - Passes `batch.yaml` content as the skill prompt via stdin
 - Captures stdout (stream-json events) and stderr
 - Writes `stdout.log` and `stderr.log` to `$AGENT_EVAL_RUNS_DIR/{id}/`
-- Parses the final `result` event for token usage and cost
-- Writes `run_result.json` with exit_code, duration_s, token_usage, cost_usd
+- Parses the final `result` event for token usage and cost; `cost_usd` is the **billed** cost — the conversation `total_cost_usd`, raised to the per-model `modelUsage` sum when that exceeds it by more than $0.01 (background agents killed after the final turn, or still running at an evaluator timeout, burn billed tokens the conversation total never sees)
+- Writes `run_result.json` with exit_code, duration_s, token_usage, cost_usd — `exit_code` reflects case truth, not the raw process code: the runner reports 1 when the CLI killed background tasks that outlived the final turn (or ran an unknown command) even though the process exited 0, with the reason appended as an ERROR note in stderr
 
 **What the skill sees (batch mode)**:
 - Working directory: the workspace
@@ -115,7 +118,7 @@ $AGENT_EVAL_RUNS_DIR/{id}/
 
 ### In-place file edits
 
-Skills that modify input files using the Edit tool (rather than writing to an output directory) are handled automatically. `workspace.py` creates a git commit of the initial workspace state before execution. After execution, `collect.py` runs `git diff HEAD` to detect modified files and copies them to a `_modified/` directory under each case's run output. No extra `outputs` config is needed.
+Skills that modify input files using the Edit tool (rather than writing to an output directory) are handled automatically. `workspace.py` creates a git commit of the initial workspace state before execution. After execution, `collect.py` runs `git diff HEAD` (plus `git ls-files --others` for new files) to detect modified files and copies them to a `_modified/` directory under each case's run output. No extra `outputs` config is needed. Harness-created paths (`.claude/`, `.git/`, `.work/`, `.staged-plugins/`, `subagents/`, `hooks/`, logs) and directories declared in `outputs[].path` are excluded, so only files the skill itself modified or created appear in `_modified/`.
 
 ## 4. Collection → Scoring
 
@@ -253,6 +256,8 @@ For each judge across all cases:
 | `stderr: true` | Capture full stderr | `stderr.log` in case/run dir | `outputs["stderr"]` |
 | `events: true` | Parse JSONL into events.json | Parsed from stdout.log at collection time | `outputs["events"]` (list of event dicts). Tool results/inputs capped at 50K chars |
 | `metrics: true` | Capture execution metadata | `run_result.json` | `outputs["exit_code"]`, `["duration_s"]`, `["cost_usd"]`, `["num_turns"]`, `["token_usage"]` |
+
+> `exit_code` reflects case truth, not the raw process code: the runner reports 1 when the CLI killed background tasks that outlived the final turn (or ran an unknown command) even though the process exited 0 — the reason is appended as an ERROR note in `outputs["stderr"]`. `cost_usd` is billed cost — the conversation total, raised to the per-model `modelUsage` sum when that exceeds it by more than $0.01 — so it includes tokens burned by killed or still-running background agents.
 
 Note: `events.json` is generated at collection time by `collect.py` and includes merged subagent transcripts from `subagents/*.jsonl`. Tool calls in `outputs["tool_calls"]` are derived from events.
 

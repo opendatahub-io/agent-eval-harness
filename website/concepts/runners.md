@@ -84,11 +84,11 @@ Whatever the runtime, results are normalized into one `RunResult` dataclass:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `exit_code` | `int` | `0` = success; `-1` = timeout or harness-level failure |
+| `exit_code` | `int` | `0` = success; `-1` = timeout or harness-level failure. Runners may convert a process exit 0 into `1` when the run demonstrably failed — e.g. the claude-code runner fails a case whose background tasks the CLI killed at the bg-wait ceiling, or whose slash command was unknown |
 | `stdout` / `stderr` | `str` | Captured output |
 | `duration_s` | `float` | Wall-clock seconds |
 | `token_usage` | `dict` | `{"input": N, "output": N}` |
-| `cost_usd` | `float` | API spend |
+| `cost_usd` | `float` | Billed API spend — the conversation `total_cost_usd`, raised to the per-model usage sum when that exceeds it by more than $0.01 (background agents burning tokens the conversation total never saw) |
 | `num_turns` | `int` | Assistant turns (incl. subagents where captured) |
 | `resolved_model` | `str` | Full model ID observed at runtime |
 | `models_used` | `list` | All distinct models observed |
@@ -111,7 +111,7 @@ claude --print \
   --max-budget-usd "$BUDGET" \
   --verbose \                      # only with live logging
   --effort high \                  # only if runner.effort set
-  --plugin-dir <dir> \             # per runner.plugin_dirs entry
+  --plugin-dir <dir> \             # per runner.plugin_dirs entry (see Plugin staging)
   --append-system-prompt "..." \   # if system_prompt set
   --settings <path>                # permissions/hooks/env
 # the prompt (/skill args, or raw prompt) is piped on stdin
@@ -121,10 +121,25 @@ The runner reads the stream line by line, injecting timestamps and printing live
 progress (skill invocations, tool calls, permission denials, final cost). A watchdog
 thread kills the process at the deadline. From the stream it extracts usage, cost,
 turn counts, resolved model(s), and the structured `permission_denials` array from
-the `result` event.
+the `result` event. Reported `cost_usd` is the *billed* cost: the conversation's
+`total_cost_usd`, raised to the per-model `modelUsage` sum when that exceeds it
+by more than $0.01 (background agents killed after the final turn — or still running at an evaluator
+timeout — burn billed tokens the conversation total never sees), so it can exceed
+the cost the CLI printed.
 
 **Highlights specific to this runner:**
 
+- **Plugin staging** — every `runner.plugin_dirs` entry outside the workspace is
+  copied into `<workspace>/.staged-plugins/` and `--plugin-dir` receives the copy,
+  so the real plugin path never enters session context; in-workspace entries
+  pass through unchanged and `workspace_mode: repo` skips staging entirely.
+- **Background-task truth** — the CLI waits up to `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`
+  (default 600 s) for background tasks that outlive the final turn, then kills
+  them but still exits 0. The runner detects the kill and fails the case:
+  `exit_code` becomes `1` and an ERROR note is appended to stderr — artifacts
+  from the killed agent may be half-written. For long-running pipeline skills,
+  raise the ceiling (`0` = wait indefinitely) via `runner.env:` or an exported
+  variable (the key is on the env allowlist).
 - **Budget** is enforced server-side via `--max-budget-usd`.
 - **Permissions** — simple string patterns become `--allowed-tools` /
   `--disallowed-tools`; path-based rules are compiled into a temporary

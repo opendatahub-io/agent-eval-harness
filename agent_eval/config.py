@@ -466,6 +466,10 @@ class RunnerConfig:
     command: Optional[Union[str, list]] = None  # CLI runner: command template
     workspace_mode: Optional[str] = None  # repo | None (default: isolated workspace)
     settings: dict = field(default_factory=dict)
+    # Claude Code stages each entry's discoverable content into the case
+    # workspace and passes the staged copy to --plugin-dir (see
+    # agent.claude_code.stage_plugin_dir); Codex copies each entry's skills
+    # into the workspace's .agents/skills.
     plugin_dirs: list = field(default_factory=list)
     env: dict = field(default_factory=dict)
     system_prompt: Optional[str] = None

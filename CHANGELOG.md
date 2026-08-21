@@ -1,3 +1,19 @@
+# [1.40.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.39.5...v1.40.0) (2026-08-21)
+
+
+### Bug Fixes
+
+* **claude-code:** contain symlinked copy roots; survive symlink loops ([0e2118b](https://github.com/opendatahub-io/agent-eval-harness/commit/0e2118b5c0b679fd1a2040e2326a5a06418ab69a))
+* **claude-code:** copy staged roots from the checked canonical path ([7482473](https://github.com/opendatahub-io/agent-eval-harness/commit/7482473e0a2434a10f1b97dae2cfaf9a8c521bed))
+* **claude-code:** keep staging out of repo mode and out of collected artifacts ([b89b4fa](https://github.com/opendatahub-io/agent-eval-harness/commit/b89b4fa3f0b96cd1593385ac4f437b04772cd5aa))
+* **claude-code:** propagate broken plugin configs; refuse escaping symlinks ([a8713db](https://github.com/opendatahub-io/agent-eval-harness/commit/a8713db8430223166322291040c6ccbf231daa53))
+
+
+### Features
+
+* **claude-code:** optionally stage plugin dirs inside the workspace ([4e4e26e](https://github.com/opendatahub-io/agent-eval-harness/commit/4e4e26e01bc33421ae2e74fb1627204feabde9d0))
+* **claude-code:** stage plugin dirs into the workspace unconditionally ([e23e2c8](https://github.com/opendatahub-io/agent-eval-harness/commit/e23e2c895b9e892b27bca921119f9a799144ecd8))
+
 ## [1.39.5](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.39.4...v1.39.5) (2026-08-20)
 
 

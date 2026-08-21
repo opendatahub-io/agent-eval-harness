@@ -16,9 +16,139 @@ from .stream_capture import (
     count_subagent_turns, count_subagent_turns_by_model, setup_subagent_hook,
 )
 from agent_eval.tools.permissions import compile_permission_rules
-from agent_eval.config import resolve_plugin_dir
+from agent_eval.config import resolve_plugin_dir, resolve_plugin_skill_roots
 
 _print_lock = threading.Lock()
+
+# Conventional directories plugin discovery reads besides the manifest and
+# the manifest-declared skill roots. Copied only when present.
+# scripts/ is included because skills commonly invoke
+# ${CLAUDE_PLUGIN_ROOT}/scripts/... or ${CLAUDE_SKILL_DIR}/../../scripts/...
+# at runtime; a staged copy without it would break those plugins.
+_PLUGIN_OPTIONAL_DIRS = ("commands", "agents", "hooks", "scripts")
+
+# Bulk plugin discovery never reads — keeps the staged copy small.
+_PLUGIN_IGNORE = shutil.ignore_patterns(".git", "node_modules", "__pycache__")
+
+
+def _plugin_ignore(plugin: Path):
+    """copytree ignore callback: bulk dirs, plus any symlink whose resolved
+    target escapes the plugin. ``symlinks=False`` MATERIALIZES link targets,
+    so a third-party plugin could otherwise plant a link to a host file
+    (credentials, source data) and have staging copy it into the workspace
+    where the agent can read it (CWE-59 -> CWE-200).
+    """
+    def ignore(src, names):
+        ignored = set(_PLUGIN_IGNORE(src, names))
+        for name in names:
+            if name in ignored:
+                continue
+            entry = Path(src) / name
+            if entry.is_symlink():
+                try:
+                    resolved = entry.resolve(strict=True)
+                except (OSError, RuntimeError):
+                    # Dangling or looping (loops raise RuntimeError on
+                    # Python 3.11/3.12, OSError after) — not stageable.
+                    ignored.add(name)
+                    continue
+                if not resolved.is_relative_to(plugin):
+                    ignored.add(name)
+        return ignored
+    return ignore
+
+
+def stage_plugin_dir(plugin_dir: Path, workspace: Path) -> Path:
+    """Copy one plugin's discoverable content into the case workspace.
+
+    WHY: ``--plugin-dir <path>`` lands verbatim in the session's system
+    context — the stream-json init event registers the plugin under that
+    path. When the configured path points outside the workspace (typically
+    at the project repo under evaluation), the agent can follow it and
+    read or write the real project: ``additionalDirectories`` gates the
+    file tools, but Bash is not path-scoped, so a disclosed path is a
+    standing escape vector out of the isolated workspace. Staging the
+    plugin inside the throwaway workspace and passing THAT path keeps the
+    real location out of the session entirely.
+
+    Copies only what plugin discovery and execution need: the
+    ``.claude-plugin/`` manifest, every skill root declared by the
+    manifest (via ``resolve_plugin_skill_roots``, which validates
+    containment), and the conventional ``_PLUGIN_OPTIONAL_DIRS`` when they
+    exist at the plugin root. Symlinks are not reproduced — in-plugin
+    targets are copied as content, dangling ones are skipped, and links
+    escaping the plugin are refused — so the staged tree cannot point back
+    outside the workspace. Idempotent per workspace: an existing
+    destination is reused; a partial copy never becomes the destination
+    (copy into a temp sibling, then rename).
+    """
+    plugin = Path(plugin_dir).resolve()
+    dest = workspace / ".staged-plugins" / plugin.name
+    if dest.exists():
+        return dest
+
+    sources = [plugin / ".claude-plugin"]
+    # A Claude plugin may legitimately export no skills (commands, agents or
+    # hooks only). Tolerate exactly that layout — no 'skills' declaration in
+    # the manifest AND no conventional skills/ directory — and let every
+    # other error from resolve_plugin_skill_roots propagate: a malformed
+    # manifest or a declared-but-missing root staged "successfully" would
+    # only resurface later as an undiscoverable slash command, the silent
+    # failure mode this staging exists to prevent.
+    declares_skills = False
+    manifest_path = plugin / ".claude-plugin" / "plugin.json"
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            # Malformed manifest: let the authoritative resolver raise its
+            # own, clearer error below.
+            manifest = None
+            declares_skills = True
+        if isinstance(manifest, dict) and manifest.get("skills") is not None:
+            declares_skills = True
+    if declares_skills or (plugin / "skills").is_dir():
+        sources.extend(resolve_plugin_skill_roots(plugin))
+    sources.extend(plugin / name for name in _PLUGIN_OPTIONAL_DIRS)
+
+    staging = dest.parent / f".{plugin.name}.partial"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    try:
+        for source in sources:
+            if not source.is_dir():
+                continue
+            # copytree with symlinks=False follows a source dir that is
+            # ITSELF a symlink, and the ignore callback only sees entries
+            # inside walked directories — an escaping link at the copy root
+            # (e.g. scripts -> ~/.secrets) would be materialized wholesale.
+            # Apply the same containment rule to the roots.
+            try:
+                resolved = source.resolve(strict=True)
+            except (OSError, RuntimeError):
+                continue
+            if not resolved.is_relative_to(plugin):
+                continue
+            # Copy from the CHECKED canonical path, not the symlink: copying
+            # from `source` would re-follow the link at copy time, letting a
+            # concurrent writer swap it between check and use (CWE-367).
+            shutil.copytree(
+                resolved, staging / source.relative_to(plugin),
+                symlinks=False, ignore=_plugin_ignore(plugin),
+                ignore_dangling_symlinks=True, dirs_exist_ok=True)
+        try:
+            staging.replace(dest)
+        except OSError:
+            # Another stager won the rename race; its complete copy stands.
+            if dest.is_dir():
+                shutil.rmtree(staging, ignore_errors=True)
+                return dest
+            raise
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return dest
 
 
 def _per_model_turns(subagent_dir, stream_ids_by_model):
@@ -57,6 +187,7 @@ class ClaudeCodeRunner(EvalRunner):
         return cls(
             permissions=overrides.get("permissions", config.permissions),
             plugin_dirs=resolved_plugin_dirs,
+            workspace_mode=config.runner.workspace_mode,
             env=config.runner.env,
             system_prompt=config.runner.system_prompt,
             subagent_model=overrides.get("subagent_model"),
@@ -73,6 +204,7 @@ class ClaudeCodeRunner(EvalRunner):
         permissions: Optional[dict] = None,
         subagent_model: Optional[str] = None,
         plugin_dirs: Optional[list] = None,
+        workspace_mode: Optional[str] = None,
         env: Optional[dict] = None,
         system_prompt: Optional[str] = None,
         mlflow_experiment: Optional[str] = None,
@@ -84,6 +216,7 @@ class ClaudeCodeRunner(EvalRunner):
         self._permissions = permissions or {}
         self._subagent_model = subagent_model
         self._plugin_dirs = plugin_dirs or []
+        self._workspace_mode = workspace_mode
         self._env = env or {}
         self._system_prompt = system_prompt
         self._mlflow_experiment = mlflow_experiment
@@ -148,7 +281,22 @@ class ClaudeCodeRunner(EvalRunner):
         if self._permission_mode:
             cmd.extend(["--permission-mode", self._permission_mode])
 
-        for plugin_dir in self._plugin_dirs:
+        plugin_dirs = self._plugin_dirs
+        if plugin_dirs:
+            # Always pass a workspace-local copy so the real plugin path never
+            # enters the session context (see stage_plugin_dir). A plugin that
+            # already lives inside the workspace is passed through unchanged,
+            # and workspace_mode: repo skips staging entirely — the workspace
+            # IS the project there, so there is nothing to isolate and staging
+            # would write junk into the user's repo.
+            try:
+                plugin_dirs = self._staged_plugin_dirs(workspace)
+            except (OSError, ValueError, FileNotFoundError) as e:
+                return RunResult(
+                    exit_code=-1, stdout="",
+                    stderr=f"Plugin staging failed: {e}", duration_s=0.0,
+                )
+        for plugin_dir in plugin_dirs:
             cmd.extend(["--plugin-dir", str(plugin_dir)])
 
         effective_prompt = system_prompt or self._system_prompt
@@ -340,6 +488,9 @@ class ClaudeCodeRunner(EvalRunner):
                 num_turns = (num_turns or 0) + subagent_turns
             per_model_turns = _per_model_turns(
                 workspace / "subagents", stream_ids_by_model)
+            # An evaluator timeout can land after the CLI already emitted
+            # usage data — same under-reporting risk as the bg-kill path.
+            cost_usd = _billed_cost(cost_usd, per_model_usage)
             timeout_stderr = f"Timed out after {timeout_s}s"
             denial_list = _extract_denial_list(result_obj, permission_denials, result_denials)
             if denial_list:
@@ -403,6 +554,8 @@ class ClaudeCodeRunner(EvalRunner):
         if not cost_usd and isinstance(result_obj, dict):
             cost_usd = result_obj.get("total_cost_usd")
 
+        cost_usd = _billed_cost(cost_usd, per_model_usage)
+
         # Add subagent turns from captured transcripts, deduplicating
         # against IDs already seen in the stream (Claude Code >= 2.1.108
         # streams subagent messages in stdout too)
@@ -422,6 +575,21 @@ class ClaudeCodeRunner(EvalRunner):
         # run. Fail the case instead of letting a never-started skill look like
         # a skill that produced nothing.
         exit_code = proc.returncode
+        # The CLI kills background tasks that outlive the final turn by the
+        # bg-wait ceiling (default 600s) and still exits 0 with a "success"
+        # result event. For pipeline skills whose real work happens in
+        # background agents, that is a dead case wearing an OK label: on a
+        # real run the killed agent left half-written artifacts and the case
+        # was published as "OK | exit 0". Fail it honestly.
+        if _BG_KILL_RE.search(stderr or "") and exit_code == 0:
+            exit_code = 1
+            stderr = (stderr or "") + (
+                "\nERROR: the CLI terminated still-running background tasks at "
+                "the bg-wait ceiling — their work is incomplete and artifacts "
+                "may be half-written. Raise CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS "
+                "(0 = wait indefinitely) for long-running pipeline skills, via "
+                "the environment or runner.env in eval.yaml."
+            )
         unknown_command = _detect_unknown_command(result_obj)
         if unknown_command and exit_code == 0:
             exit_code = 1
@@ -456,6 +624,39 @@ class ClaudeCodeRunner(EvalRunner):
             raw_output=raw_output,
         )
 
+    def _staged_plugin_dirs(self, workspace: Path) -> list:
+        """Stage every configured plugin into the workspace; return the copies.
+
+        The staged path is keyed by the plugin's directory name, so two
+        different plugins sharing a basename would silently collapse into
+        one copy — fail loud instead.
+        """
+        # workspace_mode: repo runs in the user's real repository: there is
+        # no isolation boundary for staging to defend (the session already
+        # has the project), and staging an external plugin would write
+        # .staged-plugins/ into the repo — polluting it and reading back as
+        # a spurious repo modification. Pass every configured path through.
+        if self._workspace_mode == "repo":
+            return [str(Path(p).resolve()) for p in self._plugin_dirs]
+        staged = []
+        seen: dict = {}
+        ws = Path(workspace).resolve()
+        for configured in self._plugin_dirs:
+            plugin = Path(configured).resolve()
+            # A plugin already inside the workspace is passed through: its
+            # path discloses nothing outside the sandbox, and re-staging it
+            # would be pointless.
+            if plugin == ws or plugin.is_relative_to(ws):
+                staged.append(str(plugin))
+                continue
+            previous = seen.setdefault(plugin.name, plugin)
+            if previous != plugin:
+                raise ValueError(
+                    "plugin staging cannot stage two different plugins with "
+                    f"the same directory name: {previous} and {plugin}")
+            staged.append(str(stage_plugin_dir(plugin, workspace)))
+        return staged
+
     @staticmethod
     def _cleanup_session(workspace: Path) -> None:
         """Remove the Claude Code session directory for a workspace.
@@ -480,6 +681,10 @@ class ClaudeCodeRunner(EvalRunner):
         "ANTHROPIC_DEFAULT_HAIKU_MODEL",
         "CLOUD_ML_REGION", "CLAUDE_CODE_USE_VERTEX",
         "CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_CODE_SUBAGENT_MODEL",
+        # The bg-kill failure note tells users to raise this; an exact-name
+        # allowlist would otherwise swallow the export and make that advice
+        # a lie. runner.env also works and wins on collision.
+        "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS",
         "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT",
         "CLOUDSDK_CONFIG", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
         "MLFLOW_TRACKING_URI", "MLFLOW_EXPERIMENT_NAME",
@@ -510,7 +715,28 @@ class ClaudeCodeRunner(EvalRunner):
         return env
 
 
+def _billed_cost(cost_usd, per_model_usage):
+    """The larger of conversation cost and per-model billed cost.
+
+    total_cost_usd covers the CONVERSATION; modelUsage covers every token
+    billed, including a background agent killed after the final turn (or
+    still running at an evaluator timeout). Normally they agree to the cent —
+    when modelUsage is higher, the difference is real spend the conversation
+    never saw (a real case published $0.30 while burning $1.47).
+    """
+    per_model_total = sum(
+        (v or {}).get("cost_usd") or 0
+        for v in (per_model_usage or {}).values())
+    if per_model_total and per_model_total > (cost_usd or 0) + 0.01:
+        return per_model_total
+    return cost_usd
+
+
 _UNKNOWN_COMMAND_RE = re.compile(r"^Unknown command:\s*(/\S+)")
+
+# Emitted on stderr when the CLI gives up waiting for background tasks
+# (message text as of Claude Code 2.1.x; keep the match loose).
+_BG_KILL_RE = re.compile(r"Background tasks still running after .*terminating", re.S)
 
 
 def _detect_unknown_command(result_obj) -> Optional[str]:

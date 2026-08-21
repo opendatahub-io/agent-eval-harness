@@ -43,6 +43,8 @@ and gives each its own throwaway workspace under
 - symlinks to project resources (`scripts`, `skills`, `.context`, `CLAUDE.md`, …),
 - freshly-generated output directories from the `outputs` block,
 - a per-workspace `.claude/settings.json` (permissions, hooks, injected env),
+- staged copies of out-of-workspace `runner.plugin_dirs` under
+  `.staged-plugins/` (claude-code runner — see [Runners](runners.md)),
 - an initialized git repo so [lifecycle hooks](lifecycle-hooks.md) and `collect`
   can diff for in-place edits.
 
@@ -129,6 +131,7 @@ Three guardrails bound each invocation. In `case` mode "per-invocation" means
 | Config key | CLI override | Default | Meaning |
 | --- | --- | --- | --- |
 | `execution.timeout` | `--timeout` | `3600` (s) | Subprocess wall-clock timeout |
+| `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` | env / `runner.env` | `600000` (ms) | How long the CLI waits for background tasks after the final turn before killing them — killed tasks fail the case (exit 1) even though the CLI exits 0 |
 | `execution.max_budget_usd` | `--max-budget` | `100.0` | Cost cap per invocation |
 | `execution.parallelism` | `--parallelism` | `1` (sequential) | Concurrent cases (case mode only) |
 
