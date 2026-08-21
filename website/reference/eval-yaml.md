@@ -162,6 +162,7 @@ one `judge`.
           <span class="sd-f">max_error_rate</span>
           <span class="sd-f">min_alpha</span>
           <span class="sd-f">min_human_agreement</span>
+          <span class="sd-f">min_panel_alpha</span>
         </div>
       </div>
       <div class="sd-card">
@@ -336,10 +337,13 @@ judges:
   - name: output_quality
     prompt: "Score 1-5 vs the reference for completeness, clarity, accuracy."
     score_range: [1, 5]     # declare the scale — omitting it warns at config load
+    # model: [claude-sonnet-4-5, gpt-4o, gemini-2.5-pro]  # list = judge panel;
+    #   non-Anthropic ids are gateway aliases via ANTHROPIC_BASE_URL (LiteLLM)
 
 thresholds:
   has_content: { min_pass_rate: 1.0 }
   output_quality: { min_mean: 3.5 }
+  # output_quality: { min_panel_alpha: 0.67 }  # cross-model panel alpha gate
 ```
 
 ## Conventions
@@ -367,7 +371,7 @@ thresholds:
 - [**traces**](config/traces.md) — stdout, stderr, events, metrics
 - [**hooks**](config/hooks.md) — before/after all/each, before_scoring
 - [**judges**](config/judges.md) — the five judge types and all fields
-- [**thresholds**](config/thresholds.md) — min_mean, min_pass_rate, min_win_rate, max_error_rate, min_alpha, min_human_agreement
+- [**thresholds**](config/thresholds.md) — min_mean, min_pass_rate, min_win_rate, max_error_rate, min_alpha, min_human_agreement, min_panel_alpha
 - [**reward**](config/reward.md) — single-judge and formula reward modes
 
 </div>

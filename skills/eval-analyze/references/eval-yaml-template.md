@@ -374,6 +374,16 @@ judges:
   #   prompt_file: eval/prompts/comparison-judge.md
   #   # model: <model-id>   # Optional override; default is models.judge
 
+  # Judge panel (cross-family ensemble) — `model` as a LIST of 2-4 ids.
+  # The judge call fans out per model (samples apply per model), reduces by
+  # majority/median over the per-model verdicts, and scoring adds a
+  # cross-model Krippendorff alpha + family composition.
+  # - name: <name>
+  #   llm_rubric: <criteria>
+  #   score_range: [1, 5]
+  #   model: [claude-sonnet-4-5, gpt-4o, gemini-2.5-pro]  # list = judge panel;
+  #     # non-Anthropic ids are gateway aliases via ANTHROPIC_BASE_URL (LiteLLM)
+
 # Thresholds for regression detection
 thresholds:
   <judge_name>:
@@ -384,6 +394,9 @@ thresholds:
     # min_human_agreement: 0.6  # judge-vs-human kappa/alpha, merged by
     #                      # `score.py calibration` after /eval-review verdicts.
     #                      # Never regresses until the judge has been calibrated.
+    # min_panel_alpha: 0.67  # cross-model panel alpha, for a judge whose
+    #                      # `model` is a list. Perfect-agreement matrices
+    #                      # pass; skipped with a notice on --runner harbor.
 
 # Reward composition (OPTIONAL) — collapse per-judge results into a single
 # scalar in [0, 1] for RL training (GRPO). Only needed when training; the

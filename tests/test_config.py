@@ -763,6 +763,155 @@ thresholds:
     assert cfg.thresholds == {"q": {"min_human_agreement": 0.6}}
 
 
+def test_min_panel_alpha_is_a_known_threshold_key(tmp_path):
+    """PR8: min_panel_alpha is in THRESHOLD_KEYS — no unknown-key warning,
+    block stored verbatim."""
+    import warnings as _warnings
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")
+        cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - {name: q, check: "return (True, 'ok')"}
+thresholds:
+  q:
+    min_panel_alpha: 0.67
+"""))
+    assert cfg.thresholds == {"q": {"min_panel_alpha": 0.67}}
+
+
+@pytest.mark.parametrize("value", ["1.5", '"high"', ".nan"])
+def test_bad_min_panel_alpha_values_raise(tmp_path, value):
+    """Value validation rides the generic *_alpha rule in _parse_thresholds:
+    finite numbers <= 1.0 (the coefficient maximum)."""
+    with pytest.raises(ValueError,
+                       match=r"min_panel_alpha must be a finite"):
+        EvalConfig.from_yaml(_write(tmp_path, f"""
+name: t
+execution: {{skill: s}}
+judges:
+  - {{name: q, check: "return (True, 'ok')"}}
+thresholds:
+  q:
+    min_panel_alpha: {value}
+"""))
+
+
+class TestSameFamilyAdvisory:
+    """Appendix-B.4 same-family advisory (user decision Q2): fires at config
+    load ONLY when reliability features are engaged — a judges[].model panel
+    or a consequence-tagged judge — and never on a plain config."""
+
+    ADVISORY = "one provider family"
+
+    @staticmethod
+    def _load_catching(tmp_path, text):
+        import warnings as _warnings
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            EvalConfig.from_yaml(_write(tmp_path, text))
+        return [w for w in caught
+                if TestSameFamilyAdvisory.ADVISORY in str(w.message)]
+
+    def test_fires_on_same_family_roles_with_a_consequence_judge(
+            self, tmp_path):
+        hits = self._load_catching(tmp_path, """
+name: t
+execution: {skill: s}
+models: {skill: claude-sonnet-4-5, judge: claude-opus-4-8}
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    samples: 3
+    consequence: safety
+""")
+        assert len(hits) == 1
+        assert "Appendix B.4" in str(hits[0].message)
+
+    def test_fires_on_a_single_family_panel_alone(self, tmp_path):
+        hits = self._load_catching(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - name: q
+    llm_rubric: score it
+    feedback_type: bool
+    model: [claude-sonnet-4-5, claude-haiku-4-5, claude-opus-4-8]
+""")
+        assert len(hits) == 1
+
+    def test_silent_on_a_plain_all_anthropic_config(self, tmp_path):
+        """No panel, no consequence tag: reliability features are not
+        engaged, so the advisory never fires (Q2)."""
+        hits = self._load_catching(tmp_path, """
+name: t
+execution: {skill: s}
+models: {skill: claude-sonnet-4-5, judge: claude-opus-4-8}
+judges:
+  - {name: q, llm_rubric: score it, feedback_type: bool}
+""")
+        assert hits == []
+
+    def test_silent_on_a_cross_family_judge(self, tmp_path):
+        hits = self._load_catching(tmp_path, """
+name: t
+execution: {skill: s}
+models: {skill: claude-sonnet-4-5, judge: gpt-4o}
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    samples: 3
+    consequence: safety
+""")
+        assert hits == []
+
+    def test_silent_when_any_id_is_an_unrecognized_alias(self, tmp_path):
+        hits = self._load_catching(tmp_path, """
+name: t
+execution: {skill: s}
+models: {skill: claude-sonnet-4-5, judge: my-litellm-alias}
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    samples: 3
+    consequence: safety
+""")
+        assert hits == []
+
+    def test_silent_below_two_configured_models(self, tmp_path):
+        """Only models.skill is set — the hardcoded tools.py hook default is
+        never inferred."""
+        hits = self._load_catching(tmp_path, """
+name: t
+execution: {skill: s}
+models: {skill: claude-sonnet-4-5}
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    samples: 3
+    consequence: safety
+""")
+        assert hits == []
+
+    def test_a_cross_family_panel_member_silences_the_claim(self, tmp_path):
+        hits = self._load_catching(tmp_path, """
+name: t
+execution: {skill: s}
+models: {skill: claude-sonnet-4-5, judge: claude-opus-4-8}
+judges:
+  - name: q
+    llm_rubric: score it
+    feedback_type: bool
+    model: [claude-sonnet-4-5, gpt-4o]
+""")
+        assert hits == []
+
+
 @pytest.mark.parametrize("value", ["1.5", '"high"', ".nan"])
 def test_bad_min_human_agreement_values_raise(tmp_path, value):
     """The generic *_agreement rule in _parse_thresholds covers the new key:

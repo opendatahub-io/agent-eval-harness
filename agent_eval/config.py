@@ -656,9 +656,13 @@ CONSEQUENCE_TIER_MIN_ALPHA = {
 #: gates the post-hoc judge-vs-human calibration coefficient merged by
 #: ``score.py calibration`` (its value validation rides the generic
 #: ``*_agreement`` rule in ``_parse_thresholds``).
+#: ``min_panel_alpha`` gates the cross-model panel alpha of a judge whose
+#: ``model`` is a list (a judge panel); its value validation rides the
+#: generic ``*_alpha`` rule below. Consequence tiers inject ``min_alpha``
+#: ONLY — a panel gate is always explicit (user decision Q3).
 THRESHOLD_KEYS = frozenset({
     "min_mean", "min_pass_rate", "min_win_rate", "max_error_rate", "min_alpha",
-    "min_human_agreement",
+    "min_human_agreement", "min_panel_alpha",
 })
 
 
@@ -792,7 +796,15 @@ class JudgeConfig:
     # normalizes the judge over; `reward.score_range` is only a fallback for
     # composed judges that declare none.
     score_range: Optional[list] = None
-    model: str = ""  # Override model for this judge (pairwise, LLM)
+    # Override model for this judge (pairwise, LLM). In YAML, `model` also
+    # accepts a LIST of 2-4 model ids — a judge panel: `model` then holds the
+    # first entry and `panel_models` the full list.
+    model: str = ""
+    # Judge panel — derived from a list-valued `model:` in YAML, never its
+    # own YAML key. Non-empty only for LLM judges (llm_rubric/prompt/
+    # prompt_file); the scorer fans out per model and reduces by majority
+    # (bool) / median_low (numeric) over the per-model reduced verdicts.
+    panel_models: list = field(default_factory=list)
     # External code judge
     module: str = ""
     function: str = ""
@@ -1387,6 +1399,42 @@ class EvalConfig:
                         f"Judge '{jname}': 'score_range' must be finite and "
                         "increasing [min, max]")
                 score_range_val = [lo, hi]
+            # `model` — a string, or a LIST of 2-4 model ids (a judge panel).
+            # Normalize None FIRST: a bare `model:` key (explicit YAML null)
+            # loaded fine before lists existed and must keep loading.
+            jname = j.get("name", "")
+            model_raw = j.get("model", "")
+            if model_raw is None:
+                model_raw = ""
+            panel_models_val = []
+            if isinstance(model_raw, list):
+                entries = list(model_raw)
+                if not entries:
+                    raise ValueError(
+                        f"Judge '{jname}': 'model' list cannot be empty — "
+                        "use a string, or 2-4 model ids for a judge panel")
+                if not all(isinstance(e, str) and e.strip() for e in entries):
+                    raise ValueError(
+                        f"Judge '{jname}': model list entries must be "
+                        "non-empty strings")
+                if len(set(entries)) != len(entries):
+                    raise ValueError(
+                        f"Judge '{jname}': duplicate model in panel list — "
+                        "a duplicate panel model would double-weight a rater")
+                if len(entries) > 4:
+                    raise ValueError(
+                        f"Judge '{jname}': a judge panel supports 2-4 "
+                        f"models, got {len(entries)}")
+                # A 1-item list is a plain single-model judge, not a panel.
+                model_val = entries[0]
+                if len(entries) >= 2:
+                    panel_models_val = entries
+            elif isinstance(model_raw, str):
+                model_val = model_raw
+            else:
+                raise ValueError(
+                    f"Judge '{jname}': 'model' must be a string or a list "
+                    "of strings")
             config.judges.append(
                 JudgeConfig(
                     name=j.get("name", ""),
@@ -1399,7 +1447,8 @@ class EvalConfig:
                     context=j.get("context", []),
                     feedback_type=j.get("feedback_type", ""),
                     score_range=score_range_val,
-                    model=j.get("model", ""),
+                    model=model_val,
+                    panel_models=panel_models_val,
                     module=j.get("module", ""),
                     function=j.get("function", ""),
                     builtin=builtin_val,
@@ -1438,6 +1487,29 @@ class EvalConfig:
                 raise ValueError(
                     f"Judge '{jc.name}': unknown builtin judge '{jc.builtin}' "
                     f"(available: {', '.join(builtin_judge_names())})")
+            # Judge panels (list-valued `model`) are valid ONLY on LLM judges
+            # (llm_rubric/prompt/prompt_file): deterministic judges take no
+            # model, builtins own their prompt contract, and the agent-judge
+            # runner path resolves one model per judge — a panel there would
+            # silently run one model, so it is rejected loudly at load.
+            if jc.panel_models:
+                if jc.builtin or jc.check or jc.module:
+                    kind = ("builtin" if jc.builtin
+                            else "check" if jc.check else "module")
+                    raise ValueError(
+                        f"Judge '{jc.name}': 'model' list (judge panel) is "
+                        f"not valid on a {kind} judge — a panel needs an "
+                        "LLM judge (llm_rubric/prompt/prompt_file)")
+                if jc.agent:
+                    raise ValueError(
+                        f"Judge '{jc.name}': judge panels are not supported "
+                        "for agent judges — the agent-judge runner path is "
+                        "pinned to one model per judge")
+                if not (jc.prompt or jc.prompt_file or jc.llm_rubric):
+                    raise ValueError(
+                        f"Judge '{jc.name}': 'model' list on a non-LLM "
+                        "judge — a judge panel needs an LLM judge "
+                        "(llm_rubric/prompt/prompt_file)")
             if jc.feedback_type == "bool" and jc.score_range:
                 raise ValueError(
                     f"Judge '{jc.name}': 'score_range' has no meaning with "
@@ -1595,6 +1667,47 @@ class EvalConfig:
         # raise) but stored verbatim; consequence-tier defaults resolve at
         # detection time via `effective_thresholds()`, never here.
         config.thresholds = _parse_thresholds(raw.get("thresholds", {}))
+
+        # Q3 (consequence x panels): tiers inject `min_alpha` ONLY — the
+        # self-consistency gate. A consequence-tagged PANEL judge without an
+        # explicit `min_panel_alpha` has an ungated panel alpha; say so at
+        # load rather than silently leaving the truer coefficient ungated.
+        for jc in config.judges:
+            if not (jc.consequence and jc.panel_models):
+                continue
+            entry = (config.thresholds or {}).get(jc.name)
+            if not (isinstance(entry, dict) and "min_panel_alpha" in entry):
+                import warnings
+                warnings.warn(
+                    f"Judge '{jc.name}': consequence '{jc.consequence}' "
+                    "injects a tier-default min_alpha only (single-judge "
+                    "self-consistency); the judge's cross-model panel alpha "
+                    "is NOT tier-gated — set an explicit "
+                    f"thresholds.{jc.name}.min_panel_alpha to gate it",
+                    stacklevel=2)
+
+        # Appendix-B.4 same-family advisory (user decision Q2): fires ONLY
+        # when reliability features are engaged — a judges[].model panel or
+        # a consequence-tagged judge. (models.hook_shadow does not exist
+        # yet; when it ships it joins this engagement test.) At most one
+        # warning per load; unknown ids (gateway aliases) stay silent inside
+        # same_family_advisory. The run-report same-family caveat is
+        # independent of this and always renders.
+        if any(jc.panel_models or jc.consequence for jc in config.judges):
+            from agent_eval.model_families import same_family_advisory
+            role_models = [m for m in (models.skill, models.subagent,
+                                       models.judge, models.hook)
+                           if m and isinstance(m, str)]
+            panel_entries = []
+            for jc in config.judges:
+                if jc.panel_models:
+                    panel_entries.extend(jc.panel_models)
+                elif jc.model:
+                    role_models.append(jc.model)
+            advisory = same_family_advisory(role_models, panel_entries)
+            if advisory:
+                import warnings
+                warnings.warn(advisory, stacklevel=2)
 
         # Hooks
         hooks_raw = raw.get("hooks", {}) or {}

@@ -15,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from agent_eval.model_families import (  # noqa: E402
-    family_composition, infer_model_family,
+    family_composition, infer_model_family, same_family_advisory,
 )
 
 FAMILY_TABLE = [
@@ -126,3 +126,26 @@ def test_family_composition_empty_and_none():
 def test_family_composition_never_names_an_unknown_family():
     comp = family_composition(["mystery-model"])
     assert set(comp) == {"unknown"}
+
+
+# ---------------------------------------------------------------------------
+# same_family_advisory (Appendix B.4 — the ONE home; config.py imports it)
+# ---------------------------------------------------------------------------
+
+def test_advisory_text_on_a_single_known_family():
+    text = same_family_advisory(["claude-opus-4-8"], ["claude-haiku-4-5"])
+    assert text is not None
+    assert "anthropic" in text
+    assert "Appendix B.4" in text
+    assert "ANTHROPIC_BASE_URL" in text
+
+
+@pytest.mark.parametrize("role_models,panel_models", [
+    (["claude-opus-4-8", "gpt-4o"], []),           # cross-family
+    (["claude-opus-4-8", "my-alias"], []),         # unknown anywhere -> silent
+    (["claude-opus-4-8"], []),                     # < 2 collected
+    ([], []),                                      # nothing configured
+    (["claude-opus-4-8"], ["claude-x", "gpt-4o"]),  # cross-family panel member
+])
+def test_advisory_stays_silent(role_models, panel_models):
+    assert same_family_advisory(role_models, panel_models) is None

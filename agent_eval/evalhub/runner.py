@@ -215,15 +215,20 @@ def _run_with_client(client, config, config_path, ns, provider_id,
     # detection is worse than a noisy failure). Raw config.thresholds on
     # purpose (never effective_thresholds()): consequence tiers must not
     # inject min_alpha here — the EvalHub client summary carries no sampling
-    # stability data, so a consequence-tagged judge must not regress this
-    # path. Explicit min_alpha keys are skipped via include_irr=False.
+    # stability data and no judge-panel data, so a consequence-tagged judge
+    # must not regress this path. Explicit min_alpha and min_panel_alpha
+    # keys are skipped via include_irr=False (it covers both).
     if config.thresholds:
         score = _load_score_module()
-        if any(isinstance(t, dict) and "min_alpha" in t
-               for t in config.thresholds.values()):
-            print("NOTE: reliability gates (min_alpha) skipped on this "
-                  "execution path: no sampling stability data in aggregated "
-                  "results", file=sys.stderr)
+        skipped = sorted({key
+                          for t in config.thresholds.values()
+                          if isinstance(t, dict)
+                          for key in ("min_alpha", "min_panel_alpha")
+                          if key in t})
+        if skipped:
+            print(f"NOTE: reliability gates ({', '.join(skipped)}) skipped "
+                  "on this execution path: no sampling stability data or "
+                  "judge-panel data in aggregated results", file=sys.stderr)
         regressions = score.detect_regressions(summary["judges"],
                                                config.thresholds,
                                                include_irr=False)

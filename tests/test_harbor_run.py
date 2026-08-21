@@ -612,6 +612,44 @@ def test_no_skip_notice_without_a_min_alpha_threshold(tmp_path, capsys):
     assert capsys.readouterr().err == ""
 
 
+def test_min_panel_alpha_skipped_on_harbor_with_the_combined_notice(
+        tmp_path, capsys):
+    """min_panel_alpha rides the same include_irr scoping as min_alpha: no
+    panel_alpha regression on the harbor path, min_mean still fires, and
+    the skip notice names BOTH configured reliability keys."""
+    raw = {
+        "name": "t",
+        "execution": {"skill": "rfe.speedrun"},
+        "dataset": {"path": ""},
+        "judges": [
+            {"name": "files_exist", "check": "return (True, 'ok')\n"},
+            {"name": "rfe_quality", "prompt": "score it",
+             "score_range": [1, 5],
+             "model": ["m1", "m2", "m3"]},
+        ],
+        "thresholds": {"rfe_quality": {"min_mean": 4.0, "min_alpha": 0.8,
+                                       "min_panel_alpha": 0.67}},
+    }
+    p = tmp_path / "eval.yaml"
+    p.write_text(yaml.safe_dump(raw, sort_keys=False))
+    config = EvalConfig.from_yaml(p)
+    job = _parsed_job()
+    for t in job["trials"]:
+        t["per_judge"]["rfe_quality"]["value"] = 2
+    summary = run_mod.build_summary(job, config)
+    score = run_mod._load_score_module()
+
+    assert run_mod._note_min_alpha_skipped(config.thresholds) is True
+    err = capsys.readouterr().err
+    assert ("reliability gates (min_alpha, min_panel_alpha) skipped on "
+            "this execution path") in err
+    assert "no sampling stability data or judge-panel data" in err
+
+    regressions = score.detect_regressions(
+        summary["judges"], config.thresholds, include_irr=False)
+    assert [r.metric for r in regressions] == ["mean"]
+
+
 def test_consequence_tier_never_reaches_raw_thresholds(tmp_path):
     """The harbor path validates task-package reuse off set(config.thresholds)
     — a consequence-tagged judge must not appear there, and the reuse

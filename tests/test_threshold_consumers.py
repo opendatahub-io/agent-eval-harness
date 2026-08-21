@@ -38,6 +38,10 @@ def _ha_judges(**ha):
     return {"q": {"mean": 4.0, "scored_cases": 5, "human_agreement": ha}}
 
 
+def _panel_judges(**panel):
+    return {"q": {"mean": 4.0, "scored_cases": 4, "panel": panel}}
+
+
 # judges aggregate, thresholds, run-level human_calibration block (None =
 # never calibrated), and whether the CLI would regress
 CASES = [
@@ -89,6 +93,25 @@ CASES = [
                 reason_code="insufficient_data",
                 reason="n=3 joined pairs, below the calibration floor (5)"),
      {"q": {"min_human_agreement": 0.6}}, {"judges": ["q"]}, True),
+    # Judge-panel gate (measurement-validity PR8). Same three-state rule as
+    # min_alpha, routed under the same include_irr scoping.
+    ("min_panel_alpha breach",
+     _panel_judges(metric="krippendorff_alpha", level="nominal", value=0.4,
+                   n_units=4, models=["a", "b", "c"],
+                   families={"unknown": 3}),
+     {"q": {"min_panel_alpha": 0.67}}, None, True),
+    ("min_panel_alpha clean",
+     _panel_judges(metric="krippendorff_alpha", level="nominal", value=0.8,
+                   n_units=4),
+     {"q": {"min_panel_alpha": 0.67}}, None, False),
+    ("min_panel_alpha degenerate pass",
+     _panel_judges(metric="krippendorff_alpha", level="nominal", value=None,
+                   reason_code="perfect_agreement",
+                   reason="all ratings identical"),
+     {"q": {"min_panel_alpha": 0.67}}, None, False),
+    ("min_panel_alpha configured but unavailable",
+     {"q": {"mean": 4.0, "scored_cases": 4}},
+     {"q": {"min_panel_alpha": 0.67}}, None, True),
 ]
 
 
@@ -180,6 +203,26 @@ def test_harbor_report_shows_no_fail_for_a_min_alpha_only_judge():
     assert "FAIL" not in harbor
     assert not report._render_regressions(
         summary, config, run_result={"execution_mode": "harbor"})
+
+
+def test_harbor_report_shows_no_fail_for_a_min_panel_alpha_only_judge():
+    """min_panel_alpha rides the SAME include_irr scoping as min_alpha —
+    harbor/evalhub aggregations carry no judge-panel data."""
+    judges = _panel_judges(metric="krippendorff_alpha", level="nominal",
+                           value=0.4, n_units=4)
+    summary = {"judges": judges, "per_case": {}}
+    config = {"thresholds": {"q": {"min_panel_alpha": 0.67}}, "judges": []}
+
+    local = report._render_scoring_summary(summary, config)
+    assert "FAIL" in local
+
+    harbor = report._render_scoring_summary(
+        summary, config, run_result={"execution_mode": "harbor"})
+    assert "FAIL" not in harbor
+    assert not report._render_regressions(
+        summary, config, run_result={"execution_mode": "harbor"})
+    assert detect_regressions(judges, config["thresholds"],
+                              include_irr=False) == []
 
 
 def test_harbor_min_human_agreement_never_calibrated_is_silently_skipped():

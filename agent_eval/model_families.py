@@ -100,3 +100,40 @@ def family_composition(model_ids):
         family = infer_model_family(model_id) or "unknown"
         composition[family] = composition.get(family, 0) + 1
     return composition
+
+
+def same_family_advisory(role_models, panel_models=()):
+    """Appendix-B.4 advisory text, or ``None`` when no claim can be made.
+
+    ``role_models`` are the explicitly configured role/judge model ids
+    (``models.skill/subagent/judge/hook`` when set, plus per-judge single
+    models); ``panel_models`` is the flat list of ``judges[].model`` panel
+    entries. Returns the warning text when >= 2 collected ids ALL classify
+    (no unknowns anywhere) into exactly ONE provider family; otherwise
+    ``None``. An unclassifiable id (opaque gateway alias) silences the claim
+    by design — unknown means silent, never a warning.
+
+    The CALLER decides when the check is engaged. Per user decision Q2 it
+    fires only when reliability features are in play — a ``judges[].model``
+    panel or a consequence-tagged judge (``models.hook_shadow`` does not
+    exist yet; it joins the engagement test when it ships) — and at most
+    once per config load. The run-report same-family caveat is separate and
+    always renders.
+    """
+    models = [m for m in list(role_models or []) + list(panel_models or [])
+              if isinstance(m, str) and m.strip()]
+    if len(models) < 2:
+        return None
+    families = [infer_model_family(m) for m in models]
+    if any(f is None for f in families):
+        return None
+    if len(set(families)) != 1:
+        return None
+    return (
+        f"All configured models resolve to one provider family "
+        f"({families[0]}): correlated failures across generation/judgment/"
+        "simulation layers (arXiv 2608.00794 Appendix B.4). Consider a "
+        "cross-family judge panel (judges[].model as a list) — "
+        "non-Anthropic members require an Anthropic-Messages-compatible "
+        "gateway via ANTHROPIC_BASE_URL."
+    )

@@ -447,16 +447,24 @@ def _copy_case_artifacts(parsed: dict, output_dir: Path,
 def _note_min_alpha_skipped(thresholds) -> bool:
     """One combined stderr notice when reliability gates cannot run here.
 
-    Harbor aggregation carries no per-sample stability data, so ``min_alpha``
-    thresholds are skipped (``include_irr=False``) rather than regressing
-    every run. Consequence tiers never inject on this path either — the
-    detector receives raw ``config.thresholds``, not ``effective_thresholds()``.
+    Harbor aggregation carries no per-sample stability data and no
+    judge-panel data, so ``min_alpha`` and ``min_panel_alpha`` thresholds
+    are skipped (``include_irr=False`` covers both) rather than regressing
+    every run. (Panels still EXECUTE in-container — the in-container
+    verifier runs score_cases, so you pay m× judge cost — but the
+    cross-case panel alpha is not aggregated on this path yet.)
+    Consequence tiers never inject on this path either — the detector
+    receives raw ``config.thresholds``, not ``effective_thresholds()``.
     """
-    if any(isinstance(t, dict) and "min_alpha" in t
-           for t in (thresholds or {}).values()):
-        print("NOTE: reliability gates (min_alpha) skipped on this execution "
-              "path: no sampling stability data in aggregated results",
-              file=sys.stderr)
+    skipped = sorted({key
+                      for t in (thresholds or {}).values()
+                      if isinstance(t, dict)
+                      for key in ("min_alpha", "min_panel_alpha")
+                      if key in t})
+    if skipped:
+        print(f"NOTE: reliability gates ({', '.join(skipped)}) skipped on "
+              "this execution path: no sampling stability data or "
+              "judge-panel data in aggregated results", file=sys.stderr)
         return True
     return False
 
@@ -712,7 +720,8 @@ def run_eval_on_harbor(
     # consequence tiers must not inject min_alpha on this path — Harbor
     # aggregation carries no per-sample stability data, so a
     # consequence-tagged judge must not regress a Harbor run. Explicit
-    # min_alpha keys are skipped via include_irr=False, with one notice.
+    # min_alpha and min_panel_alpha keys are skipped via include_irr=False,
+    # with one combined notice.
     score = _load_score_module()
     _note_min_alpha_skipped(config.thresholds)
     regressions = score.detect_regressions(summary["judges"], config.thresholds,

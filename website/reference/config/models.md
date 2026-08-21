@@ -107,6 +107,23 @@ judges:
 export EVAL_JUDGE_MODEL=claude-opus-4-6   # last-resort default across runs
 ```
 
+A [judge panel](judges.md#judge-panels-cross-family-ensembles) — a per-judge
+`model:` that is a **list** — bypasses `models.judge` entirely: every panel
+member is named explicitly.
+
+!!! note "Same-family advisory (Appendix B.4)"
+    When reliability features are engaged — a `judges[].model` panel or a
+    `consequence`-tagged judge — config load emits **one** `warnings.warn`
+    if ≥ 2 explicitly configured models (the `models.*` roles plus per-judge
+    models, panel members included) all resolve to **one recognized provider
+    family**: same-family agents, judges and simulators share training
+    lineage and can fail in correlated ways. The check is conservative and
+    silent whenever *any* configured id is unrecognized (opaque gateway
+    aliases defeat family inference by design), and it never fires on a
+    config with no panel and no consequence tag. Satisfy it with a
+    cross-family judge panel or a cross-family `models.judge` — non-Anthropic
+    ids are gateway aliases via `ANTHROPIC_BASE_URL`.
+
 ## hook
 
 The model used to auto-answer `AskUserQuestion` prompts during headless

@@ -194,6 +194,8 @@ If `hooks.before_scoring` is configured in eval.yaml, score.py runs those hooks 
 
 Judges receive the case `outputs` record — file contents (`outputs["files"]`, `<dir>_content`), execution metadata, `tool_calls`, logs, `annotations` (parsed `annotations.yaml`, for outcome-aware scoring), and `hook_answers` (the simulated-user answer-provenance ledger; None when no ledger was found, plus `hook_answers_scope` and `interception_configured`). Full field reference: [`references/data-pipeline.md`](references/data-pipeline.md).
 
+**Panel judges**: a judge whose `model:` is a **list** (2-4 ids) fans out per model — cost is `models × samples × cases` judge calls (`samples` applies per model). Each model's draws reduce first (majority/median), then the per-model reduced verdicts reduce across models into the case value; scoring adds a cross-model Krippendorff alpha with family composition (`panel` on the judge aggregate in `summary.yaml`, badge in the report, gated by `thresholds.<judge>.min_panel_alpha`). Non-Anthropic panel members are gateway aliases via `ANTHROPIC_BASE_URL` (LiteLLM); with a bare Anthropic key the panel is within-family and labeled as such.
+
 If `--baseline` was specified, also run pairwise comparison:
 
 ```bash
@@ -210,6 +212,19 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py read $AGENT_EVAL_RUNS_DI
 ```
 
 `summary.yaml` has four sections: `judges` (per-judge `mean` and `pass_rate`), `per_case` (per-case `{value, rationale}` per judge), `validity` (non-gating measurement-validity block, rebuilt on every scoring run: per-judge IRR triple, V1/V2/V3 layer statuses, same-family caveat), and `pairwise` (only if `--baseline` was used: `run_a`, `run_b`, `wins_a`, `wins_b`, `ties`). After `/eval-review` collects calibration verdicts and `score.py calibration --run-id <id> --config <config>` runs, judge entries may additionally carry a `human_agreement` block (judge-vs-human kappa/alpha) and a run-level `human_calibration` section exists.
+
+### Step 6.5: Instrument clarity (optional, diagnostic)
+
+When a rubric is new or freshly edited — or before trusting a judge gate — check whether the rubric admits consistent application:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/score.py clarity \
+  --run-id <id> \
+  --config <config> \
+  --raters <m1,m2,m3>
+```
+
+Each rater model re-rates a deterministic case subsample (sorted + strided, seedless; `--max-cases 20` default) with the judge's own rubric; the m-way chance-corrected alpha is compared against the 0.67 exploratory floor and merged into `summary['clarity']` (rendered as a small table in the report). This measures **instrument clarity — does the rubric admit consistent application? — not rater validity**: at or above 0.67 the rubric is applied consistently; below it, the rubric likely underspecifies the construct — refine the rubric rather than lowering the bar. Report-only: it never gates CI. Prefer cross-family raters (gateway aliases via `ANTHROPIC_BASE_URL`); re-scoring the run invalidates a prior clarity block (cmd_judges prints a re-run note).
 
 ## Step 7: Interpret and Report
 

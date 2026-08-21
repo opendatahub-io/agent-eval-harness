@@ -14,6 +14,8 @@ thresholds:
     max_error_rate: 0.2      # optional — fail if >20% of cases errored
   # format_check:
   #   min_human_agreement: 0.6  # judge-vs-human kappa/alpha, after `score.py calibration`
+  # task_quality:
+  #   min_panel_alpha: 0.67  # panel judge (judges[].model as a list) — cross-model alpha
   # pairwise:
   #   min_win_rate: 0.6      # pairwise judge — fraction of cases won vs baseline
 ```
@@ -23,7 +25,7 @@ omitted, no gate runs and scoring always succeeds. Unknown keys **warn** at
 config load (they never gate); `*_alpha` / `*_agreement` values must be
 finite numbers ≤ 1.0 (the coefficient maximum).
 
-## The six keys
+## The seven keys
 
 | Key | Applies to | Metric compared | Passes when |
 | --- | --- | --- | --- |
@@ -33,6 +35,7 @@ finite numbers ≤ 1.0 (the coefficient maximum).
 | `max_error_rate` | any judge | fraction of cases where the judge errored | `error_rate <= max_error_rate` |
 | `min_alpha` | LLM/agent judges run with [`samples > 1`](judges.md) | single-judge self-consistency alpha (upper bound on inter-rater reliability) over the case × sample rating matrix | `alpha >= min_alpha`, or all ratings identical (see below) |
 | `min_human_agreement` | any calibrated judge (deterministic `check` judges included) | judge-vs-human agreement (Cohen's kappa / Krippendorff's alpha) merged by `score.py calibration` from `/eval-review` verdicts | `value >= min_human_agreement`, perfect agreement, or the judge was never calibrated (see below) |
+| `min_panel_alpha` | [panel judges](judges.md#judge-panels-cross-family-ensembles) (`model` is a list) | cross-model panel alpha (Krippendorff) over the cases × models matrix of per-model reduced verdicts | `alpha >= min_panel_alpha`, or all ratings identical (see below) |
 
 `max_error_rate` is the coverage gate. `min_mean`, `min_pass_rate` and
 `min_win_rate` are computed over the cases that produced a value, so a judge
@@ -72,6 +75,36 @@ for tentative conclusions); 0.70 and 0.80 are author-proposed.
     `min_alpha` (explicit or tier-injected) is **skipped with a stderr
     notice** on those execution paths — it never regresses a containerized
     run. Score the run locally to evaluate the reliability gate.
+
+## `min_panel_alpha` — the panel gate
+
+`min_panel_alpha` gates the **cross-model panel alpha** of a
+[panel judge](judges.md#judge-panels-cross-family-ensembles) (`judges[].model`
+as a list): Krippendorff's alpha over the cases × models matrix, where each
+model's per-case *reduced* verdict is one rater and an errored model is a
+missing rating. It follows the same three states as `min_alpha`:
+
+1. **Breach** — alpha computed and below the bound → regression (the detail
+   names the panel's family composition, so a within-family breach reads
+   correctly).
+2. **Perfect agreement** — every rating identical (`reason_code:
+   perfect_agreement`) → **passes**.
+3. **Configured but unavailable** — no panel data at all (the judge has no
+   `model` list, or too few pairable cases) → regression with an actionable
+   detail.
+
+Consequence tiers inject `min_alpha` **only** — a consequence-tagged panel
+judge without an explicit `min_panel_alpha` gets a load warning telling you
+to set one. Value validation is shared with the other `*_alpha` keys
+(finite, ≤ 1.0).
+
+!!! note "Harbor: panels execute, the gate does not"
+    Panels still **execute in-container on Harbor** — the in-container
+    verifier runs the full judge engine, so you pay m× judge cost — while
+    the cross-case panel alpha is **not aggregated on that path yet**.
+    `min_panel_alpha` is therefore skipped with the same stderr notice as
+    `min_alpha` on the Harbor/EvalHub paths. Score the run locally to
+    evaluate the gate.
 
 ## `min_human_agreement` — the calibration gate
 

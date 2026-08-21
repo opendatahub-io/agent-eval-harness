@@ -81,7 +81,7 @@ flowchart TD
 | `arguments` | mapping | all | `**kwargs` for Python judges; `{{ arguments }}` for LLM judges. |
 | `if` | string | all | Python expression over `annotations`/`outputs`; skip the case when false. |
 | `feedback_type` | string | LLM, agent (validated on every judge) | `bool` selects a `passed` verdict; anything else — **including omitting it** — selects a numeric `score` on `score_range`. **Never inferred** from the rubric text. `int`/`float` force integer/continuous scoring; when omitted, integer-ness follows the bounds: whole bounds score as an integer, fractional bounds (e.g. `[0, 2.5]`) as a number. `bool` + `score_range`, and `int` + fractional bounds, are rejected at load on any judge type. |
-| `model` | string | LLM, agent | Per-judge model override (highest precedence). |
+| `model` | string **or list** | LLM (list: LLM only), agent (string only) | Per-judge model override (highest precedence). A **list of 2–4 ids declares a [judge panel](#judge-panels-cross-family-ensembles)**: the judge call fans out per model and the verdicts are reduced across models. Lists are valid only on LLM judges (`llm_rubric`/`prompt`/`prompt_file`) — rejected at load on `check`/`builtin`/`module`/agent judges. A 1-item list is a plain single-model judge. |
 | `samples` | int | LLM, agent | Run N times per case and reduce (median/majority). Default `1`. |
 | `consequence` | string | all | Reliability tier: `exploratory` \| `safety` \| `gating`. Injects a default [`min_alpha`](thresholds.md#min_alpha-the-reliability-gate) of 0.67 / 0.70 / 0.80 at detection time (an explicit `min_alpha` wins; `thresholds` is never rewritten). The gated coefficient is the **single-judge self-consistency alpha, an upper bound on inter-rater reliability** — a self-consistent-but-biased judge still passes. Only 0.67 is literature-backed; 0.70/0.80 are author-proposed. Requires `samples >= 2` on an LLM/agent judge — config load warns when the judge cannot produce IRR data (`samples: 1`, builtin LLM judges, deterministic judges). |
 | `score_range` | `[min, max]` | all numeric judges | The judge's scale. **Declared:** stated in the LLM judge's system prompt and `submit_score` schema (and in the agent judge's `score.json` contract), colors per-case report cells, normalizes the judge in every [reward](reward.md#precedence) composition that normalizes it — a `reward.score_range` only covers judges that declare none, and a judge the reward clamps as-is (`reward.raw`, or a single `reward.judge` without `normalize`) consults no range — and is **enforced for every judge type** — including `check`, `module`/`function` and Python `builtin` judges: an off-scale (or non-finite) value becomes an error sample, not a clamped one (see [Validation](#validation-at-load-time)). **Omitted:** LLM/agent judges are told `[1, 5]` but nothing is checked, and the cell renders neutral (uncolored). Bounds may be negative (`[-1, 1]`) or fractional (`[0, 2.5]`); fractional bounds also select a non-rounded `number` verdict. |
@@ -162,6 +162,61 @@ per-judge model:  >  models.judge  >  EVAL_JUDGE_MODEL env var
 ```
 
 If none resolves to a non-empty value, the judge raises at run time.
+A [judge panel](#judge-panels-cross-family-ensembles) bypasses `models.judge`
+entirely — every member is named explicitly in the list.
+
+## Judge panels (cross-family ensembles)
+
+A **list-valued `model`** turns an LLM judge into a panel: every case is
+judged by each listed model independently, and the per-case verdict is the
+cross-model reduction (paper Prescription 4 — a single judge's
+self-consistency alpha is only an *upper bound* on inter-rater reliability;
+a self-consistent-but-biased judge sails through it).
+
+```yaml
+judges:
+  - name: task_quality
+    llm_rubric: "Rate the response quality."
+    score_range: [1, 5]
+    samples: 3                    # k draws PER panel model (k × m calls/case)
+    model:
+      - claude-sonnet-4-5         # primary family
+      - gpt-4o                    # gateway alias via ANTHROPIC_BASE_URL
+      - gemini-2.5-pro            # >= 2 known families => cross-family
+```
+
+Semantics:
+
+- **`samples` applies per model.** Each model's `k` draws are reduced first
+  by the usual sampling reduction (strict-majority bool with ties→fail,
+  `median_low` numeric), so within-model self-consistency is never conflated
+  with inter-rater agreement. The per-case value is then a second, identical
+  reduction over the per-model **reduced** verdicts.
+- **Cross-case panel alpha.** Scoring computes Krippendorff's alpha over the
+  cases × models matrix (units = cases, raters = models; an errored model is
+  a *missing* rating, never a category) and writes it as `panel` on the
+  judge's aggregate in `summary.yaml` — gate it with
+  [`min_panel_alpha`](thresholds.md#min_panel_alpha-the-panel-gate).
+- **Family labeling.** The panel's family composition is inferred
+  conservatively from the model ids. When every member resolves to one known
+  family the alpha is labeled *single-family — within-family agreement can be
+  spuriously high*; unrecognized ids (gateway aliases) are counted as
+  `unknown` and no family is ever claimed for them.
+
+!!! warning "Gateway prerequisite — stated plainly"
+    All judge calls go through the **single Anthropic-Messages client**
+    (`score.py`'s `_get_anthropic_client`, which honors `ANTHROPIC_BASE_URL`).
+    Cross-family panel members are therefore **gateway aliases**: you need an
+    Anthropic-Messages-compatible proxy (e.g. LiteLLM serving `/v1/messages`
+    with tool-call translation) and `ANTHROPIC_BASE_URL` pointing at it. With
+    a bare Anthropic key a panel necessarily stays **within-family** — it
+    still runs, and the report labels it as such, never as cross-family. No
+    native OpenAI/Gemini SDK path exists, and the MLflow `make_judge`
+    fallback (active only without Anthropic credentials) rejects panels with
+    a clear error.
+
+Pairwise comparison remains single-model: a list normalizes to its first
+entry there. Panels multiply judge cost — `models × samples × cases` calls.
 
 ## Agent judges
 

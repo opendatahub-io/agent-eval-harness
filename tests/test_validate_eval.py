@@ -78,9 +78,11 @@ class TestJudgeFieldContract:
         from agent_eval.config import JudgeConfig
 
         allowed = _valid_judge_fields()
-        # `condition` is spelled `if` in YAML; everything else matches verbatim.
+        # `condition` is spelled `if` in YAML; `panel_models` is derived from
+        # a list-valued `model:` and is never its own YAML key; everything
+        # else matches verbatim.
         expected = {f.name for f in dataclasses.fields(JudgeConfig)}
-        expected = (expected - {"condition"}) | {"if"}
+        expected = (expected - {"condition", "panel_models"}) | {"if"}
         assert expected <= allowed, (
             f"validate_eval rejects real JudgeConfig field(s): "
             f"{sorted(expected - allowed)}"
@@ -93,8 +95,10 @@ class TestJudgeFieldContract:
 
         # `condition` must NOT be accepted — YAML spells it `if`. Leaving it in
         # `known` would let an accidental `condition` entry pass this test.
+        # `panel_models` must NOT be accepted either — it is derived from a
+        # list-valued `model:`, never written in YAML.
         known = ({f.name for f in dataclasses.fields(JudgeConfig)}
-                 - {"condition"}) | {"if"}
+                 - {"condition", "panel_models"}) | {"if"}
         assert _valid_judge_fields() == known, (
             f"validate_eval accepts field(s) JudgeConfig does not define: "
             f"{sorted(_valid_judge_fields() - known)}"

@@ -1345,6 +1345,46 @@ def _irr_badge(irr):
     return f'<span class="{cls}" title="{_esc(tooltip)}">{_esc(text)}</span>'
 
 
+def _panel_badge(panel):
+    """Cross-model judge-panel alpha badge beside the IRR badge.
+
+    Shows the panel alpha (3 decimals), rater count and family composition;
+    the tooltip carries the full label (including the single-family caveat
+    when every member resolves to one known family), the models list, the
+    metric/level, n_units and k_samples. Degenerate results render
+    "panel α n/a (…)" — never 1.0. No strength-of-agreement adjectives.
+    """
+    if not isinstance(panel, dict) or not panel:
+        return ""
+    models = panel.get("models") or []
+    families = panel.get("families") or {}
+    fam_str = " + ".join(f"{count} {fam}"
+                         for fam, count in sorted(families.items()))
+    label = panel.get("label") or "cross-model panel alpha"
+    tooltip = f"{label} — {panel.get('metric', 'krippendorff_alpha')}"
+    if panel.get("level"):
+        tooltip += f"/{panel['level']}"
+    tooltip += f", n_units={panel.get('n_units', '?')}"
+    if panel.get("k_samples"):
+        tooltip += f", {panel['k_samples']} sample(s) per model"
+    if models:
+        tooltip += f". Panel: {', '.join(str(m) for m in models)}"
+    if panel.get("rationale"):
+        tooltip += f". {panel['rationale']}"
+
+    value = panel.get("value")
+    cls = "irr-badge"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        text = (f"panel α = {value:.3f} ({len(models)} models — {fam_str}, "
+                f"n={panel.get('n_units', '?')})")
+    elif panel.get("reason_code") == "perfect_agreement":
+        text = f"panel α n/a (perfect agreement — {len(models)} models)"
+    else:
+        text = f"panel α n/a ({panel.get('reason_code') or 'unavailable'})"
+        cls += " irr-warn"
+    return f'<span class="{cls}" title="{_esc(tooltip)}">{_esc(text)}</span>'
+
+
 def _human_agreement_badge(ha, human_calibration=None):
     """Judge-vs-human calibration annotation beside the IRR badge.
 
@@ -1413,12 +1453,19 @@ def _render_scoring_summary(summary, config, baseline_summary=None,
                      or "—")
     for jc in config.get("judges", []):
         jname = jc.get("name", "")
+        # `model` may be a list (a judge panel) — render a readable label,
+        # never a Python list repr, in the Model column.
+        model_raw = jc.get("model")
+        if isinstance(model_raw, list):
+            model_label = "panel: " + ", ".join(str(m) for m in model_raw)
+        else:
+            model_label = model_raw
         if jc.get("builtin"):
-            judge_info[jname] = ("builtin", jc.get("model") or "—")
+            judge_info[jname] = ("builtin", model_label or "—")
         elif jc.get("check"):
             judge_info[jname] = ("check", "—")
         elif jc.get("prompt") or jc.get("prompt_file"):
-            judge_info[jname] = ("llm", jc.get("model") or default_model)
+            judge_info[jname] = ("llm", model_label or default_model)
         elif jc.get("module"):
             judge_info[jname] = ("code", "—")
 
@@ -1461,6 +1508,11 @@ def _render_scoring_summary(summary, config, baseline_summary=None,
                 jst.get("samples"))
         if isinstance(jst, dict) and isinstance(jst.get("irr"), dict):
             metric_val += " " + _irr_badge(jst["irr"])
+        # Cross-model panel alpha (judges[].model as a list) beside the IRR
+        # badge — self-consistency and inter-rater agreement are different
+        # measurements and render as separate annotations.
+        if isinstance(agg.get("panel"), dict):
+            metric_val += " " + _panel_badge(agg["panel"])
         # Judge-vs-human calibration (score.py calibration) beside the IRR
         # badge — self-consistency and criterion anchoring are different
         # measurements and render as separate annotations.
@@ -1500,6 +1552,10 @@ def _render_scoring_summary(summary, config, baseline_summary=None,
                 # Skipped (not evaluated) on harbor/evalhub runs — don't
                 # display a bound the detector never checked.
                 thresh_str = f"&ge; &alpha; {thresh['min_alpha']}"
+            elif "min_panel_alpha" in thresh and include_irr:
+                # Same execution-path scoping as min_alpha: the panel gate
+                # is skipped on harbor/evalhub runs.
+                thresh_str = f"&ge; panel &alpha; {thresh['min_panel_alpha']}"
             elif "min_human_agreement" in thresh and (
                     isinstance(agg.get("human_agreement"), dict)
                     or judge_name in ((summary.get("human_calibration") or {})
@@ -1588,6 +1644,63 @@ def _render_scoring_summary(summary, config, baseline_summary=None,
             html += "<td>—</td>"
         html += f'<td>—</td><td><span class="{pw_status_cls}">{pw_status}</span></td></tr>\n'
 
+    html += "</table>\n"
+    html += _render_clarity(summary.get("clarity"))
+    return html
+
+
+def _render_clarity(clarity):
+    """Compact instrument-clarity table under the scoring summary.
+
+    Renders ``summary['clarity']`` (written by ``score.py clarity``):
+    per-judge m-way alpha vs the 0.67 exploratory floor, the rater models
+    and their family composition. Explicitly instrument clarity — whether
+    the rubric admits consistent application — not rater validity.
+    Report-only: no CI gate. Renders nothing when the block is absent.
+    """
+    if not isinstance(clarity, dict) or not isinstance(
+            clarity.get("judges"), dict) or not clarity["judges"]:
+        return ""
+    raters = clarity.get("raters") or []
+    families = clarity.get("families") or {}
+    fam_str = " + ".join(f"{count} {fam}"
+                         for fam, count in sorted(families.items()))
+    floor = clarity.get("floor", 0.67)
+    label = clarity.get("label") or (
+        "instrument clarity (does the rubric admit consistent "
+        "application?) — not rater validity")
+    html = "<h3>Instrument clarity</h3>\n"
+    html += (f'<p class="clarity-note">{_esc(label)} — '
+             f"{len(raters)} raters ({_esc(fam_str)}), "
+             f"floor {floor} (report-only diagnostic, no CI gate)</p>\n")
+    html += "<table>\n<tr><th>Judge</th><th>Clarity &alpha;</th>"
+    html += f"<th>n cases</th><th>vs {floor} floor</th></tr>\n"
+    for name in sorted(clarity["judges"]):
+        block = clarity["judges"][name]
+        if not isinstance(block, dict):
+            continue
+        value = block.get("value")
+        n_units = block.get("n_units", block.get("n_cases", "?"))
+        tooltip = (f"{block.get('metric', 'krippendorff_alpha')}/"
+                   f"{block.get('level', '?')}")
+        if block.get("rationale"):
+            tooltip += f" — {block['rationale']}"
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            val_str = f'<span title="{_esc(tooltip)}">{value:.3f}</span>'
+            if value >= floor:
+                verdict = '<span class="pass">meets floor</span>'
+            else:
+                verdict = ('<span class="fail" title="the rubric likely '
+                           'underspecifies the construct; refine the rubric '
+                           'rather than lowering the bar (paper Sec 10.2)">'
+                           'below floor</span>')
+        else:
+            reason = block.get("reason_code") or "unavailable"
+            val_str = (f'<span title="{_esc(block.get("reason") or reason)}">'
+                       f"n/a ({_esc(reason)})</span>")
+            verdict = '<span class="skip">—</span>'
+        html += (f"<tr><td>{_esc(name)}</td><td>{val_str}</td>"
+                 f"<td>{n_units}</td><td>{verdict}</td></tr>\n")
     html += "</table>\n"
     return html
 

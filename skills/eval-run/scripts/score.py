@@ -10,6 +10,7 @@ Usage:
     python3 ${CLAUDE_SKILL_DIR}/scripts/score.py pairwise --run-id <id> --baseline <id> --config eval.yaml
     python3 ${CLAUDE_SKILL_DIR}/scripts/score.py regression --run-id <id> --config eval.yaml
     python3 ${CLAUDE_SKILL_DIR}/scripts/score.py calibration --run-id <id> --config eval.yaml
+    python3 ${CLAUDE_SKILL_DIR}/scripts/score.py clarity --run-id <id> --config eval.yaml --raters m1,m2,m3
 """
 
 import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
@@ -38,7 +39,7 @@ import yaml
 from agent_eval.config import (
     EvalConfig, RunnerConfig, _is_valid_eval_name, _validate_path_segment,
 )
-from agent_eval.model_families import infer_model_family
+from agent_eval.model_families import family_composition, infer_model_family
 from agent_eval.tools.interception import extract_tool_patterns
 from agent_eval.reliability import (
     INTERVAL, NOMINAL, ORDINAL,
@@ -53,6 +54,20 @@ from agent_eval.reliability import (
 IRR_SELF_CONSISTENCY_LABEL = (
     "single-judge self-consistency alpha "
     "(upper bound on inter-rater reliability)")
+
+# Cross-model judge-panel alpha (units = cases, raters = the panel's models).
+# The single-family suffix is mandatory whenever every panel member resolves
+# to ONE known provider family — within-family agreement must never be sold
+# as cross-family robustness (paper Prescription 4).
+PANEL_ALPHA_LABEL = "cross-model panel alpha"
+PANEL_SINGLE_FAMILY_SUFFIX = (
+    " (single-family panel — within-family agreement can be spuriously "
+    "high; paper Prescription 4)")
+PANEL_ALPHA_RATIONALE = (
+    "Krippendorff's alpha over the cases × models matrix: each panel "
+    "model's per-case REDUCED verdict is one rater; an errored model is a "
+    "missing rating, which alpha's coincidence formulation tolerates "
+    "(paper Sec 5.3).")
 
 # Log (don't silently blank) any undefined variable a judge template references.
 _TEMPLATE_LOGGER = logging.getLogger("agent_eval.judge_template")
@@ -893,17 +908,25 @@ def _make_builtin_scorer(entry, jc, config):
         arguments = jc.arguments
         judge_model = _resolve_judge_model(jc, config)
 
-        def scorer(outputs=None, **kwargs):
-            out = outputs or {}
-            rendered = _render_jinja2_template(prompt_text, arguments, out)
-            images = _extract_images(out)
-            # Builtin prompts state a pass/fail contract, so the verdict shape
-            # is theirs, not the judge config's. A config that declares
-            # `feedback_type`/`score_range` on one of these is rejected at load
-            # rather than having the declaration silently dropped here.
-            return _call_structured_judge(rendered, judge_model, "bool",
-                                          images=images)
+        def _make(model):
+            def scorer(outputs=None, **kwargs):
+                out = outputs or {}
+                rendered = _render_jinja2_template(prompt_text, arguments, out)
+                images = _extract_images(out)
+                # Builtin prompts state a pass/fail contract, so the verdict
+                # shape is theirs, not the judge config's. A config that
+                # declares `feedback_type`/`score_range` on one of these is
+                # rejected at load rather than having the declaration
+                # silently dropped here.
+                return _call_structured_judge(rendered, model, "bool",
+                                              images=images)
+            return scorer
 
+        # Panels are rejected on builtin judges at config load; `for_model`
+        # is attached for the `score.py clarity` diagnostic, which re-rates
+        # cases with arbitrary rater models through this same call path.
+        scorer = _make(judge_model)
+        scorer.for_model = _make
         return scorer
 
     raise ValueError(f"Unknown builtin judge kind: {entry.kind}")
@@ -1410,6 +1433,67 @@ def _compute_stability_irr(scored, judge_config, n_samples, samples_set):
     return irr
 
 
+def _score_panel(scorer, rec, models, n_samples, bounds, name, judge_type,
+                 case_id):
+    """Score one case with a judge panel: k samples PER MODEL, reduced per
+    model first, then across models.
+
+    Each model's ``n_samples`` draws are reduced by ``_aggregate_samples``
+    (within-model self-consistency is never conflated with inter-rater
+    agreement); the per-case VALUE is a second, literal ``_aggregate_samples``
+    pass over the per-model REDUCED records — strict-majority bool with
+    ties→fail, ``median_low`` numeric. An errored draw is a ``None`` raw
+    value and an errored model a ``None`` reduced value (a missing rating,
+    never a category). Deliberately NO top-level ``stability`` key: model
+    disagreement is not sampling instability, and the cross-case stability
+    block must not conflate the two. All raw draws land in
+    ``sample_rationales`` with a ``[model]`` prefix so the report's existing
+    per-case renderer shows them unchanged.
+    """
+    values = {}
+    samples = {}
+    sample_rationales = []
+    reduced_records = []
+    for model in models:
+        model_scorer = scorer.for_model(model)
+        runs = []
+        for _ in range(n_samples):
+            try:
+                v, rat = _normalize_result(model_scorer(outputs=rec))
+                v = _enforce_bounds(v, bounds, name)
+                runs.append({"value": v, "rationale": rat})
+            except Exception as e:
+                _log_judge_error(case_id, e)
+                runs.append({"value": None, "error": str(e)})
+        for r in runs:
+            entry = {"value": r.get("value"),
+                     "rationale": f"[{model}] {r.get('rationale', '')}".strip()}
+            if r.get("error"):
+                entry["error"] = r["error"]
+            sample_rationales.append(entry)
+        reduced = (_aggregate_samples(runs, judge_type) if n_samples > 1
+                   else runs[0])
+        rec_m = {"value": reduced.get("value"),
+                 "rationale": f"[{model}] {reduced.get('rationale', '')}"
+                              .strip()}
+        if reduced.get("error"):
+            rec_m["error"] = reduced["error"]
+        reduced_records.append(rec_m)
+        values[model] = reduced.get("value")
+        samples[model] = [r.get("value") for r in runs]
+
+    result = _aggregate_samples(reduced_records, judge_type)
+    out = {"value": result.get("value"), "judge_type": judge_type,
+           "panel": {"models": list(models), "values": values,
+                     "samples": samples},
+           "sample_rationales": sample_rationales}
+    if result.get("value") is None and result.get("error"):
+        out["error"] = result["error"]
+    else:
+        out["rationale"] = result.get("rationale", "")
+    return out
+
+
 def _parse_inline_check_source(source):
     """Parse an inline check snippet as the function body used at runtime."""
     wrapped = f"def _check(outputs, arguments):\n{textwrap.indent(source or '', '    ')}"
@@ -1748,8 +1832,15 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
             else:
                 n = 1
             bounds = judge_bounds.get(name)
+            # Judge panel: k samples per model, per-model reduction, then a
+            # cross-model majority/median — never the plain sampling path.
+            panel = getattr(scorer, "panel_models", None)
             try:
-                if n > 1:
+                if panel:
+                    case_results[name] = _score_panel(
+                        scorer, rec, panel, n, bounds, name, judge_type,
+                        case_id)
+                elif n > 1:
                     runs = []
                     for _ in range(n):
                         try:
@@ -1849,6 +1940,52 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
                     "irr": _compute_stability_irr(
                         scored, jc_by_name.get(name), n_samples, samples_set),
                 }
+
+    # Cross-case panel alpha (judge panels): units = cases, raters = the
+    # panel's models, ratings = per-model REDUCED verdicts; an errored model
+    # is a missing rating (None), never a category. The models list is read
+    # from config — never inferred from the first scored case.
+    samples_by_name = {jn: js for jn, _, _, _, js in judges}
+    for name in aggregated:
+        jc = jc_by_name.get(name)
+        panel_models = list(getattr(jc, "panel_models", None) or []) if jc else []
+        if not panel_models:
+            continue
+        units = []
+        for c in per_case:
+            recd = per_case[c].get(name)
+            pnl = recd.get("panel") if isinstance(recd, dict) else None
+            if isinstance(pnl, dict):
+                vals = pnl.get("values") or {}
+                units.append([vals.get(m) for m in panel_models])
+        level = _irr_level(jc)
+        # Same guard as the stability IRR: a distance-weighted level needs
+        # numeric ratings; contradicting observed values fall back to nominal.
+        if level != NOMINAL and any(
+                isinstance(v, bool) or not isinstance(v, (int, float))
+                for row in units for v in row if v is not None):
+            level = NOMINAL
+        result = krippendorff_alpha(units, level)
+        families = family_composition(panel_models)
+        label = PANEL_ALPHA_LABEL
+        if len(families) == 1 and "unknown" not in families:
+            label += PANEL_SINGLE_FAMILY_SUFFIX
+        k_samples = (max(1, samples_override)
+                     if samples_override is not None
+                     else samples_by_name.get(name, 1))
+        aggregated[name]["panel"] = {
+            "metric": result.metric,
+            "level": level,
+            "value": result.value,
+            "reason_code": result.reason_code,
+            "reason": result.reason,
+            "n_units": result.n_units,
+            "label": label,
+            "rationale": PANEL_ALPHA_RATIONALE,
+            "models": panel_models,
+            "families": families,
+            "k_samples": k_samples,
+        }
 
     return {"per_case": per_case, "aggregated": aggregated}
 
@@ -2203,6 +2340,31 @@ def _load_agent_judge(jc, config, project_root=None):
     return scorer
 
 
+class _PanelScorer:
+    """Panel facade over a per-model scorer factory.
+
+    ``for_model(m)`` returns (and caches) the single-model scorer the factory
+    builds — the SAME client/call path a single-model judge uses
+    (``_get_anthropic_client`` honoring ``ANTHROPIC_BASE_URL``), so every
+    panel member, gateway aliases included, is called identically. Calling
+    the facade directly falls back to the first panel member;
+    ``score_cases`` takes the panel path (``_score_panel``) instead.
+    """
+
+    def __init__(self, panel_models, make_scorer):
+        self.panel_models = list(panel_models)
+        self._make = make_scorer
+        self._cache = {}
+
+    def for_model(self, model):
+        if model not in self._cache:
+            self._cache[model] = self._make(model)
+        return self._cache[model]
+
+    def __call__(self, outputs=None, **kwargs):
+        return self.for_model(self.panel_models[0])(outputs=outputs, **kwargs)
+
+
 def _load_llm_judge(jc, config, project_root=None):
     root = Path(project_root).resolve() if project_root else Path.cwd().resolve()
     # Check llm_rubric first (preferred in synthetic-generation configs), then prompt
@@ -2235,19 +2397,42 @@ def _load_llm_judge(jc, config, project_root=None):
     if (os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID")
             or os.environ.get("ANTHROPIC_API_KEY")
             or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
-        judge_model = _resolve_judge_model(jc, config)
         feedback_type = "bool" if jc.feedback_type == "bool" else "score"
         bounds = _numeric_bounds(jc)
         arguments = jc.arguments
 
-        def scorer(outputs=None, **kwargs):
-            out = outputs or {}
-            rendered = _render_jinja2_template(prompt, arguments, out)
-            images = _extract_images(out)
-            return _call_structured_judge(rendered, judge_model, feedback_type,
-                                          images=images, bounds=bounds)
+        def _make(model):
+            def scorer(outputs=None, **kwargs):
+                out = outputs or {}
+                rendered = _render_jinja2_template(prompt, arguments, out)
+                images = _extract_images(out)
+                return _call_structured_judge(rendered, model, feedback_type,
+                                              images=images, bounds=bounds)
+            return scorer
 
+        # Judge panel: every member resolves through this same factory —
+        # non-Anthropic ids are gateway aliases reached via
+        # ANTHROPIC_BASE_URL (e.g. a LiteLLM proxy serving /v1/messages).
+        # A panel bypasses models.judge entirely.
+        if jc.panel_models:
+            return _PanelScorer(jc.panel_models, _make)
+        judge_model = _resolve_judge_model(jc, config)
+        scorer = _make(judge_model)
+        # `score.py clarity` re-rates cases with arbitrary rater models
+        # through the judge's own rubric and call path.
+        scorer.for_model = _make
         return scorer
+
+    # The MLflow make_judge fallback below is pinned to one client/model —
+    # it cannot fan a panel out per member, so panels are rejected loudly
+    # here rather than silently running one model.
+    if jc.panel_models:
+        raise RuntimeError(
+            f"Judge '{jc.name}': judge panels require the Anthropic client "
+            "path (ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / "
+            "ANTHROPIC_VERTEX_PROJECT_ID), optionally through an "
+            "Anthropic-Messages-compatible gateway via ANTHROPIC_BASE_URL — "
+            "the MLflow make_judge fallback cannot run a panel")
 
     # MLflow make_judge fallback (requires OpenAI-compatible API key)
     try:
@@ -3192,7 +3377,8 @@ def detect_regressions(current_results, thresholds, baseline_results=None, *,
     the local scoring path (detection-time consequence-tier resolution) and
     from raw ``config.thresholds`` on the Harbor/EvalHub paths (with
     ``include_irr=False``, since those aggregations carry no sampling
-    stability data).
+    stability data and no judge-panel data — ``include_irr`` scopes both
+    ``min_alpha`` and ``min_panel_alpha``).
 
     ``human_calibration`` is the summary's run-level ``human_calibration``
     block (written by ``score.py calibration``), consumed only by the
@@ -3291,6 +3477,40 @@ def detect_regressions(current_results, thresholds, baseline_results=None, *,
                     "deterministic, or produced no IRR data")
                 regressions.append(Regression(
                     judge_name, "alpha", f">= {t}", "n/a", detail))
+        # min_panel_alpha gates the cross-model panel alpha (units = cases,
+        # raters = the panel's models). Same THREE-STATE semantics as
+        # min_alpha, and the same include_irr scoping: Harbor/EvalHub
+        # aggregations carry no panel data, so the gate is skipped there
+        # with the combined reliability skip-notice.
+        if "min_panel_alpha" in threshold and include_irr:
+            panel = current.get("panel")
+            panel = panel if isinstance(panel, dict) else {}
+            t = threshold["min_panel_alpha"]
+            value = panel.get("value")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if value < t:
+                    detail = (
+                        f"{panel.get('metric', 'krippendorff_alpha')}/"
+                        f"{panel.get('level', '?')}, "
+                        f"n_units={panel.get('n_units', '?')} — "
+                        f"{panel.get('label', PANEL_ALPHA_LABEL)}")
+                    families = panel.get("families")
+                    if isinstance(families, dict) and families:
+                        detail += "; families: " + ", ".join(
+                            f"{fam} x{count}"
+                            for fam, count in sorted(families.items()))
+                    regressions.append(Regression(
+                        judge_name, "panel_alpha", f">= {t}", f"{value:.3f}",
+                        detail))
+            elif panel.get("reason_code") == REASON_PERFECT_AGREEMENT:
+                pass  # degenerate PASS: zero variance, gate satisfied
+            else:
+                detail = panel.get("reason") or (
+                    "panel alpha unavailable — no judge panel data; "
+                    "configure judges[].model as a list of 2-4 models and "
+                    "re-score")
+                regressions.append(Regression(
+                    judge_name, "panel_alpha", f">= {t}", "n/a", detail))
         # min_human_agreement gates the post-hoc judge-vs-human calibration
         # merged by `score.py calibration`. THREE-STATE semantics, with one
         # deliberate deviation from the configured-but-unavailable pattern:
@@ -3533,6 +3753,21 @@ def cmd_judges(args):
                 else:
                     st_note += (f"  [α n/a "
                                 f"({irr.get('reason_code') or 'unavailable'})]")
+        panel = agg.get("panel")
+        if isinstance(panel, dict):
+            n_models = len(panel.get("models") or [])
+            fams = panel.get("families") or {}
+            fam_note = ", ".join(f"{fam} x{count}"
+                                 for fam, count in sorted(fams.items()))
+            value = panel.get("value")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                st_note += (f"  [panel α={value:.3f} ({n_models} models: "
+                            f"{fam_note}; n={panel.get('n_units')})]")
+            elif panel.get("reason_code") == REASON_PERFECT_AGREEMENT:
+                st_note += f"  [panel α n/a (perfect agreement; {fam_note})]"
+            else:
+                st_note += (f"  [panel α n/a "
+                            f"({panel.get('reason_code') or 'unavailable'})]")
         if rate is not None:
             print(f"  {name}: pass_rate={rate:.1%}{st_note}")
         elif mean is not None:
@@ -3541,22 +3776,31 @@ def cmd_judges(args):
     # A prior `score.py calibration` merged human_agreement blocks into
     # summary['judges']; rewriting that key drops them (intended: new judge
     # values invalidate old calibration). The surviving human_calibration
-    # block is what the stale-calibration gate keys on.
+    # block is what the stale-calibration gate keys on. A prior `score.py
+    # clarity` block goes stale the same way: new judge values change the
+    # candidate basis its subsample was drawn from.
     summary_path = runs_dir / args.run_id / "summary.yaml"
     prior_human_calibration = None
+    prior_clarity = None
     if summary_path.exists():
         with open(summary_path) as f:
-            prior_human_calibration = (yaml.safe_load(f) or {}).get(
-                "human_calibration")
+            _prior_summary = yaml.safe_load(f) or {}
+        prior_human_calibration = _prior_summary.get("human_calibration")
+        prior_clarity = _prior_summary.get("clarity")
 
     _merge_summary(args.run_id, "judges",
                    _strip_judge_values(judge_results.get("aggregated", {})),
                    runs_dir)
     _merge_summary(args.run_id, "per_case", judge_results.get("per_case", {}), runs_dir)
 
+    invalidated = []
     if prior_human_calibration:
-        print("NOTE: re-scoring invalidated judge calibration — re-run: "
-              "score.py calibration", file=sys.stderr)
+        invalidated.append("judge calibration — re-run: score.py calibration")
+    if prior_clarity:
+        invalidated.append("instrument clarity — re-run: score.py clarity")
+    if invalidated:
+        print("NOTE: re-scoring invalidated " + "; ".join(invalidated),
+              file=sys.stderr)
 
     # Workload-agnostic run metrics for cross-run / cross-model comparison
     rr_path = runs_dir / args.run_id / "run_result.json"
@@ -3850,6 +4094,248 @@ def cmd_calibration(args):
         print("\n  REGRESSIONS: 0")
 
 
+# ---------------------------------------------------------------------------
+# Instrument clarity — does the rubric admit consistent application? (Sec 10.2)
+# ---------------------------------------------------------------------------
+
+#: Literature-backed exploratory floor (Krippendorff's customary minimum for
+#: tentative conclusions) the clarity alpha is compared against. Report-only:
+#: never a CI gate, no thresholds key.
+CLARITY_FLOOR = 0.67
+
+#: Mandatory label: the m raters share the judge's rubric, so their agreement
+#: measures whether the INSTRUMENT admits consistent application — it says
+#: nothing about whether any rater is right.
+CLARITY_LABEL = ("instrument clarity (does the rubric admit consistent "
+                 "application?) — not rater validity")
+
+CLARITY_RATIONALE = (
+    "m-way Krippendorff alpha over independent rater models applying the "
+    "judge's own rubric to a deterministic case subsample, compared against "
+    "the 0.67 exploratory floor (paper Sec 10.2). Below the floor, refine "
+    "the rubric rather than lowering the bar.")
+
+#: Below this many rated cases no coefficient is computed (the raw case x
+#: rater table is printed instead) — same small-N honesty as the
+#: calibration floor. Enforced via the reliability primitive's `min_units`
+#: policy floor, surfacing as reason_code `below_floor`.
+CLARITY_MIN_CASES = 5
+
+
+def _stride_subsample(items, max_n):
+    """Deterministic stride subsample of a pre-sorted list (no random).
+
+    Returns the items unchanged when they fit; otherwise every
+    ``len/max_n``-th item of the sorted input. With value-sorted candidates
+    this is systematic sampling across the verdict range — stratified
+    coverage with seedless determinism.
+    """
+    items = list(items)
+    if max_n <= 0 or len(items) <= max_n:
+        return items
+    step = len(items) / max_n
+    return [items[min(int(i * step), len(items) - 1)] for i in range(max_n)]
+
+
+def _clarity_sort_key(value, case_id):
+    """Sort key grouping candidates by incumbent verdict, then case id.
+
+    bool is numeric here on purpose (False < True groups the two verdict
+    strata); non-numeric values fall back to their string form.
+    """
+    if isinstance(value, (bool, int, float)):
+        return (0, float(value), case_id)
+    return (1, str(value), case_id)
+
+
+def cmd_clarity(args):
+    """Instrument-clarity diagnostic (paper Sec 10.2): m rater models
+    re-rate a deterministic case subsample with each judge's own rubric;
+    the m-way chance-corrected alpha answers "does the rubric admit
+    consistent application?" — NOT rater validity. Report-only: merged into
+    ``summary['clarity']``, never a CI gate.
+    """
+    config = EvalConfig.from_yaml(args.config)
+    runs_dir = _get_runs_dir(config.eval_name())
+    case_dirs = _get_case_dirs(args.run_id, runs_dir)
+
+    raters = [m.strip() for m in (args.raters or "").split(",") if m.strip()]
+    if len(raters) < 2:
+        print("clarity: needs at least 2 rater models "
+              "(--raters m1,m2[,m3])", file=sys.stderr)
+        sys.exit(1)
+    if len(set(raters)) != len(raters):
+        print("clarity: duplicate rater model — a duplicate would "
+              "double-weight a rater", file=sys.stderr)
+        sys.exit(1)
+    families = family_composition(raters)
+    if len(families) == 1 and "unknown" not in families:
+        print("clarity WARNING: all raters resolve to one provider family "
+              f"({next(iter(families))}) — within-family agreement can be "
+              "spuriously high (paper Prescription 4); prefer cross-family "
+              "raters (gateway aliases via ANTHROPIC_BASE_URL)",
+              file=sys.stderr)
+
+    n_samples = max(1, args.samples or 1)
+    max_cases = max(1, args.max_cases or 20)
+
+    summary_path = runs_dir / args.run_id / "summary.yaml"
+    summary = {}
+    if summary_path.exists():
+        with open(summary_path) as f:
+            summary = yaml.safe_load(f) or {}
+    per_case = summary.get("per_case") or {}
+
+    loaded = load_judges(config, Path.cwd())
+    jc_by_name = {jc.name: jc for jc in config.judges}
+    wanted = list(args.judge or [])
+    known = {n for n, *_ in loaded}
+    for w in wanted:
+        if w not in known:
+            print(f"clarity: unknown judge '{w}' (configured: "
+                  f"{sorted(known)})", file=sys.stderr)
+            sys.exit(1)
+    selected = []
+    for name, scorer, condition, judge_type, _s in loaded:
+        if wanted and name not in wanted:
+            continue
+        if not hasattr(scorer, "for_model"):
+            if wanted:
+                print(f"clarity: judge '{name}' has no per-model call path "
+                      "(not an LLM-rubric judge) — clarity re-rates with "
+                      "the judge's own rubric", file=sys.stderr)
+                sys.exit(1)
+            continue
+        selected.append((name, scorer, condition, judge_type))
+    if not selected:
+        print("clarity: no LLM-scored judges to check", file=sys.stderr)
+        sys.exit(1)
+
+    judge_bounds = {jc.name: _numeric_bounds(jc)
+                    for jc in config.judges if jc.score_range}
+    judge_steps = {jc.name: jc.step for jc in config.judges if jc.step}
+
+    # Deterministic subsample per judge: candidates are the cases with a
+    # non-None incumbent value when a summary exists (excludes if:-skipped
+    # and errored cases), sorted by incumbent verdict then case id, and
+    # strided to <= max_cases. Seedless — same run, same subsample.
+    plan = []
+    for name, scorer, condition, judge_type in selected:
+        if per_case:
+            cands = [d for d in case_dirs
+                     if isinstance(per_case.get(d.name, {}).get(name), dict)
+                     and per_case[d.name][name].get("value") is not None]
+        else:
+            cands = list(case_dirs)
+        cands.sort(key=lambda d: _clarity_sort_key(
+            (per_case.get(d.name, {}).get(name) or {}).get("value")
+            if per_case else None, d.name))
+        plan.append((name, scorer, condition, judge_type,
+                     _stride_subsample(cands, max_cases)))
+
+    total_calls = (sum(len(sampled) for *_, sampled in plan)
+                   * len(raters) * n_samples)
+    print(f"clarity: {len(plan)} judge(s) x {len(raters)} raters x "
+          f"{n_samples} sample(s) — {total_calls} judge call(s) planned")
+
+    clarity_judges = {}
+    rated_cases = set()
+    for name, scorer, condition, judge_type, sampled in plan:
+        matrix = {}
+        for case_dir in sampled:
+            record = load_case_record(case_dir, config, run_id=args.run_id)
+            rec = (_step_scoped_record(record, judge_steps[name])
+                   if name in judge_steps else record)
+            # Without a summary the candidate filter could not consult
+            # per-case values, so honor the judge's `if:` condition here.
+            if condition and not per_case:
+                try:
+                    annotations = rec.get("annotations", {})
+                    if not eval(condition, {"__builtins__": {}},
+                                {"annotations": annotations, "outputs": rec}):
+                        continue
+                except Exception:
+                    continue
+            row = {}
+            for rater in raters:
+                model_scorer = scorer.for_model(rater)
+                runs = []
+                for _ in range(n_samples):
+                    try:
+                        v, rat = _normalize_result(model_scorer(outputs=rec))
+                        v = _enforce_bounds(v, judge_bounds.get(name), name)
+                        runs.append({"value": v, "rationale": rat})
+                    except Exception as e:
+                        _log_judge_error(case_dir.name, e)
+                        runs.append({"value": None, "error": str(e)})
+                reduced = (_aggregate_samples(runs, judge_type)
+                           if n_samples > 1 else runs[0])
+                # A rater that errored is a missing rating, never a category.
+                row[rater] = reduced.get("value")
+            matrix[case_dir.name] = row
+            rated_cases.add(case_dir.name)
+
+        jc = jc_by_name.get(name)
+        level = _irr_level(jc)
+        observed = [v for row in matrix.values() for v in row.values()
+                    if v is not None]
+        if level != NOMINAL and any(
+                isinstance(v, bool) or not isinstance(v, (int, float))
+                for v in observed):
+            level = NOMINAL
+        units = [[matrix[c].get(r) for r in raters] for c in sorted(matrix)]
+        result = krippendorff_alpha(units, level,
+                                    min_units=CLARITY_MIN_CASES)
+        value = result.value
+        clarity_judges[name] = {
+            "metric": result.metric,
+            "level": level,
+            "value": value,
+            "reason_code": result.reason_code,
+            "reason": result.reason,
+            "n_units": result.n_units,
+            "label": CLARITY_LABEL,
+            "rationale": CLARITY_RATIONALE,
+            "n_cases": len(matrix),
+            "meets_floor": (None if value is None
+                            else bool(value >= CLARITY_FLOOR)),
+            "cases": {c: dict(matrix[c]) for c in sorted(matrix)},
+        }
+
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            verdict = (
+                f"meets the {CLARITY_FLOOR} exploratory floor"
+                if value >= CLARITY_FLOOR else
+                f"below {CLARITY_FLOOR} — the rubric likely underspecifies "
+                "the construct; refine the rubric rather than lowering the "
+                "bar (paper Sec 10.2)")
+            print(f"  {name}: clarity α={value:.3f} ({result.metric}/"
+                  f"{level}, n={result.n_units}, {len(raters)} raters) — "
+                  f"{verdict}")
+        else:
+            print(f"  {name}: clarity α n/a — "
+                  f"{result.reason or result.reason_code} — raw case x "
+                  "rater table:")
+            for c in sorted(matrix):
+                cells = "  ".join(f"{r}={matrix[c].get(r)}" for r in raters)
+                print(f"    {c}: {cells}")
+
+    block = {
+        "label": CLARITY_LABEL,
+        "raters": raters,
+        "families": families,
+        "n_raters": len(raters),
+        "floor": CLARITY_FLOOR,
+        "n_cases": len(rated_cases),
+        "samples": n_samples,
+        "judges": clarity_judges,
+    }
+    _merge_summary(args.run_id, "clarity", block, runs_dir)
+    print(f"CLARITY: {len(clarity_judges)} judge(s) checked over "
+          f"{len(rated_cases)} case(s); merged into summary['clarity'] "
+          "(report-only diagnostic — no CI gate)")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Scoring CLI for eval runs",
@@ -3868,7 +4354,8 @@ def main():
                        help="Override per-judge samples config: sample each LLM "
                             "judge N times per case; median (score) / majority "
                             "(bool) becomes the value, spread recorded for "
-                            "stability reporting")
+                            "stability reporting. For panel judges, N applies "
+                            "PER PANEL MODEL (N x m calls per case)")
     jdg_p.add_argument("--workspace", default=None,
                        help="Workspace path (for before_scoring hook env vars)")
     jdg_p.add_argument("--model", default=None,
@@ -3913,6 +4400,33 @@ def main():
                             "computed (below: raw agreement table only; "
                             f"default {CALIBRATION_FLOOR})")
 
+    # clarity — instrument-clarity diagnostic (rubric consistency, Sec 10.2)
+    _clr_help = ("instrument clarity (does the rubric admit consistent "
+                 "application?) — not rater validity; report-only, no CI "
+                 "gate")
+    clr_p = subparsers.add_parser(
+        "clarity", help=_clr_help,
+        description=_clr_help + ": each rater model re-rates a "
+        "deterministic case subsample (sorted + strided, seedless) with the "
+        "judge's own rubric; the m-way chance-corrected alpha is compared "
+        f"against the {CLARITY_FLOOR} exploratory floor and merged into "
+        "summary['clarity'].")
+    clr_p.add_argument("--run-id", required=True)
+    clr_p.add_argument("--config", required=True)
+    clr_p.add_argument("--raters", required=True,
+                       help="Comma-separated rater model ids (>= 2; prefer "
+                            "3 cross-family via gateway aliases)")
+    clr_p.add_argument("--judge", action="append", default=None,
+                       help="Restrict to this judge (repeatable; default: "
+                            "all LLM-scored judges)")
+    clr_p.add_argument("--max-cases", type=int, default=20,
+                       help="Deterministic stride-subsample size (default "
+                            "20)")
+    clr_p.add_argument("--samples", type=int, default=1,
+                       help="Draws per rater per case; each rater's draws "
+                            "are reduced (majority/median) before the "
+                            "alpha (default 1)")
+
     args = parser.parse_args()
 
     # Validate run_id / baseline to prevent path traversal (CWE-22)
@@ -3922,7 +4436,8 @@ def main():
 
     {"judges": cmd_judges, "pairwise": cmd_pairwise,
      "regression": cmd_regression,
-     "calibration": cmd_calibration}[args.command](args)
+     "calibration": cmd_calibration,
+     "clarity": cmd_clarity}[args.command](args)
 
 
 if __name__ == "__main__":
