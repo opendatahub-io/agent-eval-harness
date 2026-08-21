@@ -631,6 +631,7 @@ details.case[open] > summary::before { transform: rotate(90deg); }
 details.case > summary:hover { color: var(--accent); }
 .info-box { background: var(--accent-soft); border: 1px solid var(--border); border-radius: 6px; padding: 0.8em 1em; margin: 0.6em 0; font-size: 0.9em; }
 .feedback-box { background: var(--warning-soft); border: 1px solid var(--warning-border); border-radius: 6px; padding: 0.8em 1em; margin: 0.6em 0; font-size: 0.9em; color: var(--text); }
+.sim-user { color: var(--text-muted); font-size: 0.85em; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0.4em 0 0.6em; }
 .file-badge { display: inline-block; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.82em; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 5px; padding: 3px 10px; margin: 1em 0 0.5em 0; color: var(--text-soft); }
 details.file-entry { margin: 1em 0 0.5em 0; }
 details.file-entry > summary { cursor: pointer; list-style: none; user-select: none; }
@@ -1527,6 +1528,49 @@ def _render_scoring_summary(summary, config, baseline_summary=None,
         html += f'<td>—</td><td><span class="{pw_status_cls}">{pw_status}</span></td></tr>\n'
 
     html += "</table>\n"
+    return html
+
+
+def _render_sim_user_line(case_dir, run_dir):
+    """One-line simulated-user provenance summary from hook_answers.jsonl.
+
+    Prefers the per-case ledger (case mode), falls back to the run-root
+    ledger (batch mode — run-level, unattributed). Uses score.py's lenient
+    ledger parser (the ONE parser — no second implementation here). Returns
+    "" when no ledger exists.
+    """
+    from score import _parse_hook_ledger
+    scope = "case"
+    ledger_path = case_dir / "hook_answers.jsonl"
+    if not ledger_path.is_file():
+        ledger_path = run_dir / "hook_answers.jsonl"
+        scope = "run"
+    if not ledger_path.is_file():
+        return ""
+    records = _parse_hook_ledger(ledger_path) or []
+    counts = {"override": 0, "llm": 0, "fallback": 0, "disabled": 0}
+    flagged = []
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        tier = rec.get("tier")
+        if tier in counts:
+            counts[tier] += 1
+        if tier in ("fallback", "disabled"):
+            text = str(rec.get("question") or rec.get("reason") or "?")[:120]
+            flagged.append(f'<span class="fail">{tier}: {_esc(text)}</span>')
+    answered = counts["override"] + counts["llm"] + counts["fallback"]
+    parts = [f'{counts["override"]} override', f'{counts["llm"]} llm']
+    if counts["fallback"]:
+        parts.append(f'{counts["fallback"]} fallback')
+    if counts["disabled"]:
+        parts.append(f'{counts["disabled"]} disabled')
+    note = " (run-level ledger — batch mode)" if scope == "run" else ""
+    html = (f'<div class="sim-user">Simulated user: {answered} answer(s) — '
+            f'{" · ".join(parts)}{_esc(note)}')
+    if flagged:
+        html += "<br>" + " · ".join(flagged)
+    html += "</div>\n"
     return html
 
 
@@ -2792,6 +2836,9 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
 
         html += "</table>\n"
 
+        # Simulated-user answer provenance (hook_answers.jsonl)
+        html += _render_sim_user_line(case_dir, run_dir)
+
         # Human feedback
         case_feedback = feedback.get(case_id, "")
         if case_feedback:
@@ -2821,7 +2868,8 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
         # Execution logs at the case root — not skill output, exclude from
         # the report.  Only exclude root-level files, not nested ones with the
         # same name (a skill could legitimately produce artifacts/stdout.log).
-        _EXEC_LOG_PATHS = {"stdout.log", "stderr.log", "run_result.json", "input.yaml"}
+        _EXEC_LOG_PATHS = {"stdout.log", "stderr.log", "run_result.json",
+                           "input.yaml", "hook_answers.jsonl"}
         if case_dir.exists():
             def _file_sort_key(f):
                 """Sort visual artifacts first: images, then diagrams, then the rest."""

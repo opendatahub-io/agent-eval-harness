@@ -8,8 +8,10 @@ that keep that from happening silently — the sampling-parameter retry, and the
 stderr announcement on the fallback tier.
 """
 
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -19,6 +21,25 @@ sys.path.insert(
     0, str(Path(__file__).parent.parent / "skills" / "eval-run" / "scripts"))
 
 import tools as hook_tools
+
+
+@pytest.fixture(autouse=True)
+def _redirect_ledger(tmp_path, monkeypatch):
+    """Point the provenance ledger away from the repo.
+
+    tools.py anchors _LEDGER to its own directory; imported in-process from
+    the repo, in-process _handle_ask_user calls would otherwise append into
+    skills/eval-run/scripts/hook_answers.jsonl.
+    """
+    ledger = tmp_path / "hook_answers.jsonl"
+    monkeypatch.setattr(hook_tools, "_LEDGER", ledger)
+    return ledger
+
+
+def _read_ledger(path):
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line]
 
 
 class _Rejected(Exception):
@@ -90,7 +111,8 @@ class TestFallbackIsAnnounced:
 
     def test_first_option_fallback_warns(self, capsys, monkeypatch):
         # No case override and no LLM answer -> tier 3.
-        monkeypatch.setattr(hook_tools, "_llm_answer", lambda *a, **k: None)
+        monkeypatch.setattr(hook_tools, "_llm_answer",
+                            lambda *a, **k: (None, {}))
         tool_input = {"questions": [
             {"question": "Which?", "options": [
                 {"label": "Alpha"}, {"label": "Beta"}]},
@@ -103,7 +125,8 @@ class TestFallbackIsAnnounced:
         assert '"Alpha"' in captured.out
 
     def test_case_override_does_not_warn(self, capsys, monkeypatch):
-        monkeypatch.setattr(hook_tools, "_llm_answer", lambda *a, **k: None)
+        monkeypatch.setattr(hook_tools, "_llm_answer",
+                            lambda *a, **k: (None, {}))
         tool_input = {"questions": [
             {"question": "Which?", "options": [{"label": "Alpha"}]},
         ]}
@@ -112,3 +135,150 @@ class TestFallbackIsAnnounced:
         captured = capsys.readouterr()
         assert "AskUserQuestion fallback" not in captured.err
         assert '"Beta"' in captured.out
+
+
+class TestCreateMessageMeta:
+    """The strip-retry must report itself so the ledger records the
+    decoding change — and the meta channel must never leak into the API."""
+
+    def test_strip_retry_sets_temperature_stripped(self):
+        client = MagicMock()
+        client.messages.create.side_effect = [
+            _Rejected("temperature: Extra inputs are not permitted"), "ok"]
+        meta = {}
+        assert hook_tools._create_message(
+            client, meta=meta, model="m", temperature=0) == "ok"
+        assert meta["temperature_stripped"] is True
+
+    def test_meta_never_forwarded_to_messages_create(self):
+        client = MagicMock()
+        client.messages.create.return_value = "ok"
+        meta = {}
+        hook_tools._create_message(client, meta=meta, model="m", temperature=0)
+        for call in client.messages.create.call_args_list:
+            assert "meta" not in call.kwargs
+
+    def test_meta_untouched_on_clean_success(self):
+        client = MagicMock()
+        client.messages.create.return_value = "ok"
+        meta = {}
+        hook_tools._create_message(client, meta=meta, model="m", temperature=0)
+        assert meta == {}
+
+
+class TestLlmAnswerMeta:
+    """_llm_answer returns (label, meta) so fuzzy-match/rejected-reply/API
+    failure details reach the provenance ledger."""
+
+    def _fake_anthropic(self, monkeypatch, reply=None, ctor_error=None):
+        client = MagicMock()
+        if reply is not None:
+            client.messages.create.return_value = SimpleNamespace(
+                content=[SimpleNamespace(text=reply)])
+
+        def anthropic_ctor(**kwargs):
+            if ctor_error is not None:
+                raise ctor_error
+            return client
+
+        monkeypatch.setitem(
+            sys.modules, "anthropic",
+            SimpleNamespace(Anthropic=anthropic_ctor))
+        return client
+
+    def test_exact_match(self, monkeypatch):
+        self._fake_anthropic(monkeypatch, reply="Alpha")
+        answer, meta = hook_tools._llm_answer(
+            "Which?", [{"label": "Alpha"}, {"label": "Beta"}], "p")
+        assert answer == "Alpha"
+        assert meta["match"] == "exact"
+        assert meta["model"] == "claude-haiku-4-5-20251001"
+
+    def test_fuzzy_match(self, monkeypatch):
+        self._fake_anthropic(monkeypatch, reply='"alpha"')
+        answer, meta = hook_tools._llm_answer(
+            "Which?", [{"label": "Alpha"}], "p", model="m-1")
+        assert answer == "Alpha"
+        assert meta["match"] == "fuzzy"
+        assert meta["model"] == "m-1"
+
+    def test_rejected_reply_carries_llm_raw(self, monkeypatch):
+        self._fake_anthropic(monkeypatch, reply="Gamma, definitely")
+        answer, meta = hook_tools._llm_answer(
+            "Which?", [{"label": "Alpha"}], "p")
+        assert answer is None
+        assert meta["llm_raw"] == "Gamma, definitely"
+        assert "match" not in meta
+
+    def test_api_failure_carries_error(self, monkeypatch):
+        self._fake_anthropic(monkeypatch,
+                             ctor_error=RuntimeError("no API key"))
+        answer, meta = hook_tools._llm_answer(
+            "Which?", [{"label": "Alpha"}], "p")
+        assert answer is None
+        assert "no API key" in meta["error"]
+
+
+class TestLedgerWrites:
+    """In-process _handle_ask_user writes one record per question."""
+
+    def test_override_tier_recorded(self, _redirect_ledger, capsys):
+        tool_input = {"questions": [
+            {"question": "Which?", "options": [
+                {"label": "Alpha"}, {"label": "Beta"}]},
+        ]}
+        hook_tools._handle_ask_user(
+            tool_input, {"case_overrides": {"Which?": "Beta"}}, {"prompt": "p"})
+        records = _read_ledger(_redirect_ledger)
+        assert len(records) == 1
+        rec = records[0]
+        assert rec["tier"] == "override"
+        assert rec["question"] == "Which?"
+        assert rec["options"] == ["Alpha", "Beta"]
+        assert rec["answer"] == "Beta"
+        assert rec["ts"]
+        assert "hook_model" not in rec  # no LLM attempt was made
+
+    def test_llm_tier_records_hook_model(self, _redirect_ledger, monkeypatch,
+                                         capsys):
+        monkeypatch.setattr(
+            hook_tools, "_llm_answer",
+            lambda *a, **k: ("Alpha", {"model": "m", "match": "exact"}))
+        tool_input = {"questions": [
+            {"question": "Which?", "options": [{"label": "Alpha"}]},
+        ]}
+        hook_tools._handle_ask_user(tool_input, {}, {"prompt": "p"})
+        rec = _read_ledger(_redirect_ledger)[0]
+        assert rec["tier"] == "llm"
+        assert rec["hook_model"] == "m"
+        assert rec["match"] == "exact"
+        assert rec["answer"] == "Alpha"
+
+    def test_fallback_after_llm_error_records_error(self, _redirect_ledger,
+                                                    monkeypatch, capsys):
+        monkeypatch.setattr(
+            hook_tools, "_llm_answer",
+            lambda *a, **k: (None, {"model": "m", "error": "boom"}))
+        tool_input = {"questions": [
+            {"question": "Which?", "options": [{"label": "Alpha"}]},
+        ]}
+        hook_tools._handle_ask_user(tool_input, {}, {"prompt": "p"})
+        rec = _read_ledger(_redirect_ledger)[0]
+        assert rec["tier"] == "fallback"
+        assert rec["hook_model"] == "m"
+        assert rec["error"] == "boom"
+        assert rec["answer"] == "Alpha"
+
+    def test_unwritable_ledger_never_breaks_answering(self, tmp_path,
+                                                      monkeypatch, capsys):
+        # Best-effort contract: answers still emitted, no exception.
+        monkeypatch.setattr(
+            hook_tools, "_LEDGER",
+            tmp_path / "no" / "such" / "dir" / "hook_answers.jsonl")
+        monkeypatch.setattr(hook_tools, "_llm_answer",
+                            lambda *a, **k: (None, {}))
+        tool_input = {"questions": [
+            {"question": "Which?", "options": [{"label": "Alpha"}]},
+        ]}
+        hook_tools._handle_ask_user(tool_input, {}, {"prompt": "p"})
+        assert '"Alpha"' in capsys.readouterr().out

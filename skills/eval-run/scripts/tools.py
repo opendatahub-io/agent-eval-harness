@@ -15,7 +15,34 @@ import json
 import os
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+
+# Answer-provenance ledger. Anchored to this script's own directory — the
+# hook is copied to <case_ws>/hooks/tools.py in case AND in-repo mode, and
+# <workspace>/hooks/tools.py in batch mode, but the hook's CWD varies (it is
+# the user's repo root in in-repo mode), so a CWD-relative path would pollute
+# the repo. One JSON object per line; O_APPEND single-line writes are
+# interleaving-safe for practical line sizes when cases run in parallel.
+_LEDGER = Path(__file__).resolve().parent / "hook_answers.jsonl"
+
+
+def _log_answer(record):
+    """Append one provenance record to the ledger, best-effort.
+
+    Never raises: a crashed PreToolUse hook is treated as pass-through by
+    the CLI, silently disabling ALL interception — a logging failure must
+    never break interception (uses only json/Path/datetime, so it is safe
+    to call even from the PyYAML-missing path below).
+    """
+    try:
+        record.setdefault(
+            "ts", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        with open(_LEDGER, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
+
 
 # This script is COPIED into <workspace>/hooks/ and executed by the Claude
 # Code hook runner as a bare `python3 .../tools.py` — agent_eval is usually
@@ -40,6 +67,7 @@ except ImportError:
         "bootstrap can activate it.",
         file=sys.stderr,
     )
+    _log_answer({"tier": "disabled", "reason": "pyyaml-missing"})
     sys.exit(0)
 
 
@@ -48,9 +76,23 @@ def main():
     tool_name = input_data.get("tool_name", "")
     tool_input = input_data.get("tool_input", {})
 
-    # Load handler config from workspace
-    config_path = Path("tool_handlers.yaml")
-    if not config_path.exists():
+    # Load handler config from workspace. CWD-relative lookup first (case and
+    # batch mode run the agent in the workspace where the file is written),
+    # then fall back to resolving relative to this script's own location —
+    # tool_handlers.yaml is generated next to the hooks/ dir that holds this
+    # script. Without the fallback, in-repo mode (agent CWD = the user's repo
+    # root, handlers written to the case workspace) was silently pass-through.
+    script_dir = Path(__file__).resolve().parent
+    config_path = None
+    for candidate in (Path("tool_handlers.yaml"),
+                      script_dir / "tool_handlers.yaml",
+                      script_dir.parent / "tool_handlers.yaml"):
+        if candidate.exists():
+            config_path = candidate
+            break
+    if config_path is None:
+        _log_answer({"tier": "disabled", "reason": "tool-handlers-missing",
+                     "cwd": os.getcwd()})
         sys.exit(0)
 
     with open(config_path) as f:
@@ -128,6 +170,10 @@ def _handle_ask_user(tool_input, config, handler):
     1. Exact match in case_overrides (question text → answer)
     2. LLM-based answer (haiku) using the handler prompt + case context
     3. Fallback: pick the first option or "yes"
+
+    Every answered question is recorded to the hook_answers.jsonl provenance
+    ledger with its tier, so scoring can tell a case-specific answer (tiers
+    1-2) from an arbitrary one (tier 3).
     """
     case_overrides = config.get("case_overrides", {})
     hook_model = config.get("hook_model")
@@ -141,24 +187,47 @@ def _handle_ask_user(tool_input, config, handler):
     for q in tool_input.get("questions", []):
         text = q.get("question", "")
         options = q.get("options", [])
+        entry = {
+            "question": text,
+            "options": [o.get("label", "") for o in options
+                        if isinstance(o, dict)],
+        }
+        llm_meta = None
 
         # 1. Exact match
         answer = case_overrides.get(text)
+        if answer is not None:
+            entry["tier"] = "override"
 
         # 2. LLM-based answer
         if answer is None and options:
-            answer = _llm_answer(text, options, prompt, model=hook_model)
+            answer, llm_meta = _llm_answer(text, options, prompt,
+                                           model=hook_model)
+            if answer is not None:
+                entry["tier"] = "llm"
 
         # 3. Fallback. Announce it: tiers 1 and 2 are the ones that answer
         # *for this case*, so landing here means the agent under test was
         # handed an arbitrary answer — and because the run still completes,
         # nothing downstream distinguishes that from a real answer.
         if answer is None:
+            entry["tier"] = "fallback"
             answer = options[0]["label"] if options else "yes"
             print(f"AskUserQuestion fallback: no case override and no LLM "
                   f"answer for {text!r} — defaulting to {answer!r}",
                   file=sys.stderr)
 
+        # Copy the LLM attempt's details into the record (llm tier, or a
+        # fallback reached after a failed/rejected LLM attempt).
+        if llm_meta:
+            entry["hook_model"] = llm_meta.get("model")
+            entry["match"] = llm_meta.get("match")
+            for key in ("llm_raw", "error", "temperature_stripped"):
+                if key in llm_meta:
+                    entry[key] = llm_meta[key]
+
+        entry["answer"] = answer
+        _log_answer(entry)
         answers[text] = answer
 
     output = {
@@ -174,7 +243,7 @@ def _handle_ask_user(tool_input, config, handler):
     json.dump(output, sys.stdout)
 
 
-def _create_message(client, **kwargs):
+def _create_message(client, meta=None, **kwargs):
     """messages.create, retrying once without `temperature` if it is rejected.
 
     Anthropic removed the sampling parameters on Opus 4.7 and later (and
@@ -187,6 +256,10 @@ def _create_message(client, **kwargs):
     The check is behavioral rather than a model-name allowlist on purpose —
     `models.hook` may be a gateway alias (a LiteLLM virtual key, a vLLM
     --served-model-name) that no substring test can classify.
+
+    ``meta`` is an optional provenance dict (never forwarded to the API):
+    the strip-retry sets ``meta["temperature_stripped"] = True`` so the
+    ledger records the decoding change.
     """
     try:
         return client.messages.create(**kwargs)
@@ -197,6 +270,8 @@ def _create_message(client, **kwargs):
             raise
         print(f"hook model {kwargs.get('model')!r} rejects 'temperature' — "
               "retrying without it", file=sys.stderr)
+        if meta is not None:
+            meta["temperature_stripped"] = True
         return client.messages.create(
             **{k: v for k, v in kwargs.items() if k != "temperature"})
 
@@ -205,7 +280,12 @@ def _llm_answer(question, options, handler_prompt, model=None):
     """Use an LLM to pick the best answer for a question.
 
     Reads input.yaml and answers.yaml from CWD for case-specific context.
-    Returns the selected option label, or None if the API call fails.
+    Returns ``(label, meta)`` — the selected option label (or None if the
+    reply was rejected or the API call failed) and a provenance dict for the
+    ledger: always ``model``; ``match`` ("exact"/"fuzzy") on success;
+    ``llm_raw`` (truncated reply) when the reply matched no option;
+    ``error`` on API failure; ``temperature_stripped`` when the strip-retry
+    fired.
     """
     # Load case context
     case_context = ""
@@ -238,12 +318,14 @@ Available options:
 Based on the handler instructions and case context, which option should be selected?
 Reply with ONLY the option label text, nothing else."""
 
+    meta = {"model": model or "claude-haiku-4-5-20251001"}
     try:
         import anthropic
         client = anthropic.Anthropic(timeout=30.0)
         response = _create_message(
             client,
-            model=model or "claude-haiku-4-5-20251001",
+            meta=meta,
+            model=meta["model"],
             max_tokens=256,
             temperature=0,
             messages=[{"role": "user", "content": prompt}],
@@ -252,19 +334,23 @@ Reply with ONLY the option label text, nothing else."""
         # Verify the answer matches an option label
         if answer in option_labels:
             print(f"LLM answered: {answer!r}", file=sys.stderr)
-            return answer
+            meta["match"] = "exact"
+            return answer, meta
         # Try fuzzy match — LLM might have added quotes or slight variation
         answer_lower = answer.lower().strip('"\'')
         for label in option_labels:
             if label.lower() == answer_lower:
                 print(f"LLM answered (fuzzy): {label!r}", file=sys.stderr)
-                return label
+                meta["match"] = "fuzzy"
+                return label, meta
         print(f"LLM answer {answer!r} not in options {option_labels}",
               file=sys.stderr)
+        meta["llm_raw"] = answer[:500]
     except Exception as e:
         print(f"LLM answer failed: {e}", file=sys.stderr)
+        meta["error"] = str(e)[:500]
 
-    return None
+    return None, meta
 
 
 def _deny(reason):

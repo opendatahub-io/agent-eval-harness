@@ -205,6 +205,40 @@ def _extract_verifiable_evidence(record):
     ])
 
 
+def _parse_hook_ledger(path):
+    """Leniently parse a hook_answers.jsonl provenance ledger.
+
+    The ONE ledger parser (report.py imports it — no second parser). Skips
+    blank/malformed lines and non-dict entries silently (one stderr warning
+    per file), so a torn concurrent append can't invalidate the rest of the
+    ledger. Returns a list of record dicts ([] for an empty file), or None
+    when the file exists but cannot be read — provenance unknown, which the
+    provenance judge treats fail-safe like a missing ledger.
+    """
+    path = Path(path)
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    records = []
+    warned = False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            if not warned:
+                print(f"  Warning: skipping malformed line(s) in {path}",
+                      file=sys.stderr)
+                warned = True
+            continue
+        if isinstance(obj, dict):
+            records.append(obj)
+    return records
+
+
 def load_case_record(case_dir, config, run_id=None, runs_dir=None):
     """Load all outputs, execution metadata, and traces for a case.
 
@@ -213,6 +247,12 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
     - tool_calls: captured tool calls (from tool outputs)
     - Execution metadata: exit_code, duration_s, token_usage, cost_usd, num_turns
     - Logs: stdout, stderr (if traces config enables them)
+    - hook_answers: simulated-user answer-provenance records (list, possibly
+      empty) or None when no ledger was found — the None-vs-[] distinction is
+      load-bearing for the simulator_provenance judge
+    - hook_answers_scope: "case" | "run" (run-root batch ledger, unattributed)
+      | None
+    - interception_configured: whether eval.yaml declares inputs.tools
     """
     runs_dir = Path(runs_dir) if runs_dir else _get_runs_dir(
         config.eval_name() if config else "")
@@ -371,6 +411,34 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
             record["events"] = []
     else:
         record["events"] = []
+
+    # --- Simulated-user answer provenance (hook_answers.jsonl ledger) ---
+    # None-vs-[] is load-bearing for the simulator_provenance judge: None
+    # means no ledger was found (unrecorded simulation if the trace shows
+    # AskUserQuestion calls), [] means a ledger exists but recorded nothing.
+    record["interception_configured"] = bool(config.inputs.tools)
+    ledger_path = case_dir / "hook_answers.jsonl"
+    ledger_scope = "case"
+    if not ledger_path.exists():
+        # In-container Harbor scoring: case_dir IS the agent workspace, so
+        # the ledger still sits where the interceptor wrote it (hooks/).
+        candidate = case_dir / "hooks" / "hook_answers.jsonl"
+        if candidate.exists():
+            ledger_path = candidate
+        elif run_id and runs_dir:
+            # Batch layout: run-level ledger at the run root (unattributed),
+            # mirroring the events.json run-root fallback above.
+            candidate = runs_dir / run_id / "hook_answers.jsonl"
+            if candidate.exists():
+                ledger_path = candidate
+                ledger_scope = "run"
+    if ledger_path.exists():
+        record["hook_answers"] = _parse_hook_ledger(ledger_path)
+        record["hook_answers_scope"] = (
+            ledger_scope if record["hook_answers"] is not None else None)
+    else:
+        record["hook_answers"] = None
+        record["hook_answers_scope"] = None
 
     # --- Case inputs (from input.yaml in case directory or dataset) ---
     # Exposed as {{ inputs }} in LLM judge prompts (plural for symmetry with

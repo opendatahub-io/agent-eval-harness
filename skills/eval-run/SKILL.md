@@ -192,7 +192,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/score.py judges \
 
 If `hooks.before_scoring` is configured in eval.yaml, score.py runs those hooks before judge execution. Pass `--workspace` and `--model` so hook environment variables are populated.
 
-Judges receive the case `outputs` record — file contents (`outputs["files"]`, `<dir>_content`), execution metadata, `tool_calls`, logs, and `annotations` (parsed `annotations.yaml`, for outcome-aware scoring). Full field reference: [`references/data-pipeline.md`](references/data-pipeline.md).
+Judges receive the case `outputs` record — file contents (`outputs["files"]`, `<dir>_content`), execution metadata, `tool_calls`, logs, `annotations` (parsed `annotations.yaml`, for outcome-aware scoring), and `hook_answers` (the simulated-user answer-provenance ledger; None when no ledger was found, plus `hook_answers_scope` and `interception_configured`). Full field reference: [`references/data-pipeline.md`](references/data-pipeline.md).
 
 If `--baseline` was specified, also run pairwise comparison:
 

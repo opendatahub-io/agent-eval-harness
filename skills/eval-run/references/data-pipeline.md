@@ -22,6 +22,7 @@ How data flows from dataset cases through execution, collection, and scoring.
   {output_dirs}/          # Empty dirs for skill outputs
   .claude/settings.json   # Generated hook config (if inputs.tools)
   hooks/tools.py          # Hook script (if inputs.tools)
+  hooks/hook_answers.jsonl # Answer-provenance ledger (written at runtime)
   tool_handlers.yaml      # Handler config (if inputs.tools)
   scripts/ → symlink
   .claude/ → symlink (or generated)
@@ -43,6 +44,8 @@ When `execution.mode` is `case` (default), workspace.py creates a separate works
       answers.yaml        # Copied from dataset (if present)
       {output_dirs}/      # Empty dirs for skill outputs
       .claude/settings.json  # Generated (hooks + permissions)
+      hooks/tools.py       # Hook script (if inputs.tools)
+      hooks/hook_answers.jsonl  # Answer-provenance ledger (written at runtime)
       subagents/           # SubagentStop hook target
       scripts/ → symlink
       CLAUDE.md → symlink
@@ -98,6 +101,7 @@ $AGENT_EVAL_RUNS_DIR/{id}/
   stdout.log              # Full stdout
   stderr.log              # Full stderr
   collection.json         # Per-case artifact counts
+  hook_answers.jsonl      # Batch mode only: run-level answer-provenance ledger
   cases/
     case-001-name/
       artifacts/          # Files from outputs[0].path
@@ -106,6 +110,7 @@ $AGENT_EVAL_RUNS_DIR/{id}/
         RFE-001-review.md
       _modified/          # In-place edits (auto-detected via git diff)
         source.md
+      hook_answers.jsonl  # Case mode: per-case answer-provenance ledger
     case-002-name/
       artifacts/
         RFE-002-slug.md
@@ -178,6 +183,19 @@ Skills that modify input files using the Edit tool (rather than writing to an ou
 
     # --- Annotations (from dataset case directory) ---
     "annotations": {"expected_voice": "technical", "difficulty": "easy"},
+
+    # --- Simulated-user answer provenance (hook_answers.jsonl) ---
+    # None when no ledger was found (load-bearing: with AskUserQuestion
+    # calls in events this means unrecorded simulation); [] when a ledger
+    # exists but recorded nothing; else one record per answered question.
+    # See references/tool-interception.md for the frozen record schema.
+    "hook_answers": [
+        {"ts": "2026-08-21T10:00:00+00:00", "question": "Which priority?",
+         "options": ["Normal", "High"], "answer": "Normal",
+         "tier": "override"},
+    ],
+    "hook_answers_scope": "case",     # "case" | "run" (batch, unattributed) | None
+    "interception_configured": True,  # bool(config.inputs.tools)
 
     # --- Context ---
     "case_dir": "/absolute/path/to/case"

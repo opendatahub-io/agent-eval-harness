@@ -9,6 +9,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agent_eval.judges.process.tool_call_validation import judge as tool_call_judge
 from agent_eval.judges.efficiency.cost_budget import judge as cost_budget_judge
+from agent_eval.judges.process.simulator_provenance import (
+    judge as provenance_judge,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +104,163 @@ class TestCostBudget:
         outputs = {"cost_usd": 1.0}
         passed, rationale = cost_budget_judge(outputs)
         assert passed is True
+
+
+# ---------------------------------------------------------------------------
+# simulator_provenance
+# ---------------------------------------------------------------------------
+
+def _ask_user_event(n_questions=1):
+    """An assistant event carrying one AskUserQuestion call."""
+    return {
+        "type": "assistant",
+        "tools": [{
+            "name": "AskUserQuestion",
+            "input": {"questions": [
+                {"question": f"Q{i}?"} for i in range(n_questions)]},
+        }],
+    }
+
+
+class TestSimulatorProvenance:
+
+    def test_pass_no_interception(self):
+        passed, rationale = provenance_judge({})
+        assert passed is True
+        assert "No tool interception configured" in rationale
+
+    def test_pass_all_recorded_tiers(self):
+        outputs = {
+            "interception_configured": True,
+            "hook_answers_scope": "case",
+            "hook_answers": [
+                {"tier": "override", "question": "Q1?", "answer": "A"},
+                {"tier": "llm", "question": "Q2?", "answer": "B",
+                 "hook_model": "m", "match": "exact"},
+            ],
+            "events": [_ask_user_event(2)],
+        }
+        passed, rationale = provenance_judge(outputs)
+        assert passed is True
+        assert "1 override / 1 llm" in rationale
+
+    def test_fail_on_fallback(self):
+        outputs = {
+            "interception_configured": True,
+            "hook_answers_scope": "case",
+            "hook_answers": [
+                {"tier": "fallback", "question": "Which priority?",
+                 "answer": "Normal", "error": "no api key"},
+            ],
+            "events": [_ask_user_event(1)],
+        }
+        passed, rationale = provenance_judge(outputs)
+        assert passed is False
+        assert "Which priority?" in rationale
+        assert "fallback" in rationale
+
+    def test_fail_on_disabled(self):
+        outputs = {
+            "interception_configured": True,
+            "hook_answers_scope": "case",
+            "hook_answers": [
+                {"tier": "disabled", "reason": "pyyaml-missing"},
+            ],
+            "events": [],
+        }
+        passed, rationale = provenance_judge(outputs)
+        assert passed is False
+        assert "pyyaml-missing" in rationale
+
+    def test_fail_on_error_record(self):
+        outputs = {
+            "interception_configured": True,
+            "hook_answers_scope": "case",
+            "hook_answers": [
+                {"tier": "llm", "question": "Q?", "answer": "A",
+                 "error": "API error mid-flight"},
+            ],
+            "events": [_ask_user_event(1)],
+        }
+        passed, rationale = provenance_judge(outputs)
+        assert passed is False
+        assert "error" in rationale
+
+    def test_fail_when_ledger_missing_but_questions_asked(self):
+        # The fail-open trap: interception configured, trace shows
+        # AskUserQuestion, no ledger — unrecorded simulation.
+        outputs = {
+            "interception_configured": True,
+            "hook_answers": None,
+            "hook_answers_scope": None,
+            "events": [_ask_user_event(1)],
+        }
+        passed, rationale = provenance_judge(outputs)
+        assert passed is False
+        assert "unrecorded" in rationale
+
+    def test_pass_when_ledger_missing_no_questions(self):
+        outputs = {
+            "interception_configured": True,
+            "hook_answers": None,
+            "hook_answers_scope": None,
+            "events": [{"type": "assistant", "tools": [{"name": "Read"}]}],
+        }
+        passed, rationale = provenance_judge(outputs)
+        assert passed is True
+        assert "nothing to certify" in rationale
+
+    def test_fail_on_partial_coverage(self):
+        # 2 questions in one AskUserQuestion call, only 1 recorded answer.
+        outputs = {
+            "interception_configured": True,
+            "hook_answers_scope": "case",
+            "hook_answers": [
+                {"tier": "override", "question": "Q0?", "answer": "A"},
+            ],
+            "events": [_ask_user_event(2)],
+        }
+        passed, rationale = provenance_judge(outputs)
+        assert passed is False
+        assert "partial provenance" in rationale
+
+    def test_run_scope_skips_coverage_and_notes_batch(self):
+        # Same counts as the partial-coverage case, but run scope: per-case
+        # attribution is impossible, so coverage is skipped.
+        outputs = {
+            "interception_configured": True,
+            "hook_answers_scope": "run",
+            "hook_answers": [
+                {"tier": "override", "question": "Q0?", "answer": "A"},
+            ],
+            "events": [_ask_user_event(2)],
+        }
+        passed, rationale = provenance_judge(outputs)
+        assert passed is True
+        assert "run-level" in rationale
+
+    def test_empty_ledger_no_questions_passes(self):
+        outputs = {
+            "interception_configured": True,
+            "hook_answers_scope": "case",
+            "hook_answers": [],
+            "events": [],
+        }
+        passed, rationale = provenance_judge(outputs)
+        assert passed is True
+
+    def test_empty_ledger_with_questions_fails(self):
+        # Empty-but-present ledger with observed questions = partial
+        # provenance (catches swallowed best-effort writes).
+        outputs = {
+            "interception_configured": True,
+            "hook_answers_scope": "case",
+            "hook_answers": [],
+            "events": [_ask_user_event(1)],
+        }
+        passed, rationale = provenance_judge(outputs)
+        assert passed is False
+        assert "partial provenance" in rationale
 
 
 # ---------------------------------------------------------------------------
