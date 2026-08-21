@@ -154,7 +154,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/execute.py \
 
 **Launch with `run_in_background: true` and do NOT redirect its output** (no `>`, `|`, `tee`, `2>&1`) — a redirect diverts the stream Claude Code's background viewer reads and leaves it blank. You don't need one: `execute.py` mirrors its live console to `<output_dir>/console.log`.
 
-When it finishes, read `run_result.json` — if `exit_code` is non-zero, report the failure and stop. If `stderr.log` ends with an `ERROR:` about background tasks terminated at the bg-wait ceiling, first determine which side is wrong: a skill whose final turn is SUPPOSED to await its background agents has a turn-discipline defect to fix, while a skill designed around intentionally long-running background work needs a higher ceiling — `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` via `runner.env:` in eval.yaml (`execution.timeout` remains the backstop) — see [`references/execution-monitoring.md`](references/execution-monitoring.md). For session-lifecycle details, polling patterns, problem detection, and CLI fallbacks, see [`references/execution-monitoring.md`](references/execution-monitoring.md).
+When it finishes, read `run_result.json` — if `exit_code` is non-zero, report the failure and stop. If `stderr.log` ends with a bg-wait-ceiling `ERROR:`, fix the skill's turn discipline if it should have awaited its agents; raise `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` via `runner.env:` only for intentionally long-running background work. For session-lifecycle details, polling patterns, problem detection, and CLI fallbacks, see [`references/execution-monitoring.md`](references/execution-monitoring.md).
 
 ## Step 5: Collect Artifacts
 
