@@ -114,6 +114,8 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/workspace.py \
 
 The script prints `WORKSPACE: <path>`, `CASES: <count>`, `BATCH: <path>`. Report these to the user. If `inputs.tools` is configured, it also prints `HOOKS: N tool interceptors configured`.
 
+It also runs an informational dataset-audit preflight: it warns only when an existing `dataset_audit.yaml` is stale or incomplete (a never-audited dataset stays silent) and never blocks the run.
+
 If the case count is 0, stop — the filter matched nothing.
 
 ## Step 3a: Resolve Tool Interception (if `inputs.tools` configured)

@@ -250,8 +250,10 @@ ls <dataset_path>/case-001-*/
 ```
 
 The audit exits 0 even with findings (they are triage input, not a gate); pass
-`--strict` to make any warning/error exit 1 (CI). `/eval-run` warns before scoring
-when the audit is missing or its per-case content hashes are stale.
+`--strict` to make any warning/error exit 1 (CI). `/eval-run`'s preflight is
+informational: it warns before scoring only when an existing audit's per-case
+content hashes are stale or incomplete (a never-audited dataset stays silent)
+and never blocks the run.
 
 ## Step 6.5: Null-agent solvability probe (optional — run once per dataset revision, before the first real /eval-run)
 

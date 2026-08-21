@@ -47,9 +47,11 @@ flowchart TD
     H[Header — skill · run · baseline · date] --> RC[Run Configuration + Model Usage]
     RC --> AN[Analysis — agent's recommendation]
     AN --> SS[Scoring Summary — per-judge pass_rate / mean]
-    SS --> VR["Validity & Reliability — measurement caveats"]
+    SS --> SC["Simulator Calibration — inputs.tools runs only"]
+    SC --> VR["Validity & Reliability — measurement caveats"]
     VR --> RG[Regressions — only if a threshold is breached]
-    RG --> SO[Shared Outputs — batch_pattern '*' files]
+    RG --> HC["Human Calibration — after score.py calibration"]
+    HC --> SO[Shared Outputs — batch_pattern '*' files]
     SO --> RO["Per-Case Reward Overview — reward config only"]
     RO --> PC[Per-Case Details — rationale, artifacts, diffs]
 ```
@@ -95,6 +97,19 @@ row shows the `W / L / T` record.
     (`3/5 · 3×`) showing how many cases gave a stable verdict across samples.
     Per-case rationale for each sample is available in tabs further down.
 
+### Simulator calibration
+
+Rendered **only for runs with `inputs.tools` interception** — it summarizes the
+simulated user from the `hook_answers.jsonl` provenance ledgers. The card shows
+the answer-tier proportion bar (override · llm · fallback), the fallback rate
+(fallback answers over answered questions) against its
+`thresholds.simulator.max_fallback_rate` gate, any interception-disabled
+events, the hook model, and the held-out gold agreement stratified by override
+provenance — the **human stratum is the only calibration evidence**; the agent
+stratum is labeled LLM-vs-LLM consistency. With `models.hook_shadow`
+configured, cross-simulator agreement rows (with family composition) are added.
+A red banner fires when zero human-provenance pairs exist.
+
 ### Validity & reliability
 
 A non-gating measurement-validity section rendered from `summary.yaml`'s
@@ -135,6 +150,16 @@ coefficient does and does not claim, and how to enable the full stack — are on
 Rendered **only when a threshold is breached** — a compact table of every judge
 that fell below its `min_pass_rate` or `min_mean`. If the section is absent, no
 gate failed.
+
+### Human calibration
+
+Appears **only after `score.py calibration` has been run** against
+`/eval-review` verdicts. It names the reviewer and coverage, states the
+mandatory caveats (not-blind exposure, non-random case selection, single human
+reviewer), and then renders each calibrated judge's coefficient (Cohen's kappa
+or Krippendorff's alpha, per the judge's scale) alongside the raw,
+chance-uncorrected agreement table — below the calibration floor the raw table
+is the only deliverable.
 
 ### Per-case reward overview
 

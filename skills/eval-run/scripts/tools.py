@@ -23,15 +23,19 @@ from pathlib import Path
 # The generated hook settings give this script an explicit 120s timeout
 # (HOOK_TIMEOUT_SECONDS in agent_eval/tools/interception.py — a mirrored
 # literal; this script cannot import agent_eval). A PreToolUse hook killed at
-# that wall is silent pass-through, so OPTIONAL LLM calls — the
-# cross-simulator shadows and the calibration shadow — check the remaining
-# budget first and degrade to a ledger-recorded skip ({"skipped": "deadline"})
-# instead of risking an external kill. PRIMARY answers are always attempted:
-# with the 100s budget below, up to ~3 questions fit primary (30s) +
-# calibration shadow (15s) draws; beyond that the optional calls yield in
-# strict order — cross-simulator shadows FIRST (they reserve the calibration
-# shadow's slice, so their skip floor is higher), then the calibration
-# shadow. The budget clock starts at process start (module import), measured
+# that wall is silent pass-through, so EVERY LLM call checks the remaining
+# budget first and degrades to a ledger-recorded skip ({"skipped":
+# "deadline"}) instead of risking an external kill. The API client is built
+# with max_retries=0 and a per-call timeout equal to the call's nominal
+# timeout, so one call can never exceed its slice — retrying inside a busted
+# budget is counterproductive (the ledger already records the error). With
+# that and the tier-2 primary gate, the worst case is bounded by the ~100s
+# budget REGARDLESS of question count: as the budget shrinks the calls yield
+# in strict order — cross-simulator shadows FIRST (they reserve the
+# calibration shadow's slice, so their skip floor is higher), then the
+# calibration shadow, and finally the tier-2 primary itself skips straight
+# to the tier-3 fallback. Tier-1 overrides make no API call and are never
+# gated. The budget clock starts at process start (module import), measured
 # on the monotonic clock.
 _HOOK_START = time.monotonic()
 _DEADLINE_BUDGET = 100.0  # seconds — below the 120s hook timeout, w/ margin
@@ -194,7 +198,11 @@ def _handle_ask_user(tool_input, config, handler):
 
     Resolution order for each question:
     1. Exact match in case_overrides (question text → answer)
-    2. LLM-based answer (haiku) using the handler prompt + case context
+    2. LLM-based answer (haiku) using the handler prompt + case context —
+       skipped with a ledger-recorded ``skipped: deadline`` (falling
+       through to tier 3) when the remaining in-hook budget cannot fit the
+       primary timeout; tier-1 overrides make no API call and are never
+       gated
     3. Fallback: pick the first option or "yes"
 
     Every answered question is recorded to the hook_answers.jsonl provenance
@@ -264,13 +272,24 @@ def _handle_ask_user(tool_input, config, handler):
                 entry["calibration"] = _calibration_shadow(
                     answer, text, options, prompt, hook_model)
 
-        # 2. LLM-based answer
+        # 2. LLM-based answer — gated on the remaining deadline budget:
+        # a primary draw that cannot fit its _PRIMARY_TIMEOUT slice is
+        # skipped (falling through to the tier-3 fallback below) with a
+        # ledger-recorded {"skipped": "deadline"} so scoring can tell a
+        # deadline-skip from an LLM failure. Degrading beats the external
+        # hook kill, which would silently pass through EVERY tool call.
         if answer is None and options:
-            answer, llm_meta = _llm_answer(text, options, prompt,
-                                           model=hook_model,
-                                           timeout=_PRIMARY_TIMEOUT)
-            if answer is not None:
-                entry["tier"] = "llm"
+            if _remaining_budget() < _PRIMARY_TIMEOUT:
+                entry["skipped"] = "deadline"
+                print(f"AskUserQuestion primary LLM answer skipped for "
+                      f"{text!r}: in-hook deadline budget exhausted — "
+                      "falling back", file=sys.stderr)
+            else:
+                answer, llm_meta = _llm_answer(text, options, prompt,
+                                               model=hook_model,
+                                               timeout=_PRIMARY_TIMEOUT)
+                if answer is not None:
+                    entry["tier"] = "llm"
 
         # 3. Fallback. Announce it: tiers 1 and 2 are the ones that answer
         # *for this case*, so landing here means the agent under test was
@@ -442,7 +461,9 @@ def _llm_answer(question, options, handler_prompt, model=None,
     Reads ``context_files`` from CWD for case-specific context — the default
     (input.yaml + answers.yaml) is the injected tier-2 condition; the
     calibration shadow passes ``("input.yaml",)`` so the draw is HELD OUT
-    from the answer key. ``timeout`` is the per-call API timeout in seconds.
+    from the answer key. ``timeout`` is the per-call API timeout in seconds
+    — the client runs with ``max_retries=0``, so it also bounds the call's
+    total wall time (the deadline-budget arithmetic depends on that).
     Returns ``(label, meta)`` — the selected option label (or None if the
     reply was rejected or the API call failed) and a provenance dict for the
     ledger: always ``model``; ``match`` ("exact"/"fuzzy") on success;
@@ -484,7 +505,12 @@ Reply with ONLY the option label text, nothing else."""
     meta = {"model": model or "claude-haiku-4-5-20251001"}
     try:
         import anthropic
-        client = anthropic.Anthropic(timeout=timeout)
+        # max_retries=0: the SDK's default retries could multiply the
+        # per-call wall time past the caller's budget slice — a failed call
+        # is already recorded in the ledger, and retrying inside a busted
+        # deadline budget is counterproductive. With this, one call's wall
+        # time is bounded by its nominal `timeout`.
+        client = anthropic.Anthropic(timeout=timeout, max_retries=0)
         response = _create_message(
             client,
             meta=meta,

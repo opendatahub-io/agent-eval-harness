@@ -727,9 +727,11 @@ def _parse_thresholds(raw_thresholds):
     """Validate the ``thresholds`` block; returns it unchanged.
 
     The one thresholds validation helper. Unknown keys warn — never error —
-    so a typo like ``min_apha`` stops silently never gating. Any
-    ``*_alpha`` / ``*_agreement`` key value must be numeric, finite, and
-    <= 1.0 (the coefficient maximum); anything else raises ``ValueError``.
+    so a typo like ``min_apha`` stops silently never gating; their values
+    are never validated (an unknown key is ignored by detection, so its
+    value cannot matter). A KNOWN ``*_alpha`` / ``*_agreement`` key value
+    must be numeric, finite, and <= 1.0 (the coefficient maximum);
+    anything else raises ``ValueError``.
     The ``simulator`` mapping key is RESERVED (never a judge name) and
     validated against :data:`SIMULATOR_THRESHOLD_KEYS` instead.
     """
@@ -751,6 +753,11 @@ def _parse_thresholds(raw_thresholds):
                     "by regression detection (valid keys: "
                     f"{', '.join(sorted(THRESHOLD_KEYS))})",
                     stacklevel=2)
+                # Warn-never-error: an unknown key is ignored by regression
+                # detection, so its VALUE must not be validated either
+                # (mirrors _parse_simulator_thresholds) — otherwise a typo'd
+                # *_alpha/*_agreement key errors instead of warning.
+                continue
             if key.endswith("_alpha") or key.endswith("_agreement"):
                 if (isinstance(value, bool)
                         or not isinstance(value, (int, float))

@@ -244,8 +244,11 @@ def _run_with_client(client, config, config_path, ns, provider_id,
         if regressions:
             print(f"REGRESSIONS: {len(regressions)} detected", file=sys.stderr)
             for r in regressions:
-                print(f"  [{r.judge_name}] {r.metric}: {r.baseline_value} -> "
-                      f"{r.current_value}", file=sys.stderr)
+                line = (f"  [{r.judge_name}] {r.metric}: "
+                        f"{r.baseline_value} -> {r.current_value}")
+                if r.detail:
+                    line += f" — {r.detail}"
+                print(line, file=sys.stderr)
             return 1
 
     print(f"Mapped → {output_dir}/summary.yaml; REGRESSIONS: 0")

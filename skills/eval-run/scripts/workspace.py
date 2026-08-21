@@ -215,12 +215,14 @@ def main():
 
 
 def _dataset_audit_preflight(cases_dir, case_dirs):
-    """Soft preflight: WARN when the dataset audit is missing or stale.
+    """Soft preflight: WARN only when an EXISTING dataset audit is stale.
 
-    Compares per-case CONTENT hashes stored in dataset_audit.yaml (never dir
-    mtimes — an in-place input.yaml edit changes the hash, not the mtime).
-    A nudge, never a gate: stderr only, exit code unaffected, and any
-    failure here must not block workspace creation.
+    Opt-in contract: a dataset that was never audited (no
+    dataset_audit.yaml) stays silent. Compares per-case CONTENT hashes
+    stored in dataset_audit.yaml (never dir mtimes — an in-place input.yaml
+    edit changes the hash, not the mtime). Informational, never a gate:
+    stderr only, exit code unaffected, and any failure here must not block
+    workspace creation.
     """
     try:
         from agent_eval.dataset_audit import audit_preflight_warnings

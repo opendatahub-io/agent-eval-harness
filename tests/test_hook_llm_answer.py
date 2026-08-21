@@ -218,6 +218,100 @@ class TestLlmAnswerMeta:
         assert answer is None
         assert "no API key" in meta["error"]
 
+    def test_client_is_built_deadline_safe(self, monkeypatch):
+        """anthropic.Anthropic(timeout=<nominal>, max_retries=0): with SDK
+        retries disabled, one call's wall time is bounded by its nominal
+        timeout — the deadline-budget arithmetic depends on exactly this."""
+        seen = {}
+        client = MagicMock()
+        client.messages.create.return_value = SimpleNamespace(
+            content=[SimpleNamespace(text="Alpha")])
+
+        def anthropic_ctor(**kwargs):
+            seen.update(kwargs)
+            return client
+
+        monkeypatch.setitem(sys.modules, "anthropic",
+                            SimpleNamespace(Anthropic=anthropic_ctor))
+        answer, _meta = hook_tools._llm_answer(
+            "Which?", [{"label": "Alpha"}], "p", timeout=12.5)
+        assert answer == "Alpha"
+        assert seen == {"timeout": 12.5, "max_retries": 0}
+
+
+class TestPrimaryDeadlineGate:
+    """The tier-2 PRIMARY call is gated on the remaining deadline budget:
+    a draw that cannot fit _PRIMARY_TIMEOUT is skipped straight to the
+    tier-3 fallback with a ledger-recorded {"skipped": "deadline"} —
+    distinguishable from an LLM failure. Tier-1 overrides make no API call
+    and are never gated. With max_retries=0 on the client this bounds the
+    hook's worst case regardless of question count."""
+
+    def _two_questions(self):
+        return {"questions": [
+            {"question": "Q1?", "options": [
+                {"label": "Alpha"}, {"label": "Beta"}]},
+            {"question": "Q2?", "options": [
+                {"label": "Gamma"}, {"label": "Delta"}]},
+        ]}
+
+    def test_budget_exhaustion_midway_deadline_skips_later_questions(
+            self, monkeypatch, _redirect_ledger, capsys):
+        budgets = iter([100.0])  # Q1 fits; everything after is busted
+
+        def fake_budget():
+            return next(budgets, 1.0)
+
+        calls = []
+
+        def fake_llm(*args, **kwargs):
+            calls.append(args[0])
+            return "Alpha", {"model": "m", "match": "exact"}
+
+        monkeypatch.setattr(hook_tools, "_remaining_budget", fake_budget)
+        monkeypatch.setattr(hook_tools, "_llm_answer", fake_llm)
+        hook_tools._handle_ask_user(self._two_questions(), {}, {"prompt": "p"})
+
+        assert calls == ["Q1?"]  # Q2's primary was never attempted
+        records = _read_ledger(_redirect_ledger)
+        assert records[0]["tier"] == "llm"
+        assert "skipped" not in records[0]
+        assert records[1]["tier"] == "fallback"
+        assert records[1]["skipped"] == "deadline"
+        assert records[1]["answer"] == "Gamma"  # first option, still answered
+        captured = capsys.readouterr()
+        assert "deadline budget exhausted" in captured.err
+        assert '"Gamma"' in captured.out  # the hook still answers
+
+    def test_deadline_skip_is_not_an_llm_error(self, monkeypatch,
+                                               _redirect_ledger, capsys):
+        """A deadline skip records no `error` and no hook_model — the
+        ledger keeps deadline-skips distinguishable from LLM failures."""
+        monkeypatch.setattr(hook_tools, "_remaining_budget", lambda: 1.0)
+        monkeypatch.setattr(
+            hook_tools, "_llm_answer",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError(
+                "primary must not be called under a busted budget")))
+        tool_input = {"questions": [
+            {"question": "Which?", "options": [{"label": "Alpha"}]}]}
+        hook_tools._handle_ask_user(tool_input, {}, {"prompt": "p"})
+        rec = _read_ledger(_redirect_ledger)[0]
+        assert rec["skipped"] == "deadline"
+        assert "error" not in rec
+        assert "hook_model" not in rec
+
+    def test_tier_1_overrides_are_never_gated(self, monkeypatch,
+                                              _redirect_ledger, capsys):
+        monkeypatch.setattr(hook_tools, "_remaining_budget", lambda: 0.0)
+        tool_input = {"questions": [
+            {"question": "Which?", "options": [{"label": "Alpha"}]}]}
+        hook_tools._handle_ask_user(
+            tool_input, {"case_overrides": {"Which?": "Beta"}}, {"prompt": "p"})
+        rec = _read_ledger(_redirect_ledger)[0]
+        assert rec["tier"] == "override"
+        assert "skipped" not in rec
+        assert '"Beta"' in capsys.readouterr().out
+
 
 class TestLedgerWrites:
     """In-process _handle_ask_user writes one record per question."""

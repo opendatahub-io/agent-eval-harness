@@ -395,7 +395,9 @@ def _write_multi_step_case_package(config, config_path, bundled_cfg, case_dir,
 
 
 def _dataset_audit_preflight(cases_root, case_dirs):
-    """Soft dataset-audit preflight (parity with workspace.py): warn, never fail."""
+    """Soft dataset-audit preflight (parity with workspace.py): warn only on
+    a stale/incomplete EXISTING audit — silent when never audited, never a
+    gate."""
     try:
         from agent_eval.dataset_audit import audit_preflight_warnings
         for warning in audit_preflight_warnings(cases_root, case_dirs):

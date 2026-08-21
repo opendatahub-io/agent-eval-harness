@@ -756,8 +756,11 @@ def run_eval_on_harbor(
     if regressions:
         print(f"REGRESSIONS: {len(regressions)} detected", file=sys.stderr)
         for r in regressions:
-            print(f"  [{r.judge_name}] {r.metric}: {r.baseline_value} -> {r.current_value}",
-                  file=sys.stderr)
+            line = (f"  [{r.judge_name}] {r.metric}: "
+                    f"{r.baseline_value} -> {r.current_value}")
+            if r.detail:
+                line += f" — {r.detail}"
+            print(line, file=sys.stderr)
         return 1
     if parsed["mean_reward"] is None:
         print("NO-SCORES: Harbor completed without producing any numeric reward",

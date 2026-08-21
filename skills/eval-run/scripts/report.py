@@ -1915,7 +1915,19 @@ def _render_simulator(summary, config):
             cls = "fail" if rate > gate else "pass"
             val = (f'<span class="{cls}">{val}</span> '
                    f"(gate: &le; {gate})")
-        html += f"<tr><th>Fallback rate</th><td>{val}</td></tr>\n"
+        html += ("<tr><th>Fallback rate</th><td>" + val
+                 + " — fallback answers over answered questions"
+                   "</td></tr>\n")
+    disabled_events = block.get("disabled_events")
+    if disabled_events is None:
+        disabled_events = tiers.get("disabled") or 0
+    if disabled_events:
+        html += ("<tr><th>Interception disabled</th><td>"
+                 f'<span class="fail">{disabled_events} event(s)</span> — '
+                 "interception was disabled during the run; these records "
+                 "carry no question and are excluded from the fallback "
+                 "rate (the max_fallback_rate gate still regresses on "
+                 "them)</td></tr>\n")
     if block.get("hook_model"):
         html += (f"<tr><th>Hook model</th>"
                  f"<td>{_esc(str(block['hook_model']))}</td></tr>\n")

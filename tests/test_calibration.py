@@ -20,7 +20,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "eval-run" / "scripts"))
 
+import log_results  # noqa: E402 — conftest puts eval-mlflow/scripts on sys.path
 import report  # noqa: E402
+import score  # noqa: E402
 from agent_eval.config import EvalConfig  # noqa: E402
 from agent_eval.reliability import (  # noqa: E402
     INTERVAL, NOMINAL, ORDINAL, REASON_INSUFFICIENT_DATA,
@@ -101,6 +103,34 @@ class TestCalibrationJoin:
         joined = _calibration_join(per_case, verdicts, {"q": BOOL_JC})
         assert joined["q"]["pairs"] == [("c1", True, True)]
         assert "not a mapping" in capsys.readouterr().err
+
+    def test_unhashable_verdicts_are_excluded_not_crashed(self, capsys):
+        """Agent-written YAML can put a LIST or a DICT where a scalar
+        verdict belongs. On a non-bool/non-numeric (string) judge value
+        those used to sail through the join and crash Counter() inside
+        cohen_kappa — they must be excluded as malformed instead."""
+        text_jc = SimpleNamespace(feedback_type="", score_range=None)
+        per_case = {"c1": {"t": {"value": "Alpha"}},
+                    "c2": {"t": {"value": "Beta"}},
+                    "c3": {"t": {"value": "Gamma"}}}
+        verdicts = {"c1": {"t": ["Alpha", "Beta"]},   # YAML list
+                    "c2": {"t": {"answer": "Beta"}},  # YAML mapping
+                    "c3": {"t": "Gamma"}}             # matching scalar
+        joined = _calibration_join(per_case, verdicts, {"t": text_jc})
+        assert joined["t"]["pairs"] == [("c3", "Gamma", "Gamma")]
+        assert joined["t"]["excluded"]["malformed"] == 2
+        assert "matching hashable scalars" in capsys.readouterr().err
+
+    def test_scalar_verdict_of_the_wrong_family_is_malformed(self, capsys):
+        """A hashable scalar is not enough — it must live on the judge's
+        own scale family (a numeric verdict against a string judge value
+        would make the coefficient meaningless)."""
+        text_jc = SimpleNamespace(feedback_type="", score_range=None)
+        joined = _calibration_join({"c1": {"t": {"value": "Alpha"}}},
+                                   {"c1": {"t": 3}}, {"t": text_jc})
+        assert joined["t"]["pairs"] == []
+        assert joined["t"]["excluded"]["malformed"] == 1
+        capsys.readouterr()
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +389,12 @@ class TestCmdCalibration:
         with pytest.raises(SystemExit) as exc:
             cmd_calibration(_args(env))
         assert exc.value.code == 1
-        assert "REGRESSIONS: 1" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "REGRESSIONS: 1" in out
+        # Honest-labeling transport: the regression line carries the
+        # detail (' — <why>'), not just the bare numbers.
+        assert " — " in out
+        assert "single human reviewer" in out
 
     def test_exit_0_when_the_gate_is_satisfied(self, run_env, capsys):
         env = run_env(summary=_summary(), review=_review(), thresholds=(
@@ -418,6 +453,72 @@ class TestCmdCalibration:
             human_calibration=summary["human_calibration"])
         assert len(regs) == 1
         assert "stale calibration" in regs[0].detail
+
+
+# ---------------------------------------------------------------------------
+# Validity-block refresh (the producer, in real pipeline order)
+# ---------------------------------------------------------------------------
+
+class TestValidityRefresh:
+    def test_pipeline_judges_then_calibration_carries_human_agreement(
+            self, run_env, monkeypatch, capsys):
+        """Real subcommand order: cmd_judges assembles the validity block
+        (necessarily without calibration — it drops any prior one), then
+        cmd_calibration must refresh the persisted validity rows itself.
+        Without that refresh, summary['validity'].judges[*].human_agreement
+        can NEVER carry data in any real ordering — so the MLflow routing
+        never emits {judge}/human_agreement and the report's validity table
+        never grows the column."""
+        env = run_env(summary=None, review=_review())
+        for cid in _case_ids():
+            (env.run_dir / "cases" / cid).mkdir(parents=True)
+
+        values = {cid: J_BOOL[i] for i, cid in enumerate(_case_ids())}
+
+        def fmt(outputs=None, **kwargs):
+            return values[Path(outputs["case_dir"]).name], "ok"
+
+        def qual(outputs=None, **kwargs):
+            return 3, "meh"
+
+        monkeypatch.setattr(
+            score, "load_judges",
+            lambda config, root=None: [("format_check", fmt, "", "check", 1),
+                                       ("quality", qual, "", "llm", 1)])
+        score.cmd_judges(SimpleNamespace(
+            run_id="r1", config=str(env.cfg_path), workspace=None,
+            model=None, samples=None, no_llm_judges=False))
+
+        summary = yaml.safe_load((env.run_dir / "summary.yaml").read_text())
+        rows = {r["judge"]: r for r in summary["validity"]["judges"]}
+        assert rows["format_check"]["human_agreement"] is None  # not yet
+
+        cmd_calibration(_args(env))
+        capsys.readouterr()
+
+        summary = yaml.safe_load((env.run_dir / "summary.yaml").read_text())
+        rows = {r["judge"]: r for r in summary["validity"]["judges"]}
+        # Exact row shape build_validity_block emits: {metric, value, n}.
+        assert rows["format_check"]["human_agreement"] == {
+            "metric": "cohen_kappa", "value": pytest.approx(0.5), "n": 8}
+        # Below-floor judge: refreshed too, with the honest null value.
+        assert rows["quality"]["human_agreement"] == {
+            "metric": "krippendorff_alpha", "value": None, "n": 3}
+        # The v3 layer's copy of the rows stays in lockstep.
+        v3_rows = {r["judge"]: r
+                   for r in summary["validity"]["layers"]["v3"]["judges"]}
+        assert (v3_rows["format_check"]["human_agreement"]["value"]
+                == pytest.approx(0.5))
+
+        # MLflow routing emits the plottable metric.
+        metrics, _tags = log_results._validity_mlflow_fields(summary)
+        assert metrics["format_check/human_agreement"] == pytest.approx(0.5)
+
+        # And the report's validity table grows the column.
+        html = report._render_validity(summary,
+                                       {"thresholds": {}, "judges": []})
+        assert "Human agreement" in html
+        assert "0.500 (cohen_kappa)" in html
 
 
 # ---------------------------------------------------------------------------

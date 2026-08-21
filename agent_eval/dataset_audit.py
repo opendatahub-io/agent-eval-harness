@@ -871,19 +871,27 @@ def load_audit(dataset_root) -> Optional[dict]:
 def audit_preflight_warnings(dataset_root, case_dirs, max_names=5) -> list:
     """Soft V1 preflight for the execution paths — warning strings, or [].
 
+    Opt-in contract: a dataset with NO ``dataset_audit.yaml`` at all stays
+    SILENT — the audit is an optional /eval-dataset step, and warning on
+    every unaudited run is noise that trains users to ignore the channel.
+    Warnings fire only when an audit EXISTS and is stale or incomplete.
+
     Compares the audit's stored per-case CONTENT hashes (never dir mtimes)
     against the current case dirs: an in-place edit of ``case-001/input.yaml``
     changes the content hash but not the directory mtime. Only the SELECTED
     case dirs are checked, so a ``--cases`` subset never warns about
     unselected cases. Callers print the strings as warnings and must treat
-    this as a nudge — never a gate.
+    this as informational — never a gate, never blocking.
     """
+    if not (Path(dataset_root) / AUDIT_FILENAME).is_file():
+        return []  # never audited — silent (opt-in contract)
     audit = load_audit(dataset_root)
     if audit is None:
+        # The file EXISTS but is corrupt/unreadable — an incomplete audit,
+        # not a never-audited dataset: warn.
         return [
-            f"{AUDIT_FILENAME} not found at {dataset_root} — dataset has "
-            "not been audited; run audit_dataset.py (/eval-dataset Step 6) "
-            "before scoring"]
+            f"{AUDIT_FILENAME} at {dataset_root} is unreadable — "
+            "re-run audit_dataset.py to refresh it"]
     recorded = audit.get("case_hashes")
     if not isinstance(recorded, dict):
         return [

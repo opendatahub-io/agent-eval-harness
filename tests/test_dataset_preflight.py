@@ -1,9 +1,11 @@
 """Tests for the soft dataset-audit preflight (workspace.py + harbor/tasks.py).
 
-The preflight is a nudge, never a gate: it WARNS on stderr when
-dataset_audit.yaml is missing at the dataset root, or when stored per-case
-CONTENT hashes disagree with the current case dirs (stale audit) — and it
-must never raise or change exit codes.
+The preflight is informational, never a gate — and it is an opt-in contract:
+a dataset that was NEVER audited (no dataset_audit.yaml) stays SILENT. It
+WARNS on stderr only when an audit EXISTS and is stale or incomplete (stored
+per-case CONTENT hashes disagree with the current case dirs, cases are
+uncovered, or the file is corrupt) — and it must never raise or change exit
+codes.
 """
 
 from pathlib import Path
@@ -51,13 +53,12 @@ def write_fresh_audit(dataset):
 # ---------------------------------------------------------------------------
 
 class TestWorkspacePreflight:
-    def test_warns_when_audit_missing(self, tmp_path, capsys):
+    def test_silent_when_audit_never_existed(self, tmp_path, capsys):
+        """Opt-in contract: a never-audited dataset produces NO warning."""
         dataset = make_dataset(tmp_path)
         case_dirs = sorted(d for d in dataset.iterdir() if d.is_dir())
         workspace._dataset_audit_preflight(dataset, case_dirs)
-        err = capsys.readouterr().err
-        assert "WARNING" in err
-        assert "not been audited" in err
+        assert capsys.readouterr().err == ""
 
     def test_silent_when_audit_fresh(self, tmp_path, capsys):
         dataset = make_dataset(tmp_path)
@@ -95,7 +96,10 @@ class TestWorkspacePreflight:
         case_dirs = sorted(d for d in dataset.iterdir() if d.is_dir())
         workspace._dataset_audit_preflight(dataset, case_dirs)  # no raise
         err = capsys.readouterr().err
-        assert "WARNING" in err  # treated as not audited
+        # An audit that EXISTS but is unreadable is incomplete, not
+        # never-audited: it warns.
+        assert "WARNING" in err
+        assert "unreadable" in err
 
     def test_preflight_never_raises_on_bad_args(self, capsys):
         workspace._dataset_audit_preflight(None, None)  # no raise
@@ -124,13 +128,12 @@ class TestWorkspacePreflight:
 # ---------------------------------------------------------------------------
 
 class TestHarborPreflight:
-    def test_warns_when_audit_missing(self, tmp_path, capsys):
+    def test_silent_when_audit_never_existed(self, tmp_path, capsys):
+        """Opt-in contract parity with workspace.py: never audited = silent."""
         dataset = make_dataset(tmp_path)
         case_dirs = sorted(d for d in dataset.iterdir() if d.is_dir())
         harbor_tasks._dataset_audit_preflight(dataset, case_dirs)
-        err = capsys.readouterr().err
-        assert "WARNING" in err
-        assert "not been audited" in err
+        assert capsys.readouterr().err == ""
 
     def test_silent_when_audit_fresh(self, tmp_path, capsys):
         dataset = make_dataset(tmp_path)

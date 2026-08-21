@@ -714,6 +714,50 @@ thresholds:
     assert cfg.thresholds == {"q": {"min_apha": 0.7}}
 
 
+def test_unknown_threshold_key_never_gets_value_validation(tmp_path):
+    """Warn-never-error covers the VALUE too: an unknown key is ignored by
+    regression detection, so its value must not be validated (mirrors
+    _parse_simulator_thresholds) — while the same off-scale value on a KNOWN
+    *_alpha key still raises."""
+    with pytest.warns(UserWarning, match="unknown key 'min_alphabet'"):
+        cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - {name: q, check: "return (True, 'ok')"}
+thresholds:
+  q:
+    min_alphabet: 1.5
+"""))
+    assert cfg.thresholds == {"q": {"min_alphabet": 1.5}}
+
+    # An unknown *_agreement-suffixed key with an off-scale value used to hit
+    # the generic value rule and error — it must warn and load instead.
+    with pytest.warns(UserWarning, match="unknown key 'min_judge_agreement'"):
+        cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - {name: q, check: "return (True, 'ok')"}
+thresholds:
+  q:
+    min_judge_agreement: 1.5
+"""))
+    assert cfg.thresholds == {"q": {"min_judge_agreement": 1.5}}
+
+    # The KNOWN key keeps its value validation.
+    with pytest.raises(ValueError, match=r"min_alpha must be a finite"):
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - {name: q, check: "return (True, 'ok')"}
+thresholds:
+  q:
+    min_alpha: 1.5
+"""))
+
+
 @pytest.mark.parametrize("value", ["1.5", '"high"', ".nan"])
 def test_bad_min_alpha_values_raise(tmp_path, value):
     with pytest.raises(ValueError, match=r"min_alpha must be a finite"):

@@ -238,8 +238,9 @@ These steps run for **every** provenance:
    argument-field presence, structural issues, and reference resolution — the
    latter labeled *necessary, not sufficient*, for answerability). Conformance to
    the natural-language `dataset.schema` and companion-file review remain
-   agent/human review. `/eval-run` warns before scoring when the audit is missing
-   or stale (per-case content hashes).
+   agent/human review. `/eval-run`'s preflight is informational: it warns only
+   when an existing audit is stale (per-case content hashes) — a never-audited
+   dataset stays silent — and never blocks the run.
 2. **Report** — cases created, provenance (fresh vs. augment), the audit summary
    and artifact paths (`dataset_audit.yaml`, `manifest.yaml`), coverage, what's
    still missing, and every `TODO_` placeholder to replace.

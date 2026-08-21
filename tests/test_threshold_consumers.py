@@ -440,3 +440,115 @@ class _MissingEnginePath(type(Path())):
 
     def resolve(self):
         return Path("/nonexistent-harness-root/skills/x/scripts/log_results.py")
+
+
+# --- cmd_regression scopes reliability gates by execution mode ---------------
+
+_SCOPED_CONFIG = """\
+name: t
+execution:
+  skill: s
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    samples: 3
+thresholds:
+  q:
+    min_alpha: 0.7
+  simulator:
+    max_fallback_rate: 0.0
+"""
+
+
+def _regression_run(tmp_path, monkeypatch):
+    import yaml
+    cfg = tmp_path / "eval.yaml"
+    cfg.write_text(_SCOPED_CONFIG)
+    runs_base = tmp_path / "runs"
+    run_dir = runs_base / "s" / "r1"
+    run_dir.mkdir(parents=True)
+    (run_dir / "summary.yaml").write_text(yaml.safe_dump(
+        {"run_id": "r1",
+         "judges": {"q": {"mean": 4.0, "scored_cases": 3}}}))
+    monkeypatch.setenv("AGENT_EVAL_RUNS_DIR", str(runs_base))
+    return cfg, run_dir
+
+
+def test_cmd_regression_skips_reliability_gates_on_a_harbor_run(
+        tmp_path, monkeypatch, capsys):
+    """cmd_regression was the only detector consumer with no execution-path
+    scoping: a harbor-shaped run dir (execution_mode: harbor in
+    run_result.json, no stability data, min_alpha + thresholds.simulator
+    configured) must exit 0 with the combined skip-notice — the simulator
+    gates ride the same include_irr scoping inside the detector."""
+    import json
+    import score
+    from types import SimpleNamespace
+
+    cfg, run_dir = _regression_run(tmp_path, monkeypatch)
+    (run_dir / "run_result.json").write_text(json.dumps(
+        {"execution_mode": "harbor"}))
+
+    score.cmd_regression(SimpleNamespace(run_id="r1", config=str(cfg),
+                                         baseline=None))  # no SystemExit
+    captured = capsys.readouterr()
+    assert "REGRESSIONS: 0" in captured.out
+    assert ("reliability gates (min_alpha) skipped on this execution path"
+            in captured.err)
+
+
+def test_cmd_regression_keeps_local_semantics_without_run_result(
+        tmp_path, monkeypatch, capsys):
+    """Missing/unreadable run_result.json means local semantics
+    (include_irr=True, matching report.py's _include_irr): the same summary
+    regresses on both the unavailable alpha and the simulator gate — and
+    every regression line carries its detail (' — <why>')."""
+    import pytest as _pytest
+    import score
+    from types import SimpleNamespace
+
+    cfg, _run_dir = _regression_run(tmp_path, monkeypatch)
+
+    with _pytest.raises(SystemExit) as exc:
+        score.cmd_regression(SimpleNamespace(run_id="r1", config=str(cfg),
+                                             baseline=None))
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert " — " in out
+    assert "samples: 1" in out                        # min_alpha detail
+    assert "no simulator block in summary" in out     # simulator detail
+
+
+def test_cmd_judges_prints_the_regression_detail(tmp_path, monkeypatch,
+                                                 capsys):
+    """Honest-labeling transport: the cmd_judges regression lines append
+    ' — <detail>' so alpha-n/a reasons reach the console."""
+    import score
+    from types import SimpleNamespace
+
+    cfg = tmp_path / "eval.yaml"
+    cfg.write_text(_SCOPED_CONFIG)
+    runs_base = tmp_path / "runs"
+    case_dir = runs_base / "s" / "r1" / "cases" / "case-001"
+    case_dir.mkdir(parents=True)
+    monkeypatch.setenv("AGENT_EVAL_RUNS_DIR", str(runs_base))
+
+    monkeypatch.setattr(score, "load_judges", lambda config, root=None: [])
+    monkeypatch.setattr(
+        score, "score_cases",
+        lambda judges, case_dirs, config, run_id=None, samples_override=None:
+        {"per_case": {"case-001": {"q": {"value": 4, "rationale": "ok",
+                                         "judge_type": "llm"}}},
+         "aggregated": {"q": {"mean": 4.0, "scored_cases": 1,
+                              "values": [4]}}})
+
+    with pytest.raises(SystemExit) as exc:
+        score.cmd_judges(SimpleNamespace(
+            run_id="r1", config=str(cfg), workspace=None, model=None,
+            samples=None, no_llm_judges=False))
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "REGRESSIONS:" in out
+    assert " — " in out
+    assert "samples: 1" in out  # the min_alpha unavailable reason

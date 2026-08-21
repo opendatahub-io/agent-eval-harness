@@ -43,6 +43,9 @@ PR1's vendored replication-repo fixtures.
 The docs narrative (glossary disambiguation, CI gating examples, the
 measurement-validity concepts page) landed as PR11.
 
+*Sections 1–6 below are the pre-implementation design-round analysis, preserved
+verbatim; the status table above reflects what actually shipped.*
+
 ---
 
 ## 1. What the paper says

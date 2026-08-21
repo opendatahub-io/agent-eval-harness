@@ -3073,6 +3073,19 @@ def _calibration_join(per_case, verdicts, judge_configs):
                           f"{human!r} outside declared score_range "
                           f"{list(bounds)} — excluded, never clamped")
                     continue
+            else:
+                # Non-bool/non-numeric judge value (a string verdict). The
+                # human verdict must be a hashable scalar of the SAME type
+                # family — an agent-written YAML list/dict would reach
+                # Counter() inside cohen_kappa and crash the join.
+                if (not isinstance(human, (str, int, float, bool))
+                        or not isinstance(jv, str)
+                        or not isinstance(human, str)):
+                    bucket["excluded"]["malformed"] += 1
+                    _warn(f"case {case_id!r}/{judge_name}: judge value "
+                          f"{jv!r} and human verdict {human!r} must be "
+                          "matching hashable scalars — excluded")
+                    continue
             bucket["pairs"].append((case_id, human, jv))
     return joined
 
@@ -3422,9 +3435,15 @@ def aggregate_simulator(config, run_id, runs_dir, case_dirs=None):
 
     - ``tiers`` — answered-question tier distribution (override / llm /
       fallback) plus ``disabled`` interception-off records.
-    - ``fallback_rate`` — (fallback + disabled) over all recorded
-      question/disabled events: the share the simulator answered
-      arbitrarily or not at all. ``None`` when nothing was recorded.
+    - ``fallback_rate`` — fallback answers over ANSWERED QUESTIONS only
+      (question-scoped units): the share of questions the simulator
+      answered arbitrarily. ``None`` when no question was answered.
+      Disabled records are per-hook-invocation (they carry a reason, no
+      question) and never enter this rate — they are counted separately.
+    - ``disabled_events`` — interception-disabled hook invocations
+      (per-invocation records, no question). The ``max_fallback_rate``
+      gate also regresses whenever this is non-zero, so mixing units in
+      one rate is never needed to keep the gate protective.
     - ``calibration`` — held-out shadow agreement vs the override gold set,
       stratified by ``source``: the HUMAN stratum is the only calibration
       evidence (``gold_agreement``); the agent stratum is labeled
@@ -3490,10 +3509,10 @@ def aggregate_simulator(config, run_id, runs_dir, case_dirs=None):
             })
 
     n_questions = tiers["override"] + tiers["llm"] + tiers["fallback"]
-    denominator = n_questions + tiers["disabled"]
-    fallback_rate = (round((tiers["fallback"] + tiers["disabled"])
-                           / denominator, 3)
-                     if denominator else None)
+    # Question-scoped only: disabled records are per-hook-invocation events
+    # with no question, so they must not dilute (or inflate) this rate.
+    fallback_rate = (round(tiers["fallback"] / n_questions, 3)
+                     if n_questions else None)
 
     def _stratum_block(name, label):
         s = strata[name]
@@ -3526,6 +3545,7 @@ def aggregate_simulator(config, run_id, runs_dir, case_dirs=None):
         "tiers": tiers,
         "n_questions": n_questions,
         "fallback_rate": fallback_rate,
+        "disabled_events": tiers["disabled"],
         "calibration": calibration,
         "deadline_skips": deadline_skips,
         "ledger_scope": ledger_scope,
@@ -3559,9 +3579,11 @@ def _aggregate_cross_simulator(records, primary_model):
     shadow-covered questions (primary answered, every shadow model
     answered) so partial coverage never inflates agreement;
     ``per_model_agreement`` is per-model over that model's own answered
-    questions. ``single_family`` is true when every model with a KNOWN
-    family resolves to one family — within-family agreement must never be
-    sold as cross-family robustness (paper Prescription 4). The nominal
+    questions. ``single_family`` is true ONLY when every model classifies
+    (zero unknown-family models) into exactly one known family — the PR8
+    panel rule: an unclassifiable gateway alias silences the claim rather
+    than letting within-family agreement be sold as cross-family
+    robustness (paper Prescription 4). The nominal
     alpha needs >= ``_XSIM_ALPHA_MIN_QUESTIONS`` covered questions;
     below that it is suppressed with ``reason_code: insufficient_data``.
     """
@@ -3640,11 +3662,15 @@ def _aggregate_cross_simulator(records, primary_model):
         }
 
     models = [primary_model] + model_order
-    known = [f for f in (infer_model_family(m) for m in models) if f]
+    families = family_composition(models)
     return {
         "models": models,
-        "families": family_composition(models),
-        "single_family": bool(known) and len(set(known)) == 1,
+        "families": families,
+        # PR8 panel rule: single-family is claimed ONLY when there are zero
+        # unknown-family models AND exactly one known family — an
+        # unclassifiable gateway alias silences the claim (silence
+        # contract), it never converts a mixed panel into a single family.
+        "single_family": len(families) == 1 and "unknown" not in families,
         "n_questions": len(covered),
         "n_shadowed_questions": len(rows),
         "all_agree_rate": (round(all_agree / len(covered), 3)
@@ -3842,8 +3868,8 @@ def detect_regressions(current_results, thresholds, baseline_results=None, *,
                         judge_name, "alpha", f">= {t}", f"{value:.3f}",
                         f"{irr.get('metric', 'alpha')}/"
                         f"{irr.get('level', '?')}, "
-                        f"n_units={irr.get('n_units', '?')} — single-judge "
-                        "self-consistency alpha (upper bound on IRR)"))
+                        f"n_units={irr.get('n_units', '?')} — "
+                        f"{IRR_SELF_CONSISTENCY_LABEL}"))
             elif irr.get("reason_code") == REASON_PERFECT_AGREEMENT:
                 pass  # degenerate PASS: zero variance, gate satisfied
             else:
@@ -3976,7 +4002,11 @@ def detect_regressions(current_results, thresholds, baseline_results=None, *,
 def _detect_simulator_regressions(simulator, sim_thresholds):
     """Evaluate the reserved ``thresholds.simulator`` gates.
 
-    ``max_fallback_rate`` gates the arbitrary-answer share;
+    ``max_fallback_rate`` gates the question-scoped arbitrary-answer share
+    (fallback answers over answered questions) AND additionally regresses
+    whenever ``disabled_events`` is non-zero — disabled records are
+    per-hook-invocation (no question), so they never enter the rate, but an
+    interception-disabled run must still fail the gate;
     ``min_gold_agreement`` gates ONLY the human-provenance calibration
     stratum (agent-authored pairs are LLM-vs-LLM consistency, not human
     calibration — fail-loud when no human pairs exist, paper Sec 5.3
@@ -4016,18 +4046,29 @@ def _detect_simulator_regressions(simulator, sim_thresholds):
     if "max_fallback_rate" in sim_thresholds:
         t = sim_thresholds["max_fallback_rate"]
         rate = simulator.get("fallback_rate")
+        tiers = simulator.get("tiers") or {}
+        disabled = simulator.get("disabled_events")
+        if disabled is None:  # pre-disabled_events summary
+            disabled = tiers.get("disabled") or 0
         if not _numeric(rate):
             regressions.append(Regression(
                 "simulator", "fallback_rate", f"<= {t}", "n/a",
                 "fallback_rate unavailable — no answered questions recorded "
                 "in the hook_answers ledger"))
         elif rate > t:
-            tiers = simulator.get("tiers") or {}
             regressions.append(Regression(
                 "simulator", "fallback_rate", f"<= {t}", f"{rate:.3f}",
-                f"{tiers.get('fallback', 0)} fallback + "
-                f"{tiers.get('disabled', 0)} disabled answer(s) — the agent "
-                "under test received arbitrary or uninterceded answers"))
+                f"{tiers.get('fallback', 0)} fallback answer(s) over "
+                f"{simulator.get('n_questions', '?')} answered question(s) "
+                "— the agent under test received arbitrary answers"))
+        if disabled:
+            # Disabled records carry no question, so they cannot enter the
+            # question-scoped rate — but an interception-disabled run must
+            # still fail the gate.
+            regressions.append(Regression(
+                "simulator", "disabled_events", "0", str(disabled),
+                f"interception was disabled during the run "
+                f"({disabled} events)"))
     if "min_gold_agreement" in sim_thresholds:
         t = sim_thresholds["min_gold_agreement"]
         calibration = simulator.get("calibration")
@@ -4369,8 +4410,11 @@ def cmd_judges(args):
             has_regressions = True
             print(f"\n  REGRESSIONS: {len(regressions)} detected")
             for r in regressions:
-                print(f"    [{r.judge_name}] {r.metric}: "
-                      f"{r.baseline_value} -> {r.current_value}")
+                line = (f"    [{r.judge_name}] {r.metric}: "
+                        f"{r.baseline_value} -> {r.current_value}")
+                if r.detail:
+                    line += f" — {r.detail}"
+                print(line)
         else:
             print("\n  REGRESSIONS: 0")
 
@@ -4479,16 +4523,49 @@ def cmd_regression(args):
             with open(baseline_path) as f:
                 baseline_agg = (yaml.safe_load(f) or {}).get("judges", {})
 
+    # Execution-path scoping (parity with report.py's _include_irr and the
+    # Harbor/EvalHub CLIs): those aggregations carry no sampling stability,
+    # judge-panel, or hook-ledger data, so the reliability gates
+    # (min_alpha/min_panel_alpha) and the reserved thresholds.simulator
+    # gates must be skipped for such runs — the detector scopes all of them
+    # under include_irr. A missing or unreadable run_result.json means
+    # local semantics (include_irr=True).
+    execution_mode = None
+    rr_path = runs_dir / args.run_id / "run_result.json"
+    try:
+        with open(rr_path) as f:
+            _run_meta = json.load(f)
+        if isinstance(_run_meta, dict):
+            execution_mode = _run_meta.get("execution_mode")
+    except (OSError, ValueError):
+        pass
+    include_irr = execution_mode not in ("harbor", "evalhub")
+    eff_thresholds = config.effective_thresholds()
+    if not include_irr:
+        skipped = sorted({key
+                          for t in (eff_thresholds or {}).values()
+                          if isinstance(t, dict)
+                          for key in ("min_alpha", "min_panel_alpha")
+                          if key in t})
+        if skipped:
+            print(f"NOTE: reliability gates ({', '.join(skipped)}) skipped on "
+                  "this execution path: no sampling stability data or "
+                  "judge-panel data in aggregated results", file=sys.stderr)
+
     regressions = detect_regressions(
-        current_agg, config.effective_thresholds(), baseline_agg,
+        current_agg, eff_thresholds, baseline_agg,
         pairwise=summary.get("pairwise"),
+        include_irr=include_irr,
         simulator=summary.get("simulator"),
         human_calibration=summary.get("human_calibration"))
     if regressions:
         print(f"REGRESSIONS: {len(regressions)} detected")
         for r in regressions:
-            print(f"  [{r.judge_name}] {r.metric}: "
-                  f"{r.baseline_value} -> {r.current_value}")
+            line = (f"  [{r.judge_name}] {r.metric}: "
+                    f"{r.baseline_value} -> {r.current_value}")
+            if r.detail:
+                line += f" — {r.detail}"
+            print(line)
         sys.exit(1)
     else:
         print("REGRESSIONS: 0")
@@ -4524,7 +4601,11 @@ def cmd_calibration(args):
     computes the structurally selected coefficient per judge, and persists
     BOTH targets: per-judge ``human_agreement`` merged into
     ``summary['judges'][<name>]`` (what the gate and report read) and the
-    run-level ``summary['human_calibration']`` block. Exits 1 iff a
+    run-level ``summary['human_calibration']`` block — plus an in-place
+    refresh of the persisted ``summary['validity']`` per-judge rows
+    (``build_validity_block`` runs only in ``cmd_judges``, which drops
+    calibration first, so without this refresh the validity table's
+    human_agreement column could never carry data). Exits 1 iff a
     configured ``min_human_agreement`` is breached.
     """
     from datetime import datetime, timezone
@@ -4602,6 +4683,35 @@ def cmd_calibration(args):
     _merge_summary(args.run_id, "judges", judges_block, runs_dir)
     _merge_summary(args.run_id, "human_calibration", human_calibration,
                    runs_dir)
+    # Refresh the persisted validity block's per-judge rows in place.
+    # build_validity_block runs only in cmd_judges — which drops any prior
+    # calibration first — so this producer is the ONLY place the
+    # summary['validity'].judges human_agreement rows can ever carry data
+    # (the report's validity table and the MLflow {judge}/human_agreement
+    # metric both read them). Row shape matches build_validity_block's
+    # human_agreement passthrough exactly: {metric, value, n}.
+    with open(summary_path) as f:
+        merged_summary = yaml.safe_load(f) or {}
+    validity = merged_summary.get("validity")
+    if isinstance(validity, dict):
+        v3 = (validity.get("layers") or {}).get("v3")
+        row_lists = [validity.get("judges"),
+                     v3.get("judges") if isinstance(v3, dict) else None]
+        for rows in row_lists:
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                name = row.get("judge")
+                if name not in calibrated:
+                    continue
+                ha = (judges_block.get(name) or {}).get("human_agreement")
+                ha = ha if isinstance(ha, dict) else {}
+                row["human_agreement"] = {"metric": ha.get("metric"),
+                                          "value": ha.get("value"),
+                                          "n": ha.get("n_units")}
+        _merge_summary(args.run_id, "validity", validity, runs_dir)
     print(f"CALIBRATION: {len(calibrated)} judge(s) calibrated against "
           f"reviewer '{human_calibration['reviewer_id']}' "
           f"({human_calibration['n_reviewed']}/"
@@ -4623,8 +4733,11 @@ def cmd_calibration(args):
         if regressions:
             print(f"\n  REGRESSIONS: {len(regressions)} detected")
             for r in regressions:
-                print(f"    [{r.judge_name}] {r.metric}: "
-                      f"{r.baseline_value} -> {r.current_value}")
+                line = (f"    [{r.judge_name}] {r.metric}: "
+                        f"{r.baseline_value} -> {r.current_value}")
+                if r.detail:
+                    line += f" — {r.detail}"
+                print(line)
             sys.exit(1)
         print("\n  REGRESSIONS: 0")
 

@@ -45,7 +45,9 @@ def test_state_1_breach_when_alpha_below_threshold():
     assert len(regs) == 1
     assert regs[0].metric == "alpha"
     assert regs[0].current_value == "0.400"
-    assert "upper bound on IRR" in regs[0].detail
+    # Full verbatim honest label, never an abbreviation.
+    assert ("single-judge self-consistency alpha "
+            "(upper bound on inter-rater reliability)") in regs[0].detail
 
 
 def test_no_regression_when_alpha_clears_the_bound():

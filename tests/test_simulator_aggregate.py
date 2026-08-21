@@ -122,8 +122,11 @@ def test_mixed_tiers_and_fallback_rate(tmp_path):
     assert block["tiers"] == {"override": 6, "llm": 1, "fallback": 1,
                               "disabled": 1}
     assert block["n_questions"] == 8
-    # (1 fallback + 1 disabled) / 9 recorded events, rounded to 3 decimals
-    assert block["fallback_rate"] == round(2 / 9, 3)
+    # Question-scoped: 1 fallback / 8 answered questions. Disabled records
+    # are per-hook-invocation (no question) and never enter the rate —
+    # they are counted separately.
+    assert block["fallback_rate"] == round(1 / 8, 3)
+    assert block["disabled_events"] == 1
     assert block["ledger_scope"] == "case"
     assert block["hook_model"] == "claude-haiku-4-5"
     assert block["deadline_skips"] == 1
@@ -196,10 +199,24 @@ def _sim_block(tmp_path, records=MIXED_RECORDS):
 def test_max_fallback_rate_breach_regresses(tmp_path):
     block = _sim_block(tmp_path)
     regs = _detect_simulator_regressions(block, {"max_fallback_rate": 0.0})
+    # MIXED_RECORDS carries 1 disabled record: the gate regresses on the
+    # question-scoped rate breach AND on the disabled events.
     assert [(r.judge_name, r.metric) for r in regs] == [
-        ("simulator", "fallback_rate")]
+        ("simulator", "fallback_rate"), ("simulator", "disabled_events")]
+    assert "fallback answer(s) over" in regs[0].detail
+    # A satisfied rate does NOT absolve the disabled events — the gate
+    # stays protective against interception-off runs.
+    regs = _detect_simulator_regressions(block, {"max_fallback_rate": 0.9})
+    assert [(r.judge_name, r.metric) for r in regs] == [
+        ("simulator", "disabled_events")]
+    assert regs[0].detail == ("interception was disabled during the run "
+                              "(1 events)")
+
+    # With no disabled records, a satisfied rate is clean.
+    no_disabled = [r for r in MIXED_RECORDS if r.get("tier") != "disabled"]
+    clean_block = _sim_block(tmp_path / "nd", no_disabled)
     assert _detect_simulator_regressions(
-        block, {"max_fallback_rate": 0.9}) == []
+        clean_block, {"max_fallback_rate": 0.9}) == []
 
 
 def test_min_gold_agreement_gates_the_human_stratum_only(tmp_path):
@@ -239,8 +256,10 @@ def test_configured_but_no_simulator_block_regresses_per_key():
 def test_the_reserved_key_never_hits_the_judge_loop(tmp_path):
     """A judge aggregate containing real judges plus thresholds.simulator
     must not produce phantom judge-loop regressions ('n/a pass_rate' for a
-    judge named simulator)."""
-    block = _sim_block(tmp_path)
+    judge named simulator). Uses a ledger without disabled records so the
+    disabled_events rule cannot mask a phantom regression."""
+    no_disabled = [r for r in MIXED_RECORDS if r.get("tier") != "disabled"]
+    block = _sim_block(tmp_path, no_disabled)
     regs = detect_regressions(
         {"q": {"mean": 4.0, "pass_rate": 1.0, "scored_cases": 3}},
         {"q": {"min_pass_rate": 0.5},
@@ -348,9 +367,10 @@ def test_cross_simulator_disagreements_capped_at_twenty(tmp_path):
 
 
 def test_cross_simulator_single_family_flag(tmp_path):
-    """All KNOWN families identical -> single_family, even next to an
-    unclassifiable gateway alias (the families dict still shows the
-    unknown count)."""
+    """PR8 panel rule: single_family is True ONLY with zero unknown-family
+    models AND exactly one known family. An unclassifiable gateway alias
+    SILENCES the claim (silence contract) — it must never let within-family
+    agreement be reported as a single-family finding it cannot verify."""
     cross = _sim_block(
         tmp_path,
         _bulk_shadow_records(2, models=("claude-opus-4-8",)))[
@@ -361,7 +381,7 @@ def test_cross_simulator_single_family_flag(tmp_path):
         tmp_path / "alias",
         _bulk_shadow_records(2, models=("claude-opus-4-8", "my-alias")))[
             "cross_simulator"]
-    assert cross["single_family"] is True
+    assert cross["single_family"] is False
     assert cross["families"] == {"anthropic": 2, "unknown": 1}
 
 
@@ -463,6 +483,11 @@ def test_report_batch_note_and_gates(tmp_path):
     assert "not attributed to cases" in html
     assert "gate: &le; 0.0" in html
     assert "human stratum only" in html
+    # Unit-honest card: the rate row names its units; the disabled record
+    # renders as its own fail-styled row, never inside the rate.
+    assert "fallback answers over answered questions" in html
+    assert "Interception disabled" in html
+    assert "1 event(s)" in html
 
 
 def test_report_renders_nothing_without_a_block():
