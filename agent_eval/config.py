@@ -624,6 +624,95 @@ class GenerationConfig:
     seeds: list = field(default_factory=list)  # List of GenerationSeed
 
 
+#: Valid ``JudgeConfig.consequence`` tiers (measurement-validity program).
+CONSEQUENCE_LEVELS = ("exploratory", "safety", "gating")
+
+#: Tier-default ``min_alpha`` for consequence-tagged judges, resolved at
+#: detection time via ``effective_thresholds()`` — never written into
+#: ``config.thresholds``. The gated coefficient is the single-judge
+#: self-consistency alpha, an upper bound on inter-rater reliability.
+#: Only 0.67 is literature-backed (Krippendorff's customary floor for
+#: tentative conclusions); 0.70 and 0.80 are author-proposed tiers.
+CONSEQUENCE_TIER_MIN_ALPHA = {
+    "exploratory": 0.67,
+    "safety": 0.70,
+    "gating": 0.80,
+}
+
+#: Recognized per-judge ``thresholds`` keys. Unknown keys warn at config load
+#: (never error); regression detection ignores them.
+THRESHOLD_KEYS = frozenset({
+    "min_mean", "min_pass_rate", "min_win_rate", "max_error_rate", "min_alpha",
+})
+
+
+def _parse_thresholds(raw_thresholds):
+    """Validate the ``thresholds`` block; returns it unchanged.
+
+    The one thresholds validation helper. Unknown keys warn — never error —
+    so a typo like ``min_apha`` stops silently never gating. Any
+    ``*_alpha`` / ``*_agreement`` key value must be numeric, finite, and
+    <= 1.0 (the coefficient maximum); anything else raises ``ValueError``.
+    """
+    if raw_thresholds is None:
+        return {}
+    if not isinstance(raw_thresholds, dict):
+        raise ValueError("thresholds must be a mapping")
+    import warnings
+    for judge_name, entry in raw_thresholds.items():
+        if not isinstance(entry, dict):
+            continue
+        for key, value in entry.items():
+            if key not in THRESHOLD_KEYS:
+                warnings.warn(
+                    f"thresholds.{judge_name}: unknown key '{key}' is ignored "
+                    "by regression detection (valid keys: "
+                    f"{', '.join(sorted(THRESHOLD_KEYS))})",
+                    stacklevel=2)
+            if key.endswith("_alpha") or key.endswith("_agreement"):
+                if (isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not math.isfinite(float(value))
+                        or float(value) > 1.0):
+                    raise ValueError(
+                        f"thresholds.{judge_name}.{key} must be a finite "
+                        f"number <= 1.0 (the coefficient maximum), "
+                        f"got: {value!r}")
+    return raw_thresholds
+
+
+def effective_thresholds(thresholds: dict, judges) -> dict:
+    """Merged thresholds VIEW with consequence-tier defaults injected.
+
+    Returns a copy: an explicit threshold always wins; a consequence-tagged
+    judge with no explicit ``min_alpha`` gets its tier default injected into
+    the returned view only. ``thresholds`` itself is NEVER mutated —
+    ``harbor/run.py`` reads ``config.thresholds`` as a required-judges set,
+    so tier resolution happens at detection time, not at load time.
+
+    ``judges`` entries are duck-typed: ``JudgeConfig`` instances or raw dicts
+    (report.py passes the raw eval.yaml judges list). Invalid consequence
+    strings in raw dicts are skipped silently — ``EvalConfig.from_yaml``
+    already rejects them at load.
+    """
+    out = {k: (dict(v) if isinstance(v, dict) else v)
+           for k, v in (thresholds or {}).items()}
+    for judge in judges or []:
+        if isinstance(judge, dict):
+            name = judge.get("name") or ""
+            consequence = judge.get("consequence") or ""
+        else:
+            name = getattr(judge, "name", "") or ""
+            consequence = getattr(judge, "consequence", "") or ""
+        tier = CONSEQUENCE_TIER_MIN_ALPHA.get(consequence)
+        if not name or tier is None:
+            continue
+        entry = out.setdefault(name, {})
+        if isinstance(entry, dict):
+            entry.setdefault("min_alpha", tier)
+    return out
+
+
 @dataclass
 class JudgeConfig:
     """Configuration for a single judge.
@@ -701,6 +790,14 @@ class JudgeConfig:
     # Sampling — run this judge N times per case and reduce (median/majority).
     # Only meaningful for stochastic (LLM and agent) judges; ignored otherwise.
     samples: int = 1
+    # Consequence tier (measurement-validity P5): exploratory | safety |
+    # gating. Injects a tier-default `min_alpha` at detection time via
+    # `effective_thresholds()` (0.67 / 0.70 / 0.80 — only 0.67 is
+    # literature-backed; 0.70 and 0.80 are author-proposed). The gated
+    # coefficient is the single-judge self-consistency alpha, an UPPER BOUND
+    # on inter-rater reliability — a self-consistent-but-biased judge still
+    # passes. Needs `samples >= 2` on an LLM/agent judge to produce IRR data.
+    consequence: str = ""
     # Agent judge — presence of this block upgrades an (otherwise LLM) judge to
     # a tool-using agent run through the runner abstraction, with read-only file
     # tools and a staged, isolated workspace. Permissive mapping (mirrors
@@ -1293,6 +1390,7 @@ class EvalConfig:
                     arguments=args_val,
                     step=j.get("step", "") or "",
                     samples=int(j.get("samples", 1)),
+                    consequence=str(j.get("consequence", "") or ""),
                     agent=agent_val,
                 )
             )
@@ -1354,6 +1452,40 @@ class EvalConfig:
                     "so it is scored on the unenforced [1, 5] default — "
                     "declare one to have the returned value checked",
                     stacklevel=2)
+            # Consequence tiers gate the sampling-stability alpha; warn at
+            # load when the judge cannot produce IRR data, because the
+            # tier-default min_alpha will then regress as
+            # configured-but-unavailable at detection time.
+            if jc.consequence and jc.consequence not in CONSEQUENCE_LEVELS:
+                raise ValueError(
+                    f"Judge '{jc.name}': consequence must be one of "
+                    f"{', '.join(CONSEQUENCE_LEVELS)}, got: {jc.consequence!r}")
+            if jc.consequence:
+                import warnings
+                stochastic = bool(jc.prompt or jc.prompt_file or jc.llm_rubric
+                                  or jc.agent)
+                if builtin_kind == "llm":
+                    warnings.warn(
+                        f"Judge '{jc.name}': consequence '{jc.consequence}' "
+                        f"is set but builtin LLM judge '{jc.builtin}' is "
+                        "pinned to samples: 1 at scoring time, so no IRR "
+                        "data will exist and the tier-default min_alpha will "
+                        "regress as unavailable",
+                        stacklevel=2)
+                elif stochastic and jc.samples <= 1:
+                    warnings.warn(
+                        f"Judge '{jc.name}': consequence '{jc.consequence}' "
+                        "is set but samples: 1 produces no IRR data — the "
+                        "tier-default min_alpha will regress as unavailable "
+                        "unless the judge runs with --samples >= 2",
+                        stacklevel=2)
+                elif not stochastic:
+                    warnings.warn(
+                        f"Judge '{jc.name}': consequence '{jc.consequence}' "
+                        "is set on a deterministic judge, which is never "
+                        "sampled and produces no IRR data — the tier-default "
+                        "min_alpha will regress as unavailable",
+                        stacklevel=2)
 
         # Reward composition
         if "reward" in raw:
@@ -1443,8 +1575,10 @@ class EvalConfig:
                 _warn_reward_range_precedence(config)
             _warn_reward_judge_clamp(config)
 
-        # Thresholds
-        config.thresholds = raw.get("thresholds", {})
+        # Thresholds — validated (unknown keys warn; bad *_alpha values
+        # raise) but stored verbatim; consequence-tier defaults resolve at
+        # detection time via `effective_thresholds()`, never here.
+        config.thresholds = _parse_thresholds(raw.get("thresholds", {}))
 
         # Hooks
         hooks_raw = raw.get("hooks", {}) or {}
@@ -1517,6 +1651,15 @@ class EvalConfig:
     def project_root(self) -> Path:
         """Project root directory (always CWD, not the eval.yaml location)."""
         return Path.cwd()
+
+    def effective_thresholds(self) -> dict:
+        """Thresholds view with consequence-tier ``min_alpha`` defaults.
+
+        Detection-time resolution: explicit thresholds win, and
+        ``self.thresholds`` is never mutated (see the module-level
+        ``effective_thresholds``).
+        """
+        return effective_thresholds(self.thresholds or {}, self.judges)
 
 
 def _is_valid_eval_name(name: object) -> bool:

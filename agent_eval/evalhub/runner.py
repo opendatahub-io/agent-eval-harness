@@ -212,10 +212,21 @@ def _run_with_client(client, config, config_path, ns, provider_id,
         print(f"WARNING: report generation failed: {exc}", file=sys.stderr)
 
     # 6. Regression check — let errors propagate (silent success on broken
-    # detection is worse than a noisy failure)
+    # detection is worse than a noisy failure). Raw config.thresholds on
+    # purpose (never effective_thresholds()): consequence tiers must not
+    # inject min_alpha here — the EvalHub client summary carries no sampling
+    # stability data, so a consequence-tagged judge must not regress this
+    # path. Explicit min_alpha keys are skipped via include_irr=False.
     if config.thresholds:
         score = _load_score_module()
-        regressions = score.detect_regressions(summary["judges"], config.thresholds)
+        if any(isinstance(t, dict) and "min_alpha" in t
+               for t in config.thresholds.values()):
+            print("NOTE: reliability gates (min_alpha) skipped on this "
+                  "execution path: no sampling stability data in aggregated "
+                  "results", file=sys.stderr)
+        regressions = score.detect_regressions(summary["judges"],
+                                               config.thresholds,
+                                               include_irr=False)
         if regressions:
             print(f"REGRESSIONS: {len(regressions)} detected", file=sys.stderr)
             for r in regressions:

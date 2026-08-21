@@ -592,3 +592,154 @@ name: t
 execution: {skill: s}
 runner: {type: codex, workspace_mode: repo}
 """))
+
+
+# ---------------------------------------------------------------------------
+# Consequence tiers + thresholds validation (measurement-validity PR2)
+# ---------------------------------------------------------------------------
+
+def test_consequence_round_trips_through_the_explicit_kwargs_site(tmp_path):
+    """from_yaml constructs JudgeConfig with explicit kwargs, silently
+    dropping unknown YAML keys — so `consequence` has to be wired there."""
+    cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    samples: 3
+    consequence: safety
+"""))
+    assert cfg.judges[0].consequence == "safety"
+
+
+@pytest.mark.parametrize("tier", ["exploratory", "safety", "gating"])
+def test_all_consequence_tiers_are_valid(tmp_path, tier):
+    cfg = EvalConfig.from_yaml(_write(tmp_path, f"""
+name: t
+execution: {{skill: s}}
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    samples: 3
+    consequence: {tier}
+"""))
+    assert cfg.judges[0].consequence == tier
+
+
+def test_invalid_consequence_raises(tmp_path):
+    with pytest.raises(ValueError, match="consequence must be one of"):
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    consequence: sev1
+"""))
+
+
+def test_consequence_with_samples_1_warns(tmp_path):
+    with pytest.warns(UserWarning, match="samples: 1 produces no IRR data"):
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    consequence: safety
+"""))
+
+
+def test_consequence_on_builtin_llm_judge_warns(tmp_path):
+    """Builtin LLM judges are pinned to n=1 at scoring time (score.py
+    load_judges), so a consequence tag can never see IRR data."""
+    with pytest.warns(UserWarning, match="pinned to samples: 1"):
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - name: q
+    builtin: quality/output_completeness
+    samples: 5
+    consequence: gating
+"""))
+
+
+def test_consequence_on_deterministic_judge_warns(tmp_path):
+    with pytest.warns(UserWarning, match="deterministic judge"):
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - name: q
+    check: "return (True, 'ok')"
+    consequence: exploratory
+"""))
+
+
+def test_consequence_with_samples_2_is_quiet(tmp_path):
+    import warnings as _warnings
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")
+        cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    samples: 2
+    consequence: safety
+"""))
+    assert cfg.judges[0].consequence == "safety"
+
+
+def test_unknown_threshold_key_warns_not_errors(tmp_path):
+    with pytest.warns(UserWarning, match="unknown key 'min_apha'"):
+        cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - {name: q, check: "return (True, 'ok')"}
+thresholds:
+  q:
+    min_apha: 0.7
+"""))
+    # Stored verbatim — validation never rewrites the block.
+    assert cfg.thresholds == {"q": {"min_apha": 0.7}}
+
+
+@pytest.mark.parametrize("value", ["1.5", '"high"', ".nan"])
+def test_bad_min_alpha_values_raise(tmp_path, value):
+    with pytest.raises(ValueError, match=r"min_alpha must be a finite"):
+        EvalConfig.from_yaml(_write(tmp_path, f"""
+name: t
+execution: {{skill: s}}
+judges:
+  - {{name: q, check: "return (True, 'ok')"}}
+thresholds:
+  q:
+    min_alpha: {value}
+"""))
+
+
+def test_valid_threshold_block_loads_verbatim(tmp_path):
+    cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    samples: 3
+thresholds:
+  q:
+    min_mean: 3.5
+    min_alpha: 0.7
+"""))
+    assert cfg.thresholds == {"q": {"min_mean": 3.5, "min_alpha": 0.7}}

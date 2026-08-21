@@ -8,6 +8,7 @@ them, scoring exits non-zero — the hook you want for CI.
 thresholds:
   output_quality:
     min_mean: 3.5            # numeric judge — average score across cases
+    min_alpha: 0.7           # sampled judge — self-consistency alpha over the sampling matrix
   has_content:
     min_pass_rate: 1.0       # boolean judge — fraction of cases passing (0.0–1.0)
     max_error_rate: 0.2      # optional — fail if >20% of cases errored
@@ -16,9 +17,11 @@ thresholds:
 ```
 
 The block is a plain mapping (`dict`, default empty). When it is empty or
-omitted, no gate runs and scoring always succeeds.
+omitted, no gate runs and scoring always succeeds. Unknown keys **warn** at
+config load (they never gate); `*_alpha` values must be finite numbers
+≤ 1.0 (the coefficient maximum).
 
-## The four keys
+## The five keys
 
 | Key | Applies to | Metric compared | Passes when |
 | --- | --- | --- | --- |
@@ -26,17 +29,46 @@ omitted, no gate runs and scoring always succeeds.
 | `min_pass_rate` | boolean judges | fraction of cases returning `True` | `pass_rate >= min_pass_rate` |
 | `min_win_rate` | the `pairwise` judge | fraction of cases won vs the `--baseline` run | `win_rate >= min_win_rate` |
 | `max_error_rate` | any judge | fraction of cases where the judge errored | `error_rate <= max_error_rate` |
+| `min_alpha` | LLM/agent judges run with [`samples > 1`](judges.md) | single-judge self-consistency alpha (upper bound on inter-rater reliability) over the case × sample rating matrix | `alpha >= min_alpha`, or all ratings identical (see below) |
 
-`max_error_rate` is the coverage gate. The other three are computed over the
-cases that produced a value, so a judge that errors on most of the dataset
-still reports a `mean` over the survivors and passes `min_mean`. Declare
-`max_error_rate` to say how much of the dataset actually has to be scored. It
-is off unless declared — one flaky judge run should not fail a suite by
-default.
+`max_error_rate` is the coverage gate. `min_mean`, `min_pass_rate` and
+`min_win_rate` are computed over the cases that produced a value, so a judge
+that errors on most of the dataset still reports a `mean` over the survivors
+and passes `min_mean`. Declare `max_error_rate` to say how much of the
+dataset actually has to be scored. It is off unless declared — one flaky
+judge run should not fail a suite by default.
 
 You may set more than one key per judge; each is checked independently. The
-three `min_*` keys are compared with `<` and `max_error_rate` with `>`, so a
+`min_*` keys are compared with `<` and `max_error_rate` with `>`, so a
 metric exactly equal to its threshold **passes** either way.
+
+## `min_alpha` — the reliability gate
+
+`min_alpha` gates the chance-corrected agreement of a sampled judge with
+itself: the **single-judge self-consistency alpha (an upper bound on
+inter-rater reliability)** written to `stability.irr` in `summary.yaml`. It
+has three states:
+
+1. **Breach** — the alpha is computed and below the bound → regression.
+2. **Perfect agreement** — every rating identical, so the coefficient is 0/0
+   (`reason_code: perfect_agreement`) → **passes**. A mature all-pass suite
+   must not fail CI on a degenerate denominator.
+3. **Configured but unavailable** — the judge ran with `samples: 1`, is
+   deterministic, errored everywhere, or had too little pairable data →
+   regression, matching how the other keys treat a `None` metric.
+
+Instead of (or alongside) an explicit bound, tag the judge with a
+[`consequence` tier](judges.md): `exploratory`/`safety`/`gating` inject a
+default `min_alpha` of 0.67/0.70/0.80 at detection time. An explicit
+`min_alpha` always wins, and the stored `thresholds` block is never
+rewritten. Only 0.67 is literature-backed (Krippendorff's customary floor
+for tentative conclusions); 0.70 and 0.80 are author-proposed.
+
+!!! note "Local scoring path only"
+    Harbor and EvalHub aggregations carry no per-sample stability data, so
+    `min_alpha` (explicit or tier-injected) is **skipped with a stderr
+    notice** on those execution paths — it never regresses a containerized
+    run. Score the run locally to evaluate the reliability gate.
 
 ## Match the key to the judge's value type
 

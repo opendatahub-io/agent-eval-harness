@@ -36,6 +36,18 @@ import yaml
 from agent_eval.config import (
     EvalConfig, RunnerConfig, _is_valid_eval_name, _validate_path_segment,
 )
+from agent_eval.reliability import (
+    INTERVAL, NOMINAL, ORDINAL,
+    REASON_PERFECT_AGREEMENT,
+    bootstrap_ci, fleiss_kappa, krippendorff_alpha, select_irr_metric,
+)
+
+# Mandatory label for every self-consistency coefficient this file emits:
+# k samples of ONE judge measure the stability of a single instrument, not
+# agreement between independent raters (paper Sec 5.3, Appendix A.1).
+IRR_SELF_CONSISTENCY_LABEL = (
+    "single-judge self-consistency alpha "
+    "(upper bound on inter-rater reliability)")
 
 # Log (don't silently blank) any undefined variable a judge template references.
 _TEMPLATE_LOGGER = logging.getLogger("agent_eval.judge_template")
@@ -1240,6 +1252,91 @@ def _aggregate_samples(runs, judge_type):
     return result
 
 
+def _irr_level(judge_config):
+    """Measurement level of a judge's sampled ratings (shared helper).
+
+    bool verdicts are nominal categories; an integer ``score_range`` is an
+    ordered band scale (ordinal); any other numeric scale is interval.
+    Single implementation — later reliability consumers import this.
+    """
+    if judge_config is None:
+        return INTERVAL
+    bounds = _numeric_bounds(judge_config)
+    if bounds is None:  # feedback_type: bool
+        return NOMINAL
+    return ORDINAL if bounds[2] else INTERVAL
+
+
+def _compute_stability_irr(scored, judge_config, n_samples, samples_set):
+    """Chance-corrected IRR over the cross-case sampling matrix.
+
+    Each scored case is one unit; its ratings are ``stability.values`` plus
+    one MISSING rating (``None``) per errored sample — an errored rating is
+    missing, never a rating category. Metric selection, degenerate handling
+    (via ``IRRResult.reason_code`` — no duplicate prechecks here) and the
+    bootstrap CI all come from ``agent_eval.reliability``; this function only
+    adapts shapes into the canonical coefficient block:
+    ``{metric, level, value, reason_code, reason, n_units, label, rationale}``
+    plus optional ``{ci: [lo, hi], fleiss_kappa, n_ratings}``.
+    """
+    level = _irr_level(judge_config)
+    units = []
+    # Completeness is judged PER CASE (never from the first case only): every
+    # scored case must carry exactly `samples` observed values, and `samples`
+    # must be uniform across cases.
+    complete = len(samples_set) == 1
+    for r in scored:
+        st = r.get("stability") or {}
+        values = list(st.get("values") or [])
+        error_count = int(st.get("error_count") or 0)
+        units.append(values + [None] * error_count)
+        if len(values) != n_samples:
+            complete = False
+
+    # A distance-weighted level needs numeric ratings; if the observed values
+    # contradict the declared level (e.g. bool verdicts from a judge that
+    # declared nothing), fall back to nominal rather than crashing scoring.
+    if level != NOMINAL and any(
+            isinstance(v, bool) or not isinstance(v, (int, float))
+            for row in units for v in row if v is not None):
+        level = NOMINAL
+
+    # N resamples of one judge are a varied-identity rater pool (paper
+    # Appendix A.1), so the selector always lands on Krippendorff's alpha.
+    metric, rationale = select_irr_metric(
+        n_raters=n_samples, varying_identity=True,
+        complete_matrix=complete, scale=level)
+    result = krippendorff_alpha(units, level)
+
+    irr = {
+        "metric": result.metric,
+        "level": level,
+        "value": result.value,
+        "reason_code": result.reason_code,
+        "reason": result.reason,
+        "n_units": result.n_units,
+        "label": IRR_SELF_CONSISTENCY_LABEL,
+        "rationale": rationale,
+        "n_ratings": result.n_ratings,
+    }
+
+    if result.value is not None:
+        ci = bootstrap_ci(
+            units, lambda resample: krippendorff_alpha(resample, level).value)
+        if ci is not None:
+            irr["ci"] = [round(ci.low, 3), round(ci.high, 3)]
+
+    # Fleiss companion (kappa-vs-alpha divergence surfaces exact-match
+    # distortion): only on a complete matrix, and never on an interval scale
+    # where exact-match agreement is the distortion being measured.
+    if complete and level != INTERVAL:
+        fk = fleiss_kappa(units)
+        if fk.value is not None:
+            irr["fleiss_kappa"] = round(fk.value, 3)
+
+    return irr
+
+
 def _parse_inline_check_source(source):
     """Parse an inline check snippet as the function body used at runtime."""
     wrapped = f"def _check(outputs, arguments):\n{textwrap.indent(source or '', '    ')}"
@@ -1658,20 +1755,26 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
                                   run_id=run_id)
 
     # Per-judge stability across cases (only meaningful when sampled > 1):
-    # how many cases gave a consistent score across all samples.
+    # how many cases gave a consistent score across all samples, plus a
+    # chance-corrected IRR coefficient over the case × sample rating matrix
+    # (error samples count as missing ratings, never a category).
+    jc_by_name = {jc.name: jc for jc in config.judges}
     for name in aggregated:
         scored = [per_case[c][name] for c in per_case
                   if isinstance(per_case.get(c, {}).get(name), dict)
                   and "stability" in per_case[c][name]
                   and per_case[c][name].get("value") is not None]
         if scored:
-            n_samples = scored[0]["stability"].get("samples", 1)
+            samples_set = {r["stability"].get("samples", 1) for r in scored}
+            n_samples = max(samples_set)
             if n_samples > 1:
                 stable = sum(1 for r in scored if r["stability"].get("stable"))
                 aggregated[name]["stability"] = {
                     "samples": n_samples,
                     "stable_cases": stable,
                     "total_cases": len(scored),
+                    "irr": _compute_stability_irr(
+                        scored, jc_by_name.get(name), n_samples, samples_set),
                 }
 
     return {"per_case": per_case, "aggregated": aggregated}
@@ -2227,9 +2330,42 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
         "cases_compared": len(results),
         "wins_a": wins_a, "wins_b": wins_b,
         "ties": ties, "errors": errors,
+        "swap_consistency": _swap_consistency(results),
+        # pref_ab/pref_ba are the raw position-swapped verdicts; keeping them
+        # per case is what makes swap consistency (and any future pairwise
+        # reliability coefficient) computable after the fact.
         "per_case": [{"case_id": r.case_id, "winner": r.winner, "error": r.error,
+                      "pref_ab": r.pref_ab, "pref_ba": r.pref_ba,
                       "reasoning": r.reasoning}
                      for r in results],
+    }
+
+
+def _swap_consistency(results):
+    """Position-swap consistency of the AB/BA pairwise verdict pairs.
+
+    Consistent means the swapped orders agree — ("A","B") -> A wins,
+    ("B","A") -> B wins, ("tie","tie") -> tie — i.e. the winner was derivable
+    without folding to tie. Everything else non-errored is inconsistent:
+    (A,A)/(B,B) is pure position bias, a one-sided tie is partial. Errored
+    comparisons are EXCLUDED from the denominator, never counted as a verdict
+    category. ``rate`` is an uncorrected agreement fraction (no chance
+    correction). Headline wins/ties counts are unaffected.
+    """
+    consistent = inconsistent = errors = 0
+    for r in results:
+        if r.winner == "error":
+            errors += 1
+        elif (r.pref_ab, r.pref_ba) in (("A", "B"), ("B", "A"), ("tie", "tie")):
+            consistent += 1
+        else:
+            inconsistent += 1
+    scored = consistent + inconsistent
+    return {
+        "consistent": consistent,
+        "inconsistent": inconsistent,
+        "errors": errors,
+        "rate": round(consistent / scored, 3) if scored else None,
     }
 
 
@@ -2513,7 +2649,21 @@ def _unavailable_reason(current, metric, kind):
             f"or not {kind}")
 
 
-def detect_regressions(current_results, thresholds, baseline_results=None):
+def detect_regressions(current_results, thresholds, baseline_results=None, *,
+                       pairwise=None, include_irr=True, simulator=None):
+    """Evaluate per-judge thresholds against aggregated results.
+
+    ``thresholds`` should come from ``EvalConfig.effective_thresholds()`` on
+    the local scoring path (detection-time consequence-tier resolution) and
+    from raw ``config.thresholds`` on the Harbor/EvalHub paths (with
+    ``include_irr=False``, since those aggregations carry no sampling
+    stability data).
+
+    ``pairwise`` and ``simulator`` are accepted but RESERVED: ``pairwise``
+    is the summary's pairwise block for a future pairwise verdict-alpha gate
+    (deferred follow-up), and ``simulator`` activates in a later commit of
+    the measurement-validity program. Both are unused for now.
+    """
     regressions = []
     for judge_name, threshold in thresholds.items():
         current = current_results.get(judge_name)
@@ -2563,6 +2713,42 @@ def detect_regressions(current_results, thresholds, baseline_results=None):
             elif mean < threshold["min_mean"]:
                 regressions.append(Regression(judge_name, "mean",
                                               f">= {threshold['min_mean']}", str(mean)))
+        # min_alpha gates the single-judge self-consistency alpha computed
+        # over the sampling matrix (stability.irr). THREE-STATE semantics:
+        #   1. irr value present and < threshold      -> regression (breach)
+        #   2. value None with reason_code
+        #      'perfect_agreement'                    -> PASSES (healthy
+        #      degenerate: every rating identical, the coefficient is 0/0 —
+        #      a mature all-pass suite must not fail CI)
+        #   3. configured but unavailable — no stability.irr at all
+        #      (samples: 1, deterministic judge) or reason_code in
+        #      {insufficient_data, below_floor, undefined} -> regression
+        #      (configured-but-unavailable, the established pattern)
+        # EXCEPT when include_irr=False: min_alpha keys are skipped entirely
+        # with no regression (Harbor/EvalHub aggregations carry no sampling
+        # stability data, so the gate cannot be evaluated there).
+        if "min_alpha" in threshold and include_irr:
+            stability = current.get("stability")
+            irr = (stability.get("irr")
+                   if isinstance(stability, dict) else None) or {}
+            t = threshold["min_alpha"]
+            value = irr.get("value")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if value < t:
+                    regressions.append(Regression(
+                        judge_name, "alpha", f">= {t}", f"{value:.3f}",
+                        f"{irr.get('metric', 'alpha')}/"
+                        f"{irr.get('level', '?')}, "
+                        f"n_units={irr.get('n_units', '?')} — single-judge "
+                        "self-consistency alpha (upper bound on IRR)"))
+            elif irr.get("reason_code") == REASON_PERFECT_AGREEMENT:
+                pass  # degenerate PASS: zero variance, gate satisfied
+            else:
+                detail = irr.get("reason") or (
+                    "alpha unavailable — judge ran with samples: 1, is "
+                    "deterministic, or produced no IRR data")
+                regressions.append(Regression(
+                    judge_name, "alpha", f">= {t}", "n/a", detail))
         if "min_win_rate" in threshold:
             win_rate = current.get("win_rate")
             if win_rate is None:
@@ -2597,6 +2783,14 @@ def _get_case_dirs(run_id, runs_dir):
         print(f"No cases directory: {cases_dir}", file=sys.stderr)
         sys.exit(1)
     return sorted(d for d in cases_dir.iterdir() if d.is_dir())
+
+
+def _strip_judge_values(aggregated):
+    """Persistable judge aggregates: drop only the top-level raw ``values``
+    list per judge. Nested keys — notably ``stability.irr`` — survive the
+    merge into summary.yaml."""
+    return {name: {k: v for k, v in agg.items() if k != "values"}
+            for name, agg in aggregated.items()}
 
 
 def _merge_summary(run_id, key, data, runs_dir=None):
@@ -2733,15 +2927,26 @@ def cmd_judges(args):
         if isinstance(st, dict) and st.get("samples", 1) > 1:
             stable, tot = st.get("stable_cases", 0), st.get("total_cases", 0)
             st_note = f"  [{stable}/{tot} stable over {st['samples']} samples]"
+            irr = st.get("irr")
+            if isinstance(irr, dict):
+                value = irr.get("value")
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    st_note += (f"  [self-consistency α={value:.3f} "
+                                f"({irr.get('metric')}/{irr.get('level')}, "
+                                f"n={irr.get('n_units')})]")
+                elif irr.get("reason_code") == REASON_PERFECT_AGREEMENT:
+                    st_note += "  [α n/a (perfect agreement)]"
+                else:
+                    st_note += (f"  [α n/a "
+                                f"({irr.get('reason_code') or 'unavailable'})]")
         if rate is not None:
             print(f"  {name}: pass_rate={rate:.1%}{st_note}")
         elif mean is not None:
             print(f"  {name}: mean={mean:.2f}{st_note}")
 
-    _merge_summary(args.run_id, "judges", {
-        name: {k: v for k, v in agg.items() if k != "values"}
-        for name, agg in judge_results.get("aggregated", {}).items()
-    }, runs_dir)
+    _merge_summary(args.run_id, "judges",
+                   _strip_judge_values(judge_results.get("aggregated", {})),
+                   runs_dir)
     _merge_summary(args.run_id, "per_case", judge_results.get("per_case", {}), runs_dir)
 
     # Workload-agnostic run metrics for cross-run / cross-model comparison
@@ -2760,11 +2965,24 @@ def cmd_judges(args):
                 else:
                     print(f"  {k}: {v:,.1f}")
 
-    # Regression detection
+    # Regression detection — thresholds resolved at detection time via
+    # effective_thresholds(), so a consequence-tagged judge gets its
+    # tier-default min_alpha without config.thresholds ever being mutated.
     has_regressions = False
-    if config.thresholds:
+    eff_thresholds = config.effective_thresholds()
+    if eff_thresholds:
+        raw_thresholds = config.thresholds or {}
+        for judge_name, entry in sorted(eff_thresholds.items()):
+            raw_entry = raw_thresholds.get(judge_name)
+            if (isinstance(entry, dict) and "min_alpha" in entry
+                    and not (isinstance(raw_entry, dict)
+                             and "min_alpha" in raw_entry)):
+                print(f"  NOTE: min_alpha {entry['min_alpha']} injected for "
+                      f"judge '{judge_name}' from its consequence tier "
+                      "(only 0.67 is literature-backed; 0.70/0.80 are "
+                      "author-proposed)", file=sys.stderr)
         current_agg = judge_results.get("aggregated", {})
-        regressions = detect_regressions(current_agg, config.thresholds)
+        regressions = detect_regressions(current_agg, eff_thresholds)
         if regressions:
             has_regressions = True
             print(f"\n  REGRESSIONS: {len(regressions)} detected")
@@ -2833,6 +3051,13 @@ def cmd_pairwise(args):
             sys.exit(1)
         print(f"  A wins: {r['wins_a']} | B wins: {r['wins_b']} | "
               f"Ties: {r['ties']} | Errors: {r['errors']}")
+        sc = r.get("swap_consistency") or {}
+        if sc.get("rate") is not None:
+            scored_pairs = sc.get("consistent", 0) + sc.get("inconsistent", 0)
+            print(f"  Swap consistency: {sc.get('consistent', 0)}/"
+                  f"{scored_pairs} ({sc['rate']:.0%}) position-consistent "
+                  f"AB/BA verdict pairs (uncorrected agreement; "
+                  f"{sc.get('errors', 0)} errored comparison(s) excluded)")
         runs.append(r)
 
     # The first run is the primary (its per-case reasoning is rendered).
@@ -2872,7 +3097,9 @@ def cmd_regression(args):
             with open(baseline_path) as f:
                 baseline_agg = (yaml.safe_load(f) or {}).get("judges", {})
 
-    regressions = detect_regressions(current_agg, config.thresholds, baseline_agg)
+    regressions = detect_regressions(
+        current_agg, config.effective_thresholds(), baseline_agg,
+        pairwise=summary.get("pairwise"))
     if regressions:
         print(f"REGRESSIONS: {len(regressions)} detected")
         for r in regressions:

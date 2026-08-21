@@ -565,3 +565,74 @@ def test_build_summary_regression_detectable(tmp_path):
     score = run_mod._load_score_module()
     regressions = score.detect_regressions(summary["judges"], config.thresholds)
     assert any(r.judge_name == "rfe_quality" for r in regressions)
+
+
+def _config_with_min_alpha(tmp_path):
+    raw = {
+        "name": "t",
+        "execution": {"skill": "rfe.speedrun"},
+        "dataset": {"path": ""},
+        "judges": [
+            {"name": "files_exist", "check": "return (True, 'ok')\n"},
+            {"name": "rfe_quality", "prompt": "score it",
+             "score_range": [1, 5], "samples": 3},
+        ],
+        "thresholds": {"rfe_quality": {"min_mean": 4.0, "min_alpha": 0.8}},
+    }
+    p = tmp_path / "eval.yaml"
+    p.write_text(yaml.safe_dump(raw, sort_keys=False))
+    return EvalConfig.from_yaml(p)
+
+
+def test_min_alpha_skipped_on_harbor_but_min_mean_still_fires(tmp_path, capsys):
+    """Harbor summaries carry no sampling stability data, so an explicit
+    min_alpha threshold produces NO alpha regression under include_irr=False
+    while the min_mean breach on the same judge still fires — with the
+    combined stderr skip notice."""
+    config = _config_with_min_alpha(tmp_path)
+    job = _parsed_job()
+    for t in job["trials"]:
+        t["per_judge"]["rfe_quality"]["value"] = 2
+    summary = run_mod.build_summary(job, config)
+    score = run_mod._load_score_module()
+
+    assert run_mod._note_min_alpha_skipped(config.thresholds) is True
+    err = capsys.readouterr().err
+    assert "reliability gates (min_alpha) skipped on this execution path" in err
+    assert "no sampling stability data" in err
+
+    regressions = score.detect_regressions(
+        summary["judges"], config.thresholds, include_irr=False)
+    assert [r.metric for r in regressions] == ["mean"]
+
+
+def test_no_skip_notice_without_a_min_alpha_threshold(tmp_path, capsys):
+    config = _config(tmp_path)
+    assert run_mod._note_min_alpha_skipped(config.thresholds) is False
+    assert capsys.readouterr().err == ""
+
+
+def test_consequence_tier_never_reaches_raw_thresholds(tmp_path):
+    """The harbor path validates task-package reuse off set(config.thresholds)
+    — a consequence-tagged judge must not appear there, and the reuse
+    validation behavior must be identical with or without the tag."""
+    raw = {
+        "name": "t",
+        "execution": {"skill": "rfe.speedrun"},
+        "dataset": {"path": ""},
+        "judges": [
+            {"name": "files_exist", "check": "return (True, 'ok')\n"},
+            {"name": "rfe_quality", "prompt": "score it",
+             "score_range": [1, 5], "samples": 3, "consequence": "safety"},
+        ],
+        "thresholds": {"files_exist": {"min_pass_rate": 1.0}},
+    }
+    p = tmp_path / "eval.yaml"
+    p.write_text(yaml.safe_dump(raw, sort_keys=False))
+    config = EvalConfig.from_yaml(p)
+
+    # The tier default lives in the VIEW only.
+    assert config.effective_thresholds()["rfe_quality"] == {"min_alpha": 0.70}
+    assert set(config.thresholds) == {"files_exist"}
+    # ... and the raw dict is what the notice checks: no notice fires.
+    assert run_mod._note_min_alpha_skipped(config.thresholds) is False

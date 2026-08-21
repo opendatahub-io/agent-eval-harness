@@ -149,6 +149,7 @@ one `judge`.
           <span class="sd-f">samples</span>
           <span class="sd-f">score_range</span>
           <span class="sd-f">feedback_type</span>
+          <span class="sd-f">consequence</span>
         </div>
       </div>
       <div class="sd-card">
@@ -159,6 +160,7 @@ one `judge`.
           <span class="sd-f">min_pass_rate</span>
           <span class="sd-f">min_win_rate</span>
           <span class="sd-f">max_error_rate</span>
+          <span class="sd-f">min_alpha</span>
         </div>
       </div>
       <div class="sd-card">
@@ -364,7 +366,7 @@ thresholds:
 - [**traces**](config/traces.md) — stdout, stderr, events, metrics
 - [**hooks**](config/hooks.md) — before/after all/each, before_scoring
 - [**judges**](config/judges.md) — the five judge types and all fields
-- [**thresholds**](config/thresholds.md) — min_mean, min_pass_rate, min_win_rate, max_error_rate
+- [**thresholds**](config/thresholds.md) — min_mean, min_pass_rate, min_win_rate, max_error_rate, min_alpha
 - [**reward**](config/reward.md) — single-judge and formula reward modes
 
 </div>

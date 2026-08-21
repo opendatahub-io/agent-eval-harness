@@ -46,13 +46,16 @@ from agent_eval.mlflow.trace_builder import build_trace, log_trace
 from agent_eval.harbor.results import _extract_transcript_metrics
 
 
-def _detect_regressions(judges, thresholds):
+def _detect_regressions(judges, thresholds, pairwise=None, include_irr=True,
+                        simulator=None):
     """score.py's regression detector, loaded by path.
 
     The judge engine lives with the eval-run skill rather than in the
     agent_eval package — same approach as agent_eval/harbor/reward.py. Raises
     if it cannot be loaded; the caller tags the run "unknown" rather than
-    claiming a clean one.
+    claiming a clean one. The reliability kwargs are forwarded verbatim
+    (``pairwise``/``simulator`` are reserved pass-throughs) so the MLflow tag
+    agrees with the CLI exit code and the report.
     """
     import importlib.util
     root = Path(__file__).resolve().parent.parent.parent.parent
@@ -63,7 +66,9 @@ def _detect_regressions(judges, thresholds):
                                                   score_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.detect_regressions(judges, thresholds)
+    return mod.detect_regressions(judges, thresholds, pairwise=pairwise,
+                                  include_irr=include_irr,
+                                  simulator=simulator)
 
 
 def _resolve_skill(config: EvalConfig) -> str | None:
@@ -324,12 +329,24 @@ def main():
         # or `max_error_rate` was still tagged regressions_detected=no.
         # "unknown" is a third state on purpose — tagging a run clean because
         # the detector could not run is the failure this whole change is about.
-        if not config.thresholds:
+        # Effective thresholds (consequence-tier min_alpha injected at
+        # detection time) so CLI / report / MLflow agree; min_alpha is
+        # skipped for harbor/evalhub runs, whose aggregation carries no
+        # sampling stability data.
+        eff_thresholds = (config.effective_thresholds()
+                          if hasattr(config, "effective_thresholds")
+                          else (config.thresholds or {}))
+        if not eff_thresholds:
             regressions_tag = "no"
         else:
             try:
+                include_irr = (run_result.get("execution_mode")
+                               not in ("harbor", "evalhub"))
                 regressions_tag = (
-                    "yes" if _detect_regressions(judges, config.thresholds)
+                    "yes" if _detect_regressions(
+                        judges, eff_thresholds,
+                        pairwise=summary.get("pairwise"),
+                        include_irr=include_irr)
                     else "no")
             except Exception as exc:
                 print(f"Warning: could not evaluate thresholds: {exc}",

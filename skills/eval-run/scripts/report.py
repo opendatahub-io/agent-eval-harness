@@ -670,6 +670,8 @@ details.io-diff { border-left-color: var(--warning); }
 .stab-wrap { display: inline-flex; align-items: center; gap: 5px; }
 .stab-bar { vertical-align: middle; }
 .stab-label { font-size: 0.8em; color: var(--text-muted); }
+.irr-badge { font-size: 0.8em; color: var(--text-muted); white-space: nowrap; }
+.irr-badge.irr-warn { color: var(--warning); }
 .ascii-range { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.85em; letter-spacing: 1px; color: var(--text-muted); margin-left: 6px; white-space: pre; }
 .ascii-range .med { color: var(--accent); font-weight: 700; }
 .sample-tabs { display: flex; gap: 0; border-bottom: 2px solid var(--border); margin-bottom: 0.5em; }
@@ -1299,15 +1301,61 @@ def _stability_proportion_bar(stable, total, samples):
         f'</svg><span class="stab-label">{stable}/{total} · {samples}×</span></span>')
 
 
-def _render_scoring_summary(summary, config, baseline_summary=None):
+def _irr_badge(irr):
+    """Compact chance-corrected reliability badge beside the stability bar.
+
+    Shows the coefficient (3 decimals), metric name, n_units and the CI when
+    present; the tooltip carries the verbatim upper-bound label plus the
+    metric-selection rationale. Degenerate results render "α n/a (perfect
+    agreement)" — never 1.0. No strength-of-agreement adjectives, ever.
+    """
+    if not isinstance(irr, dict) or not irr:
+        return ""
+    label = irr.get("label") or ("single-judge self-consistency alpha "
+                                 "(upper bound on inter-rater reliability)")
+    metric = irr.get("metric", "krippendorff_alpha")
+    level = irr.get("level")
+    n_units = irr.get("n_units", "?")
+    tooltip = f"{label} — {metric}"
+    if level:
+        tooltip += f"/{level}"
+    tooltip += f", n_units={n_units}"
+    if irr.get("n_ratings") is not None:
+        tooltip += f", n_ratings={irr['n_ratings']}"
+    if irr.get("rationale"):
+        tooltip += f". {irr['rationale']}"
+    tooltip += (" Consequence-tier defaults: only 0.67 is literature-backed; "
+                "0.70/0.80 are author-proposed.")
+
+    value = irr.get("value")
+    cls = "irr-badge"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        text = f"self-consistency α = {value:.3f} ({metric}, n={n_units}"
+        ci = irr.get("ci")
+        if isinstance(ci, (list, tuple)) and len(ci) == 2:
+            text += f", CI [{ci[0]:.3f}, {ci[1]:.3f}]"
+        text += ")"
+    elif irr.get("reason_code") == "perfect_agreement":
+        text = "α n/a (perfect agreement)"
+    else:
+        text = f"α n/a ({irr.get('reason_code') or 'unavailable'})"
+        cls += " irr-warn"
+    return f'<span class="{cls}" title="{_esc(tooltip)}">{_esc(text)}</span>'
+
+
+def _render_scoring_summary(summary, config, baseline_summary=None,
+                            run_result=None):
     judges = summary.get("judges", {})
-    thresholds = config.get("thresholds", {})
+    thresholds = _effective_thresholds(config)
+    include_irr = _include_irr(run_result)
     # Authoritative PASS/FAIL per judge, from the same detector the CLI exits
     # on — the column below only picks which bound to display.
     try:
         _breached = {r.judge_name
-                     for r in _detect_regressions(summary.get("judges", {}),
-                                                  thresholds)}
+                     for r in _detect_regressions(
+                         summary.get("judges", {}), thresholds,
+                         pairwise=summary.get("pairwise"),
+                         include_irr=include_irr)}
         _breach_known = True
     except Exception:
         # Unknown, not clean: fall back to the metrics this table can compute
@@ -1356,12 +1404,15 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
             metric_val = "—"
 
         # Sampling stability (from `score.py judges --samples N`) — a proportion
-        # bar (stable vs varied across cases) appended to the metric.
+        # bar (stable vs varied across cases) appended to the metric, plus the
+        # chance-corrected self-consistency alpha badge when computed.
         jst = agg.get("stability")
         if isinstance(jst, dict) and jst.get("samples", 1) > 1 and metric_val != "—":
             metric_val += " " + _stability_proportion_bar(
                 jst.get("stable_cases", 0), jst.get("total_cases", 0),
                 jst.get("samples"))
+        if isinstance(jst, dict) and isinstance(jst.get("irr"), dict):
+            metric_val += " " + _irr_badge(jst["irr"])
 
         # Baseline
         bl_val = ""
@@ -1391,6 +1442,10 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
                 thresh_str = f"&ge; {_pct(thresh['min_win_rate'])}"
             elif "max_error_rate" in thresh:
                 thresh_str = f"&le; {_pct(thresh['max_error_rate'])} errored"
+            elif "min_alpha" in thresh and include_irr:
+                # Skipped (not evaluated) on harbor/evalhub runs — don't
+                # display a bound the detector never checked.
+                thresh_str = f"&ge; &alpha; {thresh['min_alpha']}"
 
         # A breach is authoritative and is checked FIRST, because the metric it
         # gates on need not be one this table can display: a judge gated only
@@ -1475,28 +1530,54 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
     return html
 
 
-def _detect_regressions(judges, thresholds):
+def _detect_regressions(judges, thresholds, pairwise=None, include_irr=True,
+                        simulator=None):
     """score.py's regression detector.
 
     score.py sits beside this file but is a script, not a package module, so
     it is imported by name off the same directory. Raises rather than
     returning [] — a detector that could not run is not a clean run, and
-    callers render that distinction.
+    callers render that distinction. The reliability kwargs are forwarded
+    verbatim (``pairwise``/``simulator`` are reserved pass-throughs;
+    ``include_irr=False`` skips ``min_alpha`` gates on execution paths whose
+    aggregation carries no sampling stability data).
     """
     from score import detect_regressions
-    return detect_regressions(judges, thresholds)
+    return detect_regressions(judges, thresholds, pairwise=pairwise,
+                              include_irr=include_irr, simulator=simulator)
 
 
-def _render_regressions(summary, config):
+def _effective_thresholds(config):
+    """Thresholds with consequence-tier min_alpha defaults injected.
+
+    Detection-time resolution through the same accessor the CLI gate uses,
+    so a consequence-tagged judge shows its tier bound (and FAILs) exactly
+    when the CLI exits 1. Raw-dict judges are handled by the duck-typed
+    reader in agent_eval.config.
+    """
+    from agent_eval.config import effective_thresholds
+    return effective_thresholds(config.get("thresholds") or {},
+                                config.get("judges") or [])
+
+
+def _include_irr(run_result):
+    """min_alpha gates apply on the local scoring path only — Harbor and
+    EvalHub aggregations carry no sampling stability data."""
+    return (run_result or {}).get("execution_mode") not in ("harbor", "evalhub")
+
+
+def _render_regressions(summary, config, run_result=None):
     judges = summary.get("judges", {})
-    thresholds = config.get("thresholds", {})
+    thresholds = _effective_thresholds(config)
     regressions = []
 
     # Reuse score.py's detector rather than restating it. This section had
     # drifted to two of the four keys, so a `min_win_rate` or `max_error_rate`
     # breach failed the run while the report showed no Regressions table at all.
     try:
-        for reg in _detect_regressions(judges, thresholds):
+        for reg in _detect_regressions(judges, thresholds,
+                                       pairwise=summary.get("pairwise"),
+                                       include_irr=_include_irr(run_result)):
             regressions.append((reg.judge_name, reg.metric,
                                 reg.baseline_value, reg.current_value))
     except Exception as exc:
@@ -1533,6 +1614,15 @@ def _render_pairwise(summary):
     if pw.get("errors"):
         html += f" | Errors: {pw['errors']}"
     html += "</p>\n"
+
+    sc = pw.get("swap_consistency") or {}
+    if sc.get("rate") is not None:
+        scored_pairs = sc.get("consistent", 0) + sc.get("inconsistent", 0)
+        html += (f"<p>Swap consistency: {sc.get('consistent', 0)}/"
+                 f"{scored_pairs} ({sc['rate']:.0%}) position-consistent "
+                 f"AB/BA verdict pairs (uncorrected agreement; "
+                 f"{sc.get('errors', 0)} errored comparison(s) excluded from "
+                 "the denominator)</p>\n")
 
     per_case = pw.get("per_case", [])
     if per_case:
@@ -2930,8 +3020,11 @@ def generate_report(config, summary, run_result, run_dir,
     html += _render_header(config, run_id, run_result, baseline_id, title=report_title)
     html += _wrap_section(_render_run_config(run_result, baseline_result))
     html += _render_analysis(run_dir, summary, run_result, baseline_summary)
-    html += _wrap_section(_render_scoring_summary(summary, config, baseline_summary))
-    html += _wrap_section(_render_regressions(summary, config))
+    html += _wrap_section(_render_scoring_summary(summary, config,
+                                                  baseline_summary,
+                                                  run_result=run_result))
+    html += _wrap_section(_render_regressions(summary, config,
+                                              run_result=run_result))
     html += _wrap_section(_render_shared_outputs(run_dir, config))
     # Per-Case Reward Overview is an RL-training reward summary — only render it
     # when a reward is configured. For judge-only evals the Scoring Summary

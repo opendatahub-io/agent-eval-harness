@@ -444,6 +444,23 @@ def _copy_case_artifacts(parsed: dict, output_dir: Path,
                 shutil.copy2(src, dst)
 
 
+def _note_min_alpha_skipped(thresholds) -> bool:
+    """One combined stderr notice when reliability gates cannot run here.
+
+    Harbor aggregation carries no per-sample stability data, so ``min_alpha``
+    thresholds are skipped (``include_irr=False``) rather than regressing
+    every run. Consequence tiers never inject on this path either — the
+    detector receives raw ``config.thresholds``, not ``effective_thresholds()``.
+    """
+    if any(isinstance(t, dict) and "min_alpha" in t
+           for t in (thresholds or {}).values()):
+        print("NOTE: reliability gates (min_alpha) skipped on this execution "
+              "path: no sampling stability data in aggregated results",
+              file=sys.stderr)
+        return True
+    return False
+
+
 def _write_report(config_path: Path, output_dir: Path, summary: dict,
                   run_meta: dict) -> None:
     """Render report.html with the same generator the local path uses."""
@@ -691,8 +708,15 @@ def run_eval_on_harbor(
             print(f"  [{case_id}] {step}", file=sys.stderr)
 
     # 6. Regression detection (suite-level), mirroring score.py regression.
+    # Raw config.thresholds on purpose (never effective_thresholds()):
+    # consequence tiers must not inject min_alpha on this path — Harbor
+    # aggregation carries no per-sample stability data, so a
+    # consequence-tagged judge must not regress a Harbor run. Explicit
+    # min_alpha keys are skipped via include_irr=False, with one notice.
     score = _load_score_module()
-    regressions = score.detect_regressions(summary["judges"], config.thresholds)
+    _note_min_alpha_skipped(config.thresholds)
+    regressions = score.detect_regressions(summary["judges"], config.thresholds,
+                                           include_irr=False)
     if regressions:
         print(f"REGRESSIONS: {len(regressions)} detected", file=sys.stderr)
         for r in regressions:

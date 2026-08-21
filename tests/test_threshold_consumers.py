@@ -28,6 +28,12 @@ def _load(path, name):
     return mod
 
 
+def _irr_judges(**irr):
+    return {"q": {"mean": 4.0, "scored_cases": 3,
+                  "stability": {"samples": 3, "stable_cases": 1,
+                                "total_cases": 3, "irr": irr}}}
+
+
 # judges aggregate, thresholds, and whether the CLI would regress
 CASES = [
     ("min_mean", {"q": {"mean": 0.5, "scored_cases": 10}},
@@ -40,6 +46,18 @@ CASES = [
      {"q": {"max_error_rate": 0.2}}, True),
     ("clean", {"q": {"mean": 4.0, "scored_cases": 10, "errored_cases": 0}},
      {"q": {"min_mean": 1.0}}, False),
+    # Reliability gates (measurement-validity PR2). Later commits add rows.
+    ("min_alpha breach",
+     _irr_judges(value=0.40, metric="krippendorff_alpha", level="ordinal",
+                 n_units=3),
+     {"q": {"min_alpha": 0.7}}, True),
+    ("min_alpha degenerate pass",
+     _irr_judges(value=None, reason_code="perfect_agreement",
+                 reason="all ratings identical"),
+     {"q": {"min_alpha": 0.7}}, False),
+    ("min_alpha configured but unavailable",
+     {"q": {"mean": 4.0, "scored_cases": 3}},
+     {"q": {"min_alpha": 0.7}}, True),
 ]
 
 
@@ -105,6 +123,40 @@ def _statuses(judges, thresholds):
 def test_the_summary_status_matches_the_detector(label, judges, thresholds,
                                                  expected):
     assert _statuses(judges, thresholds) == [expected], label
+
+
+# --- execution-path scoping: harbor/evalhub skip min_alpha -------------------
+
+def test_harbor_report_shows_no_fail_for_a_min_alpha_only_judge():
+    """The same breach that FAILs a local report is skipped (with the CLI)
+    when the run executed on harbor/evalhub — those aggregations carry no
+    sampling stability data."""
+    judges = _irr_judges(value=0.40, metric="krippendorff_alpha",
+                         level="ordinal", n_units=3)
+    summary = {"judges": judges, "per_case": {}}
+    config = {"thresholds": {"q": {"min_alpha": 0.7}}, "judges": []}
+
+    local = report._render_scoring_summary(summary, config)
+    assert "FAIL" in local
+
+    harbor = report._render_scoring_summary(
+        summary, config, run_result={"execution_mode": "harbor"})
+    assert "FAIL" not in harbor
+    assert not report._render_regressions(
+        summary, config, run_result={"execution_mode": "harbor"})
+
+
+def test_consequence_tier_bound_renders_without_a_thresholds_block():
+    """Detection-time tier resolution is visible to the report: a
+    consequence-tagged judge shows its 0.70 bound in the Threshold column
+    via _effective_thresholds, with no thresholds block in the config."""
+    judges = _irr_judges(value=0.85, metric="krippendorff_alpha",
+                         level="ordinal", n_units=3)
+    html = report._render_scoring_summary(
+        {"judges": judges, "per_case": {}},
+        {"judges": [{"name": "q", "consequence": "safety",
+                     "llm_rubric": "score it"}]})
+    assert "&alpha; 0.7" in html
 
 
 # --- a detector that cannot run is not a clean run ---------------------------
