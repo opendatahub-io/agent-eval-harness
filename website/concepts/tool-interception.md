@@ -47,7 +47,7 @@ the second is an optional LLM refinement.
 flowchart TD
     A["eval.yaml<br/>inputs.tools (match + prompt)"] --> B
     B["Stage 1 — heuristic<br/>build_handlers() at workspace setup"] --> C["tool_handlers.yaml<br/>match + patterns + prompt"]
-    C -.->|optional| D["Stage 2 — LLM refinement<br/>/eval-analyze or eval-run Step 3b"]
+    C -.->|optional| D["Stage 2 — LLM refinement<br/>/eval-analyze or eval-run Step 3a"]
     D --> E["tool_handlers.yaml<br/>+ input_filters + env_checks + case_overrides"]
     C --> F["hooks/tools.py<br/>(PreToolUse hook)"]
     E --> F
@@ -71,7 +71,7 @@ flowchart TD
     An LLM reads the `prompt` and adds the concrete runtime checks —
     `input_filters`, `env_checks`, `case_overrides`. This happens either in
     `/eval-analyze` (writing a resolved `tool_handlers.yaml` alongside `eval.yaml`)
-    or in `/eval-run` **Step 3b** against the workspace copy. If a pre-resolved file
+    or in `/eval-run` **Step 3a** against the workspace copy. If a pre-resolved file
     exists, `generate_interception()` uses it as-is and skips the heuristic.
 
 !!! tip "Resolve Bash and service gates before you rely on them"

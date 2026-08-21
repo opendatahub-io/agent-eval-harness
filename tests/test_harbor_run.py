@@ -6,6 +6,7 @@ shape (judges aggregated + per_case), which is what makes report.py / regression
 """
 
 import json
+from pathlib import Path
 
 import pytest
 import yaml
@@ -674,3 +675,60 @@ def test_consequence_tier_never_reaches_raw_thresholds(tmp_path):
     assert set(config.thresholds) == {"files_exist"}
     # ... and the raw dict is what the notice checks: no notice fires.
     assert run_mod._note_min_alpha_skipped(config.thresholds) is False
+
+
+# --- reserved thresholds.simulator scoping (measurement-validity PR9) --------
+
+def _config_sim_thresholds(tmp_path, *, judge_thresholds=True):
+    raw = {
+        "name": "t",
+        "execution": {"skill": "rfe.speedrun"},
+        "dataset": {"path": ""},
+        "judges": [
+            {"name": "files_exist", "check": "return (True, 'ok')\n"},
+            {"name": "rfe_quality", "prompt": "score it",
+             "score_range": [1, 5]},
+        ],
+        "thresholds": {"simulator": {"max_fallback_rate": 0.0,
+                                     "min_gold_agreement": 0.8}},
+    }
+    if judge_thresholds:
+        raw["thresholds"]["rfe_quality"] = {"min_mean": 4.0}
+    p = tmp_path / "eval.yaml"
+    p.write_text(yaml.safe_dump(raw, sort_keys=False))
+    return EvalConfig.from_yaml(p)
+
+
+def test_package_reuse_never_demands_a_judge_named_simulator(tmp_path):
+    """thresholds.simulator is the reserved simulator-gate key — package
+    reuse must not reject a bundle for lacking a judge named 'simulator'."""
+    config = _config_sim_thresholds(tmp_path)
+    tasks = tmp_path / "tasks"
+    _write_pregenerated_task(tasks, judges=("rfe_quality",))
+    run_mod._validate_task_package_reuse(tasks, config)  # does not raise
+
+
+def test_no_llm_judges_guard_ignores_the_reserved_simulator_key(tmp_path):
+    """Dropping model judges never 'removes' the simulator gates: the run
+    proceeds past the --no-llm-judges guard (and fails later on the
+    missing --image, proving the guard did not fire)."""
+    config_path = tmp_path / "eval.yaml"
+    _config_sim_thresholds(tmp_path, judge_thresholds=False)
+    with pytest.raises(ValueError, match="--image"):
+        run_mod.run_eval_on_harbor(
+            config_path, image=None, model="m",
+            output_dir=tmp_path / "out", tasks_dir=tmp_path / "tasks",
+            jobs_dir=tmp_path / "jobs", no_llm_judges=True)
+
+
+def test_regression_step_strips_simulator_with_a_notice(tmp_path, capsys):
+    config = _config_sim_thresholds(tmp_path)
+    stripped = run_mod._strip_simulator_thresholds(config.thresholds)
+    assert "simulator" not in stripped
+    assert stripped == {"rfe_quality": {"min_mean": 4.0}}
+    assert ("thresholds.simulator is not evaluated on the Harbor path"
+            in capsys.readouterr().err)
+    # Drift guard: the regression step at the end of run_eval_on_harbor
+    # goes through the strip helper, not raw config.thresholds.
+    source = Path(run_mod.__file__).read_text()
+    assert "_strip_simulator_thresholds(config.thresholds)" in source

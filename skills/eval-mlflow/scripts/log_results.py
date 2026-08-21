@@ -54,9 +54,11 @@ def _detect_regressions(judges, thresholds, pairwise=None, include_irr=True,
     agent_eval package — same approach as agent_eval/harbor/reward.py. Raises
     if it cannot be loaded; the caller tags the run "unknown" rather than
     claiming a clean one. The reliability kwargs are forwarded verbatim
-    (``pairwise``/``simulator`` are reserved pass-throughs;
-    ``human_calibration`` feeds the ``min_human_agreement`` stale-calibration
-    check) so the MLflow tag agrees with the CLI exit code and the report.
+    (``pairwise`` is a reserved pass-through; ``simulator`` is the summary's
+    run-level simulator block for the reserved ``thresholds.simulator``
+    gates; ``human_calibration`` feeds the ``min_human_agreement``
+    stale-calibration check) so the MLflow tag agrees with the CLI exit
+    code and the report.
     """
     import importlib.util
     root = Path(__file__).resolve().parent.parent.parent.parent
@@ -421,6 +423,7 @@ def main():
                         judges, eff_thresholds,
                         pairwise=summary.get("pairwise"),
                         include_irr=include_irr,
+                        simulator=summary.get("simulator"),
                         human_calibration=summary.get("human_calibration"))
                     else "no")
             except Exception as exc:

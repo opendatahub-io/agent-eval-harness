@@ -9,6 +9,7 @@ Usage:
     python3 ${CLAUDE_SKILL_DIR}/scripts/score.py judges --run-id <id> --config eval.yaml
     python3 ${CLAUDE_SKILL_DIR}/scripts/score.py pairwise --run-id <id> --baseline <id> --config eval.yaml
     python3 ${CLAUDE_SKILL_DIR}/scripts/score.py regression --run-id <id> --config eval.yaml
+    python3 ${CLAUDE_SKILL_DIR}/scripts/score.py simulator --run-id <id> --config eval.yaml
     python3 ${CLAUDE_SKILL_DIR}/scripts/score.py calibration --run-id <id> --config eval.yaml
     python3 ${CLAUDE_SKILL_DIR}/scripts/score.py clarity --run-id <id> --config eval.yaml --raters m1,m2,m3
 """
@@ -68,6 +69,19 @@ PANEL_ALPHA_RATIONALE = (
     "model's per-case REDUCED verdict is one rater; an errored model is a "
     "missing rating, which alpha's coincidence formulation tolerates "
     "(paper Sec 5.3).")
+
+# Simulator calibration stratum labels (summary['simulator'].calibration).
+# Human-provenance pairs are the only calibration evidence (paper
+# Prescription 1); agent-authored overrides measure LLM-vs-LLM consistency
+# and must never be sold as human calibration. Both are RAW agreement rates
+# — nominal option labels at tiny n, so raw agreement + n only, no
+# chance-corrected coefficient here.
+SIM_GOLD_HUMAN_LABEL = ("held-out percent agreement vs human-authored "
+                        "overrides (uncorrected)")
+SIM_GOLD_AGENT_LABEL = ("LLM-vs-LLM consistency (not human calibration) "
+                        "— uncorrected")
+#: Cap on the per-pair detail list persisted in the human stratum.
+_SIM_PAIRS_CAP = 50
 
 # Log (don't silently blank) any undefined variable a judge template references.
 _TEMPLATE_LOGGER = logging.getLogger("agent_eval.judge_template")
@@ -257,6 +271,42 @@ def _parse_hook_ledger(path):
         if isinstance(obj, dict):
             records.append(obj)
     return records
+
+
+def _load_hook_ledgers(run_dir, case_dirs):
+    """Collected hook_answers.jsonl records across a run.
+
+    Returns ``(records, ledger_scope)`` with scope ``case`` (per-case
+    ledgers found, each record tagged ``case_id``), ``run`` (only the
+    run-root batch ledger — unattributed), or ``missing``. Mirrors
+    ``load_case_record``'s per-case lookup (collected copy, then the
+    in-workspace ``hooks/`` location) and the run-root batch fallback.
+    Uses the ONE lenient ledger parser above.
+    """
+    run_dir = Path(run_dir)
+    records = []
+    scope = "missing"
+    for case_dir in case_dirs or []:
+        case_dir = Path(case_dir)
+        for candidate in (case_dir / "hook_answers.jsonl",
+                          case_dir / "hooks" / "hook_answers.jsonl"):
+            if candidate.is_file():
+                parsed = _parse_hook_ledger(candidate)
+                if parsed is not None:
+                    scope = "case"
+                    for rec in parsed:
+                        rec = dict(rec)
+                        rec["case_id"] = case_dir.name
+                        records.append(rec)
+                break
+    if scope == "missing":
+        root_ledger = run_dir / "hook_answers.jsonl"
+        if root_ledger.is_file():
+            parsed = _parse_hook_ledger(root_ledger)
+            if parsed is not None:
+                scope = "run"
+                records.extend(dict(rec) for rec in parsed)
+    return records, scope
 
 
 def load_case_record(case_dir, config, run_id=None, runs_dir=None):
@@ -3275,9 +3325,10 @@ def build_validity_block(config, aggregated_judges, summary=None,
     # --- V2: simulated user -------------------------------------------------
     intercepting = _intercepts_ask_user(config)
     if intercepting:
-        # Defensive read: a future summary['simulator'] block (calibration
-        # data) supplies its own status once it ships; until then the
-        # simulator is honestly uncalibrated.
+        # The summary['simulator'] block (aggregate_simulator) supplies its
+        # own status — 'calibrated' iff human-provenance pairs exist. The
+        # defensive fallback keeps old summaries honest: no block means an
+        # uncalibrated simulator.
         sim = summary.get("simulator")
         status = (str(sim.get("status"))
                   if isinstance(sim, dict) and sim.get("status")
@@ -3341,6 +3392,158 @@ def build_validity_block(config, aggregated_judges, summary=None,
 
 
 # ---------------------------------------------------------------------------
+# Simulator aggregation (summary['simulator'] from the hook_answers ledgers)
+# ---------------------------------------------------------------------------
+
+def aggregate_simulator(config, run_id, runs_dir, case_dirs=None):
+    """Aggregate the run's hook_answers.jsonl ledgers into a simulator block.
+
+    Returns ``None`` when the eval configures no tool interception
+    (``inputs.tools`` empty — there is no simulator to describe); otherwise
+    the ``summary['simulator']`` block:
+
+    - ``tiers`` — answered-question tier distribution (override / llm /
+      fallback) plus ``disabled`` interception-off records.
+    - ``fallback_rate`` — (fallback + disabled) over all recorded
+      question/disabled events: the share the simulator answered
+      arbitrarily or not at all. ``None`` when nothing was recorded.
+    - ``calibration`` — held-out shadow agreement vs the override gold set,
+      stratified by ``source``: the HUMAN stratum is the only calibration
+      evidence (``gold_agreement``); the agent stratum is labeled
+      LLM-vs-LLM consistency. Raw agreement + n only (nominal labels,
+      tiny n — no chance-corrected coefficient).
+    - ``deadline_skips`` — shadows skipped by the in-hook deadline budget.
+    - ``ledger_scope`` — ``case`` | ``run`` (batch root ledger,
+      unattributed) | ``missing``.
+    - ``status`` — ``calibrated`` iff >= 1 human-provenance pair exists,
+      else ``uncalibrated simulator`` (consumed by the validity block's V2
+      stanza).
+    """
+    if not config.inputs.tools:
+        return None
+    from datetime import datetime, timezone
+
+    run_dir = Path(runs_dir) / run_id
+    if case_dirs is None:
+        cases_root = run_dir / "cases"
+        case_dirs = (sorted(d for d in cases_root.iterdir() if d.is_dir())
+                     if cases_root.is_dir() else [])
+    records, ledger_scope = _load_hook_ledgers(run_dir, case_dirs)
+
+    tiers = {"override": 0, "llm": 0, "fallback": 0, "disabled": 0}
+    hook_models = {}
+    deadline_skips = 0
+    cal_errors = 0
+    strata = {"human": {"n": 0, "agree": 0, "pairs": []},
+              "agent": {"n": 0, "agree": 0}}
+    for rec in records:
+        tier = rec.get("tier")
+        if tier in tiers:
+            tiers[tier] += 1
+        model = rec.get("hook_model")
+        if model:
+            hook_models[model] = hook_models.get(model, 0) + 1
+        cal = rec.get("calibration")
+        if not isinstance(cal, dict):
+            continue
+        if cal.get("skipped") == "deadline":
+            deadline_skips += 1
+        if cal.get("error"):
+            cal_errors += 1
+        agree = cal.get("agree")
+        if not isinstance(agree, bool):
+            continue  # not a scored pair (error / skip / no shadow)
+        stratum = "human" if rec.get("source") == "human" else "agent"
+        strata[stratum]["n"] += 1
+        strata[stratum]["agree"] += 1 if agree else 0
+        if stratum == "human" and len(strata["human"]["pairs"]) < _SIM_PAIRS_CAP:
+            strata["human"]["pairs"].append({
+                "question": rec.get("question"),
+                "gold": cal.get("gold"),
+                "shadow": cal.get("shadow"),
+                "agree": agree,
+            })
+
+    n_questions = tiers["override"] + tiers["llm"] + tiers["fallback"]
+    denominator = n_questions + tiers["disabled"]
+    fallback_rate = (round((tiers["fallback"] + tiers["disabled"])
+                           / denominator, 3)
+                     if denominator else None)
+
+    def _stratum_block(name, label):
+        s = strata[name]
+        block = {
+            "n": s["n"],
+            "agree": s["agree"],
+            "rate": round(s["agree"] / s["n"], 3) if s["n"] else None,
+            "label": label,
+        }
+        if name == "human":
+            block["pairs"] = s["pairs"]
+        return block
+
+    human_block = _stratum_block("human", SIM_GOLD_HUMAN_LABEL)
+    agent_block = _stratum_block("agent", SIM_GOLD_AGENT_LABEL)
+    calibration = {
+        "n_pairs": strata["human"]["n"] + strata["agent"]["n"],
+        "by_source": {"human": human_block, "agent": agent_block},
+        # The HUMAN-stratum raw agreement is THE gold agreement — the only
+        # human-anchored calibration evidence (paper Prescription 1).
+        "gold_agreement": human_block["rate"],
+        "gold_agreement_label": SIM_GOLD_HUMAN_LABEL,
+        "errors": cal_errors,
+        "validated": human_block["n"] >= 1,
+    }
+
+    block = {
+        "status": ("calibrated" if human_block["n"] >= 1
+                   else "uncalibrated simulator"),
+        "tiers": tiers,
+        "n_questions": n_questions,
+        "fallback_rate": fallback_rate,
+        "calibration": calibration,
+        "deadline_skips": deadline_skips,
+        "ledger_scope": ledger_scope,
+        "generated_at": datetime.now(timezone.utc).isoformat(
+            timespec="seconds"),
+    }
+    if hook_models:
+        block["hook_model"] = max(hook_models, key=hook_models.get)
+    if ledger_scope == "run":
+        block["note"] = ("run-level ledger — answers not attributed to "
+                         "cases (batch mode)")
+    return block
+
+
+def _print_simulator_block(sim_block):
+    """Console summary of a simulator block (tiers + gold agreement)."""
+    tiers = sim_block.get("tiers") or {}
+    parts = [f"{tiers.get('override', 0)} override",
+             f"{tiers.get('llm', 0)} llm",
+             f"{tiers.get('fallback', 0)} fallback"]
+    if tiers.get("disabled"):
+        parts.append(f"{tiers['disabled']} disabled")
+    scope_note = (" (run-level ledger, unattributed)"
+                  if sim_block.get("ledger_scope") == "run" else "")
+    print(f"  simulator: {sim_block.get('n_questions', 0)} question(s) — "
+          f"{' · '.join(parts)}{scope_note}")
+    calibration = sim_block.get("calibration") or {}
+    human = (calibration.get("by_source") or {}).get("human") or {}
+    agent = (calibration.get("by_source") or {}).get("agent") or {}
+    if human.get("n"):
+        print(f"  simulator gold agreement: {human['rate']:.1%} over "
+              f"{human['n']} human-provenance pair(s) — uncorrected "
+              "agreement, held out")
+    elif agent.get("n"):
+        print(f"  simulator calibration: {agent['n']} agent-provenance "
+              "pair(s) only — LLM-vs-LLM consistency, NOT human "
+              "calibration (mark case_overrides with source: human)")
+    if sim_block.get("deadline_skips"):
+        print(f"  simulator: {sim_block['deadline_skips']} calibration "
+              "shadow(s) skipped by the in-hook deadline budget")
+
+
+# ---------------------------------------------------------------------------
 # Regression detection
 # ---------------------------------------------------------------------------
 
@@ -3387,13 +3590,28 @@ def detect_regressions(current_results, thresholds, baseline_results=None, *,
     once and then re-scored (``cmd_judges`` wholesale-rewrites
     ``summary['judges']``).
 
-    ``pairwise`` and ``simulator`` are accepted but RESERVED: ``pairwise``
-    is the summary's pairwise block for a future pairwise verdict-alpha gate
-    (deferred follow-up), and ``simulator`` activates in a later commit of
-    the measurement-validity program. Both are unused for now.
+    ``simulator`` is the summary's run-level ``simulator`` block (written by
+    ``aggregate_simulator``), consumed by the RESERVED ``thresholds
+    .simulator`` mapping key — never a judge key, so the per-judge loop
+    skips it. Three-state semantics match the judge gates: breach /
+    clean / configured-but-unavailable (no simulator block, no answered
+    questions, or — for ``min_gold_agreement`` — zero HUMAN-provenance
+    calibration pairs) = regression. Under ``include_irr=False``
+    (Harbor/EvalHub) the simulator gates are skipped like the other
+    reliability gates — those aggregations carry no ledger data, and both
+    paths additionally strip the key with a stderr notice.
+
+    ``pairwise`` is accepted but RESERVED for a future pairwise
+    verdict-alpha gate (deferred follow-up); unused for now.
     """
     regressions = []
     for judge_name, threshold in thresholds.items():
+        if judge_name == "simulator":
+            # RESERVED mapping key (simulator gates) — never a judge lookup:
+            # falling through would fetch a judge named 'simulator' or be
+            # silently dropped by the None-check below. Handled after the
+            # judge loop.
+            continue
         current = current_results.get(judge_name)
         if current is None:
             continue
@@ -3584,6 +3802,92 @@ def detect_regressions(current_results, thresholds, baseline_results=None, *,
                             regressions.append(Regression(
                                 judge_name, f"{key}_vs_baseline",
                                 str(base_val), str(curr_val), "Degraded vs baseline"))
+
+    # Reserved thresholds.simulator gates (evaluated against the run-level
+    # simulator block, never a judge aggregate). Scoped off with the other
+    # reliability gates on Harbor/EvalHub (include_irr=False): those
+    # aggregations carry no hook-ledger data, and both paths also strip the
+    # key with a notice — keeping the report/MLflow consumers (which compute
+    # include_irr from execution_mode) in lockstep with those CLIs.
+    sim_thresholds = thresholds.get("simulator")
+    if isinstance(sim_thresholds, dict) and sim_thresholds and include_irr:
+        regressions.extend(
+            _detect_simulator_regressions(simulator, sim_thresholds))
+    return regressions
+
+
+def _detect_simulator_regressions(simulator, sim_thresholds):
+    """Evaluate the reserved ``thresholds.simulator`` gates.
+
+    ``max_fallback_rate`` gates the arbitrary-answer share;
+    ``min_gold_agreement`` gates ONLY the human-provenance calibration
+    stratum (agent-authored pairs are LLM-vs-LLM consistency, not human
+    calibration — fail-loud when no human pairs exist, paper Sec 5.3
+    anti-distortion). ``min_cross_simulator_agreement`` is reserved for
+    cross-family shadow simulators (``models.hook_shadow``, a later commit)
+    and is not evaluated — config load already warns about it.
+    """
+
+    def _numeric(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+    regressions = []
+    active = [k for k in ("max_fallback_rate", "min_gold_agreement")
+              if k in sim_thresholds]
+    if not active:
+        return regressions
+    if not isinstance(simulator, dict) or not simulator:
+        # Configured-but-unavailable is a regression, never a silent skip.
+        for key in active:
+            metric = ("fallback_rate" if key == "max_fallback_rate"
+                      else "gold_agreement")
+            bound = (f"<= {sim_thresholds[key]}"
+                     if key == "max_fallback_rate"
+                     else f">= {sim_thresholds[key]}")
+            regressions.append(Regression(
+                "simulator", metric, bound, "n/a",
+                "thresholds.simulator configured but no simulator block in "
+                "summary — re-run score.py judges (or score.py simulator) "
+                "on a locally scored run"))
+        return regressions
+    if "max_fallback_rate" in sim_thresholds:
+        t = sim_thresholds["max_fallback_rate"]
+        rate = simulator.get("fallback_rate")
+        if not _numeric(rate):
+            regressions.append(Regression(
+                "simulator", "fallback_rate", f"<= {t}", "n/a",
+                "fallback_rate unavailable — no answered questions recorded "
+                "in the hook_answers ledger"))
+        elif rate > t:
+            tiers = simulator.get("tiers") or {}
+            regressions.append(Regression(
+                "simulator", "fallback_rate", f"<= {t}", f"{rate:.3f}",
+                f"{tiers.get('fallback', 0)} fallback + "
+                f"{tiers.get('disabled', 0)} disabled answer(s) — the agent "
+                "under test received arbitrary or uninterceded answers"))
+    if "min_gold_agreement" in sim_thresholds:
+        t = sim_thresholds["min_gold_agreement"]
+        calibration = simulator.get("calibration")
+        calibration = calibration if isinstance(calibration, dict) else {}
+        human = (calibration.get("by_source") or {}).get("human") or {}
+        n_human = human.get("n") or 0
+        rate = human.get("rate")
+        if not n_human:
+            regressions.append(Regression(
+                "simulator", "gold_agreement", f">= {t}", "n/a",
+                "no human-provenance calibration pairs "
+                "(case_overrides_source: human required) — agent-authored "
+                "pairs measure LLM-vs-LLM consistency, not human "
+                "calibration"))
+        elif not _numeric(rate):
+            regressions.append(Regression(
+                "simulator", "gold_agreement", f">= {t}", "n/a",
+                "gold agreement unavailable — human-provenance pairs exist "
+                "but carry no agreement rate; re-run score.py simulator"))
+        elif rate < t:
+            regressions.append(Regression(
+                "simulator", "gold_agreement", f">= {t}", f"{rate:.3f}",
+                f"{SIM_GOLD_HUMAN_LABEL}, n={n_human}"))
     return regressions
 
 
@@ -3793,6 +4097,16 @@ def cmd_judges(args):
                    runs_dir)
     _merge_summary(args.run_id, "per_case", judge_results.get("per_case", {}), runs_dir)
 
+    # Simulator block from the collected hook_answers ledgers — merged
+    # BEFORE the validity block is assembled (its V2 stanza reads the fresh
+    # calibration status) and BEFORE regression detection (the reserved
+    # thresholds.simulator gates evaluate against it). Re-aggregate without
+    # re-scoring via `score.py simulator`.
+    sim_block = aggregate_simulator(config, args.run_id, runs_dir, case_dirs)
+    if sim_block is not None:
+        _merge_summary(args.run_id, "simulator", sim_block, runs_dir)
+        _print_simulator_block(sim_block)
+
     invalidated = []
     if prior_human_calibration:
         invalidated.append("judge calibration — re-run: score.py calibration")
@@ -3853,6 +4167,7 @@ def cmd_judges(args):
         current_agg = judge_results.get("aggregated", {})
         regressions = detect_regressions(
             current_agg, eff_thresholds,
+            simulator=sim_block,
             human_calibration=prior_human_calibration)
         if regressions:
             has_regressions = True
@@ -3971,6 +4286,7 @@ def cmd_regression(args):
     regressions = detect_regressions(
         current_agg, config.effective_thresholds(), baseline_agg,
         pairwise=summary.get("pairwise"),
+        simulator=summary.get("simulator"),
         human_calibration=summary.get("human_calibration"))
     if regressions:
         print(f"REGRESSIONS: {len(regressions)} detected")
@@ -3980,6 +4296,29 @@ def cmd_regression(args):
         sys.exit(1)
     else:
         print("REGRESSIONS: 0")
+
+
+def cmd_simulator(args):
+    """Re-aggregate the simulator block from collected ledgers.
+
+    Standalone re-aggregation of ``summary['simulator']`` (cmd_judges runs
+    the same aggregation inline) — useful after marking case_overrides with
+    ``source: human`` or when scoring artifacts moved. Merge-only: gate via
+    ``score.py regression``, which reads the merged block.
+    """
+    config = EvalConfig.from_yaml(args.config)
+    runs_dir = _get_runs_dir(config.eval_name())
+    if not config.inputs.tools:
+        print("No inputs.tools configured — nothing to aggregate.",
+              file=sys.stderr)
+        sys.exit(1)
+    case_dirs = _get_case_dirs(args.run_id, runs_dir)
+    sim_block = aggregate_simulator(config, args.run_id, runs_dir, case_dirs)
+    _merge_summary(args.run_id, "simulator", sim_block, runs_dir)
+    _print_simulator_block(sim_block)
+    print(f"Merged summary['simulator'] "
+          f"(ledger_scope={sim_block.get('ledger_scope')}) into "
+          f"{runs_dir / args.run_id / 'summary.yaml'}")
 
 
 def cmd_calibration(args):
@@ -4382,6 +4721,19 @@ def main():
     reg_p.add_argument("--config", required=True)
     reg_p.add_argument("--baseline", default=None)
 
+    # simulator — re-aggregate summary['simulator'] from collected ledgers
+    _sim_help = ("re-aggregate the simulator block (tier distribution, "
+                 "fallback rate, held-out gold agreement by provenance) "
+                 "from the collected hook_answers.jsonl ledgers")
+    sim_p = subparsers.add_parser(
+        "simulator", help=_sim_help,
+        description=_sim_help + ". cmd `judges` runs the same aggregation "
+        "inline; this re-runs it without re-scoring (e.g. after marking "
+        "case_overrides with source: human). Gate via `score.py "
+        "regression` and the reserved thresholds.simulator key.")
+    sim_p.add_argument("--run-id", required=True)
+    sim_p.add_argument("--config", required=True)
+
     # calibration — judge-vs-human agreement from /eval-review verdicts
     _cal_help = ("judge-vs-human calibration (see inputs.tools calibration "
                  "for simulator calibration — a different feature)")
@@ -4436,6 +4788,7 @@ def main():
 
     {"judges": cmd_judges, "pairwise": cmd_pairwise,
      "regression": cmd_regression,
+     "simulator": cmd_simulator,
      "calibration": cmd_calibration,
      "clarity": cmd_clarity}[args.command](args)
 

@@ -302,6 +302,11 @@ class ToolInputConfig:
     match: str = ""  # Natural language: what to intercept (tools, scripts, APIs)
     prompt: str = ""  # Natural language instruction for how to handle
     prompt_file: str = ""  # External file with detailed instructions
+    # Simulator calibration shadow: when True, tools.py ALSO runs the LLM
+    # tier on every override-answered AskUserQuestion — held out (the shadow
+    # context excludes answers.yaml) and logged to the hook_answers.jsonl
+    # ledger, never injected. Feeds summary['simulator'].calibration.
+    calibration: bool = False
 
 
 @dataclass
@@ -665,6 +670,56 @@ THRESHOLD_KEYS = frozenset({
     "min_human_agreement", "min_panel_alpha",
 })
 
+#: RESERVED ``thresholds`` mapping key: ``thresholds.simulator`` gates the
+#: run-level ``summary['simulator']`` block (aggregated from the
+#: hook_answers.jsonl ledgers by ``score.py``), never a judge — a judge
+#: literally named "simulator" is rejected when the block coexists (and
+#: DeprecationWarning'd otherwise). ``min_cross_simulator_agreement`` is
+#: accepted-but-warned: it activates with cross-family shadow simulators
+#: (``models.hook_shadow``) in a later commit.
+SIMULATOR_THRESHOLD_KEYS = frozenset({
+    "max_fallback_rate", "min_gold_agreement", "min_cross_simulator_agreement",
+})
+
+
+def _parse_simulator_thresholds(entry):
+    """Validate the reserved ``thresholds.simulator`` block (see above).
+
+    Sub-keys outside :data:`SIMULATOR_THRESHOLD_KEYS` warn (parallel to the
+    judge-key rule: never error on unknown). Values must be numeric, finite
+    and <= 1.0; ``max_fallback_rate`` must additionally be >= 0 (it is a
+    rate, and a negative bound would regress every run).
+    """
+    import warnings
+    if not isinstance(entry, dict):
+        raise ValueError(
+            "thresholds.simulator is a RESERVED key and must be a mapping "
+            f"with keys from: {', '.join(sorted(SIMULATOR_THRESHOLD_KEYS))}")
+    for key, value in entry.items():
+        if key not in SIMULATOR_THRESHOLD_KEYS:
+            warnings.warn(
+                f"thresholds.simulator: unknown key '{key}' is ignored by "
+                "regression detection (valid keys: "
+                f"{', '.join(sorted(SIMULATOR_THRESHOLD_KEYS))})",
+                stacklevel=3)
+            continue
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(float(value)) or float(value) > 1.0):
+            raise ValueError(
+                f"thresholds.simulator.{key} must be a finite number <= 1.0, "
+                f"got: {value!r}")
+        if key == "max_fallback_rate" and float(value) < 0:
+            raise ValueError(
+                f"thresholds.simulator.max_fallback_rate must be >= 0 "
+                f"(it is a rate), got: {value!r}")
+        if key == "min_cross_simulator_agreement":
+            warnings.warn(
+                "thresholds.simulator.min_cross_simulator_agreement is "
+                "reserved for cross-family shadow simulators "
+                "(models.hook_shadow — not yet active); it is accepted but "
+                "not evaluated by regression detection yet",
+                stacklevel=3)
+
 
 def _parse_thresholds(raw_thresholds):
     """Validate the ``thresholds`` block; returns it unchanged.
@@ -673,6 +728,8 @@ def _parse_thresholds(raw_thresholds):
     so a typo like ``min_apha`` stops silently never gating. Any
     ``*_alpha`` / ``*_agreement`` key value must be numeric, finite, and
     <= 1.0 (the coefficient maximum); anything else raises ``ValueError``.
+    The ``simulator`` mapping key is RESERVED (never a judge name) and
+    validated against :data:`SIMULATOR_THRESHOLD_KEYS` instead.
     """
     if raw_thresholds is None:
         return {}
@@ -680,6 +737,9 @@ def _parse_thresholds(raw_thresholds):
         raise ValueError("thresholds must be a mapping")
     import warnings
     for judge_name, entry in raw_thresholds.items():
+        if judge_name == "simulator":
+            _parse_simulator_thresholds(entry)
+            continue
         if not isinstance(entry, dict):
             continue
         for key, value in entry.items():
@@ -714,6 +774,12 @@ def effective_thresholds(thresholds: dict, judges) -> dict:
     (report.py passes the raw eval.yaml judges list). Invalid consequence
     strings in raw dicts are skipped silently — ``EvalConfig.from_yaml``
     already rejects them at load.
+
+    The RESERVED ``simulator`` mapping key passes through UNTOUCHED: it is
+    not a judge key, so the tier-injection loop below never writes into it
+    (a deprecated judge literally named "simulator" is skipped here — its
+    tier default would otherwise leak ``min_alpha`` into the simulator
+    gate block).
     """
     out = {k: (dict(v) if isinstance(v, dict) else v)
            for k, v in (thresholds or {}).items()}
@@ -725,7 +791,7 @@ def effective_thresholds(thresholds: dict, judges) -> dict:
             name = getattr(judge, "name", "") or ""
             consequence = getattr(judge, "consequence", "") or ""
         tier = CONSEQUENCE_TIER_MIN_ALPHA.get(consequence)
-        if not name or tier is None:
+        if not name or name == "simulator" or tier is None:
             continue
         entry = out.setdefault(name, {})
         if isinstance(entry, dict):
@@ -1327,12 +1393,26 @@ class EvalConfig:
 
         # Inputs (tool interception)
         inputs_raw = raw.get("inputs", {})
-        for t in inputs_raw.get("tools") or []:
+        for i, t in enumerate(inputs_raw.get("tools") or []):
+            calibration_val = t.get("calibration", False)
+            if not isinstance(calibration_val, bool):
+                raise ValueError(
+                    f"inputs.tools[{i}].calibration must be a boolean, "
+                    f"got: {calibration_val!r}")
+            if (calibration_val
+                    and "askuserquestion" not in str(t.get("match", "")).lower()):
+                import warnings
+                warnings.warn(
+                    f"inputs.tools[{i}].calibration is set but the match text "
+                    "does not mention AskUserQuestion — the calibration "
+                    "shadow only affects the AskUserQuestion answering tier",
+                    stacklevel=2)
             config.inputs.tools.append(
                 ToolInputConfig(
                     match=t.get("match", ""),
                     prompt=t.get("prompt", ""),
                     prompt_file=t.get("prompt_file", ""),
+                    calibration=calibration_val,
                 )
             )
 
@@ -1667,6 +1747,24 @@ class EvalConfig:
         # raise) but stored verbatim; consequence-tier defaults resolve at
         # detection time via `effective_thresholds()`, never here.
         config.thresholds = _parse_thresholds(raw.get("thresholds", {}))
+
+        # TWO-STAGE reservation of the judge name "simulator" (backcompat):
+        # `thresholds.simulator` is the reserved simulator-gate block, so a
+        # judge with that name plus the block is a genuine collision — the
+        # detector could not tell the judge's gates from the simulator's.
+        # Without the block, existing configs keep loading with a
+        # DeprecationWarning nudging a rename.
+        if any(jc.name == "simulator" for jc in config.judges):
+            if "simulator" in (config.thresholds or {}):
+                raise ValueError(
+                    "'simulator' is a reserved thresholds key (simulator "
+                    "gates: max_fallback_rate/min_gold_agreement) and cannot "
+                    "also be a judge name — rename the judge")
+            import warnings
+            warnings.warn(
+                "the name 'simulator' is reserved for simulator gates "
+                "(thresholds.simulator); rename the judge",
+                DeprecationWarning, stacklevel=2)
 
         # Q3 (consequence x panels): tiers inject `min_alpha` ONLY — the
         # self-consistency gate. A consequence-tagged PANEL judge without an

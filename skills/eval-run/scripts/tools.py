@@ -15,8 +15,30 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+# --- In-hook wall-clock deadline budget ------------------------------------
+# The generated hook settings give this script an explicit 120s timeout
+# (HOOK_TIMEOUT_SECONDS in agent_eval/tools/interception.py — a mirrored
+# literal; this script cannot import agent_eval). A PreToolUse hook killed at
+# that wall is silent pass-through, so OPTIONAL LLM calls — the calibration
+# shadow — check the remaining budget first and degrade to a ledger-recorded
+# skip ({"calibration": {"skipped": "deadline"}}) instead of risking an
+# external kill. PRIMARY answers are always attempted: with the 100s budget
+# below, up to ~3 questions fit primary (30s) + shadow (15s) draws; beyond
+# that the shadows yield first. The budget clock starts at process start
+# (module import), measured on the monotonic clock.
+_HOOK_START = time.monotonic()
+_DEADLINE_BUDGET = 100.0  # seconds — below the 120s hook timeout, w/ margin
+_PRIMARY_TIMEOUT = 30.0   # tier-2 LLM answer (injected)
+_SHADOW_TIMEOUT = 15.0    # calibration shadow (logged, never injected)
+
+
+def _remaining_budget():
+    """Seconds left before the in-hook deadline budget is exhausted."""
+    return _DEADLINE_BUDGET - (time.monotonic() - _HOOK_START)
 
 # Answer-provenance ledger. Anchored to this script's own directory — the
 # hook is copied to <case_ws>/hooks/tools.py in case AND in-repo mode, and
@@ -132,7 +154,7 @@ def _find_handler(tool_name, tool_input, handlers):
     default-deny in main() would block the entire skill. To prevent that
     footgun, Bash handlers without input_filters are treated as
     misconfigured: emit a stderr warning and skip (pass-through).
-    Resolve them in eval-run Step 3b before relying on the handler.
+    Resolve them in eval-run Step 3a before relying on the handler.
     """
     for h in handlers:
         patterns = h.get("patterns", [])
@@ -144,7 +166,7 @@ def _find_handler(tool_name, tool_input, handlers):
                     f"tool_handlers.yaml: handler {h.get('match', '?')!r} "
                     "has 'Bash' in patterns but no input_filters — "
                     "skipping (would deny all Bash). Resolve in eval-run "
-                    "Step 3b.",
+                    "Step 3a.",
                     file=sys.stderr,
                 )
                 continue
@@ -173,10 +195,26 @@ def _handle_ask_user(tool_input, config, handler):
 
     Every answered question is recorded to the hook_answers.jsonl provenance
     ledger with its tier, so scoring can tell a case-specific answer (tiers
-    1-2) from an arbitrary one (tier 3).
+    1-2) from an arbitrary one (tier 3). ``tier: override`` records also
+    carry ``source: human|agent`` — per-entry ``{answer, source}`` dicts or
+    the file-level ``case_overrides_source`` mark human authorship; anything
+    unmarked conservatively counts as ``agent``.
+
+    When the handler carries ``calibration: true`` (merged from
+    ``inputs.tools`` by the workspace/Harbor generation), every
+    override-answered question ALSO shadow-runs the LLM tier — held out
+    (context excludes answers.yaml) and logged into the record's
+    ``calibration`` object, NEVER injected: the override is what the agent
+    under test receives, always.
     """
-    case_overrides = config.get("case_overrides", {})
+    case_overrides = config.get("case_overrides", {}) or {}
+    # File-level provenance default for flat override entries. Conservative:
+    # only the exact string 'human' counts — unmarked never counts as human.
+    default_source = ("human"
+                      if config.get("case_overrides_source") == "human"
+                      else "agent")
     hook_model = config.get("hook_model")
+    calibrate = bool(handler.get("calibration"))
     prompt = handler.get("prompt", "")
     if not prompt and handler.get("prompt_file"):
         try:
@@ -194,15 +232,27 @@ def _handle_ask_user(tool_input, config, handler):
         }
         llm_meta = None
 
-        # 1. Exact match
-        answer = case_overrides.get(text)
+        # 1. Exact match. An override value is a scalar answer, or a
+        # per-entry {answer, source} dict carrying its own provenance.
+        override = case_overrides.get(text)
+        source = default_source
+        if isinstance(override, dict):
+            source = "human" if override.get("source") == "human" else "agent"
+            answer = override.get("answer")
+        else:
+            answer = override
         if answer is not None:
             entry["tier"] = "override"
+            entry["source"] = source
+            if calibrate:
+                entry["calibration"] = _calibration_shadow(
+                    answer, text, options, prompt, hook_model)
 
         # 2. LLM-based answer
         if answer is None and options:
             answer, llm_meta = _llm_answer(text, options, prompt,
-                                           model=hook_model)
+                                           model=hook_model,
+                                           timeout=_PRIMARY_TIMEOUT)
             if answer is not None:
                 entry["tier"] = "llm"
 
@@ -243,6 +293,54 @@ def _handle_ask_user(tool_input, config, handler):
     json.dump(output, sys.stdout)
 
 
+def _calibration_shadow(gold, question, options, handler_prompt, model):
+    """Shadow-run the LLM tier for an override-answered question (held out).
+
+    Returns the reserved ``calibration`` ledger object; NEVER raises and
+    never influences the injected answer — the override is what the agent
+    gets, this draw is logged only. HELD OUT: the shadow's case context is
+    ``input.yaml`` alone — ``answers.yaml`` is stripped so gold agreement
+    measures simulator calibration, not answer-key transcription.
+
+    Skips with a record instead of calling when the question offers no
+    options (the LLM tier could not have run) or when the in-hook deadline
+    budget cannot fit another ``_SHADOW_TIMEOUT`` call
+    (``{"skipped": "deadline"}`` — degrading beats an external hook kill).
+    The ``decoding`` sub-object records the effective decoding config
+    (temperature=0 single draw; whether the strip-retry fired) so a future
+    ``samples: k`` self-consistency follow-up can refuse alpha over greedy
+    draws.
+    """
+    try:
+        if not options:
+            return {"skipped": "no_options"}
+        cal = {"gold": gold, "shadow": None, "agree": None, "held_out": True}
+        if _remaining_budget() < _SHADOW_TIMEOUT:
+            cal["skipped"] = "deadline"
+            print(f"calibration shadow skipped for {question!r}: in-hook "
+                  "deadline budget exhausted", file=sys.stderr)
+            return cal
+        shadow, meta = _llm_answer(question, options, handler_prompt,
+                                   model=model,
+                                   context_files=("input.yaml",),
+                                   timeout=_SHADOW_TIMEOUT)
+        meta = meta or {}
+        cal["shadow"] = shadow
+        if shadow is not None:
+            cal["agree"] = shadow == gold
+        if "error" in meta:
+            cal["error"] = meta["error"]
+        cal["decoding"] = {
+            "temperature": 0,
+            "temperature_stripped": bool(meta.get("temperature_stripped",
+                                                  False)),
+        }
+        return cal
+    except Exception as exc:  # never-crash envelope
+        return {"gold": gold, "shadow": None, "agree": None,
+                "held_out": True, "error": str(exc)[:500]}
+
+
 def _create_message(client, meta=None, **kwargs):
     """messages.create, retrying once without `temperature` if it is rejected.
 
@@ -276,10 +374,14 @@ def _create_message(client, meta=None, **kwargs):
             **{k: v for k, v in kwargs.items() if k != "temperature"})
 
 
-def _llm_answer(question, options, handler_prompt, model=None):
+def _llm_answer(question, options, handler_prompt, model=None,
+                context_files=("input.yaml", "answers.yaml"), timeout=30.0):
     """Use an LLM to pick the best answer for a question.
 
-    Reads input.yaml and answers.yaml from CWD for case-specific context.
+    Reads ``context_files`` from CWD for case-specific context — the default
+    (input.yaml + answers.yaml) is the injected tier-2 condition; the
+    calibration shadow passes ``("input.yaml",)`` so the draw is HELD OUT
+    from the answer key. ``timeout`` is the per-call API timeout in seconds.
     Returns ``(label, meta)`` — the selected option label (or None if the
     reply was rejected or the API call failed) and a provenance dict for the
     ledger: always ``model``; ``match`` ("exact"/"fuzzy") on success;
@@ -289,7 +391,7 @@ def _llm_answer(question, options, handler_prompt, model=None):
     """
     # Load case context
     case_context = ""
-    for fname in ("input.yaml", "answers.yaml"):
+    for fname in context_files:
         p = Path(fname)
         if p.exists():
             try:
@@ -321,7 +423,7 @@ Reply with ONLY the option label text, nothing else."""
     meta = {"model": model or "claude-haiku-4-5-20251001"}
     try:
         import anthropic
-        client = anthropic.Anthropic(timeout=30.0)
+        client = anthropic.Anthropic(timeout=timeout)
         response = _create_message(
             client,
             meta=meta,

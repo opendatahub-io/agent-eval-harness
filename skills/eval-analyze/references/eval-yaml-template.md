@@ -202,6 +202,15 @@ inputs:
     #     Answer based on the test case context in input.yaml and answers.yaml.
     #     Use answers.yaml guidance for domain-specific decisions.
     #     Default: pick the first option or answer "yes" for confirmations.
+    #   calibration: true
+    #   # Shadow-run the LLM tier on override-answered questions (held out —
+    #   # answers.yaml stripped; logged, never injected). Feeds the
+    #   # summary['simulator'] calibration block and the reserved
+    #   # thresholds.simulator gates. Note: case_overrides a HUMAN authored
+    #   # in a resolved tool_handlers.yaml should carry
+    #   # `case_overrides_source: human` (or per-entry `source: human`) so
+    #   # gold agreement counts them as human calibration pairs — unmarked
+    #   # entries count as agent-authored.
 
     # Control external service access (MCP tools AND scripts)
     # - match: |
@@ -397,6 +406,15 @@ thresholds:
     # min_panel_alpha: 0.67  # cross-model panel alpha, for a judge whose
     #                      # `model` is a list. Perfect-agreement matrices
     #                      # pass; skipped with a notice on --runner harbor.
+  # simulator:             # RESERVED key (never a judge name): gates the
+  #   max_fallback_rate: 0.0     # simulator block aggregated from the
+  #   min_gold_agreement: 0.8    # hook_answers ledgers. Gold agreement is
+  #                              # human-provenance pairs ONLY (requires
+  #                              # calibration: true + case_overrides_source:
+  #                              # human); stripped with a notice on the
+  #                              # Harbor/EvalHub paths.
+  #   # min_cross_simulator_agreement: 0.7  # reserved — activates with
+  #   #                                     # models.hook_shadow (not yet)
 
 # Reward composition (OPTIONAL) — collapse per-judge results into a single
 # scalar in [0, 1] for RL training (GRPO). Only needed when training; the

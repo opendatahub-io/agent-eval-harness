@@ -4,10 +4,20 @@ This documents how `inputs.tools` handlers are resolved and executed during head
 
 ## Flow
 
-1. **eval.yaml** defines handlers with `match` (what to intercept) and `prompt` (how to handle)
-2. **workspace.py** extracts basic tool name patterns from `match` text, writes `tool_handlers.yaml`, and includes `hook_model` from `models.hook`
-3. **eval-run agent (Step 3b)** reads `tool_handlers.yaml`, interprets the `prompt` field, and adds concrete runtime checks
+1. **eval.yaml** defines handlers with `match` (what to intercept) and `prompt` (how to handle), plus the harness-owned runtime knobs (`calibration`)
+2. **workspace.py** extracts basic tool name patterns from `match` text and writes `tool_handlers.yaml`. Harness-owned knobs (`hook_model` from `models.hook`, `calibration` from `inputs.tools`) are stamped on by a **post-load merge** applied regardless of source — a pre-resolved `tool_handlers.yaml` (from `/eval-analyze`) gets the same knobs, with `hook_model` as a `setdefault` (an explicit value in the resolved file wins; supplying a missing one prints a stderr notice)
+3. **eval-run agent (Step 3a)** reads `tool_handlers.yaml`, interprets the `prompt` field, and adds concrete runtime checks — preserving the harness-owned keys (see SKILL.md Step 3a)
 4. **tools.py** (PreToolUse hook) executes the checks at runtime. AskUserQuestion uses a 3-tier resolution: exact `case_overrides` match → LLM call (using `hook_model`) → first-option fallback. All other tool checks are deterministic.
+
+Every generated PreToolUse hook entry carries an explicit `timeout` of **120s**
+(`HOOK_TIMEOUT_SECONDS`), sized to the worst case of one AskUserQuestion batch
+(~30s primary LLM answer + ~15s calibration shadow per question × a small
+question-batch factor). Inside the hook, an **in-hook deadline budget** (100s
+on the monotonic clock from hook start) is checked before each *optional* LLM
+call — the calibration shadow — which is skipped with a ledger record
+(`calibration: {skipped: "deadline"}`) instead of risking an external kill
+(a killed PreToolUse hook is silent pass-through). Primary answers are always
+attempted.
 
 ## tool_handlers.yaml Format
 
@@ -34,8 +44,10 @@ handlers:
 hook_model: claude-haiku-4-5-20251001
 
 # Per-case exact-match answer overrides (optional — LLM answering is preferred)
+case_overrides_source: human            # file-level provenance default for flat entries (default: agent)
 case_overrides:
-  "What priority should this have?": "Normal"
+  "What priority should this have?": "Normal"          # flat => source from file default
+  "Which region?": {answer: "eu-west", source: human}  # per-entry provenance
 ```
 
 ### Fields
@@ -44,21 +56,45 @@ case_overrides:
 |-------|--------|---------|---------|
 | `match` | workspace.py (from eval.yaml) | eval-run agent | Natural language description of what to intercept |
 | `patterns` | workspace.py (heuristic extraction) | tools.py | Tool name patterns for matching (exact or glob) |
-| `input_filters` | eval-run agent (Step 3b) | tools.py | Regex patterns to match Bash command content. When present with "Bash" in patterns, BOTH must match. |
-| `env_checks` | eval-run agent (Step 3b) | tools.py | Env var validation. Each key is a var name, `must_contain` lists required substrings. All must pass for the tool call to be allowed. |
+| `input_filters` | eval-run agent (Step 3a) | tools.py | Regex patterns to match Bash command content. When present with "Bash" in patterns, BOTH must match. |
+| `env_checks` | eval-run agent (Step 3a) | tools.py | Env var validation. Each key is a var name, `must_contain` lists required substrings. All must pass for the tool call to be allowed. |
 | `prompt` | workspace.py (from eval.yaml) | eval-run agent, tools.py | Natural language instruction — the agent reads this to generate concrete checks. Also passed to the LLM answerer as context for AskUserQuestion. |
-| `hook_model` | workspace.py (from models.hook) | tools.py | Model ID for LLM-based AskUserQuestion answering. Defaults to `claude-haiku-4-5-20251001`. |
-| `case_overrides` | eval-run agent (optional) | tools.py | Question → answer map for AskUserQuestion. Exact-match tier — checked before LLM and fallback. |
+| `hook_model` | post-load merge (setdefault from models.hook; a resolved file's explicit value wins) | tools.py | Model ID for LLM-based AskUserQuestion answering. Defaults to `claude-haiku-4-5-20251001`. |
+| `case_overrides` | eval-run agent / human (optional) | tools.py | Question → answer map for AskUserQuestion. Exact-match tier — checked before LLM and fallback. Values are flat answers or per-entry `{answer, source}` dicts. |
+| `calibration` | post-load merge (from `inputs.tools[].calibration`) | tools.py | Shadow-run the LLM tier on override-answered questions — held-out, logged to the ledger, never injected. Feeds `summary['simulator'].calibration`. |
+| `case_overrides_source` | eval-run agent / human | tools.py, score.py | File-level provenance default for flat `case_overrides` entries: `human` \| `agent` (default `agent` — agent authorship is the documented default). Only explicit `human` markings reach the human calibration stratum. |
 
 ## How tools.py Handles Each Tool Type
 
 ### AskUserQuestion
 
 1. Match by pattern: `patterns: ["AskUserQuestion"]`
-2. **Tier 1 — exact match**: look up the question text in `case_overrides`
+2. **Tier 1 — exact match**: look up the question text in `case_overrides` (flat answer, or `{answer, source}` — the answer is injected either way, and the record carries the entry's provenance)
 3. **Tier 2 — LLM call**: if no exact match and options are available, call the `hook_model` with the question, options, handler `prompt`, and case context (`input.yaml` + `answers.yaml` from CWD). The LLM picks the best option based on context. **Note**: case files are sent to the LLM API — do not put secrets, credentials, or PII in `input.yaml` or `answers.yaml`.
 4. **Tier 3 — fallback**: pick the first option, or "yes"
 5. Return `permissionDecision: "allow"` with `updatedInput` containing answers
+
+#### Calibration shadow (held out)
+
+When the handler carries `calibration: true`, every **override-answered**
+question ALSO shadow-runs the LLM tier and logs the result into the same
+ledger record's `calibration` object. Two invariants:
+
+- **Never injected**: the tier-1 override is what the agent under test
+  receives, always — the shadow exists only to measure whether the LLM
+  simulator *would have* answered like the (ideally human-authored) override.
+- **Held out**: the shadow's case context is `input.yaml` only —
+  `answers.yaml` is stripped, so gold agreement measures simulator
+  calibration, not answer-key transcription.
+
+The shadow uses a shorter timeout (~15s vs the primary's 30s), is skipped
+with `calibration: {skipped: "deadline"}` when the in-hook deadline budget
+cannot fit another call, records `{skipped: "no_options"}` when the LLM tier
+could not have run, and can never affect the injected answer or the hook's
+exit code (never-crash envelope). Downstream, `score.py` stratifies the
+pairs by `source`: only human-provenance pairs count as **gold agreement**
+(the `thresholds.simulator.min_gold_agreement` gate); agent-provenance pairs
+are labeled "LLM-vs-LLM consistency (not human calibration)".
 
 ### MCP Tools (e.g., mcp__atlassian__*)
 
@@ -119,12 +155,12 @@ envelope: a logging failure can never break interception.
 | `temperature_stripped` | bool | when the strip-retry fired | The `temperature` param was rejected and retried without |
 | `reason` | str | `disabled` records | `pyyaml-missing` \| `tool-handlers-missing` |
 | `cwd` | str | `tool-handlers-missing` records | The hook's CWD (surfaces resolution problems) |
+| `source` | str | `override` records | Case-override provenance: `human` \| `agent`. Only explicit human markings (`case_overrides_source: human` or per-entry `source: human`) count as `human` — unmarked defaults to `agent`. |
+| `calibration` | dict | `override` records on a `calibration: true` handler | The held-out shadow result: `{gold, shadow, agree: bool\|null, held_out: true}` plus `error` (shadow call failed), `skipped: "deadline"\|"no_options"`, and `decoding: {temperature: 0, temperature_stripped: bool}` (the effective decoding config — recorded so a future `samples: k` self-consistency follow-up can refuse alpha over greedy draws). |
 
 **Reserved fields** (documented now, emitted by a later commit — do not
-repurpose): `source: human|agent` (case_overrides provenance),
-`calibration{gold, shadow, agree, held_out, error, decoding{temperature,
-temperature_stripped}}` (shadow-run gold agreement), `shadows[{model, answer,
-error, held_out}]` (cross-family shadow simulators).
+repurpose): `shadows[{model, answer, error, held_out}]` (cross-family shadow
+simulators, `models.hook_shadow`).
 
 ### Tier semantics
 
@@ -195,11 +231,11 @@ answers. This is *not* simulator calibration.
   were already delivered to the agent in-band, so this leaks nothing new;
   optionally deny `Read(**/hook_answers.jsonl)` for hygiene.
 
-## What eval-run Agent Does in Step 3b
+## What eval-run Agent Does in Step 3a
 
-Read each handler in `tool_handlers.yaml` and resolve the `prompt` into concrete fields:
+Read each handler in `tool_handlers.yaml` and resolve the `prompt` into concrete fields — **preserving the harness-owned keys** (`hook_model`, `calibration`, `case_overrides_source`, and the future `hook_shadow_models`) exactly as written:
 
-1. **For AskUserQuestion**: The LLM answerer handles most questions automatically using the handler `prompt` + case context. Only add `case_overrides` entries for questions that need exact deterministic answers. The `answers.yaml` file in each case directory provides guidance the LLM reads at runtime — you don't need to load it into `case_overrides`.
+1. **For AskUserQuestion**: The LLM answerer handles most questions automatically using the handler `prompt` + case context. Only add `case_overrides` entries for questions that need exact deterministic answers. The `answers.yaml` file in each case directory provides guidance the LLM reads at runtime — you don't need to load it into `case_overrides`. Entries you author yourself stay flat (or `{answer, source: agent}`); `source: human` is reserved for answers a human actually supplied — never remove or downgrade an existing human marking. When `calibration` is enabled, human-provenance overrides double as the calibration gold set.
 
 2. **For service interception** (Jira, Slack, etc.): Read the prompt and add:
    - `env_checks`: which env vars to validate and what values indicate test instances
@@ -216,7 +252,7 @@ Read each handler in `tool_handlers.yaml` and resolve the `prompt` into concrete
   prompt: "Only allow if JIRA_SERVER points to a test instance or emulator."
 ```
 
-**After eval-run agent resolves** (Step 3b):
+**After eval-run agent resolves** (Step 3a):
 ```yaml
 - match: "Any Jira interaction via MCP or scripts calling the Jira API."
   patterns: ["Bash", "mcp__atlassian__*"]

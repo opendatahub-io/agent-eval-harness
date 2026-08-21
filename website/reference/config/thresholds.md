@@ -18,14 +18,19 @@ thresholds:
   #   min_panel_alpha: 0.67  # panel judge (judges[].model as a list) — cross-model alpha
   # pairwise:
   #   min_win_rate: 0.6      # pairwise judge — fraction of cases won vs baseline
+  # simulator:               # RESERVED key — gates the simulator block, not a judge
+  #   max_fallback_rate: 0.0
+  #   min_gold_agreement: 0.8
 ```
 
 The block is a plain mapping (`dict`, default empty). When it is empty or
 omitted, no gate runs and scoring always succeeds. Unknown keys **warn** at
 config load (they never gate); `*_alpha` / `*_agreement` values must be
-finite numbers ≤ 1.0 (the coefficient maximum).
+finite numbers ≤ 1.0 (the coefficient maximum). The mapping key
+`simulator` is **reserved** — see
+[the reserved `simulator` key](#the-reserved-simulator-key) below.
 
-## The seven keys
+## The seven per-judge keys
 
 | Key | Applies to | Metric compared | Passes when |
 | --- | --- | --- | --- |
@@ -142,6 +147,39 @@ Calibration is **post-hoc**, so the gate has three states:
     regression rather than a silent skip. The verdicts in `review.yaml`
     survive re-scoring, so re-running `score.py calibration` restores the
     gate.
+
+## The reserved `simulator` key
+
+`thresholds.simulator` is a **reserved mapping key** — it gates the run-level
+`summary['simulator']` block (aggregated by `score.py` from the
+`hook_answers.jsonl` answer ledgers of an
+[intercepted](inputs-tools.md) run), never a judge. Consequently the name
+`simulator` cannot be a judge name: a judge called `simulator` next to a
+`thresholds.simulator` block is a **load error**; without the block it loads
+with a `DeprecationWarning` telling you to rename the judge.
+
+Three sub-keys (anything else warns at load and is ignored):
+
+| Sub-key | Gates | Passes when |
+| --- | --- | --- |
+| `max_fallback_rate` | the share of recorded answer events that were `fallback` or `disabled` — answers the agent under test received arbitrarily or without interception | `fallback_rate <= max_fallback_rate` |
+| `min_gold_agreement` | the held-out calibration-shadow agreement over **human-provenance pairs only** (`inputs.tools[].calibration: true` + `case_overrides_source: human`) | `gold_agreement >= min_gold_agreement` with ≥ 1 human pair |
+| `min_cross_simulator_agreement` | **reserved** — activates with cross-family shadow simulators (`models.hook_shadow`, not yet active); accepted with a load warning, never evaluated | — |
+
+The gates follow the configured-but-unavailable rule: a configured
+`thresholds.simulator` with **no simulator block** in the summary (never
+scored locally, or old summary) is a regression per configured sub-key, and
+`min_gold_agreement` with **zero human-provenance pairs** fails loudly —
+agent-authored override pairs measure LLM-vs-LLM consistency, not human
+calibration, and are never silently substituted.
+
+!!! note "Local scoring path only"
+    Harbor and EvalHub aggregations carry no hook-ledger data, so the
+    reserved key is **stripped with a stderr notice** on those paths
+    (`thresholds.simulator is not evaluated on the Harbor/EvalHub path`),
+    the EvalHub provider translation excludes it from `pass_criteria`, and
+    Harbor task-package reuse never demands a bundled judge named
+    `simulator`. Score the run locally to evaluate the simulator gates.
 
 ## Match the key to the judge's value type
 

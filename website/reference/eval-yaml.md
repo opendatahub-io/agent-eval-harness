@@ -45,6 +45,7 @@ one `judge`.
           <span class="sd-f">match<span class="sd-badge llm">LLM</span></span>
           <span class="sd-f">prompt<span class="sd-badge llm">LLM</span></span>
           <span class="sd-f">prompt_file<span class="sd-badge llm">LLM</span></span>
+          <span class="sd-f">calibration</span>
         </div>
       </div>
       <div class="sd-card">
@@ -163,6 +164,7 @@ one `judge`.
           <span class="sd-f">min_alpha</span>
           <span class="sd-f">min_human_agreement</span>
           <span class="sd-f">min_panel_alpha</span>
+          <span class="sd-f">simulator (reserved)</span>
         </div>
       </div>
       <div class="sd-card">
@@ -371,7 +373,7 @@ thresholds:
 - [**traces**](config/traces.md) — stdout, stderr, events, metrics
 - [**hooks**](config/hooks.md) — before/after all/each, before_scoring
 - [**judges**](config/judges.md) — the five judge types and all fields
-- [**thresholds**](config/thresholds.md) — min_mean, min_pass_rate, min_win_rate, max_error_rate, min_alpha, min_human_agreement, min_panel_alpha
+- [**thresholds**](config/thresholds.md) — min_mean, min_pass_rate, min_win_rate, max_error_rate, min_alpha, min_human_agreement, min_panel_alpha, plus the reserved `simulator` mapping key
 - [**reward**](config/reward.md) — single-judge and formula reward modes
 
 </div>

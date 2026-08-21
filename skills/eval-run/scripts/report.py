@@ -1437,6 +1437,7 @@ def _render_scoring_summary(summary, config, baseline_summary=None,
                          summary.get("judges", {}), thresholds,
                          pairwise=summary.get("pairwise"),
                          include_irr=include_irr,
+                         simulator=summary.get("simulator"),
                          human_calibration=summary.get("human_calibration"))}
         _breach_known = True
     except Exception:
@@ -1756,11 +1757,13 @@ def _detect_regressions(judges, thresholds, pairwise=None, include_irr=True,
     it is imported by name off the same directory. Raises rather than
     returning [] — a detector that could not run is not a clean run, and
     callers render that distinction. The reliability kwargs are forwarded
-    verbatim (``pairwise``/``simulator`` are reserved pass-throughs;
-    ``include_irr=False`` skips ``min_alpha`` gates on execution paths whose
-    aggregation carries no sampling stability data; ``human_calibration`` is
-    the summary's run-level block, needed by the ``min_human_agreement``
-    stale-calibration check).
+    verbatim (``pairwise`` is a reserved pass-through; ``simulator`` is the
+    summary's run-level simulator block, evaluated by the reserved
+    ``thresholds.simulator`` gates; ``include_irr=False`` skips the
+    ``min_alpha``-family AND simulator gates on execution paths whose
+    aggregation carries no sampling stability or ledger data;
+    ``human_calibration`` is the summary's run-level block, needed by the
+    ``min_human_agreement`` stale-calibration check).
     """
     from score import detect_regressions
     return detect_regressions(judges, thresholds, pairwise=pairwise,
@@ -1800,6 +1803,7 @@ def _render_regressions(summary, config, run_result=None):
                 judges, thresholds,
                 pairwise=summary.get("pairwise"),
                 include_irr=_include_irr(run_result),
+                simulator=summary.get("simulator"),
                 human_calibration=summary.get("human_calibration")):
             regressions.append((reg.judge_name, reg.metric,
                                 reg.baseline_value, reg.current_value))
@@ -1819,6 +1823,132 @@ def _render_regressions(summary, config, run_result=None):
         html += (f'<tr><td>{_esc(judge)}</td><td>{metric}</td>'
                  f'<td>{expected}</td><td><span class="fail">{actual}</span></td></tr>\n')
     html += "</table>\n"
+    return html
+
+
+def _tier_proportion_bar(tiers):
+    """3-segment proportion bar over simulated-user answer tiers.
+
+    Shares _stability_proportion_bar's SVG visual language: override
+    (case-specific, success-colored) · llm (accent) · fallback+disabled
+    (arbitrary/uninterceded, warning background). Counts in the label.
+    """
+    override = tiers.get("override", 0) or 0
+    llm = tiers.get("llm", 0) or 0
+    bad = (tiers.get("fallback", 0) or 0) + (tiers.get("disabled", 0) or 0)
+    total = override + llm + bad
+    if not total:
+        return ""
+    W, H = 92, 7
+    w_override = W * override / total
+    w_llm = W * llm / total
+    title = (f"{override} override · {llm} llm · {bad} fallback/disabled "
+             f"of {total} answer(s)")
+    return (
+        f'<span class="stab-wrap">'
+        f'<svg class="stab-bar" width="{W}" height="{H}" viewBox="0 0 {W} {H}" '
+        f'role="img" aria-label="{_esc(title)}"><title>{_esc(title)}</title>'
+        f'<rect x="0" y="0" width="{W}" height="{H}" rx="3.5" fill="var(--warning)"/>'
+        f'<rect x="0" y="0" width="{w_override + w_llm:.1f}" height="{H}" rx="3.5" fill="var(--accent)"/>'
+        f'<rect x="0" y="0" width="{w_override:.1f}" height="{H}" rx="3.5" fill="var(--success)"/>'
+        f'</svg><span class="stab-label">{override} · {llm} · {bad}</span></span>')
+
+
+def _render_simulator(summary, config):
+    """Simulator Calibration card (measurement-validity V2 layer).
+
+    Renders ``summary['simulator']`` (assembled by score.py's
+    ``aggregate_simulator``): the answer-tier proportion bar, the fallback
+    rate against its gate, and the held-out gold agreement stratified by
+    case_overrides provenance — the HUMAN stratum is the calibration
+    evidence; the agent stratum renders with its verbatim LLM-vs-LLM
+    label. The P1 banner fires whenever zero human-provenance pairs
+    exist. Returns '' when the run carries no simulator block.
+    """
+    block = summary.get("simulator") if isinstance(summary, dict) else None
+    if not isinstance(block, dict) or not block:
+        return ""
+    html = "<h2>Simulator Calibration</h2>\n"
+
+    calibration = (block.get("calibration")
+                   if isinstance(block.get("calibration"), dict) else {})
+    by_source = calibration.get("by_source") or {}
+    human = by_source.get("human") or {}
+    agent = by_source.get("agent") or {}
+
+    # P1 banner: no human-provenance pairs = the simulator's answers were
+    # never validated against a human, whatever the agent stratum says.
+    if not human.get("n"):
+        html += ('<p class="fail">Simulator calibration not validated '
+                 "against human answers — no human-provenance override "
+                 "pairs (Prescription 1). Agent-authored overrides measure "
+                 "LLM-vs-LLM consistency, not human calibration. Mark "
+                 "human-authored case_overrides with "
+                 "<code>case_overrides_source: human</code> (or per-entry "
+                 "<code>source: human</code>).</p>\n")
+
+    tiers = block.get("tiers") or {}
+    thresholds = (config.get("thresholds") or {}) if isinstance(
+        config, dict) else {}
+    sim_gates = (thresholds.get("simulator")
+                 if isinstance(thresholds.get("simulator"), dict) else {})
+
+    html += "<table>\n"
+    bar = _tier_proportion_bar(tiers)
+    if bar:
+        html += ("<tr><th>Answer tiers</th><td>" + bar
+                 + ' <span class="stab-label">override · llm · '
+                   "fallback/disabled</span></td></tr>\n")
+    html += (f"<tr><th>Questions answered</th>"
+             f"<td>{block.get('n_questions', 0)}</td></tr>\n")
+    rate = block.get("fallback_rate")
+    if isinstance(rate, (int, float)) and not isinstance(rate, bool):
+        val = f"{rate:.1%}"
+        gate = sim_gates.get("max_fallback_rate")
+        if isinstance(gate, (int, float)) and not isinstance(gate, bool):
+            cls = "fail" if rate > gate else "pass"
+            val = (f'<span class="{cls}">{val}</span> '
+                   f"(gate: &le; {gate})")
+        html += f"<tr><th>Fallback rate</th><td>{val}</td></tr>\n"
+    if block.get("hook_model"):
+        html += (f"<tr><th>Hook model</th>"
+                 f"<td>{_esc(str(block['hook_model']))}</td></tr>\n")
+
+    gate = sim_gates.get("min_gold_agreement")
+    gate_txt = (f" (gate: &ge; {gate}, human stratum only)"
+                if isinstance(gate, (int, float))
+                and not isinstance(gate, bool) else "")
+    for name, stratum, prominent in (("human", human, True),
+                                     ("agent", agent, False)):
+        if not stratum.get("n"):
+            continue
+        label = str(stratum.get("label") or "")
+        r = stratum.get("rate")
+        val = (f"{r:.1%}" if isinstance(r, (int, float))
+               and not isinstance(r, bool) else "n/a")
+        detail = (f"{val} — {stratum.get('agree', 0)}/{stratum['n']} "
+                  f"pair(s) · {_esc(label)}")
+        if prominent:
+            row_label = "Gold agreement (human)"
+            detail = f"<strong>{detail}</strong>{gate_txt}"
+        else:
+            row_label = "Agent-stratum agreement"
+        html += f"<tr><th>{row_label}</th><td>{detail}</td></tr>\n"
+    if block.get("deadline_skips"):
+        html += (f"<tr><th>Deadline skips</th><td>"
+                 f"{block['deadline_skips']} calibration shadow(s) skipped "
+                 f"by the in-hook deadline budget</td></tr>\n")
+    html += "</table>\n"
+
+    if not calibration.get("n_pairs") and tiers.get("llm"):
+        html += ('<p class="validity-note">Calibration shadow disabled — '
+                 "llm-tier answers are provenance only, not calibration. "
+                 "Enable <code>inputs.tools[].calibration: true</code> with "
+                 "human-provenance case_overrides to measure gold "
+                 "agreement.</p>\n")
+    if block.get("ledger_scope") == "run":
+        html += ('<p class="validity-note">run-level ledger — answers not '
+                 "attributed to cases (batch mode)</p>\n")
     return html
 
 
@@ -3527,8 +3657,9 @@ def generate_report(config, summary, run_result, run_dir,
     html += _wrap_section(_render_scoring_summary(summary, config,
                                                   baseline_summary,
                                                   run_result=run_result))
-    # Insertion point: the Simulator Calibration card renders HERE (above
-    # Validity & Reliability) once summary['simulator'] ships.
+    # Simulator Calibration card (above Validity & Reliability, whose V2
+    # stanza summarizes the same block).
+    html += _wrap_section(_render_simulator(summary, config))
     html += _wrap_section(_render_validity(summary, config))
     html += _wrap_section(_render_regressions(summary, config,
                                               run_result=run_result))

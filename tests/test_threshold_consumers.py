@@ -122,6 +122,104 @@ def test_the_cli_gate_behaves_as_the_table_says(key, judges, thresholds, hc,
                                    human_calibration=hc)) is regresses
 
 
+# --- reserved thresholds.simulator key (measurement-validity PR9) -------------
+# judges aggregate, thresholds, summary['simulator'] block (None = never
+# aggregated), and whether the CLI would regress. The judges dict always
+# carries a REAL judge so a phantom judge-loop lookup for 'simulator'
+# ("n/a pass_rate") would show up as an unexpected regression.
+
+def _sim_summary(fallback_rate=0.0, human_n=2, human_agree=2):
+    human_rate = round(human_agree / human_n, 3) if human_n else None
+    return {
+        "status": "calibrated" if human_n else "uncalibrated simulator",
+        "tiers": {"override": 4, "llm": 1, "fallback": 0, "disabled": 0},
+        "n_questions": 5,
+        "fallback_rate": fallback_rate,
+        "calibration": {
+            "n_pairs": human_n + 1,
+            "by_source": {
+                "human": {"n": human_n, "agree": human_agree,
+                          "rate": human_rate, "label": "…(uncorrected)",
+                          "pairs": []},
+                "agent": {"n": 1, "agree": 0, "rate": 0.0,
+                          "label": "LLM-vs-LLM consistency "
+                                   "(not human calibration) — uncorrected"},
+            },
+            "gold_agreement": human_rate,
+            "validated": bool(human_n),
+        },
+        "deadline_skips": 0,
+        "ledger_scope": "case",
+    }
+
+
+_SIM_JUDGES = {"q": {"mean": 4.0, "pass_rate": 1.0, "scored_cases": 5}}
+
+SIM_CASES = [
+    ("fallback-rate breach",
+     _sim_summary(fallback_rate=0.4),
+     {"simulator": {"max_fallback_rate": 0.0}}, True),
+    ("gold-agreement breach (human stratum)",
+     _sim_summary(human_n=4, human_agree=1),
+     {"simulator": {"min_gold_agreement": 0.8}}, True),
+    ("clean block — agent stratum worse than the gate is NOT gated",
+     _sim_summary(),
+     {"simulator": {"max_fallback_rate": 0.1,
+                    "min_gold_agreement": 0.8}}, False),
+    ("zero human-provenance pairs fail the gold gate loudly",
+     _sim_summary(human_n=0, human_agree=0),
+     {"simulator": {"min_gold_agreement": 0.5}}, True),
+    ("configured but no simulator block in the summary",
+     None,
+     {"simulator": {"max_fallback_rate": 0.0}}, True),
+]
+
+
+@pytest.mark.parametrize("key,sim,thresholds,regresses", SIM_CASES)
+def test_the_cli_simulator_gate_behaves_as_the_table_says(key, sim,
+                                                          thresholds,
+                                                          regresses):
+    assert bool(detect_regressions(_SIM_JUDGES, thresholds,
+                                   simulator=sim)) is regresses
+
+
+@pytest.mark.parametrize("key,sim,thresholds,regresses", SIM_CASES)
+def test_the_report_shows_every_simulator_breach_the_cli_exits_on(
+        key, sim, thresholds, regresses):
+    summary = {"judges": _SIM_JUDGES}
+    if sim is not None:
+        summary["simulator"] = sim
+    html = report._render_regressions(summary, {"thresholds": thresholds})
+    assert bool(html) is regresses, f"{key}: report and CLI disagree"
+    if regresses:
+        assert "Regressions" in html
+        assert "simulator" in html
+
+
+@pytest.mark.parametrize("key,sim,thresholds,regresses", SIM_CASES)
+def test_the_mlflow_tag_matches_the_cli_for_simulator_gates(key, sim,
+                                                            thresholds,
+                                                            regresses):
+    log_results = _load(
+        REPO_ROOT / "skills" / "eval-mlflow" / "scripts" / "log_results.py",
+        "_log_results_sim_test")
+    assert bool(log_results._detect_regressions(
+        _SIM_JUDGES, thresholds, simulator=sim)) is regresses
+
+
+def test_harbor_paths_skip_the_simulator_gates_like_the_cli():
+    """include_irr=False (the Harbor/EvalHub call shape — those paths also
+    strip the key with a notice) evaluates no simulator gate, and the
+    harbor-mode report agrees."""
+    thresholds = {"simulator": {"max_fallback_rate": 0.0,
+                                "min_gold_agreement": 0.9}}
+    assert detect_regressions(_SIM_JUDGES, thresholds,
+                              include_irr=False, simulator=None) == []
+    assert not report._render_regressions(
+        {"judges": _SIM_JUDGES}, {"thresholds": thresholds},
+        run_result={"execution_mode": "harbor"})
+
+
 @pytest.mark.parametrize("key,judges,thresholds,hc,regresses", CASES)
 def test_the_report_shows_every_breach_the_cli_exits_on(key, judges, thresholds,
                                                         hc, regresses):

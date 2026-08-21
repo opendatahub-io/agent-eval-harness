@@ -370,3 +370,101 @@ judges:
                              plugin_dirs=["plugins/does-not-exist"])
         _, out = self._run(repo, monkeypatch, capsys)
         assert "none of the configured runner.plugin_dirs" not in out, out
+
+
+class TestSimulatorThresholdsReservedKey:
+    """`thresholds.simulator` is the reserved simulator-gate key: it must be
+    exempt from the "references non-existent judge" warning, its sub-keys
+    validated against the same whitelist config load uses, and a judge
+    literally named 'simulator' next to the block is an error."""
+
+    CONFIG = """\
+name: t
+execution:
+  mode: case
+  skill: myskill
+  arguments: "{prompt}"
+runner:
+  type: claude-code
+models:
+  skill: m
+  judge: m
+dataset:
+  path: cases
+  schema: one case dir per test
+outputs:
+  - path: out
+    schema: artifacts
+judges:
+  - name: j
+    description: d
+    check: |
+      return (True, "ok")
+__EXTRA__
+"""
+
+    def _project(self, tmp_path, extra):
+        repo = tmp_path / "repo"
+        (repo / ".claude" / "skills" / "myskill").mkdir(parents=True)
+        (repo / ".claude" / "skills" / "myskill" / "SKILL.md").write_text(
+            "---\nname: myskill\n---\n")
+        (repo / "cases" / "case-001").mkdir(parents=True)
+        (repo / "cases" / "case-001" / "input.yaml").write_text("prompt: hi\n")
+        (repo / "eval.yaml").write_text(
+            self.CONFIG.replace("__EXTRA__", extra))
+        return repo
+
+    def _run(self, repo, monkeypatch, capsys):
+        monkeypatch.chdir(repo)
+        try:
+            validate_eval.validate_config("eval.yaml")
+        except SystemExit as exc:
+            return exc.code, capsys.readouterr().out
+        return 0, capsys.readouterr().out
+
+    def test_simulator_block_validates_with_zero_warnings(
+            self, tmp_path, monkeypatch, capsys):
+        repo = self._project(tmp_path, (
+            "thresholds:\n"
+            "  j:\n"
+            "    min_pass_rate: 1.0\n"
+            "  simulator:\n"
+            "    max_fallback_rate: 0.0\n"
+            "    min_gold_agreement: 0.8\n"))
+        code, out = self._run(repo, monkeypatch, capsys)
+        assert code == 0
+        assert "WARNING" not in out
+        assert out.startswith("VALID")
+
+    def test_unknown_simulator_sub_key_warns(
+            self, tmp_path, monkeypatch, capsys):
+        repo = self._project(tmp_path, (
+            "thresholds:\n"
+            "  simulator:\n"
+            "    min_self_consistency: 0.7\n"))
+        code, out = self._run(repo, monkeypatch, capsys)
+        assert code == 0
+        assert "thresholds.simulator.min_self_consistency" in out
+        assert "max_fallback_rate" in out  # names the valid sub-keys
+
+    def test_judge_named_simulator_next_to_the_block_is_an_error(
+            self, tmp_path, monkeypatch, capsys):
+        repo = self._project(tmp_path, (
+            "thresholds:\n"
+            "  simulator:\n"
+            "    max_fallback_rate: 0.0\n"))
+        config_path = repo / "eval.yaml"
+        config_path.write_text(config_path.read_text().replace(
+            "- name: j", "- name: simulator"))
+        code, out = self._run(repo, monkeypatch, capsys)
+        assert code == 1
+        assert "reserved thresholds key" in out
+
+    def test_non_mapping_simulator_block_is_an_error(
+            self, tmp_path, monkeypatch, capsys):
+        repo = self._project(tmp_path, (
+            "thresholds:\n"
+            "  simulator: 0.7\n"))
+        code, out = self._run(repo, monkeypatch, capsys)
+        assert code == 1
+        assert "must be a mapping" in out

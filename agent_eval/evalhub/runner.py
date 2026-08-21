@@ -229,8 +229,17 @@ def _run_with_client(client, config, config_path, ns, provider_id,
             print(f"NOTE: reliability gates ({', '.join(skipped)}) skipped "
                   "on this execution path: no sampling stability data or "
                   "judge-panel data in aggregated results", file=sys.stderr)
+        # The reserved thresholds.simulator key is STRIPPED with a notice —
+        # the EvalHub client summary carries no hook-ledger data, so the
+        # simulator gates cannot be evaluated here (mirrors harbor/run.py).
+        thresholds = {k: v for k, v in config.thresholds.items()
+                      if k != "simulator"}
+        if "simulator" in config.thresholds:
+            print("NOTE: thresholds.simulator is not evaluated on the "
+                  "EvalHub path (no simulator ledger aggregation)",
+                  file=sys.stderr)
         regressions = score.detect_regressions(summary["judges"],
-                                               config.thresholds,
+                                               thresholds,
                                                include_irr=False)
         if regressions:
             print(f"REGRESSIONS: {len(regressions)} detected", file=sys.stderr)

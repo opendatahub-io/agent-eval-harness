@@ -325,8 +325,13 @@ def _count_task_packages(tasks_dir: Path) -> int:
 
 def _validate_task_package_reuse(tasks_dir: Path, config: EvalConfig, *,
                                  no_llm_judges: bool = False) -> None:
-    """Reject pre-generated packages whose provenance mismatches this run."""
-    required = set(config.thresholds or {})
+    """Reject pre-generated packages whose provenance mismatches this run.
+
+    The RESERVED ``thresholds.simulator`` key gates the run-level simulator
+    block, never a judge — it must not demand a bundled judge named
+    'simulator'.
+    """
+    required = set(config.thresholds or {}) - {"simulator"}
     requested_mode = "deterministic-only" if no_llm_judges else "full"
     for task_dir in sorted(d for d in tasks_dir.iterdir() if d.is_dir()
                            and (d / "task.toml").is_file()):
@@ -469,6 +474,22 @@ def _note_min_alpha_skipped(thresholds) -> bool:
     return False
 
 
+def _strip_simulator_thresholds(thresholds) -> dict:
+    """Drop the reserved ``thresholds.simulator`` key, with a notice.
+
+    Harbor aggregation carries no hook-ledger data, so the simulator gates
+    (``max_fallback_rate``/``min_gold_agreement``) cannot be evaluated here
+    — stripping with a stderr notice extends the reliability-gate
+    skip-notice pattern (:func:`_note_min_alpha_skipped`) instead of
+    regressing every containerized run as configured-but-unavailable.
+    """
+    out = {k: v for k, v in (thresholds or {}).items() if k != "simulator"}
+    if "simulator" in (thresholds or {}):
+        print("NOTE: thresholds.simulator is not evaluated on the Harbor "
+              "path (no simulator ledger aggregation)", file=sys.stderr)
+    return out
+
+
 def _write_report(config_path: Path, output_dir: Path, summary: dict,
                   run_meta: dict) -> None:
     """Render report.html with the same generator the local path uses."""
@@ -543,8 +564,11 @@ def run_eval_on_harbor(
         kept_names = {
             judge.get("name") for judge in filtered.get("judges", [])
         }
+        # 'simulator' is the reserved simulator-gate key, not a judge name —
+        # dropping model judges never removes it.
         removed_thresholds = sorted(
-            name for name in config.thresholds if name not in kept_names)
+            name for name in config.thresholds
+            if name != "simulator" and name not in kept_names)
         if removed_thresholds:
             raise ValueError(
                 "--no-llm-judges would skip thresholded judge(s): "
@@ -721,10 +745,13 @@ def run_eval_on_harbor(
     # aggregation carries no per-sample stability data, so a
     # consequence-tagged judge must not regress a Harbor run. Explicit
     # min_alpha and min_panel_alpha keys are skipped via include_irr=False,
-    # with one combined notice.
+    # with one combined notice. The reserved thresholds.simulator key is
+    # STRIPPED with its own notice — Harbor aggregation carries no
+    # hook-ledger data, so the simulator gates cannot be evaluated here.
     score = _load_score_module()
     _note_min_alpha_skipped(config.thresholds)
-    regressions = score.detect_regressions(summary["judges"], config.thresholds,
+    thresholds = _strip_simulator_thresholds(config.thresholds)
+    regressions = score.detect_regressions(summary["judges"], thresholds,
                                            include_irr=False)
     if regressions:
         print(f"REGRESSIONS: {len(regressions)} detected", file=sys.stderr)
