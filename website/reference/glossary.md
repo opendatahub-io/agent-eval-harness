@@ -48,7 +48,7 @@ flowchart LR
 | Term | Definition | More |
 | --- | --- | --- |
 | **Judge** | A scorer applied to each case. Five types by which field is set: `builtin`, inline `check` (Python), LLM (`prompt`/`prompt_file`/`llm_rubric`), tool-using `agent` (`agent:` block), or external `module`/`function`. | [Judges](../concepts/judges.md) · [judges config](config/judges.md) |
-| **Threshold** | A per-judge regression gate. Valid keys: `min_mean`, `min_pass_rate`, `min_win_rate`, and `max_error_rate` (the one *maximum* — an opt-in coverage gate). | [Thresholds](../concepts/thresholds.md) · [thresholds config](config/thresholds.md) |
+| **Threshold** | A per-judge regression gate. Seven valid keys: `min_mean`, `min_pass_rate`, `min_win_rate`, `max_error_rate` (the one *maximum* — an opt-in coverage gate), `min_alpha`, `min_human_agreement`, and `min_panel_alpha`, plus the reserved `simulator` mapping key (`max_fallback_rate`, `min_gold_agreement`, `min_cross_simulator_agreement`). | [Thresholds](../concepts/thresholds.md) · [thresholds config](config/thresholds.md) |
 | **Reward** | Optional collapse of per-judge results into a single scalar in `[0, 1]` for RL training (GRPO) — either a single `judge` or a `formula` (`weighted` or a Python expression), with optional `gate`. | [Reward API](../concepts/reward-api.md) · [reward config](config/reward.md) |
 
 ## Data provenance and capture
@@ -60,6 +60,27 @@ flowchart LR
 | **Trace** | The execution record captured per case (stdout, stderr, parsed events, metrics) per the `traces` block, made available to judges and optionally logged to MLflow. | [Tracing](../concepts/tracing.md) · [traces config](config/traces.md) |
 | **Tool interception** | Headless handling of tools the agent would otherwise block on: `inputs.tools[].match` describes what to intercept, `prompt` how to answer it. | [Tool interception](../concepts/tool-interception.md) · [inputs.tools config](config/inputs-tools.md) |
 | **`case_overrides`** | The first, exact-match tier of AskUserQuestion answering during tool interception (exact `case_overrides` → LLM call via `models.hook` → static fallback). | [Tool interception](../concepts/tool-interception.md) |
+
+## Measurement validity & reliability
+
+Seven terms that sound alike and measure different things. The narrative that
+ties them together is [Measurement validity](../concepts/measurement-validity.md).
+
+| Term | Definition | More |
+| --- | --- | --- |
+| **stability** | The raw within-run exact-match agreement of a sampled judge (`stable` = every sample identical, none errored). Uncorrected for chance, and blind to *how far apart* disagreeing samples are. | [Pairwise & sampling](../concepts/pairwise-and-sampling.md) |
+| **`stability.irr`** | The chance-corrected coefficient over the same case × sample matrix: the **single-judge self-consistency alpha (upper bound on inter-rater reliability)** — a judge can agree perfectly with itself and still be biased. Gated by `min_alpha`. | [thresholds config](config/thresholds.md#min_alpha-the-reliability-gate) |
+| **panel** | Cross-model inter-judge agreement: Krippendorff's alpha over the cases × models matrix of a [judge panel](config/judges.md#judge-panels-cross-family-ensembles) (`judges[].model` as a list), each model's reduced verdict acting as one rater. Gated by `min_panel_alpha`. | [judges config](config/judges.md#judge-panels-cross-family-ensembles) |
+| **`human_agreement`** | Criterion validity against a **single human reviewer**: the judge-vs-human kappa/alpha merged by `score.py calibration` from `/eval-review` verdicts. Gated by `min_human_agreement`. | [/eval-review](../guides/eval-review.md#calibration-anchor-your-judges-to-a-human) |
+| **simulator calibration** | The V2 (simulated-user) check: `inputs.tools[].calibration: true` shadow-runs the LLM answering tier **held out** on every override-answered question and compares it to the human-authored override. Aggregated into `summary['simulator']`, gated by the reserved `thresholds.simulator` key. | [inputs.tools config](config/inputs-tools.md) |
+| **`cross_simulator`** | Simulator-choice sensitivity: how often [`models.hook_shadow`](config/models.md#hook_shadow) shadow models answer intercepted questions exactly like the primary hook. Gated by `min_cross_simulator_agreement`. | [models config](config/models.md#hook_shadow) |
+| **clarity** | Instrument clarity (`score.py clarity`): can several rater models apply the judge's rubric consistently at all? A property of the rubric, **not** rater validity — a clear rubric can still measure the wrong thing. | [judges config](config/judges.md#instrument-clarity-diagnostic) |
+
+!!! note "Two unrelated 'calibrations'"
+    **Simulator calibration** (`inputs.tools[].calibration`, above) measures the
+    simulated *user*; **judge calibration** (`score.py calibration` →
+    `human_agreement`) measures the *judges* against a human reviewer. Same word,
+    different layer.
 
 ## See also
 

@@ -1,5 +1,12 @@
 # Implementation plan — Measurement-Validity Program (arXiv 2608.00794)
 
+> **Status (2026-08-21): complete — all 11 commits (PR1–PR11) landed on
+> `feat/measurement-validity`.** Deferred follow-ups (out of program scope, per
+> the amendments below): v1-3 construct-fidelity screen; pairwise verdict-alpha
+> + `min_pairwise_alpha`; cross-replication ICC
+> (`agent_eval/anova/stats/test_retest.py`); simulator `samples: k`
+> self-consistency draws.
+
 ## Context
 
 `docs/paper-validity-analysis.md` (committed to the repo working tree, untracked) maps the paper

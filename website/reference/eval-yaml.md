@@ -372,7 +372,7 @@ thresholds:
 - [**inputs.tools**](config/inputs-tools.md) — tool interception handlers
 - [**outputs**](config/outputs.md) — path vs tool, schema, batch_pattern, types
 - [**traces**](config/traces.md) — stdout, stderr, events, metrics
-- [**hooks**](config/hooks.md) — before/after all/each, before_scoring
+- [**hooks**](config/hooks.md) — before/after all/each/step, before_scoring, before_report
 - [**judges**](config/judges.md) — the five judge types and all fields
 - [**thresholds**](config/thresholds.md) — min_mean, min_pass_rate, min_win_rate, max_error_rate, min_alpha, min_human_agreement, min_panel_alpha, plus the reserved `simulator` mapping key
 - [**reward**](config/reward.md) — single-judge and formula reward modes

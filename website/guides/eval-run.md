@@ -198,6 +198,12 @@ Aggregation is by value type: **boolean** judges become a `pass_rate` (fraction 
 `per_case`. LLM judges can be sampled `N` times (`samples:`) — bool judges reduce by
 majority vote, numeric by median. See [pairwise & sampling](../concepts/pairwise-and-sampling.md).
 
+Scoring also asks how much the scores can be trusted: sampled judges get a
+chance-corrected self-consistency coefficient (`stability.irr`), intercepted
+runs get simulator statistics, and the report carries a Validity & Reliability
+section — all opt-in and gated through the same `thresholds` block. See
+[Measurement validity](../concepts/measurement-validity.md).
+
 !!! tip "Baseline → pairwise comparison"
     `--baseline <run-id>` triggers a **position-swapped** pairwise judge on top of the
     regular judges: each case is judged both A/B and B/A, and only a consistent preference

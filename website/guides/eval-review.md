@@ -136,6 +136,13 @@ ordinal/interval scales) into each judge's `summary.yaml` entry, plus a run-leve
 [`min_human_agreement` threshold](../reference/config/thresholds.md) then gates CI
 on it.
 
+!!! note "Not to be confused with simulator calibration"
+    `score.py calibration` calibrates the **judges** against a human reviewer.
+    The unrelated [`inputs.tools[].calibration`](../reference/config/inputs-tools.md)
+    flag calibrates the **simulated user** (the AskUserQuestion answering hook)
+    against human-authored overrides. Same word, different validity layer — see the
+    [glossary](../reference/glossary.md#measurement-validity-reliability).
+
 Semantics to be aware of:
 
 - Every coefficient is labeled **"agreement with a single human reviewer (n=X)"**

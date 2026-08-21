@@ -218,6 +218,25 @@ Semantics:
 Pairwise comparison remains single-model: a list normalizes to its first
 entry there. Panels multiply judge cost — `models × samples × cases` calls.
 
+## Instrument clarity (diagnostic)
+
+`score.py clarity` asks a prior question to any agreement coefficient: **does
+the rubric even admit consistent application?** (paper Sec 10.2). It has m
+rater models re-rate a deterministic case subsample (up to `--max-cases`,
+default 20) with each LLM judge's **own rubric**, and compares the m-way
+chance-corrected alpha against the 0.67 exploratory floor:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/score.py clarity \
+  --run-id <id> --config eval.yaml --raters m1,m2[,m3]
+```
+
+At least 2 distinct rater models are required (all-one-family raters warn);
+results merge into `summary['clarity']` and render as a report badge. This is
+**instrument clarity, not rater validity** — a clear rubric can still measure
+the wrong thing — and it is report-only, never a CI gate. Re-running
+`score.py judges` stales it; re-run the subcommand after re-scoring.
+
 ## Agent judges
 
 An `agent:` block turns an LLM judge into a **tool-using agent judge**. Instead of a

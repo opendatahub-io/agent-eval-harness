@@ -125,6 +125,13 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/orchestrate.py --config eval.yaml --analyze-
     **upper bound** (`≤ $X`); failing that, it tells you to supply one rather
     than silently printing `$0`.
 
+!!! warning "`judges[].samples` multiplies judge cost across every cell"
+    Matrix cells inherit `eval.yaml` unchanged, so a judge with `samples: k`
+    (or a [panel](../reference/config/judges.md#judge-panels-cross-family-ensembles)
+    of m models) pays k× (or k×m×) judge calls in **every**
+    condition × replication — and the cost estimator does **not** model judge
+    sampling. Budget for it separately.
+
 ## How it works
 
 ```mermaid
@@ -221,6 +228,13 @@ downstream model-comparison CI uses: fan out `/eval-run`, then analyze + compare
       so the ANOVA is skipped with a note (expected, not a bug).
     - **Small-N has low power.** More cases and replications buy sensitivity, but
       at multiplicative cost. Treat a single sweep as *screening*, not proof.
+    - **Reliability gates run per cell, not per matrix.** A cell whose run trips
+      [`min_alpha`](../reference/config/thresholds.md#min_alpha-the-reliability-gate)
+      (or any threshold) still produces a full `summary.yaml` — the regression
+      affects that `/eval-run`'s exit code, and `--analyze-only` aggregates the
+      cell regardless. Per-judge reliability (`stability.irr`, `panel`,
+      `human_agreement`) lives in each run's `summary.yaml`; a cross-replication
+      ICC over the matrix is an explicitly deferred follow-up.
 
 ## Where to go next
 

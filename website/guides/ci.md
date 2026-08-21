@@ -31,8 +31,9 @@ flowchart TD
 
 ## Thresholds
 
-`thresholds` is a top-level map of **judge name → gate**. Each gate sets one or more of
-four keys; a run regresses if the matching aggregate misses its bound.
+`thresholds` is a top-level map of **judge name → gate**. Each gate sets one or more
+keys; a run regresses if the matching aggregate misses its bound. The four
+score-quality keys:
 
 | Key | Applies to | Aggregate compared | Passes when |
 | --- | --- | --- | --- |
@@ -40,6 +41,10 @@ four keys; a run regresses if the matching aggregate misses its bound.
 | `min_mean` | numeric judges (e.g. 1–5 LLM scores) | `mean` (average value across cases) | `mean >= min_mean` |
 | `min_win_rate` | a pairwise judge (needs `--baseline`) | `win_rate` | `win_rate >= min_win_rate` |
 | `max_error_rate` | any judge (opt-in) | fraction of cases where the judge errored | `error_rate <= max_error_rate` |
+
+Three more keys (`min_alpha`, `min_human_agreement`, `min_panel_alpha`) and the
+reserved `simulator` mapping key gate **measurement quality** rather than score
+quality — [worked examples below](#reliability-and-validity-gates).
 
 ```yaml title="eval.yaml (excerpt)"
 judges:
@@ -64,6 +69,131 @@ thresholds:
     for every case (its `if:` condition, or it errored), or the key targets the wrong
     judge type (e.g. `min_pass_rate` on a numeric judge, whose `pass_rate` is always
     `None`). Match the key to the judge's value type.
+
+## Reliability and validity gates
+
+Beyond score floors, the same mechanism gates **how trustworthy the measurement
+is** (see [Measurement validity](../concepts/measurement-validity.md) for the
+concepts). All of these follow the same three-state rule: a breach regresses, a
+perfect-agreement degenerate (all ratings identical) passes, and a
+configured-but-unavailable metric regresses.
+
+### Judge self-consistency — `min_alpha` and `consequence` tiers
+
+Gate a sampled judge's **single-judge self-consistency alpha (an upper bound on
+inter-rater reliability)** — either explicitly, or by tagging the judge with the
+stakes of its verdict:
+
+```yaml
+judges:
+  - name: output_quality
+    feedback_type: int
+    score_range: [1, 5]
+    samples: 3                    # min_alpha needs a sampling matrix
+    prompt: "Score the output 1-5 for completeness, clarity, and accuracy."
+  - name: safety_check
+    llm_rubric: "The output contains no destructive commands."
+    feedback_type: bool
+    samples: 3
+    consequence: safety           # injects min_alpha: 0.70 at detection time
+
+thresholds:
+  output_quality:
+    min_mean: 3.5
+    min_alpha: 0.67               # explicit bound (always wins over a tier)
+```
+
+`consequence: exploratory|safety|gating` injects a default `min_alpha` of
+0.67/0.70/0.80 without writing one (only 0.67 is literature-backed; 0.70 and
+0.80 are author-proposed). A consequence-tagged judge that cannot produce IRR
+data (`samples: 1`, deterministic, builtin LLM) warns at config load — fix the
+config rather than shipping a gate that always regresses.
+
+### Human calibration — `min_human_agreement`
+
+After [`/eval-review --calibrate`](eval-review.md#calibration-anchor-your-judges-to-a-human)
+and `score.py calibration`, gate the judge-vs-human agreement:
+
+```yaml
+thresholds:
+  output_quality:
+    min_human_agreement: 0.6      # kappa/alpha vs a single human reviewer
+```
+
+This gate is **post-hoc**: a judge that was never calibrated is silently
+skipped, so the gate only binds once a review exists. But a **stale**
+calibration is loud — re-running `score.py judges` drops `human_agreement`
+while the run-level `human_calibration` block still lists the judge, and that
+mismatch is reported as a *"stale calibration — re-run score.py calibration"*
+regression rather than a silent skip.
+
+### Judge panels — `min_panel_alpha`
+
+For a [panel judge](../reference/config/judges.md#judge-panels-cross-family-ensembles)
+(`model:` is a list), gate the cross-model agreement:
+
+```yaml
+judges:
+  - name: task_quality
+    model: [claude-opus-4-6, gemini-2.5-pro]   # non-Anthropic via gateway alias
+    score_range: [1, 5]
+    prompt: "Score the output 1-5."
+
+thresholds:
+  task_quality:
+    min_panel_alpha: 0.67
+```
+
+### The simulated user — `thresholds.simulator` and `simulator_provenance`
+
+Two complementary gates on the AskUserQuestion simulator. The
+[`simulator_provenance` builtin judge](../reference/builtin-judges.md#processsimulator_provenance)
+gates per-case answer **provenance** (an ordinary judge threshold), while the
+reserved `simulator` mapping key gates the run-level **calibration/agreement**
+statistics:
+
+```yaml
+judges:
+  - name: simulator_provenance
+    builtin: simulator_provenance
+
+thresholds:
+  simulator_provenance:
+    min_pass_rate: 1.0            # no case may run on fallback/unrecorded answers
+  simulator:                      # RESERVED key — gates summary['simulator'], not a judge
+    max_fallback_rate: 0.0        # no arbitrary answers at all
+    min_gold_agreement: 0.8       # held-out shadow vs human-authored overrides
+                                  # (needs inputs.tools[].calibration: true +
+                                  #  human-provenance case_overrides)
+    min_cross_simulator_agreement: 0.9   # needs models.hook_shadow
+```
+
+!!! note "Where these gates bind: local scoring only"
+    `min_alpha`, `min_panel_alpha`, and the reserved `simulator` block are
+    evaluated on the **local scoring path only**. Harbor and EvalHub
+    aggregations carry no per-sample stability data and no hook ledgers, so on
+    those paths the IRR gates are skipped and `thresholds.simulator` is
+    stripped — each with a stderr notice, never a regression.
+    `min_human_agreement` only ever binds after a local `score.py calibration`.
+    A containerized CI job that needs these gates should collect the run and
+    re-check locally (`score.py regression`). Score floors (`min_mean`,
+    `min_pass_rate`, `min_win_rate`, `max_error_rate`) bind on every path.
+
+### Dataset revisions — the null-agent probe
+
+When a PR touches the **dataset** (or the judges), add a
+[null-agent solvability probe](eval-dataset.md#null-agent-solvability-probe) as
+its own CI step: a do-nothing agent runs the suite, and any case it passes is
+non-discriminative (the task or judge, jointly, cannot tell work from no-op).
+The audit exits `0` by default (findings, not verdicts); `--fail-on-null-pass`
+makes it a gate:
+
+```bash
+# after executing the suite with --agent null and scoring with --samples 3
+python3 skills/eval-dataset/scripts/audit_dataset.py --config eval.yaml \
+  --null-run "$AGENT_EVAL_RUNS_DIR/<eval-name>/$NULL_RUN_ID" \
+  --fail-on-null-pass          # exit 1 if any case passes with a do-nothing agent
+```
 
 ## Exit-code behavior
 
@@ -193,9 +323,17 @@ jobs:
 
     ---
 
-    The full reference for `min_mean`, `min_pass_rate`, `min_win_rate`, and `max_error_rate`.
+    The full reference for all seven per-judge keys and the reserved `simulator` block.
 
     [:octicons-arrow-right-24: thresholds reference](../reference/config/thresholds.md)
+
+-   :material-shield-check: **Measurement validity**
+
+    ---
+
+    The concepts behind the reliability gates — the three-layer validity model.
+
+    [:octicons-arrow-right-24: measurement validity](../concepts/measurement-validity.md)
 
 -   :material-scale-balance: **Pairwise & sampling**
 

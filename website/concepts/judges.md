@@ -285,11 +285,34 @@ judges:
     model: claude-sonnet-4-6  # overrides models.judge for this judge only
 ```
 
+A per-judge `model:` may also be a **list** of 2–4 ids — a
+[judge panel](../reference/config/judges.md#judge-panels-cross-family-ensembles):
+the call fans out per model, each model's verdicts reduce first, and the
+per-model verdicts become raters in a cross-model agreement coefficient
+(gate it with `min_panel_alpha`).
+
 !!! tip "Sampling stochastic judges"
     Only LLM judges are stochastic. Set `samples: N` (or `--samples N` on the CLI) to
     run a judge N times per case and reduce — median for numeric, majority vote for
     boolean — surfacing stability in the report. See
     [pairwise & sampling](pairwise-and-sampling.md).
+
+## Reliability: how much to trust a judge
+
+Two opt-in fields ask the reliability question explicitly (see
+[Measurement validity](measurement-validity.md) for the full story):
+
+- **`consequence: exploratory|safety|gating`** tags a judge with the stakes of
+  its verdict and injects a default `min_alpha` threshold (0.67/0.70/0.80 — an
+  explicit `min_alpha` always wins) on its **single-judge self-consistency
+  alpha (an upper bound on inter-rater reliability)**, computed when the judge
+  runs with `samples > 1`.
+- **`model:` as a list** (a panel, above) measures cross-model agreement
+  instead of self-agreement — gate it with `min_panel_alpha`.
+
+Both feed the report's [Validity & Reliability
+section](../get-started/reading-the-report.md#validity-reliability) and the
+[reliability threshold keys](thresholds.md).
 
 ## See also
 

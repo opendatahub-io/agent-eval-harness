@@ -126,6 +126,10 @@ Because the section reflects measurement quality, the **mean** values in the
 Scoring Summary are capped at two decimals and carry a tooltip pointing here —
 more digits would claim precision the sample size cannot back.
 
+The concepts behind this section — the three-layer validity model, what each
+coefficient does and does not claim, and how to enable the full stack — are on
+[Measurement validity](../concepts/measurement-validity.md).
+
 ### Regressions
 
 Rendered **only when a threshold is breached** — a compact table of every judge

@@ -84,6 +84,16 @@ also works over runs produced elsewhere (e.g. a CI fan-out of `/eval-run`).
 ## Notes
 - Use current model IDs (Opus 4.8 `claude-opus-4-8`, Sonnet 4.6 `claude-sonnet-4-6`,
   Haiku 4.5 `claude-haiku-4-5-20251001`).
+- **`judges[].samples` multiplies judge cost across every cell.** Matrix cells inherit
+  eval.yaml unchanged, so `samples: k` (and a `judges[].model` panel's m models) runs
+  k× (or k×m×) judge calls in every condition × replication — and the `--dry-run` cost
+  estimator does **not** model judge sampling. Budget for it separately.
+- **Reliability gates run per cell.** A cell whose run trips `min_alpha` (or any other
+  threshold) still writes a full `summary.yaml`; the regression only affects that
+  `/eval-run`'s exit code — `--analyze-only` aggregates the cell regardless. Per-judge
+  reliability (`stability.irr`, `panel`, `human_agreement`) lives in each run's
+  `summary.yaml`; a cross-replication ICC over the matrix is an explicitly deferred
+  follow-up.
 - Repeated-measures ANOVA assumes the SAME cases run under every condition (it blocks on case
   difficulty). Keep your case set fixed across conditions.
 - Sanity-check scoring first: if most cells are 0.0, the grader/judge is probably misconfigured

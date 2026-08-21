@@ -15,9 +15,9 @@ thresholds:
 Each key under `thresholds` is a **judge name**; each value is a dict of one or more
 threshold checks.
 
-## The four threshold keys
+## The seven threshold keys
 
-Three of the keys are *minimums* — the run passes when the metric is `>=` the value.
+All keys but one are *minimums* — the run passes when the metric is `>=` the value.
 `max_error_rate` is the exception: it is a *maximum*, and passes when the error rate is
 `<=` the value. Either way a metric exactly equal to its threshold passes. Which key you
 use must match the **value type the judge produces**.
@@ -28,6 +28,20 @@ use must match the **value type the judge produces**.
 | `min_mean` | Numeric (a score on the judge's `score_range`) | Mean score across cases | matches the score scale |
 | `min_win_rate` | [Pairwise](pairwise-and-sampling.md) | Win rate vs. a baseline run | `0.0`–`1.0` |
 | `max_error_rate` | Any judge | Fraction of cases where the judge errored | `0.0`–`1.0` |
+| `min_alpha` | Sampled LLM/agent judge (`samples > 1`) | Single-judge self-consistency alpha (upper bound on inter-rater reliability) over the case × sample matrix | `≤ 1.0` |
+| `min_human_agreement` | Any judge calibrated by `score.py calibration` | Judge-vs-human kappa/alpha from `/eval-review` verdicts | `≤ 1.0` |
+| `min_panel_alpha` | [Panel judge](../reference/config/judges.md#judge-panels-cross-family-ensembles) (`model` is a list) | Cross-model panel alpha over the cases × models matrix | `≤ 1.0` |
+
+The mapping key `simulator` is **reserved** — `thresholds.simulator` gates the
+run-level simulated-user block (`max_fallback_rate`, `min_gold_agreement`,
+`min_cross_simulator_agreement`), never a judge. The three reliability keys and
+the reserved block are covered in depth in the
+[thresholds reference](../reference/config/thresholds.md) and put in context in
+[Measurement validity](measurement-validity.md); a judge's
+`consequence: exploratory|safety|gating` tag injects a default `min_alpha`
+(0.67/0.70/0.80) without writing one. All of these evaluate on the **local
+scoring path only** — Harbor/EvalHub aggregation carries no per-sample or ledger
+data, so the reliability and simulator gates are skipped there with a notice.
 
 !!! note "How aggregates are derived"
     The harness aggregates each judge across all cases before checking thresholds:
@@ -78,11 +92,12 @@ that is *not* silently ignored.
     `max_error_rate` is off unless declared, so this is opt-in: one flaky judge run
     should not fail a suite by default.
 
-!!! tip "Unknown keys and unknown judges are silently ignored"
-    Thresholds are stored as-is at config load — there is no key-name validation. A typo
-    like `min_pass` (instead of `min_pass_rate`) simply does nothing, and a threshold
-    naming a judge that doesn't exist in the results is skipped. Only the four keys above
-    are honored.
+!!! tip "Unknown keys warn; unknown judges are skipped"
+    A typo like `min_pass` (instead of `min_pass_rate`) is not honored — config load
+    prints a warning naming the valid keys, and the entry does nothing. A threshold
+    naming a judge that doesn't exist in the results is silently skipped. Only the seven
+    keys above (plus the reserved `simulator` mapping key) are honored; `*_alpha` /
+    `*_agreement` values must be finite numbers ≤ 1.0.
 
 ## How detection works
 

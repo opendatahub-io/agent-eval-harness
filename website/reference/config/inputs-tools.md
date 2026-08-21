@@ -27,6 +27,13 @@ That is the complete authoring surface — the `ToolInputConfig` dataclass in
 parses only `match`, `prompt`, `prompt_file`, and `calibration`. Everything else
 in the runtime artifact is **derived**, not declared.
 
+!!! note "`calibration` here is *simulator* calibration"
+    Not to be confused with `score.py calibration`, which calibrates the
+    **judges** against a human reviewer
+    ([/eval-review](../../guides/eval-review.md#calibration-anchor-your-judges-to-a-human)).
+    This flag measures the simulated *user* — see the
+    [glossary](../glossary.md#measurement-validity-reliability).
+
 ```yaml title="eval.yaml"
 inputs:
   tools:

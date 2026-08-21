@@ -11,13 +11,13 @@ afterwards. Each phase is a list of hook entries executed in order.
     which rewrites tool calls *inside* the agent. Two different mechanisms — this
     page is only about the pipeline lifecycle hooks.
 
-## The six phases
+## The eight phases
 
 ```mermaid
 flowchart TD
     A[before_all] --> B{for each case}
     B --> C[before_each]
-    C --> D[agent invocation]
+    C --> D["agent invocation<br/>(before_step / after_step<br/>wrap each execution.steps step)"]
     D --> E[after_each]
     E --> B
     B -->|all cases done| F[before_scoring]
@@ -30,10 +30,20 @@ flowchart TD
 | --- | --- | --- | --- |
 | `before_all` | Once, before any case executes | Project root | Aborts the run |
 | `before_each` | Before each case invocation | Case workspace | Aborts the run |
+| `before_step` | Before each step of a multi-step case ([`execution.steps`](execution.md) only) | Case workspace | Aborts the remaining steps |
+| `after_step` | After each step (guaranteed, even on error; multi-step only) | Case workspace | Always continues |
 | `after_each` | After each case (guaranteed, even on error) | Case workspace | Always continues |
 | `before_scoring` | Once, after all cases, before judges | Project root | Aborts scoring |
 | `after_all` | Once, after everything (guaranteed) | Project root | Always continues |
 | `before_report` | Once, during report generation (after `analysis.md`, before HTML render) | Project root | Always continues (`run_hooks_safe`) |
+
+!!! note "Step hooks only fire for multi-step cases"
+    `before_step` / `after_step` run only when the case executes an
+    [`execution.steps`](execution.md) sequence — single-invocation cases never
+    trigger them. The hook env carries `STEP_ID` and `STEP_INDEX` (and
+    `STEP_EXIT_CODE` in `after_step`), so one global hook can target a single
+    step via its `condition`. On [Harbor](../../guides/harbor.md), `after_step`
+    hooks are local-only.
 
 !!! note "Guaranteed cleanup phases"
     `after_each` and `after_all` run inside a `finally` block, so they fire even
@@ -75,9 +85,10 @@ hooks:
 ```
 
 !!! warning "Per-case hooks are ignored in batch mode"
-    `before_each` / `after_each` only fire in **case** (and prompt) mode, where
-    the harness loops over cases. In `execution.mode: batch` — one invocation for
-    all cases — they are dropped, and the config loader emits a warning:
+    `before_each` / `after_each` / `before_step` / `after_step` only fire in
+    **case** (and prompt) mode, where the harness loops over cases. In
+    `execution.mode: batch` — one invocation for all cases — they are dropped,
+    and the config loader emits a warning:
 
     ```text
     hooks.before_each, after_each ignored in batch mode
@@ -103,6 +114,8 @@ variables:
 | `CASE_WORKSPACE` | `before_each` / `after_each` | Absolute path to this case's workspace |
 | `CASE_SOURCE_DIR` | `before_each` / `after_each` | The case's source directory under `dataset.path` |
 | `CASE_INPUT` | `before_each` / `after_each` | Absolute path to the case's `input.yaml` |
+| `STEP_ID` / `STEP_INDEX` | `before_step` / `after_step` | The step's id and 1-based index (plus the `CASE_*` variables) |
+| `STEP_EXIT_CODE` | `after_step` | The step's exit code (`1` if the step never produced a result) |
 
 `condition` commands receive the same environment, so you can guard a hook on a
 case:

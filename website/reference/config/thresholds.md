@@ -122,7 +122,9 @@ a `human_agreement` block into the judge's `summary.yaml` entry — labeled
 *"agreement with a single human reviewer (n=X)"*, never validated accuracy.
 Below 5 joined pairs no coefficient is computed; the block carries the raw
 (uncorrected) agreement table instead. Deterministic `check` judges are
-first-class calibration targets.
+first-class calibration targets. (Not to be confused with
+[`inputs.tools[].calibration`](inputs-tools.md), which calibrates the
+*simulated user*, not the judges.)
 
 Calibration is **post-hoc**, so the gate has three states:
 
@@ -157,6 +159,13 @@ Calibration is **post-hoc**, so the gate has three states:
 `simulator` cannot be a judge name: a judge called `simulator` next to a
 `thresholds.simulator` block is a **load error**; without the block it loads
 with a `DeprecationWarning` telling you to rename the judge.
+
+Not to be confused with the
+[`simulator_provenance`](../builtin-judges.md#processsimulator_provenance)
+**builtin judge**: that judge gates per-case answer *provenance* (no
+fallback/unrecorded answers) under an ordinary
+`thresholds.simulator_provenance.min_pass_rate` entry, while this reserved
+block gates the run-level *calibration and agreement* statistics.
 
 Three sub-keys (anything else warns at load and is ignored):
 

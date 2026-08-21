@@ -190,6 +190,7 @@ nav:
     - "Pairwise & judge sampling": concepts/pairwise-and-sampling.md
     - "Analysis of variance (ANOVA)": concepts/anova.md
     - "Regression thresholds": concepts/thresholds.md
+    - "Measurement validity": concepts/measurement-validity.md
     - "The Reward API": concepts/reward-api.md
     - "Tool interception": concepts/tool-interception.md
     - "Lifecycle hooks": concepts/lifecycle-hooks.md

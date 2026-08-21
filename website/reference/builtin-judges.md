@@ -180,6 +180,12 @@ records but skips per-case coverage counting and labels the rationale as run-lev
     calibration. Blind spot: a hook killed from outside is pass-through and cannot
     write a record; the missing-ledger check is its detectable signature.
 
+    Not to be confused with the reserved
+    [`thresholds.simulator`](config/thresholds.md#the-reserved-simulator-key)
+    mapping key, which gates the run-level simulator *calibration/agreement*
+    block (`max_fallback_rate`, `min_gold_agreement`,
+    `min_cross_simulator_agreement`) rather than per-case provenance.
+
 !!! note "Bool judges gate the default reward"
     Adding this judge gates the default reward composition — a fallback-answered
     case scores 0. Teams using eval-anova composites or RL rewards should exclude
