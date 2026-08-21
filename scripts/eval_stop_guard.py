@@ -70,14 +70,22 @@ Environment
   180; ``0`` disables the ceiling and blocks until the task ends).
 """
 
+import hashlib
 import json
 import os
-import re
+import stat
 import sys
 import time
 
 TERMINAL_STATUSES = {"completed", "failed", "killed", "stopped", "cancelled"}
 DEFAULT_MAX_MIN = 180
+STATE_DIRNAME = "agent-eval-stop-guard"
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+# Sentinel: no durable first-block timestamp exists and one cannot be written.
+# Distinct from a real timestamp so main() can fail open instead of treating a
+# state-write failure as "elapsed ~= 0" and blocking the session forever.
+_PERSIST_FAILED = object()
 
 
 def _truthy(value):
@@ -108,6 +116,50 @@ def _max_seconds():
         return DEFAULT_MAX_MIN * 60
 
 
+def _transcript_root():
+    """Directory tree Claude Code keeps session transcripts under.
+
+    Transcripts live beneath ``${CLAUDE_CONFIG_DIR:-~/.claude}``. Confining
+    reads to this root stops a crafted ``transcript_path`` on hook stdin from
+    pointing the guard at an arbitrary file (CWE-22). Returns ``None`` if the
+    root can't be resolved, in which case the caller fails open.
+    """
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(
+        os.path.expanduser("~"), ".claude")
+    try:
+        return os.path.realpath(base)
+    except OSError:
+        return None
+
+
+def _within(root, path):
+    """True if ``path`` resolves to a location inside ``root`` (no symlink escape)."""
+    if not root:
+        return False
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        return False
+    return real == root or real.startswith(root + os.sep)
+
+
+def _open_read_nofollow(path):
+    """Open ``path`` for reading, refusing a final-component symlink.
+
+    Returns a text file object, or ``None`` on any failure (missing file, a
+    symlink swapped in via TOCTOU, permission error, …).
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | _NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        return os.fdopen(fd, encoding="utf-8", errors="replace")
+    except OSError:
+        os.close(fd)
+        return None
+
+
 def _live_background_tasks(transcript_path):
     """Reconstruct the set of still-running background tasks from the transcript.
 
@@ -115,12 +167,16 @@ def _live_background_tasks(transcript_path):
     not reached a terminal status, or ``None`` if the transcript cannot be read
     (caller fails open in that case).
     """
-    if not transcript_path or not os.path.isfile(transcript_path):
+    if not transcript_path or not _within(_transcript_root(), transcript_path):
+        return None
+
+    fh = _open_read_nofollow(transcript_path)
+    if fh is None:
         return None
 
     live = {}
     try:
-        with open(transcript_path, encoding="utf-8", errors="replace") as fh:
+        with fh:
             for line in fh:
                 line = line.strip()
                 if not line:
@@ -158,33 +214,95 @@ def _live_background_tasks(transcript_path):
     return live
 
 
-def _state_path(session_id):
+def _state_key(session_id, transcript_path):
+    """Stable, collision-resistant per-session key for the escape-hatch timer.
+
+    Prefer ``session_id``; fall back to the transcript path (also per-session)
+    when it is absent. Returns ``None`` when neither identity exists — the
+    caller then fails open rather than sharing one ``default`` file across
+    unrelated sessions, where one session could clear or inherit another's timer.
+    """
+    ident = session_id or transcript_path
+    if not ident:
+        return None
+    return hashlib.sha256(ident.encode("utf-8", "replace")).hexdigest()
+
+
+def _state_dir():
+    """Plugin-owned ``0700`` directory for guard state, or ``None`` if it can't
+    be secured.
+
+    Kept private and non-symlinked so a shared ``TMPDIR`` can't be used to make
+    the hook follow an attacker-planted symlink onto another file (CWE-59/377).
+    """
     tmp = os.environ.get("TMPDIR") or "/tmp"
-    safe = re.sub(r"[^A-Za-z0-9._-]", "_", session_id or "default")
-    return os.path.join(tmp, f"agent-eval-stop-guard-{safe}.json")
-
-
-def _first_block_ts(session_id, now):
-    """Return when this session first blocked, recording ``now`` if new."""
-    path = _state_path(session_id)
+    path = os.path.join(tmp, STATE_DIRNAME)
     try:
-        with open(path, encoding="utf-8") as fh:
-            ts = json.load(fh).get("first_block")
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        info = os.lstat(path)
+    except OSError:
+        return None
+    # Refuse a symlink, a non-directory, or a directory owned by someone else.
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        return None
+    if hasattr(os, "getuid") and info.st_uid != os.getuid():
+        return None
+    try:
+        os.chmod(path, 0o700)  # tighten in case it pre-existed with looser bits
+    except OSError:
+        return None
+    return path
+
+
+def _state_path(session_id, transcript_path):
+    key = _state_key(session_id, transcript_path)
+    if not key:
+        return None
+    directory = _state_dir()
+    if not directory:
+        return None
+    return os.path.join(directory, f"{key}.json")
+
+
+def _first_block_ts(path, now):
+    """When this session first blocked, recording ``now`` if new.
+
+    Returns ``_PERSIST_FAILED`` when no durable timestamp exists and one cannot
+    be written, so the caller can fail open instead of letting a state-write
+    failure block the session forever (each later Stop would otherwise see
+    ``elapsed ~= 0``).
+    """
+    if not path:
+        return _PERSIST_FAILED
+
+    fh = _open_read_nofollow(path)
+    if fh is not None:
+        try:
+            with fh:
+                ts = json.load(fh).get("first_block")
             if isinstance(ts, (int, float)):
                 return ts
-    except (OSError, ValueError, TypeError):
-        pass
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+
+    # No usable timestamp yet — create one with no-follow, 0600 semantics.
     try:
-        with open(path, "w", encoding="utf-8") as fh:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _NOFOLLOW, 0o600)
+    except OSError:
+        return _PERSIST_FAILED
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump({"first_block": now}, fh)
     except OSError:
-        pass
+        return _PERSIST_FAILED
     return now
 
 
-def _clear_state(session_id):
+def _clear_state(path):
+    if not path:
+        return
     try:
-        os.remove(_state_path(session_id))
+        os.remove(path)
     except OSError:
         pass
 
@@ -196,22 +314,35 @@ def main():
         payload = {}
 
     session_id = payload.get("session_id")
+    transcript_path = payload.get("transcript_path")
+    state_path = _state_path(session_id, transcript_path)
 
     if not _guard_enabled():
-        _clear_state(session_id)
+        _clear_state(state_path)
         return 0  # allow stop
 
-    live = _live_background_tasks(payload.get("transcript_path"))
+    live = _live_background_tasks(transcript_path)
     # Fail open if we could not read the transcript, or nothing is running —
     # better to let the agent stop than to hang a session we can't reason about.
     if not live:
-        _clear_state(session_id)
+        _clear_state(state_path)
         return 0
 
     now = time.time()
     max_s = _max_seconds()
     if max_s > 0:
-        elapsed = now - _first_block_ts(session_id, now)
+        first = _first_block_ts(state_path, now)
+        if first is _PERSIST_FAILED:
+            # Can't durably track elapsed time (no session identity or an
+            # unwritable state dir). Fail open rather than risk blocking forever.
+            print(
+                "eval_stop_guard: cannot persist the escape-hatch timer; "
+                "allowing stop rather than risk hanging the session. A "
+                "background task may still be running and the eval incomplete.",
+                file=sys.stderr,
+            )
+            return 0  # allow stop
+        elapsed = now - first
         if elapsed > max_s:
             desc = next(iter(live.values()), "") or "a background task"
             print(
@@ -222,7 +353,7 @@ def main():
                 "may be incomplete. Tune with AGENT_EVAL_STOP_GUARD_MAX_MIN.",
                 file=sys.stderr,
             )
-            _clear_state(session_id)
+            _clear_state(state_path)
             return 0  # allow stop
 
     # Small courtesy pause so repeated block -> stop cycles don't churn the
