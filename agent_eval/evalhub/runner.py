@@ -123,17 +123,22 @@ def run_eval_on_evalhub(
     # 2. Submit job to EvalHub
     client = EvalHubClient(base_url=url, auth_token=token)
     try:
-        return _run_with_client(client, config, config_path, ns, provider_id,
-                                benchmark_id, model, params, output_dir,
-                                timeout, poll_interval)
+        return _run_with_client(client, url, config, config_path, ns,
+                                provider_id, benchmark_id, model, params,
+                                output_dir, timeout, poll_interval)
     finally:
         client.close()
 
 
-def _run_with_client(client, config, config_path, ns, provider_id,
+def _run_with_client(client, url, config, config_path, ns, provider_id,
                      benchmark_id, model, params, output_dir,
                      timeout, poll_interval):
     """Inner function so the client is always closed."""
+    # The SDK is an optional dependency; the caller has already proven it
+    # imports. Re-import here because these names must not leak into module
+    # scope (module import must succeed without the SDK installed).
+    from evalhub import JobSubmissionRequest, ModelConfig, BenchmarkConfig
+
     bench_id = benchmark_id or config.name or "skill-eval"
 
     request = JobSubmissionRequest(
