@@ -48,6 +48,12 @@ Because only ``execute.py`` writes ``execute.pid``, the guard is inherently
 scoped to evals: a backgrounded dev server or a deliberately-backgrounded agent
 is never mistaken for one, so it is not blocked.
 
+That cuts both ways — the guard covers exactly the local ``execute.py`` path and
+nothing else. ``--runner harbor`` (``agent_eval.harbor.run``), the EvalHub
+adapter, and the ANOVA orchestrator's gaps between execute cells are all
+long-running and currently unguarded; extending pidfiles to those entry points
+is follow-up work.
+
 Escape hatch (stuck runs)
 -------------------------
 If an executor hangs, blocking forever would just defer the failure to the CI
@@ -119,7 +125,17 @@ def _truthy(value):
 
 
 def _guard_enabled():
-    """Enabled by default; an explicit ``AGENT_EVAL_STOP_GUARD`` always wins."""
+    """Enabled by default on POSIX; an explicit ``AGENT_EVAL_STOP_GUARD`` wins,
+    except that it can never turn the guard *on* under Windows.
+
+    Windows has no signal-0 probe: CPython's ``os.kill`` maps any ``sig`` other
+    than ``CTRL_C_EVENT``/``CTRL_BREAK_EVENT`` onto ``TerminateProcess``, so the
+    liveness check would *kill the very executor it is inspecting* — manufacturing
+    the truncated-run failure this hook exists to prevent. Until there is a real
+    probe there (e.g. ``OpenProcess``), refuse to run rather than risk it.
+    """
+    if sys.platform == "win32":
+        return False
     override = os.environ.get("AGENT_EVAL_STOP_GUARD")
     if override is not None:
         return _truthy(override)
@@ -138,8 +154,22 @@ def _max_seconds():
 
 # ── Process-liveness signal ──────────────────────────────────────────────
 
+def _valid_pid(pid):
+    """True only for a plausible individual process id.
+
+    ``os.kill`` overloads non-positive pids into broadcasts — ``0`` signals the
+    caller's whole process group and ``-1`` every process it may signal, so both
+    report "alive" unconditionally and would wedge the session until the escape
+    hatch. ``bool`` is an ``int`` subclass, so a JSON ``true`` would otherwise
+    sail through as pid 1 (init), which always exists.
+    """
+    return isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
+
+
 def _pid_alive(pid):
     """True if a process with ``pid`` currently exists."""
+    if not _valid_pid(pid):
+        return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -158,6 +188,13 @@ def _process_create_time(pid):
     tick count, or the macOS start timestamp), or ``None`` if it cannot be
     determined. Must match ``execute.py``'s derivation for the reuse check to
     work, so the two implementations are kept identical.
+
+    The macOS ``ps`` env is pinned because ``lstart`` renders a *formatted
+    local* timestamp: the same pid yields "Fri Aug 21 12:34:22 2026" plainly,
+    "…16:34:22…" under ``TZ=UTC`` and "ven. 21 août…" under a French locale.
+    execute.py records the marker under the launching shell's env while this
+    hook re-derives it under Claude Code's, so any ``TZ``/``LC_TIME`` export
+    would make every live run look pid-reused and silently disable the guard.
     """
     try:
         with open("/proc/%d/stat" % pid, encoding="utf-8") as fh:
@@ -173,6 +210,7 @@ def _process_create_time(pid):
             out = subprocess.run(
                 ["ps", "-o", "lstart=", "-p", str(pid)],
                 capture_output=True, text=True, timeout=5,
+                env={"TZ": "UTC", "LC_ALL": "C", "PATH": "/bin:/usr/bin"},
             )
             return out.stdout.strip() or None
         except (OSError, subprocess.SubprocessError):
@@ -258,10 +296,15 @@ def _pidfile_candidates(root):
     vs 0.6 ms bounded).
     """
     matches = []
+    # glob.escape: a checkout path containing glob metacharacters (a CI
+    # workspace like ``linux[py311]`` is the realistic case) would otherwise be
+    # read as a pattern, match nothing, and silently disable the guard —
+    # ``isdir`` on the root passes, so nothing else would flag it.
+    safe_root = glob.escape(root)
     for pattern in ("execute.pid", "*/execute.pid", "*/*/execute.pid",
                     "*/*/*/execute.pid"):
         try:
-            matches.extend(glob.glob(os.path.join(root, pattern)))
+            matches.extend(glob.glob(os.path.join(safe_root, pattern)))
         except OSError:
             continue
     return matches
@@ -290,20 +333,33 @@ def _live_eval_runs(cwd):
             if not info:
                 continue
             pid = info.get("pid")
-            if not isinstance(pid, int):
+            if not _valid_pid(pid):
                 continue
             run_dir = os.path.dirname(pidfile)
-            if os.path.exists(os.path.join(run_dir, "run_result.json")):
+            # "Finished" means a result written by *this* executor. Run dirs get
+            # reused (the default run-id is date+model, so a same-day retry
+            # lands in the same directory), and a result left by the previous
+            # attempt would otherwise mark the new run finished the moment it
+            # starts — the guard would wave through the very kill it exists to
+            # stop, and the stale result would be reported as the retry's.
+            # A result older than the pidfile therefore predates this executor.
+            try:
+                result_mtime = os.path.getmtime(
+                    os.path.join(run_dir, "run_result.json"))
+            except OSError:
+                result_mtime = None
+            try:
+                pid_mtime = os.path.getmtime(pidfile)
+            except OSError:
+                continue
+            if result_mtime is not None and result_mtime >= pid_mtime:
                 continue  # run already finished
             # Staleness backstop. The create_time check below is the primary
             # pid-reuse defense, but it is inert where no marker is obtainable
             # (no /proc and not darwin), leaving a reused pid able to block
             # until the ceiling. No eval outlives MAX_PIDFILE_AGE_S, so an
             # older pidfile is abandoned by definition — on every platform.
-            try:
-                if now - os.path.getmtime(pidfile) > MAX_PIDFILE_AGE_S:
-                    continue
-            except OSError:
+            if now - pid_mtime > MAX_PIDFILE_AGE_S:
                 continue
             if not _pid_alive(pid):
                 continue  # executor already dead — nothing to guard
@@ -368,15 +424,34 @@ def _state_path(session_id, fallback):
     return os.path.join(directory, f"{key}.json")
 
 
-def _first_block_ts(path, now, runs_key):
-    """When this session first blocked *on this set of runs*, recording ``now``
-    if new.
+def _write_timer(path, data):
+    """Persist guard state with no-follow, 0600 semantics. True on success."""
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _NOFOLLOW, 0o600)
+    except OSError:
+        return False
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+    except OSError:
+        return False
+    return True
+
+
+def _load_timer(path, now, runs_key):
+    """Return ``(first_block, escaped)`` for this run set, seeding it if new.
 
     ``runs_key`` scopes the timer to the runs actually being waited on. Without
     it a session that chains evals back to back — with no intervening idle Stop
     to clear the state — would inherit the previous run's ``first_block`` and
     could trip the escape hatch almost immediately on a fresh run. A changed run
     set means new work, so the clock restarts.
+
+    ``escaped`` records that the ceiling has already been reached for this run
+    set. It has to be durable: simply clearing the state on escape would let the
+    *next* Stop reseed ``first_block`` and open a fresh full-length window on the
+    same wedged executor, turning "can never hang the session forever" into a
+    repeating hostage cycle for as long as the user keeps talking.
 
     Returns ``_PERSIST_FAILED`` when no durable timestamp exists and one cannot
     be written, so the caller can fail open instead of letting a state-write
@@ -393,21 +468,13 @@ def _first_block_ts(path, now, runs_key):
                 data = json.load(fh)
             ts = data.get("first_block")
             if isinstance(ts, (int, float)) and data.get("runs") == runs_key:
-                return ts
+                return ts, bool(data.get("escaped"))
         except (OSError, ValueError, TypeError, AttributeError):
             pass
 
-    # No usable timestamp yet — create one with no-follow, 0600 semantics.
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _NOFOLLOW, 0o600)
-    except OSError:
+    if not _write_timer(path, {"first_block": now, "runs": runs_key}):
         return _PERSIST_FAILED
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({"first_block": now, "runs": runs_key}, fh)
-    except OSError:
-        return _PERSIST_FAILED
-    return now
+    return now, False
 
 
 def _clear_state(path):
@@ -442,15 +509,26 @@ def main():
 
     now = time.time()
     max_s = _max_seconds()
+    runs_key = sorted(live)
     if max_s > 0:
-        first = _first_block_ts(state_path, now, sorted(live))
-        if first is _PERSIST_FAILED:
+        timer = _load_timer(state_path, now, runs_key)
+        if timer is _PERSIST_FAILED:
             # Can't durably track elapsed time (no session identity or an
             # unwritable state dir). Fail open rather than risk blocking forever.
             print(
                 "eval_stop_guard: cannot persist the escape-hatch timer; "
                 "allowing stop rather than risk hanging the session. An eval "
                 "executor may still be running and the result incomplete.",
+                file=sys.stderr,
+            )
+            return 0  # allow stop
+        first, escaped = timer
+        if escaped:
+            # Ceiling already reached for these runs; stand down permanently
+            # rather than arming a fresh window on every later Stop.
+            print(
+                "eval_stop_guard: escape hatch already tripped for this run; "
+                "allowing stop without re-arming.",
                 file=sys.stderr,
             )
             return 0  # allow stop
@@ -464,13 +542,9 @@ def main():
                 "Tune with AGENT_EVAL_STOP_GUARD_MAX_MIN.",
                 file=sys.stderr,
             )
-            _clear_state(state_path)
+            _write_timer(state_path, {"first_block": first, "runs": runs_key,
+                                      "escaped": True})
             return 0  # allow stop
-
-    # Small courtesy pause so repeated block -> stop cycles don't churn the
-    # model faster than roughly once per turn. Stays well within the hook
-    # timeout; it does not itself wait for completion.
-    time.sleep(5)
 
     run_dir = live[0]
     reason = (
@@ -479,7 +553,14 @@ def main():
         f"written. Poll `tail -20 {run_dir}/console.log`; stop once "
         "run_result.json exists."
     )
-    print(json.dumps({"decision": "block", "reason": reason}))
+    print(json.dumps({"decision": "block", "reason": reason}), flush=True)
+
+    # Courtesy pause so repeated block -> stop cycles don't churn the model
+    # faster than roughly once per turn. Deliberately *after* the decision is
+    # flushed: spending it beforehand would burn 5s of the hook's 30s budget
+    # before rendering any verdict, and a timed-out hook renders none — which
+    # allows the stop, the precise failure this guard exists to prevent.
+    time.sleep(5)
     return 0
 
 

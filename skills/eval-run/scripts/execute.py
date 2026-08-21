@@ -52,6 +52,13 @@ def _process_create_time(pid):
     determined. Must match the Stop guard hook's derivation
     (``scripts/eval_stop_guard.py``) for the reuse check to work, so the two
     implementations are kept identical.
+
+    The macOS ``ps`` env is pinned because ``lstart`` renders a *formatted
+    local* timestamp: the same pid yields "Fri Aug 21 12:34:22 2026" plainly,
+    "…16:34:22…" under ``TZ=UTC`` and "ven. 21 août…" under a French locale.
+    This process records the marker under the launching shell's env while the
+    hook re-derives it under Claude Code's, so any ``TZ``/``LC_TIME`` export
+    would make every live run look pid-reused and silently disable the guard.
     """
     try:
         with open("/proc/%d/stat" % pid, encoding="utf-8") as fh:
@@ -67,6 +74,7 @@ def _process_create_time(pid):
             out = subprocess.run(
                 ["ps", "-o", "lstart=", "-p", str(pid)],
                 capture_output=True, text=True, timeout=5,
+                env={"TZ": "UTC", "LC_ALL": "C", "PATH": "/bin:/usr/bin"},
             )
             return out.stdout.strip() or None
         except (OSError, subprocess.SubprocessError):
@@ -93,13 +101,28 @@ def _write_pidfile(output_dir):
     pid = os.getpid()
     pidfile = Path(output_dir) / "execute.pid"
     try:
-        with open(pidfile, "w", encoding="utf-8") as fh:
+        # O_NOFOLLOW: the guard reads this path with no-follow semantics, so the
+        # writer must match. Otherwise a symlink pre-planted at execute.pid by
+        # anyone with write access to the runs tree would be followed, letting
+        # this process truncate an arbitrary file it can write (CWE-59).
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(pidfile, flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump({"pid": pid, "create_time": _process_create_time(pid)}, fh)
     except OSError:
         return  # non-fatal: guard just won't see this run
     _PIDFILE_WRITTEN = True
 
     def _remove():
+        # Only reap our own pidfile. Run dirs get reused, so a straggler from a
+        # previous attempt dying late must not delete the live pidfile of the
+        # run that replaced it — that would blind the guard to an active run.
+        try:
+            with open(pidfile, encoding="utf-8") as fh:
+                if json.load(fh).get("pid") != pid:
+                    return
+        except (OSError, ValueError):
+            return
         try:
             os.remove(pidfile)
         except OSError:
@@ -129,7 +152,40 @@ def _early_pidfile(argv):
         directory = Path(out)
         directory.mkdir(parents=True, exist_ok=True)
         _write_pidfile(directory)
+        _warn_if_unscannable(directory)
     except OSError:
+        pass
+
+
+def _warn_if_unscannable(output_dir):
+    """Warn when the Stop guard will not find this run's pidfile.
+
+    The hook scans ``$AGENT_EVAL_RUNS_DIR`` (read from *its own* env, so an
+    inline ``AGENT_EVAL_RUNS_DIR=… python3 execute.py`` never reaches it) or
+    ``<cwd>/eval/runs``. An ``--output`` outside both — or a bounded-glob depth
+    of more than three below the root — leaves the run silently unguarded. Say
+    so once, rather than letting the protection be absent without a trace.
+    """
+    try:
+        target = output_dir.resolve()
+        roots = []
+        env_root = os.environ.get("AGENT_EVAL_RUNS_DIR")
+        if env_root:
+            roots.append(Path(env_root).resolve())
+        roots.append((Path.cwd() / "eval" / "runs").resolve())
+        for root in roots:
+            if target == root or root in target.parents:
+                if len(target.relative_to(root).parts) <= 3:
+                    return
+        print(
+            f"WARNING: {target} is not under a directory the eval Stop guard "
+            f"scans ({', '.join(str(r) for r in roots)}), so it will not "
+            f"protect this run from being killed mid-flight. Set "
+            f"AGENT_EVAL_RUNS_DIR in the environment the agent itself runs in, "
+            f"or place --output under one of those roots.",
+            file=sys.stderr,
+        )
+    except (OSError, ValueError):
         pass
 
 
