@@ -636,6 +636,18 @@ def _aggregate_step_metrics(step_metrics):
     # non-zero exit code instead.
     exit_codes = [r.get("exit_code") or 0 for r in results]
     worst_exit = next((ec for ec in exit_codes if ec != 0), 0)
+    # Concatenate step denial lists in step order (dedup by tool_use_id in
+    # case a step result was double-counted) so the case-level entry reports
+    # denials like a single-step case does, instead of hiding them in steps.
+    agg_denials, seen_ids = [], set()
+    for r in results:
+        for d in (r.get("permission_denials") or []):
+            duid = d.get("tool_use_id") if isinstance(d, dict) else None
+            if duid is not None and duid in seen_ids:
+                continue
+            if duid is not None:
+                seen_ids.add(duid)
+            agg_denials.append(d)
     return {
         "exit_code": worst_exit,
         "duration_s": round(sum(r.get("duration_s") or 0 for r in results), 1),
@@ -645,6 +657,7 @@ def _aggregate_step_metrics(step_metrics):
         "num_turns": sum(r.get("num_turns") or 0 for r in results) or None,
         "per_model_usage": agg_pm or None,
         "per_model_turns": agg_pmt or None,
+        "permission_denials": agg_denials,
     }
 
 
@@ -921,6 +934,7 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
             "duration_s": 0,
             "token_usage": None,
             "cost_usd": None,
+            "permission_denials": [],  # case crashed before a result existed
             "num_turns": None,
             "per_model_usage": None,
             "per_model_turns": None,
@@ -1188,6 +1202,7 @@ def _run_multi_step_case(runner, case_id, case_ws, output_dir, model,
             "exit_code": 1, "duration_s": 0, "token_usage": None,
             "cost_usd": None, "num_turns": None, "per_model_usage": None,
             "per_model_turns": None, "error": error_msg,
+            "permission_denials": [],  # case crashed before a result existed
             "steps": step_metrics or None,
         }
         with open(case_output / "run_result.json", "w") as f:
@@ -1469,6 +1484,7 @@ def _execute_per_case(args, config, runner, runner_cls,
                             "duration_s": 0,
                             "token_usage": None,
                             "cost_usd": None,
+                            "permission_denials": [],  # crashed pre-result
                             "num_turns": None,
                             "per_model_usage": None,
                             "per_model_turns": None,
@@ -1545,6 +1561,8 @@ def _execute_per_case(args, config, runner, runner_cls,
             if isinstance(t, (int, float)):
                 agg_per_model_turns[m] = agg_per_model_turns.get(m, 0) + t
 
+    agg_denials = [d for r in case_results.values()
+                   for d in (r.get("permission_denials") or [])]
     run_meta = {
         "exit_code": worst_exit,
         "duration_s": round(total_duration, 1),
@@ -1554,6 +1572,7 @@ def _execute_per_case(args, config, runner, runner_cls,
         "num_turns": total_turns or None,
         "per_model_usage": agg_per_model or None,
         "per_model_turns": agg_per_model_turns or None,
+        "permission_denials": agg_denials,
         "num_cases": len(case_results),
         "model": model,
         "agent": runner.name,

@@ -83,7 +83,7 @@ Each case gets ALL files from the dataset case directory (not just input.yaml), 
 - When `execution.parallelism` > 1 (or `--parallelism` CLI), cases run concurrently via thread pool; each case gets a per-case log prefix (e.g., `eval:case-003`)
 - Each case gets its own stdout.log, stderr.log, and subagent transcripts
 - Results are saved to `$AGENT_EVAL_RUNS_DIR/{id}/cases/{case_id}/stdout.log`
-- run_result.json includes `execution_mode: "case"`, `per_case` breakdown, `duration_s` (sum of per-case durations), and `wall_clock_s` (actual elapsed time). Each `per_case` entry (and each step entry under a multi-step case's `steps`) carries its own `permission_denials` list; the run-level aggregate does not sum these — read them per case
+- run_result.json includes `execution_mode: "case"`, `per_case` breakdown, `duration_s` (sum of per-case durations), and `wall_clock_s` (actual elapsed time). Each `per_case` entry (and each step entry under a multi-step case's `steps`) carries its own `permission_denials` list; the run-level aggregate and the case-level entry of a multi-step case carry the concatenation
 
 ## 3. Execution → Collection
 

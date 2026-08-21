@@ -82,8 +82,8 @@ cat $AGENT_EVAL_RUNS_DIR/<eval-name>/<id>/run_result.json
 Key fields: `exit_code`, `duration_s`, `wall_clock_s` (lower when parallelism is
 used), `cost_usd`, `num_turns`, `per_model_usage`, `per_model_turns`,
 `permission_denials` (structured list of tool calls denied by permissions,
-`[{tool_name, tool_use_id, tool_input}]`, `[]` when none; in case mode it
-lives inside each `per_case` entry, not at the top level).
+`[{tool_name, tool_use_id, tool_input}]`, `[]` when none; in case mode each
+`per_case` entry carries its own list and the top level the concatenation).
 `cost_usd` is billed cost: when the `per_model_usage` sum exceeds the
 conversation total by more than $0.01 (background agents killed at the bg-wait
 ceiling, or still running at an evaluator timeout), the larger figure is

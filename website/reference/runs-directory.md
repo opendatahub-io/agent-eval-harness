@@ -20,6 +20,14 @@ export AGENT_EVAL_RUNS_DIR=eval/runs   # default
     under the base. Either way, `report.html`, `run_result.json`, and `cases/` are
     siblings inside the run directory.
 
+!!! warning "Run artifacts are sensitive"
+    `stdout.log` / `events.json` hold the verbatim session transcript, and
+    `permission_denials` entries preserve each denied call's full `tool_input`
+    — deliberately, since the input is what distinguishes an over-strict rule
+    from an escape attempt. Anything the agent saw or tried (paths, commands,
+    tokens passed on command lines) is in these files: keep the runs directory
+    out of version control and scrub before sharing.
+
 ## Per-run layout
 
 ```text
@@ -64,7 +72,7 @@ breakdown; judges read it when `traces.metrics` is on.
 | `num_turns` | Total turns (root + subagent transcripts) |
 | `num_cases` | Number of cases executed |
 | `model` / `agent` / `agent_version` | Model, runner name, runner version |
-| `permission_denials` | Tool calls denied by permissions, as `[{tool_name, tool_use_id, tool_input}]` from the CLI result event (`[]` when none). Per case inside `per_case` entries (and per step under a multi-step case's `steps`); top-level in batch/single-run mode |
+| `permission_denials` | Tool calls denied by permissions, as `[{tool_name, tool_use_id, tool_input}]` from the CLI result event (`[]` when none). Per case inside `per_case` entries (and per step under a multi-step case's `steps`); the top level carries the concatenation across cases (batch/single-run mode: that run's own list) |
 | `execution_mode` | `case` or `batch` |
 | `per_case` | Per-case dict of the same metrics plus `permission_denials`, keyed by case ID |
 

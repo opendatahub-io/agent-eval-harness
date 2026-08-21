@@ -28,15 +28,11 @@ def _dict_keys(node):
 
 
 def _serializes_runresult(node):
-    """True for dicts whose per_model_turns value reads an attribute off a
-    result object (result.per_model_turns / step_result.per_model_turns) —
-    i.e. RunResult serialization sites, not aggregation dicts."""
-    for k, v in zip(node.keys, node.values):
-        if (isinstance(k, ast.Constant) and k.value == "per_model_turns"
-                and isinstance(v, ast.Attribute)
-                and v.attr == "per_model_turns"):
-            return True
-    return False
+    """True for any dict literal carrying a per_model_turns key — direct
+    RunResult serialization sites AND aggregation dicts. The first version
+    excluded aggregation, which is exactly where the multi-step case-level
+    dict silently dropped permission_denials."""
+    return "per_model_turns" in _dict_keys(node)
 
 
 def test_every_runresult_dict_carries_permission_denials():
@@ -50,3 +46,19 @@ def test_every_runresult_dict_carries_permission_denials():
         f"RunResult-serializing dict(s) at execute.py line(s) {missing} drop "
         f"permission_denials — denial telemetry would silently vanish from "
         f"run_result.json again.")
+
+
+def test_multi_step_aggregate_carries_denials():
+    """Case-level dicts for multi-step cases must surface the union of their
+    steps' denials — not hide them under steps[*].permission_denials."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("eval_run_execute", EXECUTE)
+    execute = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(execute)
+    d1 = {"tool_name": "Bash", "tool_use_id": "t1", "tool_input": {"command": "x"}}
+    d2 = {"tool_name": "Read", "tool_use_id": "t2", "tool_input": {"path": "y"}}
+    agg = execute._aggregate_step_metrics({
+        "step-a": {"exit_code": 0, "permission_denials": [d1]},
+        "step-b": {"exit_code": 0, "permission_denials": [d1, d2]},
+    })
+    assert agg["permission_denials"] == [d1, d2]
