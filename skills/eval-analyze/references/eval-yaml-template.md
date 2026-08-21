@@ -110,6 +110,10 @@ runner:
   # lands in session context, where non-path-gated Bash can follow it out of
   # the sandbox. Plugins already inside the workspace (incl. workspace_mode:
   # repo) are passed through unchanged.
+  # env:                    # Extra env vars for the runner ($VAR resolves from caller)
+  #   CUSTOM_AUTH_TOKEN: "$CUSTOM_AUTH_TOKEN"
+  # system_prompt: ""       # Appended to harness system prompt
+  # effort: high            # Claude: low..max; Codex: minimal..xhigh
 
 # Models — defaults for each role (CLI flags override)
 models:

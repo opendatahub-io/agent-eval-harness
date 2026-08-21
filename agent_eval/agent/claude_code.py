@@ -58,26 +58,26 @@ def _plugin_ignore(plugin: Path):
 def stage_plugin_dir(plugin_dir: Path, workspace: Path) -> Path:
     """Copy one plugin's discoverable content into the case workspace.
 
-    WHY: ``--plugin-dir <real path>`` lands verbatim in every session's
-    system context — the stream-json init event registers the plugin under
-    that path. In the 2026-08-19 eval run on the epic-creator project, two
-    of 30 case dispatchers followed that leaked path, cd'd into the real
-    project repo, and ran pipeline phases there: one delivered an incomplete
-    artifact (unscored epics), the other left mid-pipeline state files in
-    the repo. The workspace's per-case staging hook gates the Read tool via
-    additionalDirectories, but Bash is not path-gated, so the leaked path is
-    a standing escape vector. Staging the plugin inside the throwaway
-    workspace and passing THAT path keeps the real path out of the session.
+    WHY: ``--plugin-dir <path>`` lands verbatim in the session's system
+    context — the stream-json init event registers the plugin under that
+    path. When the configured path points outside the workspace (typically
+    at the project repo under evaluation), the agent can follow it and
+    read or write the real project: ``additionalDirectories`` gates the
+    file tools, but Bash is not path-scoped, so a disclosed path is a
+    standing escape vector out of the isolated workspace. Staging the
+    plugin inside the throwaway workspace and passing THAT path keeps the
+    real location out of the session entirely.
 
-    Copies only what plugin discovery needs: the ``.claude-plugin/``
-    manifest, every skill root declared by the manifest (via
-    ``resolve_plugin_skill_roots``, which validates containment), and the
-    conventional ``commands/``, ``agents/`` and ``hooks/`` directories when
-    they exist at the plugin root. Symlinks are not reproduced — their
-    content is copied and dangling ones are skipped — so the staged tree
-    cannot point back outside the workspace. Idempotent per workspace: an
-    existing destination is reused; a partial copy never becomes the
-    destination (copy into a temp sibling, then rename).
+    Copies only what plugin discovery and execution need: the
+    ``.claude-plugin/`` manifest, every skill root declared by the
+    manifest (via ``resolve_plugin_skill_roots``, which validates
+    containment), and the conventional ``_PLUGIN_OPTIONAL_DIRS`` when they
+    exist at the plugin root. Symlinks are not reproduced — in-plugin
+    targets are copied as content, dangling ones are skipped, and links
+    escaping the plugin are refused — so the staged tree cannot point back
+    outside the workspace. Idempotent per workspace: an existing
+    destination is reused; a partial copy never becomes the destination
+    (copy into a temp sibling, then rename).
     """
     plugin = Path(plugin_dir).resolve()
     dest = workspace / ".staged-plugins" / plugin.name

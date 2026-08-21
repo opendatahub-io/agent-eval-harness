@@ -1,13 +1,11 @@
-"""Tests for staging plugin dirs inside the case workspace (stage_plugins).
+"""Tests for staging plugin dirs inside the case workspace.
 
-Passing ``--plugin-dir <real project path>`` puts that path verbatim in every
-session's system context (the stream-json init event registers the plugin
-under it). Bash is not path-gated in isolated workspaces, so a case agent can
-follow the leaked path out of its throwaway workspace and into the real repo
-— observed in the 2026-08-19 epic-creator eval run, where two of 30 case
-dispatchers ran pipeline phases inside the real project. ``stage_plugins``
-copies the plugin's discoverable content into the workspace and passes THAT
-path instead.
+Passing ``--plugin-dir <path>`` puts that path verbatim in the session's
+system context (the stream-json init event registers the plugin under it).
+Bash is not path-gated in isolated workspaces, so a path pointing outside the
+workspace lets a case agent follow it out of its throwaway workspace and into
+the real project. ``stage_plugin_dir`` copies the plugin's discoverable
+content into the workspace so the runner can pass THAT path instead.
 """
 
 import json
@@ -23,7 +21,7 @@ from agent_eval.agent.claude_code import ClaudeCodeRunner, stage_plugin_dir
 from agent_eval.config import EvalConfig
 
 
-def make_plugin(root, name="epic-creator", manifest=..., skills=("my-skill",)):
+def make_plugin(root, name="demo-plugin", manifest=..., skills=("my-skill",)):
     """Create a minimal plugin: manifest + skills/<name>/SKILL.md."""
     plugin = root / name
     (plugin / ".claude-plugin").mkdir(parents=True)
@@ -45,7 +43,7 @@ class TestStagePluginDir:
         ws = tmp_path / "ws"
         ws.mkdir()
         staged = stage_plugin_dir(plugin, ws)
-        assert staged == ws / ".staged-plugins" / "epic-creator"
+        assert staged == ws / ".staged-plugins" / "demo-plugin"
         assert (staged / ".claude-plugin" / "plugin.json").is_file()
         # The staged tree must remain discoverable: a SKILL.md under the
         # staged skill root is what Claude Code's plugin loader looks for.

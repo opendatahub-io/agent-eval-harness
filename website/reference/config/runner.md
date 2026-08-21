@@ -39,7 +39,7 @@ Not every runner reads every field. The matrix below shows where each field land
 | `effort` | `str` (enum) | `--effort` flag | `model_reasoning_effort` | `{effort}` placeholder | — |
 | `permission_mode` | `str` (enum) | `--permission-mode` flag | mapped to Codex sandbox mode | — | — |
 | `settings` | `dict` | merged into workspace `.claude/settings.json` | `-c` config overrides for `codex exec` | — | connection settings (see below) |
-| `plugin_dirs` | `list[str]` | one `--plugin-dir` per entry | skills copied into `.agents/skills` | — | — |
+| `plugin_dirs` | `list[str]` | staged into the workspace, one `--plugin-dir` per staged copy | skills copied into `.agents/skills` | — | — |
 | `env` | `dict` | injected on the safe allowlist | injected on the safe allowlist | — (uses `execution.env`) | — |
 | `system_prompt` | `str` | `--append-system-prompt` | prepended to the prompt | `{system_prompt}` placeholder | `developer` message |
 | `command` | `str` \| `list[str]` | — | — | **required** — command template | — |
@@ -159,9 +159,16 @@ The `cli` runner ignores `settings`.
 
 ### `plugin_dirs`
 
-`claude-code` and `codex`. Claude Code receives one `--plugin-dir` per entry. Codex
-copies each plugin's skills into the case workspace's `.agents/skills` directory for
-the duration of the run. Relative paths are always resolved from the project root.
+`claude-code` and `codex`. Both runners copy plugin content into the case workspace
+rather than exposing the configured path to the session. Claude Code stages each
+entry's discoverable content (manifest, skill roots, `commands/`, `agents/`,
+`hooks/`, `scripts/`) into `.staged-plugins/` and passes the staged copy to
+`--plugin-dir` — the configured path would otherwise land verbatim in session
+context, where Bash (not path-gated) can follow it out of the workspace. An entry
+already inside the workspace (including `workspace_mode: repo`) is passed through
+unchanged. Codex copies each plugin's skills into the case workspace's
+`.agents/skills` directory for the duration of the run. Relative paths are always
+resolved from the project root.
 A lexically external path such as `../shared-skills` is an explicit opt-in like an
 absolute path; a path declared inside the project may not escape through a symlink.
 

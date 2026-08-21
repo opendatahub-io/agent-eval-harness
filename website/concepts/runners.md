@@ -111,7 +111,7 @@ claude --print \
   --max-budget-usd "$BUDGET" \
   --verbose \                      # only with live logging
   --effort high \                  # only if runner.effort set
-  --plugin-dir <dir> \             # per runner.plugin_dirs entry
+  --plugin-dir <dir> \             # workspace-staged copy per runner.plugin_dirs entry
   --append-system-prompt "..." \   # if system_prompt set
   --settings <path>                # permissions/hooks/env
 # the prompt (/skill args, or raw prompt) is piped on stdin
@@ -125,6 +125,10 @@ the `result` event.
 
 **Highlights specific to this runner:**
 
+- **Plugin staging** — every `runner.plugin_dirs` entry outside the workspace is
+  copied into `<workspace>/.staged-plugins/` and `--plugin-dir` receives the copy,
+  so the real plugin path never enters session context; in-workspace entries
+  (including `workspace_mode: repo`) pass through unchanged.
 - **Budget** is enforced server-side via `--max-budget-usd`.
 - **Permissions** — simple string patterns become `--allowed-tools` /
   `--disallowed-tools`; path-based rules are compiled into a temporary
