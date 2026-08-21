@@ -592,3 +592,445 @@ name: t
 execution: {skill: s}
 runner: {type: codex, workspace_mode: repo}
 """))
+
+
+# ---------------------------------------------------------------------------
+# Consequence tiers + thresholds validation (measurement-validity PR2)
+# ---------------------------------------------------------------------------
+
+def test_consequence_round_trips_through_the_explicit_kwargs_site(tmp_path):
+    """from_yaml constructs JudgeConfig with explicit kwargs, silently
+    dropping unknown YAML keys — so `consequence` has to be wired there."""
+    cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    samples: 3
+    consequence: safety
+"""))
+    assert cfg.judges[0].consequence == "safety"
+
+
+@pytest.mark.parametrize("tier", ["exploratory", "safety", "gating"])
+def test_all_consequence_tiers_are_valid(tmp_path, tier):
+    cfg = EvalConfig.from_yaml(_write(tmp_path, f"""
+name: t
+execution: {{skill: s}}
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    samples: 3
+    consequence: {tier}
+"""))
+    assert cfg.judges[0].consequence == tier
+
+
+def test_invalid_consequence_raises(tmp_path):
+    with pytest.raises(ValueError, match="consequence must be one of"):
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    consequence: sev1
+"""))
+
+
+def test_consequence_with_samples_1_warns(tmp_path):
+    with pytest.warns(UserWarning, match="samples: 1 produces no IRR data"):
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    consequence: safety
+"""))
+
+
+def test_consequence_on_builtin_llm_judge_warns(tmp_path):
+    """Builtin LLM judges are pinned to n=1 at scoring time (score.py
+    load_judges), so a consequence tag can never see IRR data."""
+    with pytest.warns(UserWarning, match="pinned to samples: 1"):
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - name: q
+    builtin: quality/output_completeness
+    samples: 5
+    consequence: gating
+"""))
+
+
+def test_consequence_on_deterministic_judge_warns(tmp_path):
+    with pytest.warns(UserWarning, match="deterministic judge"):
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - name: q
+    check: "return (True, 'ok')"
+    consequence: exploratory
+"""))
+
+
+def test_consequence_with_samples_2_is_quiet(tmp_path):
+    import warnings as _warnings
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")
+        cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    samples: 2
+    consequence: safety
+"""))
+    assert cfg.judges[0].consequence == "safety"
+
+
+def test_unknown_threshold_key_warns_not_errors(tmp_path):
+    with pytest.warns(UserWarning, match="unknown key 'min_apha'"):
+        cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - {name: q, check: "return (True, 'ok')"}
+thresholds:
+  q:
+    min_apha: 0.7
+"""))
+    # Stored verbatim — validation never rewrites the block.
+    assert cfg.thresholds == {"q": {"min_apha": 0.7}}
+
+
+def test_unknown_threshold_key_never_gets_value_validation(tmp_path):
+    """Warn-never-error covers the VALUE too: an unknown key is ignored by
+    regression detection, so its value must not be validated (mirrors
+    _parse_simulator_thresholds) — while the same off-scale value on a KNOWN
+    *_alpha key still raises."""
+    with pytest.warns(UserWarning, match="unknown key 'min_alphabet'"):
+        cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - {name: q, check: "return (True, 'ok')"}
+thresholds:
+  q:
+    min_alphabet: 1.5
+"""))
+    assert cfg.thresholds == {"q": {"min_alphabet": 1.5}}
+
+    # An unknown *_agreement-suffixed key with an off-scale value used to hit
+    # the generic value rule and error — it must warn and load instead.
+    with pytest.warns(UserWarning, match="unknown key 'min_judge_agreement'"):
+        cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - {name: q, check: "return (True, 'ok')"}
+thresholds:
+  q:
+    min_judge_agreement: 1.5
+"""))
+    assert cfg.thresholds == {"q": {"min_judge_agreement": 1.5}}
+
+    # The KNOWN key keeps its value validation.
+    with pytest.raises(ValueError, match=r"min_alpha must be a finite"):
+        EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - {name: q, check: "return (True, 'ok')"}
+thresholds:
+  q:
+    min_alpha: 1.5
+"""))
+
+
+@pytest.mark.parametrize("value", ["1.5", '"high"', ".nan"])
+def test_bad_min_alpha_values_raise(tmp_path, value):
+    with pytest.raises(ValueError, match=r"min_alpha must be a finite"):
+        EvalConfig.from_yaml(_write(tmp_path, f"""
+name: t
+execution: {{skill: s}}
+judges:
+  - {{name: q, check: "return (True, 'ok')"}}
+thresholds:
+  q:
+    min_alpha: {value}
+"""))
+
+
+def test_valid_threshold_block_loads_verbatim(tmp_path):
+    cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    samples: 3
+thresholds:
+  q:
+    min_mean: 3.5
+    min_alpha: 0.7
+"""))
+    assert cfg.thresholds == {"q": {"min_mean": 3.5, "min_alpha": 0.7}}
+
+
+def test_min_human_agreement_is_a_known_threshold_key(tmp_path):
+    """PR6: min_human_agreement is in THRESHOLD_KEYS — no unknown-key warning,
+    block stored verbatim."""
+    import warnings as _warnings
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")
+        cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - {name: q, check: "return (True, 'ok')"}
+thresholds:
+  q:
+    min_human_agreement: 0.6
+"""))
+    assert cfg.thresholds == {"q": {"min_human_agreement": 0.6}}
+
+
+def test_min_panel_alpha_is_a_known_threshold_key(tmp_path):
+    """PR8: min_panel_alpha is in THRESHOLD_KEYS — no unknown-key warning,
+    block stored verbatim."""
+    import warnings as _warnings
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")
+        cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - {name: q, check: "return (True, 'ok')"}
+thresholds:
+  q:
+    min_panel_alpha: 0.67
+"""))
+    assert cfg.thresholds == {"q": {"min_panel_alpha": 0.67}}
+
+
+@pytest.mark.parametrize("value", ["1.5", '"high"', ".nan"])
+def test_bad_min_panel_alpha_values_raise(tmp_path, value):
+    """Value validation rides the generic *_alpha rule in _parse_thresholds:
+    finite numbers <= 1.0 (the coefficient maximum)."""
+    with pytest.raises(ValueError,
+                       match=r"min_panel_alpha must be a finite"):
+        EvalConfig.from_yaml(_write(tmp_path, f"""
+name: t
+execution: {{skill: s}}
+judges:
+  - {{name: q, check: "return (True, 'ok')"}}
+thresholds:
+  q:
+    min_panel_alpha: {value}
+"""))
+
+
+class TestSameFamilyAdvisory:
+    """Appendix-B.4 same-family advisory (user decision Q2): fires at config
+    load ONLY when reliability features are engaged — a judges[].model panel,
+    a consequence-tagged judge, or models.hook_shadow — and never on a plain
+    config."""
+
+    ADVISORY = "one provider family"
+
+    @staticmethod
+    def _load_catching(tmp_path, text):
+        import warnings as _warnings
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            EvalConfig.from_yaml(_write(tmp_path, text))
+        return [w for w in caught
+                if TestSameFamilyAdvisory.ADVISORY in str(w.message)]
+
+    def test_fires_on_same_family_roles_with_a_consequence_judge(
+            self, tmp_path):
+        hits = self._load_catching(tmp_path, """
+name: t
+execution: {skill: s}
+models: {skill: claude-sonnet-4-5, judge: claude-opus-4-8}
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    samples: 3
+    consequence: safety
+""")
+        assert len(hits) == 1
+        assert "Appendix B.4" in str(hits[0].message)
+
+    def test_fires_on_a_single_family_panel_alone(self, tmp_path):
+        hits = self._load_catching(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - name: q
+    llm_rubric: score it
+    feedback_type: bool
+    model: [claude-sonnet-4-5, claude-haiku-4-5, claude-opus-4-8]
+""")
+        assert len(hits) == 1
+
+    def test_silent_on_a_plain_all_anthropic_config(self, tmp_path):
+        """No panel, no consequence tag: reliability features are not
+        engaged, so the advisory never fires (Q2)."""
+        hits = self._load_catching(tmp_path, """
+name: t
+execution: {skill: s}
+models: {skill: claude-sonnet-4-5, judge: claude-opus-4-8}
+judges:
+  - {name: q, llm_rubric: score it, feedback_type: bool}
+""")
+        assert hits == []
+
+    def test_silent_on_a_cross_family_judge(self, tmp_path):
+        hits = self._load_catching(tmp_path, """
+name: t
+execution: {skill: s}
+models: {skill: claude-sonnet-4-5, judge: gpt-4o}
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    samples: 3
+    consequence: safety
+""")
+        assert hits == []
+
+    def test_silent_when_any_id_is_an_unrecognized_alias(self, tmp_path):
+        hits = self._load_catching(tmp_path, """
+name: t
+execution: {skill: s}
+models: {skill: claude-sonnet-4-5, judge: my-litellm-alias}
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    samples: 3
+    consequence: safety
+""")
+        assert hits == []
+
+    def test_silent_below_two_configured_models(self, tmp_path):
+        """Only models.skill is set — the hardcoded tools.py hook default is
+        never inferred."""
+        hits = self._load_catching(tmp_path, """
+name: t
+execution: {skill: s}
+models: {skill: claude-sonnet-4-5}
+judges:
+  - name: q
+    llm_rubric: score it
+    score_range: [1, 5]
+    samples: 3
+    consequence: safety
+""")
+        assert hits == []
+
+    def test_a_cross_family_panel_member_silences_the_claim(self, tmp_path):
+        hits = self._load_catching(tmp_path, """
+name: t
+execution: {skill: s}
+models: {skill: claude-sonnet-4-5, judge: claude-opus-4-8}
+judges:
+  - name: q
+    llm_rubric: score it
+    feedback_type: bool
+    model: [claude-sonnet-4-5, gpt-4o]
+""")
+        assert hits == []
+
+    def test_hook_shadow_engages_the_advisory(self, tmp_path):
+        """models.hook_shadow is an engagement surface (PR10): no panel and
+        no consequence tag needed. Within-family shadows are no mitigation —
+        hook (the tools.py default here) + shadows join the pool."""
+        hits = self._load_catching(tmp_path, """
+name: t
+execution: {skill: s}
+models:
+  skill: claude-sonnet-4-5
+  judge: claude-opus-4-8
+  hook_shadow: [claude-haiku-4-5]
+inputs:
+  tools:
+    - match: Questions asked via AskUserQuestion.
+      prompt: answer from input.yaml
+judges:
+  - {name: q, llm_rubric: score it, feedback_type: bool}
+""")
+        assert len(hits) == 1
+        assert "hook_shadow" in str(hits[0].message)
+
+    def test_cross_family_hook_shadow_suppresses_the_hook_role(self,
+                                                               tmp_path):
+        """A cross-family shadow IS the mitigation for the simulator layer:
+        with only skill left in the pool, the advisory stays silent."""
+        hits = self._load_catching(tmp_path, """
+name: t
+execution: {skill: s}
+models:
+  skill: claude-sonnet-4-5
+  hook: claude-haiku-4-5
+  hook_shadow: [gemini-2.5-flash]
+inputs:
+  tools:
+    - match: Questions asked via AskUserQuestion.
+      prompt: answer from input.yaml
+judges:
+  - {name: q, llm_rubric: score it, feedback_type: bool}
+""")
+        assert hits == []
+
+    def test_cross_family_hook_shadow_does_not_silence_other_roles(
+            self, tmp_path):
+        """Suppression is scoped to the hook role: an all-anthropic
+        skill+judge pair still warns despite the cross-family shadow."""
+        hits = self._load_catching(tmp_path, """
+name: t
+execution: {skill: s}
+models:
+  skill: claude-sonnet-4-5
+  judge: claude-opus-4-8
+  hook: claude-haiku-4-5
+  hook_shadow: [gemini-2.5-flash]
+inputs:
+  tools:
+    - match: Questions asked via AskUserQuestion.
+      prompt: answer from input.yaml
+judges:
+  - {name: q, llm_rubric: score it, feedback_type: bool}
+""")
+        assert len(hits) == 1
+
+
+@pytest.mark.parametrize("value", ["1.5", '"high"', ".nan"])
+def test_bad_min_human_agreement_values_raise(tmp_path, value):
+    """The generic *_agreement rule in _parse_thresholds covers the new key:
+    values must be finite numbers <= 1.0 (the coefficient maximum)."""
+    with pytest.raises(ValueError,
+                       match=r"min_human_agreement must be a finite"):
+        EvalConfig.from_yaml(_write(tmp_path, f"""
+name: t
+execution: {{skill: s}}
+judges:
+  - {{name: q, check: "return (True, 'ok')"}}
+thresholds:
+  q:
+    min_human_agreement: {value}
+"""))

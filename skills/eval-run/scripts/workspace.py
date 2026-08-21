@@ -27,7 +27,6 @@ from pathlib import Path
 import yaml
 
 from agent_eval.config import EvalConfig
-from agent_eval.tools.interception import extract_tool_patterns
 from workspace_files import _copy_input_files
 
 # Resolve git executable to absolute path to prevent PATH hijacking (CWE-426)
@@ -71,6 +70,9 @@ def main():
     if not case_dirs:
         print("ERROR: no cases found", file=sys.stderr)
         sys.exit(1)
+
+    # Soft dataset-audit preflight (V1 task validity) — warn, never fail.
+    _dataset_audit_preflight(cases_dir, case_dirs)
 
     # Validate run-id
     if not re.fullmatch(r"[A-Za-z0-9._-]+", args.run_id):
@@ -210,6 +212,25 @@ def main():
     print(f"WORKSPACE: {workspace}")
     print(f"CASES: {len(case_dirs)}")
     print(f"BATCH: {workspace / 'batch.yaml'}")
+
+
+def _dataset_audit_preflight(cases_dir, case_dirs):
+    """Soft preflight: WARN only when an EXISTING dataset audit is stale.
+
+    Opt-in contract: a dataset that was never audited (no
+    dataset_audit.yaml) stays silent. Compares per-case CONTENT hashes
+    stored in dataset_audit.yaml (never dir mtimes — an in-place input.yaml
+    edit changes the hash, not the mtime). Informational, never a gate:
+    stderr only, exit code unaffected, and any failure here must not block
+    workspace creation.
+    """
+    try:
+        from agent_eval.dataset_audit import audit_preflight_warnings
+
+        for warning in audit_preflight_warnings(cases_dir, case_dirs):
+            print(f"WARNING: {warning}", file=sys.stderr)
+    except Exception as e:  # pragma: no cover — defensive
+        print(f"DEBUG: dataset audit preflight skipped: {e}", file=sys.stderr)
 
 
 def _create_per_case_workspace(workspace, case_dirs, config, args):
@@ -507,26 +528,21 @@ def _create_repo_mode_settings(case_ws, project_root, config):
 
 
 def _setup_in_repo_tool_hooks(case_ws, config, settings):
-    """Set up tool interception hooks for in-repo mode."""
-    # Build handler config
-    handlers = []
-    hook_matchers = set()
+    """Set up tool interception hooks for in-repo mode.
 
-    for tool_cfg in config.inputs.tools:
-        handler = {"match": tool_cfg.match}
-        patterns = extract_tool_patterns(tool_cfg.match)
-        handler["patterns"] = patterns
-        if tool_cfg.prompt:
-            handler["prompt"] = tool_cfg.prompt
-        if tool_cfg.prompt_file:
-            handler["prompt_file"] = tool_cfg.prompt_file
-        handlers.append(handler)
-        hook_matchers.update(patterns)
+    Mirrors :func:`agent_eval.tools.interception.generate_interception`,
+    which in-repo mode does not go through: handlers come from the shared
+    ``build_handlers`` and the harness-owned knobs (``hook_model``,
+    ``calibration``) from the same ``merge_handler_knobs`` post-load merge,
+    so the two paths cannot drift. Hook entries carry the same explicit
+    per-hook ``timeout`` as the case/batch settings (see
+    ``HOOK_TIMEOUT_SECONDS``).
+    """
+    from agent_eval.tools.interception import (
+        build_handlers, build_settings_hooks, merge_handler_knobs)
 
-    # Write tool_handlers.yaml to case workspace
-    handler_data = {"handlers": handlers}
-    if config.models.hook:
-        handler_data["hook_model"] = config.models.hook
+    handler_data, hook_matchers = build_handlers(config)
+    handler_data = merge_handler_knobs(handler_data, config)
     with open(case_ws / "tool_handlers.yaml", "w") as f:
         yaml.dump(handler_data, f, default_flow_style=False)
 
@@ -537,16 +553,11 @@ def _setup_in_repo_tool_hooks(case_ws, config, settings):
     if interceptor_src.exists():
         shutil.copy2(interceptor_src, hooks_dir / "tools.py")
 
-    # Add PreToolUse hooks to settings
-    settings.setdefault("hooks", {})["PreToolUse"] = []
-    for matcher in sorted(hook_matchers):
-        settings["hooks"]["PreToolUse"].append({
-            "matcher": matcher,
-            "hooks": [{
-                "type": "command",
-                "command": f"python3 {case_ws}/hooks/tools.py",
-            }],
-        })
+    # Add PreToolUse hooks (with the explicit per-hook timeout) to settings
+    hook_settings = build_settings_hooks(
+        hook_matchers, f"python3 {case_ws}/hooks/tools.py")
+    settings.setdefault("hooks", {})["PreToolUse"] = (
+        hook_settings["hooks"]["PreToolUse"])
 
     print(f"HOOKS: {len(hook_matchers)} tool interceptors configured (in-repo mode)")
 

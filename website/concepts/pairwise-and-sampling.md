@@ -183,6 +183,18 @@ judges:
 
 The console echoes the same, e.g. `output_quality: mean=3.90  [8/12 stable over 5 samples]`.
 
+!!! note "`stable` is raw exact-match agreement — `stability.irr` is the corrected view"
+    The `stable` flag is **uncorrected** exact-match agreement: a 4-vs-4.1 split and a
+    1-vs-5 split both count as "not stable", and no allowance is made for chance
+    agreement. Scoring therefore also computes a chance-corrected coefficient over the
+    same case × sample matrix — the **single-judge self-consistency alpha (an upper
+    bound on inter-rater reliability)** — written as `stability.irr` on the judge
+    aggregate and gated by [`min_alpha`](../reference/config/thresholds.md#min_alpha-the-reliability-gate).
+    See [Measurement validity](measurement-validity.md) for how the two relate.
+
+    Pairwise runs similarly persist the raw `pref_ab`/`pref_ba` verdicts and a
+    `swap_consistency` rate — also uncorrected agreement.
+
 ### The `--samples` override
 
 `--samples N` overrides every judge's per-judge `samples:` at once:

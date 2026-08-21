@@ -60,7 +60,7 @@ inputs:
 ```mermaid
 flowchart TD
     A["eval.yaml<br/>inputs.tools (match + prompt)"] --> B["workspace.py<br/>heuristic: extract tool patterns"]
-    B --> C["eval-run agent (Step 3b)<br/>resolve prompt into input_filters,<br/>env_checks, case_overrides"]
+    B --> C["eval-run agent (Step 3a)<br/>resolve prompt into input_filters,<br/>env_checks, case_overrides"]
     C --> D["tool_handlers.yaml<br/>compiled handlers + hook_model"]
     D --> E["hooks/tools.py<br/>PreToolUse hook at runtime"]
     E -->|AskUserQuestion| F["3-tier answering"]
@@ -74,8 +74,8 @@ flowchart TD
 | --- | --- | --- | --- |
 | `match` | `workspace.py` (from eval.yaml) | eval-run agent | NL description of what to intercept |
 | `patterns` | `workspace.py` (heuristic) | `tools.py` | Tool name patterns, exact or `*` glob (e.g. `mcp__atlassian__*`) |
-| `input_filters` | eval-run agent (Step 3b) | `tools.py` | Regex patterns matched against the Bash command string |
-| `env_checks` | eval-run agent (Step 3b) | `tools.py` | Per-var `must_contain` substring validation |
+| `input_filters` | eval-run agent (Step 3a) | `tools.py` | Regex patterns matched against the Bash command string |
+| `env_checks` | eval-run agent (Step 3a) | `tools.py` | Per-var `must_contain` substring validation |
 | `prompt` | `workspace.py` (from eval.yaml) | eval-run agent, `tools.py` | NL instruction; also LLM-answerer context for `AskUserQuestion` |
 | `hook_model` | `workspace.py` (from `models.hook`) | `tools.py` | Model for LLM answering (default `claude-haiku-4-5-20251001`) |
 | `case_overrides` | eval-run agent (optional) | `tools.py` | Exact question→answer map, checked before the LLM tier |
@@ -148,7 +148,7 @@ production. Tools with **no matching handler pass through** untouched (`exit 0`)
     Bash call and send them all into the default-deny path — the skill couldn't run at
     all. To prevent this, `hooks/tools.py` treats such a handler as **misconfigured**:
     it logs a stderr warning and **skips it (pass-through)** rather than denying
-    everything. Always resolve `input_filters` (eval-run Step 3b does this) before
+    everything. Always resolve `input_filters` (eval-run Step 3a does this) before
     relying on a Bash handler.
 
 ## Permissions (allow / deny)

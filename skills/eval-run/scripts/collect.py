@@ -46,6 +46,26 @@ def _safe_path_component(value, field):
     return str(p)
 
 
+def _collect_case_ledger(src_root, dest_dir):
+    """Copy the answer-provenance ledger out of a workspace, if present.
+
+    The PreToolUse interceptor writes ``hooks/hook_answers.jsonl`` next to
+    itself (case workspaces in case/in-repo mode, the shared workspace in
+    batch mode). The workspace is agent-writable, so refuse symlinked
+    ledgers/hooks dirs and confine the resolved path under ``src_root``
+    (CWE-59, mirroring ``_collect_modified_files``). Returns True when the
+    ledger was copied to ``dest_dir/hook_answers.jsonl``.
+    """
+    src = src_root / "hooks" / "hook_answers.jsonl"
+    if not src.is_file() or src.is_symlink() or src.parent.is_symlink():
+        return False
+    if not src.resolve().is_relative_to(src_root.resolve()):
+        return False
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest_dir / "hook_answers.jsonl")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -129,6 +149,12 @@ def main():
                 shutil.copy2(src_file, dest)
 
             results.setdefault(case_id, {})[out_path] = len(matched_files)
+
+    # Answer-provenance ledger: one shared interceptor in batch mode, so the
+    # ledger is run-level (unattributed) — copy it to the RUN ROOT, mirroring
+    # the run-root events.json below.
+    if _collect_case_ledger(workspace, output_dir):
+        print("  hook ledger: hook_answers.jsonl (run-level)")
 
     # Save collection summary
     with open(output_dir / "collection.json", "w") as f:
@@ -228,6 +254,11 @@ def _collect_per_case(workspace, output_dir, config):
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(abs_path, dest)
             results.setdefault(case_id, {})["_modified"] = len(modified)
+
+        # Answer-provenance ledger (covers case AND in-repo mode — both keep
+        # the ledger at <case_ws>/hooks/hook_answers.jsonl)
+        if _collect_case_ledger(case_dir, output_dir / "cases" / case_id):
+            results.setdefault(case_id, {})["hook_answers"] = 1
 
         # Generate events.json from stdout.log
         if config.traces.events:

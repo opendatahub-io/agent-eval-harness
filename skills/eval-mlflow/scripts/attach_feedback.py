@@ -140,6 +140,32 @@ def _push_feedback(run_dir, experiment_name, config, args):
                     )
                     feedback_count += 1
 
+            # Calibration verdicts (from /eval-review's optional calibration
+            # sub-step): one HUMAN-source assessment per case/judge, named
+            # {case_id}/{judge_name}/human so it joins the CODE-source
+            # {case_id}/{judge_name} judge assessment on the name prefix.
+            verdicts = review.get("verdicts")
+            if isinstance(verdicts, dict):
+                reviewer_id = str(review.get("reviewer_id") or "eval-review")
+                for case_id, jmap in verdicts.items():
+                    if not isinstance(jmap, dict):
+                        print(f"Warning: verdicts[{case_id!r}] is not a "
+                              "mapping — skipped", file=sys.stderr)
+                        continue
+                    for judge_name, value in jmap.items():
+                        if value is None:
+                            continue
+                        for trace_id in trace_ids:
+                            log_feedback(
+                                trace_id=trace_id,
+                                name=f"{case_id}/{judge_name}/human",
+                                value=value,
+                                source_type="HUMAN",
+                                source_id=reviewer_id,
+                                rationale="",
+                            )
+                            feedback_count += 1
+
     print(f"TRACES: {len(trace_ids)} found")
     print(f"FEEDBACK: {feedback_count} entries attached")
 

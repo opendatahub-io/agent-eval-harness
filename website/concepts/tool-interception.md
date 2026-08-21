@@ -47,7 +47,7 @@ the second is an optional LLM refinement.
 flowchart TD
     A["eval.yaml<br/>inputs.tools (match + prompt)"] --> B
     B["Stage 1 — heuristic<br/>build_handlers() at workspace setup"] --> C["tool_handlers.yaml<br/>match + patterns + prompt"]
-    C -.->|optional| D["Stage 2 — LLM refinement<br/>/eval-analyze or eval-run Step 3b"]
+    C -.->|optional| D["Stage 2 — LLM refinement<br/>/eval-analyze or eval-run Step 3a"]
     D --> E["tool_handlers.yaml<br/>+ input_filters + env_checks + case_overrides"]
     C --> F["hooks/tools.py<br/>(PreToolUse hook)"]
     E --> F
@@ -71,7 +71,7 @@ flowchart TD
     An LLM reads the `prompt` and adds the concrete runtime checks —
     `input_filters`, `env_checks`, `case_overrides`. This happens either in
     `/eval-analyze` (writing a resolved `tool_handlers.yaml` alongside `eval.yaml`)
-    or in `/eval-run` **Step 3b** against the workspace copy. If a pre-resolved file
+    or in `/eval-run` **Step 3a** against the workspace copy. If a pre-resolved file
     exists, `generate_interception()` uses it as-is and skips the heuristic.
 
 !!! tip "Resolve Bash and service gates before you rely on them"
@@ -116,9 +116,11 @@ case_overrides:
 
 ## How the hook decides at runtime
 
-`hooks/tools.py` runs for every intercepted tool call, reads `tool_handlers.yaml`,
-finds the first matching handler, and acts by tool type. Unmatched tools pass through
-(`exit 0`).
+`hooks/tools.py` runs for every intercepted tool call, reads `tool_handlers.yaml`
+(CWD first, then relative to the script's own location — the `__file__` fallback is
+what makes interception work in in-repo mode, where the agent's CWD is the user's
+repo root), finds the first matching handler, and acts by tool type. Unmatched tools
+pass through (`exit 0`).
 
 ### AskUserQuestion — 3-tier answering
 
@@ -138,6 +140,38 @@ It then returns `permissionDecision: "allow"` with `updatedInput.answers` filled
     context. **Do not put secrets, credentials, or PII in these files.** If a case
     needs deterministic, offline answers, use `case_overrides` (tier 1) instead —
     it never leaves the process.
+
+### The answer-provenance ledger (`hook_answers.jsonl`)
+
+Every answered question is recorded — one JSON object per line — to
+`hook_answers.jsonl` next to the interceptor script itself (`hooks/`, anchored to
+`Path(__file__)`, never CWD). Each record carries the question, options, answer,
+and the **tier** that produced it (`override` / `llm` / `fallback`), plus the LLM
+attempt's details (`hook_model`, `match: exact|fuzzy|null`, `llm_raw`, `error`,
+`temperature_stripped`). When interception silently turns off (PyYAML missing, or
+`tool_handlers.yaml` not found), the hook writes a `tier: disabled` record instead
+of vanishing without a trace. Writes are best-effort: a logging failure never
+breaks interception.
+
+`collect.py` harvests the ledger to `cases/<case-id>/hook_answers.jsonl` (case and
+in-repo mode) or to the run root (batch mode — run-level, unattributed). Judges see
+it as `outputs["hook_answers"]` (a list, or `None` when no ledger was found), with
+`outputs["hook_answers_scope"]` (`case`/`run`) and
+`outputs["interception_configured"]`.
+
+The builtin **`process/simulator_provenance`** judge gates on it: fail on any
+fallback/disabled/error record, or when interception is configured, the trace shows
+AskUserQuestion calls, and no ledger exists (an unrecorded simulation). Pair it with
+`thresholds.simulator_provenance.min_pass_rate: 1.0` so no case runs on arbitrary
+answers. A pass certifies **provenance coverage only** — `llm`-tier answers are
+reported, not validated — and a hook killed from outside is pass-through and
+unrecordable (the missing-ledger check is its signature). See
+[built-in judges](../reference/builtin-judges.md#processsimulator_provenance).
+
+!!! note "Bool judges gate the default reward"
+    Adding `simulator_provenance` to an eval used for eval-anova composites or RL
+    rewards zeroes the composite for any fallback-answered case under the default
+    bool-gate composition. Exclude it via the `reward:` section, or accept the gate.
 
 ### Bash and MCP service gating
 

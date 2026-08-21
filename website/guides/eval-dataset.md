@@ -83,6 +83,10 @@ See the [generation config reference](../reference/config/generation.md) and the
     The `synthetic` strategy is fully declarative — the number of cases comes from
     each seed's `count` in `generation.seeds`. To resize a synthetic dataset, edit
     the seed counts in `eval.yaml` and re-run `/eval-dataset`, not `--count`.
+    Regeneration **replaces the whole `case-NNN` set** (numbering restarts at
+    `case-001`), so the generation script refuses to overwrite existing generated
+    cases unless it is re-run with `--force` — hand-edits such as `TODO_`
+    replacements are lost and must be reapplied.
 
 ## What a case looks like
 
@@ -213,7 +217,12 @@ The generator uses `models.judge` (falling back to a default) and authenticates 
 `ANTHROPIC_API_KEY` or `ANTHROPIC_VERTEX_PROJECT_ID`. It writes each case's
 `input.yaml` (only what the agent sees) and `annotations.yaml` (all evaluation
 metadata), auto-moving any `expected_*` fields the LLM misplaces into `input` back
-into `annotations`.
+into `annotations`. It also persists a **`manifest.yaml`** at the dataset root —
+generation provenance: the generator model and temperature, a sha256 of each seed's
+resolved prompt and of `generation.context`, the realized per-seed case counts
+(what the LLM returned vs. what validation kept), and per-case provenance. The
+manifest is a root-level file, invisible to directory-only case discovery, and is
+rewritten on every (`--force`) regeneration.
 
 See [Skill vs. prompt mode](skill-vs-prompt.md) and the
 [agentic-docs walkthrough](../get-started/agentic-docs.md) for where synthetic
@@ -223,14 +232,84 @@ generation fits.
 
 These steps run for **every** provenance:
 
-1. **Validate** — the skill reads a case back and checks it matches
-   `dataset.schema`: required files present, every `{field}` placeholder covered,
-   companion files present, no empty or placeholder-text files, and both branches
-   of conditional judges covered.
-2. **Report** — cases created, provenance (fresh vs. augment), coverage, what's
+1. **Audit + validate** — a deterministic audit script (`audit_dataset.py`) writes
+   `dataset_audit.yaml` at the dataset root. It mechanizes the duplicate,
+   contamination, composition, and conditional-judge branch-coverage checks (plus
+   argument-field presence, structural issues, and reference resolution — the
+   latter labeled *necessary, not sufficient*, for answerability). Conformance to
+   the natural-language `dataset.schema` and companion-file review remain
+   agent/human review. `/eval-run`'s preflight is informational: it warns only
+   when an existing audit is stale (per-case content hashes) — a never-audited
+   dataset stays silent — and never blocks the run.
+2. **Report** — cases created, provenance (fresh vs. augment), the audit summary
+   and artifact paths (`dataset_audit.yaml`, `manifest.yaml`), coverage, what's
    still missing, and every `TODO_` placeholder to replace.
 3. **Harbor packaging** *(if `--harbor`)* — emit self-contained task packages for
    containerized execution.
+
+## Null-agent solvability probe
+
+An optional, once-per-dataset-revision check (SKILL.md Step 6.5): run the eval
+pipeline with a **do-nothing agent** and see which cases the judges award anyway.
+The statistic is labeled exactly:
+
+> **null-pass rate (joint task/judge non-discriminativeness, upper-bounds 1−V1)**
+
+Under LLM judges this is a **joint task/judge probe** — every null-pass means
+either a degenerate case (answerable with no work) or a vacuous/lenient judge; the
+judge's rationale string distinguishes which. It is *not* a pure task-validity
+figure.
+
+The probe reuses the unchanged eval-run pipeline against a throwaway run dir
+(convention: `null-probe-<YYYYMMDD>`):
+
+```bash
+# 1. Workspace — interception/tool-handler resolution (eval-run Step 3a) is
+#    skippable: the null runner never executes, so hooks never fire.
+python3 skills/eval-run/scripts/workspace.py --config eval.yaml --run-id <null-run-id>
+
+# 2. Execute with the null runner. --model is still required by execute.py
+#    (any value works) but ignored by the null runner.
+python3 skills/eval-run/scripts/execute.py --config eval.yaml \
+  --workspace <workspace> --model sonnet --agent null \
+  --output $AGENT_EVAL_RUNS_DIR/<eval-name>/<null-run-id> --run-id <null-run-id>
+
+# 3. Collect (expect the normal "0 artifacts" warnings — nothing ran).
+python3 skills/eval-run/scripts/collect.py --config eval.yaml \
+  --workspace <workspace> --output $AGENT_EVAL_RUNS_DIR/<eval-name>/<null-run-id>
+
+# 4. Score with --samples 3: stochastic (llm/agent) judges are majority-voted,
+#    so a null-pass is not a one-off verdict (this triples judge-token cost;
+#    agent cost is zero).
+python3 skills/eval-run/scripts/score.py judges \
+  --run-id <null-run-id> --config eval.yaml --samples 3
+
+# 5. Audit the null run — merges a null_probe section into dataset_audit.yaml.
+python3 skills/eval-dataset/scripts/audit_dataset.py --config eval.yaml \
+  --null-run $AGENT_EVAL_RUNS_DIR/<eval-name>/<null-run-id> \
+  [--reward-threshold 0.5] [--fail-on-null-pass]
+```
+
+A case **null-passes** when any bool judge passed the empty run, or when the
+composite reward — recomputed from the per-judge records with the same
+`compose_reward` the [reward API](../concepts/reward-api.md) uses — reaches
+`--reward-threshold` (fixed default `0.5`). `if:`-skipped and errored judges never
+count. Passes from unsampled stochastic judges are marked `low_confidence` rather
+than trusted.
+
+!!! tip "Triage: fix the case OR fix the judge"
+    Example: a `consulted_docs` PASS with rationale "No expected_files specified —
+    nothing to verify" on a case without `expected_files` is a
+    judge/case-underspecification signal — add the annotation or condition the
+    judge; the task itself may be fine.
+
+!!! warning "Limitations"
+    Batch-mode datasets are not supported: a null run produces zero artifacts, so
+    batch collection creates no per-case run dirs and scoring exits before
+    `per_case` exists — the audit then exits `2` with guidance. The probe exits `0`
+    by default (findings, not verdicts); use `--fail-on-null-pass` to gate CI.
+    The null runner is CLI-only: `runner.type: "null"` in `eval.yaml` is rejected
+    at config load (see [runners](../concepts/runners.md#null-diagnostic-cli-only)).
 
 ## Next steps
 

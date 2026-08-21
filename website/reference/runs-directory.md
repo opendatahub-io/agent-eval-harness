@@ -37,9 +37,12 @@ $AGENT_EVAL_RUNS_DIR/<run-id>/
 ├── stderr.log          # captured stderr
 ├── collection.json     # per-case artifact counts
 ├── events.json         # parsed event stream (batch mode; if traces.events)
+├── hook_answers.jsonl  # answer-provenance ledger (batch mode; run-level)
 ├── report.html         # scored HTML report
 ├── summary.yaml        # judge results: judges (mean, pass_rate, scored_cases,
 │                       #   errored_cases, stability) + per_case + run_metrics
+│                       #   + validity (non-gating P8 block: per-judge IRR,
+│                       #   V1/V2/V3 layer statuses, same-family caveat)
 └── cases/
     └── <case-id>/
         ├── artifacts/          # files collected from outputs[].path
@@ -47,6 +50,7 @@ $AGENT_EVAL_RUNS_DIR/<run-id>/
         ├── stdout.log          # per-case agent output (case mode)
         ├── stderr.log          # per-case stderr
         ├── events.json         # parsed event stream (case mode; if traces.events)
+        ├── hook_answers.jsonl  # answer-provenance ledger (case mode; if inputs.tools)
         └── subagents/          # captured subagent transcripts (*.jsonl)
 ```
 

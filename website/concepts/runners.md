@@ -8,7 +8,8 @@ runtime-agnostic.
 
 !!! important "Runner ≠ backend"
     A **runner** is *what agent runtime* runs a case (`claude-code`, `codex`, `cli`,
-    `responses-api`) — chosen in `eval.yaml` via `runner.type`. A **backend** is
+    `responses-api` — plus a CLI-only diagnostic `null` runner) — chosen in
+    `eval.yaml` via `runner.type`. A **backend** is
     *where* the eval runs (Local, [Harbor](../guides/harbor.md),
     [EvalHub](../guides/evalhub.md)) — always chosen by a **CLI flag** (`--runner`),
     never in the config. The same `eval.yaml` runs unchanged across all three
@@ -25,14 +26,17 @@ runtime-agnostic.
 ```mermaid
 flowchart TD
     C["eval.yaml → runner.type"] --> R{RUNNERS registry}
+    F["--agent null (CLI-only probe)"] --> R
     R -->|claude-code| CC["ClaudeCodeRunner<br/>claude --print"]
     R -->|codex| CX["CodexRunner<br/>codex exec"]
     R -->|cli| CLI["CliRunner<br/>arbitrary command"]
     R -->|responses-api| RA["ResponsesAPIRunner<br/>OpenAI Responses API"]
+    R -->|null| NR["NullRunner<br/>does nothing"]
     CC --> RR["RunResult"]
     CX --> RR
     CLI --> RR
     RA --> RR
+    NR --> RR
     RR --> S["collect → judges → report → MLflow"]
 ```
 
@@ -47,6 +51,7 @@ flowchart TD
 | `codex` | `CodexRunner` | Codex CLI (`codex exec --json`) | Native Codex execution with copied skill staging, sandbox-mode mapping, and JSONL usage parsing |
 | `cli` | `CliRunner` | Any command you provide | Opaque: harness only sees exit code, stdout/stderr, and an optional `metrics.json` |
 | `responses-api` | `ResponsesAPIRunner` | OpenAI Responses API (Shell tool + Skills API) | Apples-to-apples cross-runtime comparison; needs `pip install agent-eval-harness[openai]` |
+| `null` | `NullRunner` | None — does nothing | **CLI-only diagnostic** (`--agent null`) for the [null-agent solvability probe](../guides/eval-dataset.md#null-agent-solvability-probe); `runner.type: "null"` is rejected at config load |
 
 The default is `claude-code`, so `runner:` can be omitted entirely.
 
@@ -303,6 +308,26 @@ runner:
 !!! note "Not wired"
     `settings_path` and `max_budget_usd` are accepted for ABC compatibility but the
     Responses API exposes no equivalent knobs, so they have no effect here.
+
+## `null` (diagnostic — CLI-only)
+
+`NullRunner`
+([`null.py`](https://github.com/opendatahub-io/agent-eval-harness/blob/main/agent_eval/agent/null.py))
+is a do-nothing agent: `execute()` spawns nothing and returns immediately with
+exit code `0`, empty output, zero cost, and `resolved_model: "null"`. It never
+touches the workspace, so tool-interception hooks never fire.
+
+Its one purpose is the **null-agent solvability probe** on `/eval-dataset`: run the
+unchanged workspace → execute → collect → score pipeline with `--agent null` on
+`execute.py`, then audit which cases the judges award to an agent that did no work
+(`audit_dataset.py --null-run`). See the
+[eval-dataset guide](../guides/eval-dataset.md#null-agent-solvability-probe).
+
+!!! warning "Not a config runner"
+    The probe is CLI-only. `runner.type: "null"` in `eval.yaml` is **rejected at
+    config load** with a pointer to `--agent null` — a config permanently pinned to
+    a do-nothing agent is always a mistake. (YAML's unquoted `type: null` parses to
+    "no type set" and simply falls back to the `claude-code` default.)
 
 ## Choosing a runner
 

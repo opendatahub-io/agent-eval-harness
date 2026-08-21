@@ -9,12 +9,16 @@ Usage:
     python3 ${CLAUDE_SKILL_DIR}/scripts/score.py judges --run-id <id> --config eval.yaml
     python3 ${CLAUDE_SKILL_DIR}/scripts/score.py pairwise --run-id <id> --baseline <id> --config eval.yaml
     python3 ${CLAUDE_SKILL_DIR}/scripts/score.py regression --run-id <id> --config eval.yaml
+    python3 ${CLAUDE_SKILL_DIR}/scripts/score.py simulator --run-id <id> --config eval.yaml
+    python3 ${CLAUDE_SKILL_DIR}/scripts/score.py calibration --run-id <id> --config eval.yaml
+    python3 ${CLAUDE_SKILL_DIR}/scripts/score.py clarity --run-id <id> --config eval.yaml --raters m1,m2,m3
 """
 
 import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
 
 import argparse
 import ast
+import copy
 import importlib
 import json
 import logging
@@ -36,6 +40,66 @@ import yaml
 from agent_eval.config import (
     EvalConfig, RunnerConfig, _is_valid_eval_name, _validate_path_segment,
 )
+from agent_eval.model_families import (
+    DEFAULT_HOOK_MODEL, family_composition, infer_model_family,
+)
+from agent_eval.tools.interception import extract_tool_patterns
+from agent_eval.reliability import (
+    INTERVAL, NOMINAL, ORDINAL,
+    REASON_INSUFFICIENT_DATA, REASON_PERFECT_AGREEMENT,
+    bootstrap_ci, cohen_kappa, fleiss_kappa, krippendorff_alpha,
+    select_irr_metric,
+)
+
+# Mandatory label for every self-consistency coefficient this file emits:
+# k samples of ONE judge measure the stability of a single instrument, not
+# agreement between independent raters (paper Sec 5.3, Appendix A.1).
+IRR_SELF_CONSISTENCY_LABEL = (
+    "single-judge self-consistency alpha "
+    "(upper bound on inter-rater reliability)")
+
+# Cross-model judge-panel alpha (units = cases, raters = the panel's models).
+# The single-family suffix is mandatory whenever every panel member resolves
+# to ONE known provider family — within-family agreement must never be sold
+# as cross-family robustness (paper Prescription 4).
+PANEL_ALPHA_LABEL = "cross-model panel alpha"
+PANEL_SINGLE_FAMILY_SUFFIX = (
+    " (single-family panel — within-family agreement can be spuriously "
+    "high; paper Prescription 4)")
+PANEL_ALPHA_RATIONALE = (
+    "Krippendorff's alpha over the cases × models matrix: each panel "
+    "model's per-case REDUCED verdict is one rater; an errored model is a "
+    "missing rating, which alpha's coincidence formulation tolerates "
+    "(paper Sec 5.3).")
+
+# Simulator calibration stratum labels (summary['simulator'].calibration).
+# Human-provenance pairs are the only calibration evidence (paper
+# Prescription 1); agent-authored overrides measure LLM-vs-LLM consistency
+# and must never be sold as human calibration. Both are RAW agreement rates
+# — nominal option labels at tiny n, so raw agreement + n only, no
+# chance-corrected coefficient here.
+SIM_GOLD_HUMAN_LABEL = ("held-out percent agreement vs human-authored "
+                        "overrides (uncorrected)")
+SIM_GOLD_AGENT_LABEL = ("LLM-vs-LLM consistency (not human calibration) "
+                        "— uncorrected")
+#: Cap on the per-pair detail list persisted in the human stratum.
+_SIM_PAIRS_CAP = 50
+
+# Cross-simulator agreement (summary['simulator'].cross_simulator) — the
+# primary hook answer vs each models.hook_shadow shadow answer, per
+# question. Raw agreement is uncorrected; the chance-corrected view is the
+# nominal Krippendorff alpha over questions x (primary + shadows), computed
+# only at >= _XSIM_ALPHA_MIN_QUESTIONS fully-covered questions (below that
+# the coefficient is noise).
+XSIM_AGREE_LABEL = ("cross-simulator all-agree rate — primary answer "
+                    "matched by every shadow (uncorrected)")
+XSIM_ALPHA_RATIONALE = (
+    "Krippendorff's alpha over the questions × simulators matrix: the "
+    "primary hook answer and each shadow model's answer are raters on one "
+    "question; only fully shadow-covered questions enter (paper Sec 5.3).")
+_XSIM_ALPHA_MIN_QUESTIONS = 10
+#: Cap on the persisted cross-simulator disagreement list.
+_XSIM_DISAGREEMENTS_CAP = 20
 
 # Log (don't silently blank) any undefined variable a judge template references.
 _TEMPLATE_LOGGER = logging.getLogger("agent_eval.judge_template")
@@ -193,6 +257,76 @@ def _extract_verifiable_evidence(record):
     ])
 
 
+def _parse_hook_ledger(path):
+    """Leniently parse a hook_answers.jsonl provenance ledger.
+
+    The ONE ledger parser (report.py imports it — no second parser). Skips
+    blank/malformed lines and non-dict entries silently (one stderr warning
+    per file), so a torn concurrent append can't invalidate the rest of the
+    ledger. Returns a list of record dicts ([] for an empty file), or None
+    when the file exists but cannot be read — provenance unknown, which the
+    provenance judge treats fail-safe like a missing ledger.
+    """
+    path = Path(path)
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    records = []
+    warned = False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            if not warned:
+                print(f"  Warning: skipping malformed line(s) in {path}",
+                      file=sys.stderr)
+                warned = True
+            continue
+        if isinstance(obj, dict):
+            records.append(obj)
+    return records
+
+
+def _load_hook_ledgers(run_dir, case_dirs):
+    """Collected hook_answers.jsonl records across a run.
+
+    Returns ``(records, ledger_scope)`` with scope ``case`` (per-case
+    ledgers found, each record tagged ``case_id``), ``run`` (only the
+    run-root batch ledger — unattributed), or ``missing``. Mirrors
+    ``load_case_record``'s per-case lookup (collected copy, then the
+    in-workspace ``hooks/`` location) and the run-root batch fallback.
+    Uses the ONE lenient ledger parser above.
+    """
+    run_dir = Path(run_dir)
+    records = []
+    scope = "missing"
+    for case_dir in case_dirs or []:
+        case_dir = Path(case_dir)
+        for candidate in (case_dir / "hook_answers.jsonl",
+                          case_dir / "hooks" / "hook_answers.jsonl"):
+            if candidate.is_file():
+                parsed = _parse_hook_ledger(candidate)
+                if parsed is not None:
+                    scope = "case"
+                    for rec in parsed:
+                        rec = dict(rec)
+                        rec["case_id"] = case_dir.name
+                        records.append(rec)
+                break
+    if scope == "missing":
+        root_ledger = run_dir / "hook_answers.jsonl"
+        if root_ledger.is_file():
+            parsed = _parse_hook_ledger(root_ledger)
+            if parsed is not None:
+                scope = "run"
+                records.extend(dict(rec) for rec in parsed)
+    return records, scope
+
+
 def load_case_record(case_dir, config, run_id=None, runs_dir=None):
     """Load all outputs, execution metadata, and traces for a case.
 
@@ -201,6 +335,12 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
     - tool_calls: captured tool calls (from tool outputs)
     - Execution metadata: exit_code, duration_s, token_usage, cost_usd, num_turns
     - Logs: stdout, stderr (if traces config enables them)
+    - hook_answers: simulated-user answer-provenance records (list, possibly
+      empty) or None when no ledger was found — the None-vs-[] distinction is
+      load-bearing for the simulator_provenance judge
+    - hook_answers_scope: "case" | "run" (run-root batch ledger, unattributed)
+      | None
+    - interception_configured: whether eval.yaml declares inputs.tools
     """
     runs_dir = Path(runs_dir) if runs_dir else _get_runs_dir(
         config.eval_name() if config else "")
@@ -359,6 +499,34 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
             record["events"] = []
     else:
         record["events"] = []
+
+    # --- Simulated-user answer provenance (hook_answers.jsonl ledger) ---
+    # None-vs-[] is load-bearing for the simulator_provenance judge: None
+    # means no ledger was found (unrecorded simulation if the trace shows
+    # AskUserQuestion calls), [] means a ledger exists but recorded nothing.
+    record["interception_configured"] = bool(config.inputs.tools)
+    ledger_path = case_dir / "hook_answers.jsonl"
+    ledger_scope = "case"
+    if not ledger_path.exists():
+        # In-container Harbor scoring: case_dir IS the agent workspace, so
+        # the ledger still sits where the interceptor wrote it (hooks/).
+        candidate = case_dir / "hooks" / "hook_answers.jsonl"
+        if candidate.exists():
+            ledger_path = candidate
+        elif run_id and runs_dir:
+            # Batch layout: run-level ledger at the run root (unattributed),
+            # mirroring the events.json run-root fallback above.
+            candidate = runs_dir / run_id / "hook_answers.jsonl"
+            if candidate.exists():
+                ledger_path = candidate
+                ledger_scope = "run"
+    if ledger_path.exists():
+        record["hook_answers"] = _parse_hook_ledger(ledger_path)
+        record["hook_answers_scope"] = (
+            ledger_scope if record["hook_answers"] is not None else None)
+    else:
+        record["hook_answers"] = None
+        record["hook_answers_scope"] = None
 
     # --- Case inputs (from input.yaml in case directory or dataset) ---
     # Exposed as {{ inputs }} in LLM judge prompts (plural for symmetry with
@@ -808,17 +976,25 @@ def _make_builtin_scorer(entry, jc, config):
         arguments = jc.arguments
         judge_model = _resolve_judge_model(jc, config)
 
-        def scorer(outputs=None, **kwargs):
-            out = outputs or {}
-            rendered = _render_jinja2_template(prompt_text, arguments, out)
-            images = _extract_images(out)
-            # Builtin prompts state a pass/fail contract, so the verdict shape
-            # is theirs, not the judge config's. A config that declares
-            # `feedback_type`/`score_range` on one of these is rejected at load
-            # rather than having the declaration silently dropped here.
-            return _call_structured_judge(rendered, judge_model, "bool",
-                                          images=images)
+        def _make(model):
+            def scorer(outputs=None, **kwargs):
+                out = outputs or {}
+                rendered = _render_jinja2_template(prompt_text, arguments, out)
+                images = _extract_images(out)
+                # Builtin prompts state a pass/fail contract, so the verdict
+                # shape is theirs, not the judge config's. A config that
+                # declares `feedback_type`/`score_range` on one of these is
+                # rejected at load rather than having the declaration
+                # silently dropped here.
+                return _call_structured_judge(rendered, model, "bool",
+                                              images=images)
+            return scorer
 
+        # Panels are rejected on builtin judges at config load; `for_model`
+        # is attached for the `score.py clarity` diagnostic, which re-rates
+        # cases with arbitrary rater models through this same call path.
+        scorer = _make(judge_model)
+        scorer.for_model = _make
         return scorer
 
     raise ValueError(f"Unknown builtin judge kind: {entry.kind}")
@@ -1240,6 +1416,152 @@ def _aggregate_samples(runs, judge_type):
     return result
 
 
+def _irr_level(judge_config):
+    """Measurement level of a judge's sampled ratings (shared helper).
+
+    bool verdicts are nominal categories; an integer ``score_range`` is an
+    ordered band scale (ordinal); any other numeric scale is interval.
+    Single implementation — later reliability consumers import this.
+    """
+    if judge_config is None:
+        return INTERVAL
+    bounds = _numeric_bounds(judge_config)
+    if bounds is None:  # feedback_type: bool
+        return NOMINAL
+    return ORDINAL if bounds[2] else INTERVAL
+
+
+def _compute_stability_irr(scored, judge_config, n_samples, samples_set):
+    """Chance-corrected IRR over the cross-case sampling matrix.
+
+    Each scored case is one unit; its ratings are ``stability.values`` plus
+    one MISSING rating (``None``) per errored sample — an errored rating is
+    missing, never a rating category. Metric selection, degenerate handling
+    (via ``IRRResult.reason_code`` — no duplicate prechecks here) and the
+    bootstrap CI all come from ``agent_eval.reliability``; this function only
+    adapts shapes into the canonical coefficient block:
+    ``{metric, level, value, reason_code, reason, n_units, label, rationale}``
+    plus optional ``{ci: [lo, hi], fleiss_kappa, n_ratings}``.
+    """
+    level = _irr_level(judge_config)
+    units = []
+    # Completeness is judged PER CASE (never from the first case only): every
+    # scored case must carry exactly `samples` observed values, and `samples`
+    # must be uniform across cases.
+    complete = len(samples_set) == 1
+    for r in scored:
+        st = r.get("stability") or {}
+        values = list(st.get("values") or [])
+        error_count = int(st.get("error_count") or 0)
+        units.append(values + [None] * error_count)
+        if len(values) != n_samples:
+            complete = False
+
+    # A distance-weighted level needs numeric ratings; if the observed values
+    # contradict the declared level (e.g. bool verdicts from a judge that
+    # declared nothing), fall back to nominal rather than crashing scoring.
+    if level != NOMINAL and any(
+            isinstance(v, bool) or not isinstance(v, (int, float))
+            for row in units for v in row if v is not None):
+        level = NOMINAL
+
+    # N resamples of one judge are a varied-identity rater pool (paper
+    # Appendix A.1), so the selector always lands on Krippendorff's alpha.
+    metric, rationale = select_irr_metric(
+        n_raters=n_samples, varying_identity=True,
+        complete_matrix=complete, scale=level)
+    result = krippendorff_alpha(units, level)
+
+    irr = {
+        "metric": result.metric,
+        "level": level,
+        "value": result.value,
+        "reason_code": result.reason_code,
+        "reason": result.reason,
+        "n_units": result.n_units,
+        "label": IRR_SELF_CONSISTENCY_LABEL,
+        "rationale": rationale,
+        "n_ratings": result.n_ratings,
+    }
+
+    if result.value is not None:
+        ci = bootstrap_ci(
+            units, lambda resample: krippendorff_alpha(resample, level).value)
+        if ci is not None:
+            irr["ci"] = [round(ci.low, 3), round(ci.high, 3)]
+
+    # Fleiss companion (kappa-vs-alpha divergence surfaces exact-match
+    # distortion): only on a complete matrix, and never on an interval scale
+    # where exact-match agreement is the distortion being measured.
+    if complete and level != INTERVAL:
+        fk = fleiss_kappa(units)
+        if fk.value is not None:
+            irr["fleiss_kappa"] = round(fk.value, 3)
+
+    return irr
+
+
+def _score_panel(scorer, rec, models, n_samples, bounds, name, judge_type,
+                 case_id):
+    """Score one case with a judge panel: k samples PER MODEL, reduced per
+    model first, then across models.
+
+    Each model's ``n_samples`` draws are reduced by ``_aggregate_samples``
+    (within-model self-consistency is never conflated with inter-rater
+    agreement); the per-case VALUE is a second, literal ``_aggregate_samples``
+    pass over the per-model REDUCED records — strict-majority bool with
+    ties→fail, ``median_low`` numeric. An errored draw is a ``None`` raw
+    value and an errored model a ``None`` reduced value (a missing rating,
+    never a category). Deliberately NO top-level ``stability`` key: model
+    disagreement is not sampling instability, and the cross-case stability
+    block must not conflate the two. All raw draws land in
+    ``sample_rationales`` with a ``[model]`` prefix so the report's existing
+    per-case renderer shows them unchanged.
+    """
+    values = {}
+    samples = {}
+    sample_rationales = []
+    reduced_records = []
+    for model in models:
+        model_scorer = scorer.for_model(model)
+        runs = []
+        for _ in range(n_samples):
+            try:
+                v, rat = _normalize_result(model_scorer(outputs=rec))
+                v = _enforce_bounds(v, bounds, name)
+                runs.append({"value": v, "rationale": rat})
+            except Exception as e:
+                _log_judge_error(case_id, e)
+                runs.append({"value": None, "error": str(e)})
+        for r in runs:
+            entry = {"value": r.get("value"),
+                     "rationale": f"[{model}] {r.get('rationale', '')}".strip()}
+            if r.get("error"):
+                entry["error"] = r["error"]
+            sample_rationales.append(entry)
+        reduced = (_aggregate_samples(runs, judge_type) if n_samples > 1
+                   else runs[0])
+        rec_m = {"value": reduced.get("value"),
+                 "rationale": f"[{model}] {reduced.get('rationale', '')}"
+                              .strip()}
+        if reduced.get("error"):
+            rec_m["error"] = reduced["error"]
+        reduced_records.append(rec_m)
+        values[model] = reduced.get("value")
+        samples[model] = [r.get("value") for r in runs]
+
+    result = _aggregate_samples(reduced_records, judge_type)
+    out = {"value": result.get("value"), "judge_type": judge_type,
+           "panel": {"models": list(models), "values": values,
+                     "samples": samples},
+           "sample_rationales": sample_rationales}
+    if result.get("value") is None and result.get("error"):
+        out["error"] = result["error"]
+    else:
+        out["rationale"] = result.get("rationale", "")
+    return out
+
+
 def _parse_inline_check_source(source):
     """Parse an inline check snippet as the function body used at runtime."""
     wrapped = f"def _check(outputs, arguments):\n{textwrap.indent(source or '', '    ')}"
@@ -1578,8 +1900,15 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
             else:
                 n = 1
             bounds = judge_bounds.get(name)
+            # Judge panel: k samples per model, per-model reduction, then a
+            # cross-model majority/median — never the plain sampling path.
+            panel = getattr(scorer, "panel_models", None)
             try:
-                if n > 1:
+                if panel:
+                    case_results[name] = _score_panel(
+                        scorer, rec, panel, n, bounds, name, judge_type,
+                        case_id)
+                elif n > 1:
                     runs = []
                     for _ in range(n):
                         try:
@@ -1658,21 +1987,73 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
                                   run_id=run_id)
 
     # Per-judge stability across cases (only meaningful when sampled > 1):
-    # how many cases gave a consistent score across all samples.
+    # how many cases gave a consistent score across all samples, plus a
+    # chance-corrected IRR coefficient over the case × sample rating matrix
+    # (error samples count as missing ratings, never a category).
+    jc_by_name = {jc.name: jc for jc in config.judges}
     for name in aggregated:
         scored = [per_case[c][name] for c in per_case
                   if isinstance(per_case.get(c, {}).get(name), dict)
                   and "stability" in per_case[c][name]
                   and per_case[c][name].get("value") is not None]
         if scored:
-            n_samples = scored[0]["stability"].get("samples", 1)
+            samples_set = {r["stability"].get("samples", 1) for r in scored}
+            n_samples = max(samples_set)
             if n_samples > 1:
                 stable = sum(1 for r in scored if r["stability"].get("stable"))
                 aggregated[name]["stability"] = {
                     "samples": n_samples,
                     "stable_cases": stable,
                     "total_cases": len(scored),
+                    "irr": _compute_stability_irr(
+                        scored, jc_by_name.get(name), n_samples, samples_set),
                 }
+
+    # Cross-case panel alpha (judge panels): units = cases, raters = the
+    # panel's models, ratings = per-model REDUCED verdicts; an errored model
+    # is a missing rating (None), never a category. The models list is read
+    # from config — never inferred from the first scored case.
+    samples_by_name = {jn: js for jn, _, _, _, js in judges}
+    for name in aggregated:
+        jc = jc_by_name.get(name)
+        panel_models = list(getattr(jc, "panel_models", None) or []) if jc else []
+        if not panel_models:
+            continue
+        units = []
+        for c in per_case:
+            recd = per_case[c].get(name)
+            pnl = recd.get("panel") if isinstance(recd, dict) else None
+            if isinstance(pnl, dict):
+                vals = pnl.get("values") or {}
+                units.append([vals.get(m) for m in panel_models])
+        level = _irr_level(jc)
+        # Same guard as the stability IRR: a distance-weighted level needs
+        # numeric ratings; contradicting observed values fall back to nominal.
+        if level != NOMINAL and any(
+                isinstance(v, bool) or not isinstance(v, (int, float))
+                for row in units for v in row if v is not None):
+            level = NOMINAL
+        result = krippendorff_alpha(units, level)
+        families = family_composition(panel_models)
+        label = PANEL_ALPHA_LABEL
+        if len(families) == 1 and "unknown" not in families:
+            label += PANEL_SINGLE_FAMILY_SUFFIX
+        k_samples = (max(1, samples_override)
+                     if samples_override is not None
+                     else samples_by_name.get(name, 1))
+        aggregated[name]["panel"] = {
+            "metric": result.metric,
+            "level": level,
+            "value": result.value,
+            "reason_code": result.reason_code,
+            "reason": result.reason,
+            "n_units": result.n_units,
+            "label": label,
+            "rationale": PANEL_ALPHA_RATIONALE,
+            "models": panel_models,
+            "families": families,
+            "k_samples": k_samples,
+        }
 
     return {"per_case": per_case, "aggregated": aggregated}
 
@@ -2027,6 +2408,31 @@ def _load_agent_judge(jc, config, project_root=None):
     return scorer
 
 
+class _PanelScorer:
+    """Panel facade over a per-model scorer factory.
+
+    ``for_model(m)`` returns (and caches) the single-model scorer the factory
+    builds — the SAME client/call path a single-model judge uses
+    (``_get_anthropic_client`` honoring ``ANTHROPIC_BASE_URL``), so every
+    panel member, gateway aliases included, is called identically. Calling
+    the facade directly falls back to the first panel member;
+    ``score_cases`` takes the panel path (``_score_panel``) instead.
+    """
+
+    def __init__(self, panel_models, make_scorer):
+        self.panel_models = list(panel_models)
+        self._make = make_scorer
+        self._cache = {}
+
+    def for_model(self, model):
+        if model not in self._cache:
+            self._cache[model] = self._make(model)
+        return self._cache[model]
+
+    def __call__(self, outputs=None, **kwargs):
+        return self.for_model(self.panel_models[0])(outputs=outputs, **kwargs)
+
+
 def _load_llm_judge(jc, config, project_root=None):
     root = Path(project_root).resolve() if project_root else Path.cwd().resolve()
     # Check llm_rubric first (preferred in synthetic-generation configs), then prompt
@@ -2059,19 +2465,42 @@ def _load_llm_judge(jc, config, project_root=None):
     if (os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID")
             or os.environ.get("ANTHROPIC_API_KEY")
             or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
-        judge_model = _resolve_judge_model(jc, config)
         feedback_type = "bool" if jc.feedback_type == "bool" else "score"
         bounds = _numeric_bounds(jc)
         arguments = jc.arguments
 
-        def scorer(outputs=None, **kwargs):
-            out = outputs or {}
-            rendered = _render_jinja2_template(prompt, arguments, out)
-            images = _extract_images(out)
-            return _call_structured_judge(rendered, judge_model, feedback_type,
-                                          images=images, bounds=bounds)
+        def _make(model):
+            def scorer(outputs=None, **kwargs):
+                out = outputs or {}
+                rendered = _render_jinja2_template(prompt, arguments, out)
+                images = _extract_images(out)
+                return _call_structured_judge(rendered, model, feedback_type,
+                                              images=images, bounds=bounds)
+            return scorer
 
+        # Judge panel: every member resolves through this same factory —
+        # non-Anthropic ids are gateway aliases reached via
+        # ANTHROPIC_BASE_URL (e.g. a LiteLLM proxy serving /v1/messages).
+        # A panel bypasses models.judge entirely.
+        if jc.panel_models:
+            return _PanelScorer(jc.panel_models, _make)
+        judge_model = _resolve_judge_model(jc, config)
+        scorer = _make(judge_model)
+        # `score.py clarity` re-rates cases with arbitrary rater models
+        # through the judge's own rubric and call path.
+        scorer.for_model = _make
         return scorer
+
+    # The MLflow make_judge fallback below is pinned to one client/model —
+    # it cannot fan a panel out per member, so panels are rejected loudly
+    # here rather than silently running one model.
+    if jc.panel_models:
+        raise RuntimeError(
+            f"Judge '{jc.name}': judge panels require the Anthropic client "
+            "path (ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / "
+            "ANTHROPIC_VERTEX_PROJECT_ID), optionally through an "
+            "Anthropic-Messages-compatible gateway via ANTHROPIC_BASE_URL — "
+            "the MLflow make_judge fallback cannot run a panel")
 
     # MLflow make_judge fallback (requires OpenAI-compatible API key)
     try:
@@ -2227,9 +2656,42 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
         "cases_compared": len(results),
         "wins_a": wins_a, "wins_b": wins_b,
         "ties": ties, "errors": errors,
+        "swap_consistency": _swap_consistency(results),
+        # pref_ab/pref_ba are the raw position-swapped verdicts; keeping them
+        # per case is what makes swap consistency (and any future pairwise
+        # reliability coefficient) computable after the fact.
         "per_case": [{"case_id": r.case_id, "winner": r.winner, "error": r.error,
+                      "pref_ab": r.pref_ab, "pref_ba": r.pref_ba,
                       "reasoning": r.reasoning}
                      for r in results],
+    }
+
+
+def _swap_consistency(results):
+    """Position-swap consistency of the AB/BA pairwise verdict pairs.
+
+    Consistent means the swapped orders agree — ("A","B") -> A wins,
+    ("B","A") -> B wins, ("tie","tie") -> tie — i.e. the winner was derivable
+    without folding to tie. Everything else non-errored is inconsistent:
+    (A,A)/(B,B) is pure position bias, a one-sided tie is partial. Errored
+    comparisons are EXCLUDED from the denominator, never counted as a verdict
+    category. ``rate`` is an uncorrected agreement fraction (no chance
+    correction). Headline wins/ties counts are unaffected.
+    """
+    consistent = inconsistent = errors = 0
+    for r in results:
+        if r.winner == "error":
+            errors += 1
+        elif (r.pref_ab, r.pref_ba) in (("A", "B"), ("B", "A"), ("tie", "tie")):
+            consistent += 1
+        else:
+            inconsistent += 1
+    scored = consistent + inconsistent
+    return {
+        "consistent": consistent,
+        "inconsistent": inconsistent,
+        "errors": errors,
+        "rate": round(consistent / scored, 3) if scored else None,
     }
 
 
@@ -2486,6 +2948,785 @@ def _extract_judge_json(text):
 
 
 # ---------------------------------------------------------------------------
+# Human calibration — judge-vs-human agreement from /eval-review verdicts
+# ---------------------------------------------------------------------------
+
+#: Mandatory label for every judge-vs-human coefficient this file emits: one
+#: reviewer is a criterion anchor, not a rater pool — this is agreement with
+#: a single human, never "validated accuracy".
+HUMAN_AGREEMENT_LABEL = "agreement with a single human reviewer (n={n})"
+
+#: Below this many joined pairs no coefficient is computed — the raw
+#: (uncorrected) agreement table is emitted instead. Overridable per
+#: invocation via ``calibration --floor``.
+CALIBRATION_FLOOR = 5
+
+
+def _load_review_verdicts(run_dir):
+    """Load review.yaml and its ``verdicts`` block, validated loudly.
+
+    review.yaml is agent-written YAML: a missing file or ``verdicts`` key
+    exits 1 with a hint; a structurally wrong verdicts block (not a mapping)
+    exits 1 with the expected shape. Individual malformed entries are the
+    join's job to skip (with a stderr warning) — never a crash.
+    """
+    review_path = run_dir / "review.yaml"
+    if not review_path.exists():
+        print(f"No review.yaml in {run_dir} — run /eval-review and collect "
+              "calibration verdicts first", file=sys.stderr)
+        sys.exit(1)
+    with open(review_path) as f:
+        review = yaml.safe_load(f) or {}
+    if not isinstance(review, dict):
+        print(f"review.yaml is not a mapping: {review_path}", file=sys.stderr)
+        sys.exit(1)
+    verdicts = review.get("verdicts")
+    if verdicts is None:
+        print("review.yaml has no 'verdicts' block — run /eval-review and "
+              "collect calibration verdicts first", file=sys.stderr)
+        sys.exit(1)
+    if not isinstance(verdicts, dict):
+        print("review.yaml 'verdicts' must be a mapping of "
+              "{case_dir: {judge_name: value}}; got "
+              f"{type(verdicts).__name__}", file=sys.stderr)
+        sys.exit(1)
+    return review, verdicts
+
+
+def _calibration_join(per_case, verdicts, judge_configs):
+    """Join human verdicts against the REDUCED per-case judge values.
+
+    Pure and unit-testable. Returns ``{judge_name: {"pairs": [(case_id,
+    human, judge)], "excluded": {skipped, errored, malformed, off_scale,
+    unmatched}}}``. The comparison value is ``per_case[case][judge]['value']``
+    — the ``_aggregate_samples`` reduction (majority-vote bool / median_low
+    numeric) — never ``stability.values``. Every exclusion shrinks n toward
+    the calibration floor and is counted + warned to stderr; nothing here
+    crashes on agent-written YAML.
+    """
+    joined = {}
+
+    def _bucket(judge_name):
+        return joined.setdefault(judge_name, {
+            "pairs": [],
+            "excluded": {"skipped": 0, "errored": 0, "malformed": 0,
+                         "off_scale": 0, "unmatched": 0},
+        })
+
+    def _warn(msg):
+        print(f"calibration: {msg}", file=sys.stderr)
+
+    for case_id in sorted(verdicts, key=str):
+        jmap = verdicts[case_id]
+        if not isinstance(jmap, dict):
+            _warn(f"case {case_id!r}: verdict entry is not a mapping "
+                  f"(got {type(jmap).__name__}) — skipped")
+            continue
+        case_row = per_case.get(case_id)
+        if not isinstance(case_row, dict):
+            for judge_name in jmap:
+                if judge_name in judge_configs:
+                    _bucket(judge_name)["excluded"]["unmatched"] += 1
+            _warn(f"case {case_id!r} not found in summary per_case — skipped")
+            continue
+        for judge_name, human in jmap.items():
+            if judge_name not in judge_configs:
+                _warn(f"case {case_id!r}: unknown judge {judge_name!r} "
+                      "(not in eval.yaml) — skipped")
+                continue
+            bucket = _bucket(judge_name)
+            rec = case_row.get(judge_name)
+            if not isinstance(rec, dict):
+                bucket["excluded"]["unmatched"] += 1
+                _warn(f"case {case_id!r}: judge {judge_name!r} has no "
+                      "result in per_case — skipped")
+                continue
+            jv = rec.get("value")
+            if jv is None:
+                # if:-skipped records carry no 'error' key; errored ones do.
+                kind = "errored" if rec.get("error") else "skipped"
+                bucket["excluded"][kind] += 1
+                _warn(f"case {case_id!r}/{judge_name}: judge value is null "
+                      f"({kind}) — excluded")
+                continue
+            # Type harmonization: the human verdict must live on the judge's
+            # own scale. Bool verdicts pair with bool values; numeric with
+            # numeric (bool is NOT a number here — the bool-is-int trap).
+            if isinstance(jv, bool):
+                if not isinstance(human, bool):
+                    bucket["excluded"]["malformed"] += 1
+                    _warn(f"case {case_id!r}/{judge_name}: bool judge but "
+                          f"human verdict {human!r} is not a bool — excluded")
+                    continue
+            elif isinstance(jv, (int, float)):
+                if isinstance(human, bool) or not isinstance(human,
+                                                             (int, float)):
+                    bucket["excluded"]["malformed"] += 1
+                    _warn(f"case {case_id!r}/{judge_name}: numeric judge but "
+                          f"human verdict {human!r} is not numeric — excluded")
+                    continue
+                jc = judge_configs.get(judge_name)
+                bounds = getattr(jc, "score_range", None) if jc else None
+                if bounds and not (bounds[0] <= human <= bounds[1]):
+                    bucket["excluded"]["off_scale"] += 1
+                    _warn(f"case {case_id!r}/{judge_name}: human verdict "
+                          f"{human!r} outside declared score_range "
+                          f"{list(bounds)} — excluded, never clamped")
+                    continue
+            else:
+                # Non-bool/non-numeric judge value (a string verdict). The
+                # human verdict must be a hashable scalar of the SAME type
+                # family — an agent-written YAML list/dict would reach
+                # Counter() inside cohen_kappa and crash the join.
+                if (not isinstance(human, (str, int, float, bool))
+                        or not isinstance(jv, str)
+                        or not isinstance(human, str)):
+                    bucket["excluded"]["malformed"] += 1
+                    _warn(f"case {case_id!r}/{judge_name}: judge value "
+                          f"{jv!r} and human verdict {human!r} must be "
+                          "matching hashable scalars — excluded")
+                    continue
+            bucket["pairs"].append((case_id, human, jv))
+    return joined
+
+
+def _calibration_scale(judge_config, pairs):
+    """Measurement level of the human-vs-judge join for one judge.
+
+    ``feedback_type: bool`` or all-bool joined values -> nominal; otherwise
+    the judge's declared scale via ``_irr_level`` (integer bounds ->
+    ordinal, fractional -> interval), downgraded to nominal when the joined
+    values are not numeric.
+    """
+    values = [v for _, h, j in pairs for v in (h, j)]
+    if values and all(isinstance(v, bool) for v in values):
+        return NOMINAL
+    level = _irr_level(judge_config)
+    if level != NOMINAL and any(
+            isinstance(v, bool) or not isinstance(v, (int, float))
+            for v in values):
+        return NOMINAL
+    return level
+
+
+def compute_human_agreement(pairs, scale, floor=CALIBRATION_FLOOR):
+    """Canonical ``human_agreement`` coefficient block for one judge.
+
+    Metric selection is structural (``select_irr_metric``): exactly 2 fixed
+    raters (the judge and the human) on a complete-by-construction joined
+    matrix — Cohen's kappa on nominal, Krippendorff's alpha on
+    ordinal/interval. Below ``floor`` joined pairs NO coefficient is
+    computed: the block carries the raw (chance-uncorrected) agreement plus
+    the per-case pairs table instead, with ``reason_code:
+    insufficient_data``. Shape is the canonical coefficient block
+    ``{metric, level, value, reason_code, reason, n_units, label,
+    rationale}`` plus ``agreement_raw`` (uncorrected exact-match proportion)
+    and ``pairs``.
+    """
+    n = len(pairs)
+    metric, rationale = select_irr_metric(
+        n_raters=2, varying_identity=False, complete_matrix=True, scale=scale)
+    matches = sum(1 for _, h, j in pairs if h == j)
+    agreement_raw = round(matches / n, 3) if n else None
+    block = {
+        "metric": metric,
+        "level": scale,
+        "value": None,
+        "reason_code": None,
+        "reason": None,
+        "n_units": n,
+        "label": HUMAN_AGREEMENT_LABEL.format(n=n),
+        "rationale": rationale,
+        # Exact-match proportion: chance-uncorrected agreement, reported
+        # alongside (never instead of) the coefficient.
+        "agreement_raw": agreement_raw,
+        "pairs": [{"case": c, "human": h, "judge": j, "match": h == j}
+                  for c, h, j in pairs],
+    }
+    if n < floor:
+        block["reason_code"] = REASON_INSUFFICIENT_DATA
+        block["reason"] = (
+            f"n={n} joined pairs, below the calibration floor ({floor}) — "
+            "no coefficient computed; raw (uncorrected) agreement table only")
+        return block
+    if metric == "cohen_kappa":
+        result = cohen_kappa([h for _, h, _ in pairs],
+                             [j for _, _, j in pairs])
+    else:
+        result = krippendorff_alpha([[h, j] for _, h, j in pairs],
+                                    level=scale)
+    block["value"] = result.value
+    block["reason_code"] = result.reason_code
+    block["reason"] = result.reason
+    return block
+
+
+# ---------------------------------------------------------------------------
+# Validity block (P8) — measurement-validity report data, NON-GATING
+# ---------------------------------------------------------------------------
+
+#: The multiplicative validity frame — a conceptual upper bound only. The
+#: harness NEVER computes a numeric V_total (see build_validity_block).
+VALIDITY_FRAME = (
+    "V_total <= V1 x V2 x V3 (conceptual upper bound — "
+    "arXiv 2608.00794 Sec 10.4)")
+
+VALIDITY_NOTE = (
+    "Advisory guidance only (paper Sec 10.4): the paper reads "
+    "V_total <= 0.50 as results to interpret with caution and "
+    "V_total <= 0.30 as insufficient for high-stakes conclusions. "
+    "No numeric V_total is computed here — one or more layers are "
+    "unmeasured, and a product over unmeasured layers would be a "
+    "fabricated number.")
+
+SAME_FAMILY_CAVEAT = (
+    "All classifiable model roles resolve to one provider family. "
+    "Same-family agents, judges, and simulators share training lineage "
+    "and can fail in correlated ways, so agreement between them "
+    "overstates reliability (paper Appendix B.4).")
+
+#: Layer display names used in v_total.unmeasured_layers and the report.
+_VALIDITY_LAYER_NAMES = {
+    "v1": "V1 (task generation)",
+    "v2": "V2 (simulator)",
+    "v3": "V3 (judgment)",
+}
+
+
+def _judge_irr(agg):
+    """The ONE read point for a judge aggregate's IRR data.
+
+    Reads the NESTED ``stability.irr`` dict — the canonical coefficient
+    block persisted by ``_compute_stability_irr`` (never flat ``irr_*``
+    keys). Returns the irr dict, or ``None`` when the judge carries no
+    sampling-stability IRR data (samples: 1, deterministic judge, or a
+    pre-IRR summary).
+    """
+    if not isinstance(agg, dict):
+        return None
+    stability = agg.get("stability")
+    if not isinstance(stability, dict):
+        return None
+    irr = stability.get("irr")
+    return irr if isinstance(irr, dict) and irr else None
+
+
+def _intercepts_ask_user(config):
+    """True when any ``inputs.tools`` handler would intercept AskUserQuestion.
+
+    Mirrors the runtime matching rule (tools.py ``_find_handler``): an exact
+    tool-name pattern, or a trailing-``*`` prefix pattern — the bare ``*``
+    wildcard handler prefix-matches EVERY tool, AskUserQuestion included.
+    """
+    for tool_cfg in getattr(config.inputs, "tools", None) or []:
+        match_text = getattr(tool_cfg, "match", "") or ""
+        for pattern in extract_tool_patterns(match_text):
+            if pattern == "AskUserQuestion":
+                return True
+            if (pattern.endswith("*")
+                    and "AskUserQuestion".startswith(pattern[:-1])):
+                return True
+    return False
+
+
+def _collect_role_models(config, run_result=None, intercepting=False):
+    """Configured model ids across roles, for the same-family check.
+
+    One entry per configured role slot (skill, subagent, judge default,
+    hook when intercepting) plus per-judge overrides — duplicates kept, so
+    two roles resolving to the same id still count as two same-family
+    occurrences.
+    """
+    models = []
+    skill_model = ((run_result or {}).get("model")
+                   if isinstance(run_result, dict) else None)
+    skill_model = skill_model or config.models.skill
+    for m in (skill_model, config.models.subagent, config.models.judge):
+        if m and isinstance(m, str):
+            models.append(m)
+    if intercepting and config.models.hook:
+        models.append(config.models.hook)
+    for jc in config.judges or []:
+        m = getattr(jc, "model", None)
+        if m and isinstance(m, str):
+            models.append(m)
+    return models
+
+
+def _same_family_block(config, run_result=None, intercepting=False):
+    """Same-family caveat block, or None when no claim can be made.
+
+    The claim fires only when >= 2 role slots carry KNOWN ids that all
+    resolve to ONE family. Any unclassifiable id (opaque gateway alias)
+    silences the check entirely — unknown means silent, never a warning
+    and never a claimed family.
+    """
+    models = _collect_role_models(config, run_result=run_result,
+                                  intercepting=intercepting)
+    if len(models) < 2:
+        return None
+    families = [infer_model_family(m) for m in models]
+    if any(f is None for f in families):
+        return None  # unknown id anywhere -> stay silent (gateway rule)
+    if len(set(families)) != 1:
+        return None
+    return {
+        "family": families[0],
+        "models": sorted(set(models)),
+        "caveat": SAME_FAMILY_CAVEAT,
+    }
+
+
+def build_validity_block(config, aggregated_judges, summary=None,
+                         run_result=None):
+    """Assemble ``summary['validity']`` — the P8 reporting block.
+
+    NON-GATING by design: ``detect_regressions`` never reads it. Derived
+    data, re-assembled by ``cmd_judges`` on every scoring run.
+
+    Contents: per-judge P8 rows (IRR metric + value + threshold + selection
+    rationale, human-agreement passthrough), the three V-layer stanzas with
+    unmeasured layers NAMED, an honest ``v_total`` frame (never a computed
+    number — the numeric-product guard below can only fire once all three
+    layers carry measured numeric values, which no current feature
+    produces), and the same-family caveat (report-only).
+    """
+    summary = summary if isinstance(summary, dict) else {}
+    aggregated_judges = aggregated_judges or {}
+    eff_thresholds = config.effective_thresholds() or {}
+
+    # --- per-judge P8 rows (metric / value / threshold / rationale) --------
+    rows = []
+    for name in sorted(aggregated_judges):
+        agg = aggregated_judges[name]
+        if not isinstance(agg, dict):
+            continue
+        entry = eff_thresholds.get(name)
+        threshold = entry.get("min_alpha") if isinstance(entry, dict) else None
+        irr = _judge_irr(agg)
+        irr_row = None
+        if irr is not None:
+            irr_row = {
+                "metric": irr.get("metric"),
+                "value": irr.get("value"),
+                "threshold": threshold,
+                "rationale": irr.get("rationale"),
+            }
+            if irr.get("n_units") is not None:
+                irr_row["n_units"] = irr["n_units"]
+            if irr.get("ci") is not None:
+                irr_row["ci"] = irr["ci"]
+            if irr.get("value") is None and irr.get("reason_code"):
+                irr_row["reason_code"] = irr["reason_code"]
+        ha = agg.get("human_agreement")
+        ha_row = None
+        if isinstance(ha, dict) and ha:
+            ha_row = {"metric": ha.get("metric"), "value": ha.get("value"),
+                      "n": ha.get("n_units")}
+        rows.append({"judge": name, "irr": irr_row,
+                     "human_agreement": ha_row})
+
+    # --- V1: task generation ------------------------------------------------
+    audit_present = manifest_present = False
+    null_probe = None
+    ds_path = (config.dataset.path or "").strip()
+    if ds_path:
+        dataset_root = config.resolve_path(ds_path)
+        audit_path = dataset_root / "dataset_audit.yaml"
+        audit_present = audit_path.is_file()
+        manifest_present = (dataset_root / "manifest.yaml").is_file()
+        if audit_present:
+            try:
+                audit = yaml.safe_load(audit_path.read_text()) or {}
+            except (OSError, yaml.YAMLError):
+                audit = {}
+            probe = audit.get("null_probe") if isinstance(audit, dict) else None
+            if (isinstance(probe, dict)
+                    and probe.get("null_pass_rate") is not None):
+                null_probe = {"null_pass_rate": probe["null_pass_rate"]}
+    v1 = {
+        "status": "partially-measured" if audit_present else "unmeasured",
+        "generation_strategy": config.generation.strategy or "skill",
+        "dataset_audit": "present" if audit_present else "absent",
+        "manifest": "present" if manifest_present else "absent",
+    }
+    if null_probe:
+        v1["null_probe"] = null_probe
+
+    # --- V2: simulated user -------------------------------------------------
+    intercepting = _intercepts_ask_user(config)
+    if intercepting:
+        # The summary['simulator'] block (aggregate_simulator) supplies its
+        # own status — 'calibrated' iff human-provenance pairs exist. The
+        # defensive fallback keeps old summaries honest: no block means an
+        # uncalibrated simulator.
+        sim = summary.get("simulator")
+        status = (str(sim.get("status"))
+                  if isinstance(sim, dict) and sim.get("status")
+                  else "uncalibrated simulator")
+        v2 = {"status": status, "intercepts_ask_user": True,
+              "hook_model": config.models.hook}
+    else:
+        v2 = {"status": "not-applicable", "intercepts_ask_user": False}
+
+    # --- V3: judgment ---------------------------------------------------
+    def _numeric(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+    alpha_by_judge = {r["judge"]: (r["irr"] or {}).get("value") for r in rows}
+    gated = [n for n, e in eff_thresholds.items()
+             if isinstance(e, dict) and "min_alpha" in e]
+    min_gated_alpha = None
+    if gated:
+        gated_alphas = [alpha_by_judge.get(n) for n in gated]
+        if all(_numeric(v) for v in gated_alphas):
+            min_gated_alpha = min(gated_alphas)
+    # Self-consistency alpha is an UPPER BOUND on inter-rater reliability,
+    # so IRR coverage can only ever make V3 partially measured — 'measured'
+    # would need independent raters (judge panels).
+    v3_status = ("partially-measured"
+                 if any(r["irr"] is not None for r in rows) else "unmeasured")
+    v3 = {
+        "status": v3_status,
+        "judges": copy.deepcopy(rows),
+        "min_gated_alpha": min_gated_alpha,
+    }
+
+    layers = {"v1": v1, "v2": v2, "v3": v3}
+
+    # --- v_total: the frame, never a number ---------------------------------
+    unmeasured_layers = [
+        _VALIDITY_LAYER_NAMES[key] for key in ("v1", "v2", "v3")
+        if layers[key].get("status") not in ("measured", "not-applicable")
+    ]
+    # Guard: a numeric product may appear ONLY if all three layers carry a
+    # measured numeric 'value' — impossible with the current feature set
+    # (no layer ever sets one), so this stays None. Never fabricated.
+    layer_values = [layers[key].get("value") for key in ("v1", "v2", "v3")]
+    v_total_value = None
+    if all(_numeric(v) for v in layer_values):
+        v_total_value = layer_values[0] * layer_values[1] * layer_values[2]
+    v_total = {
+        "frame": VALIDITY_FRAME,
+        "value": v_total_value,
+        "unmeasured_layers": unmeasured_layers,
+        "note": VALIDITY_NOTE,
+    }
+
+    return {
+        "judges": rows,
+        "layers": layers,
+        "v_total": v_total,
+        "same_family": _same_family_block(config, run_result=run_result,
+                                          intercepting=intercepting),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Simulator aggregation (summary['simulator'] from the hook_answers ledgers)
+# ---------------------------------------------------------------------------
+
+def aggregate_simulator(config, run_id, runs_dir, case_dirs=None):
+    """Aggregate the run's hook_answers.jsonl ledgers into a simulator block.
+
+    Returns ``None`` when the eval configures no tool interception
+    (``inputs.tools`` empty — there is no simulator to describe); otherwise
+    the ``summary['simulator']`` block:
+
+    - ``tiers`` — answered-question tier distribution (override / llm /
+      fallback) plus ``disabled`` interception-off records.
+    - ``fallback_rate`` — fallback answers over ANSWERED QUESTIONS only
+      (question-scoped units): the share of questions the simulator
+      answered arbitrarily. ``None`` when no question was answered.
+      Disabled records are per-hook-invocation (they carry a reason, no
+      question) and never enter this rate — they are counted separately.
+    - ``disabled_events`` — interception-disabled hook invocations
+      (per-invocation records, no question). The ``max_fallback_rate``
+      gate also regresses whenever this is non-zero, so mixing units in
+      one rate is never needed to keep the gate protective.
+    - ``calibration`` — held-out shadow agreement vs the override gold set,
+      stratified by ``source``: the HUMAN stratum is the only calibration
+      evidence (``gold_agreement``); the agent stratum is labeled
+      LLM-vs-LLM consistency. Raw agreement + n only (nominal labels,
+      tiny n — no chance-corrected coefficient).
+    - ``deadline_skips`` — shadows skipped by the in-hook deadline budget.
+    - ``cross_simulator`` — present only when ``models.hook_shadow``
+      shadow answers exist in the ledger: per-question agreement between
+      the primary hook answer and each shadow model (all-agree rate,
+      per-model rates, nominal alpha at >= 10 fully-covered questions,
+      capped disagreement list, family composition + ``single_family`` so
+      within-family agreement is never sold as cross-family robustness).
+      Gated by ``thresholds.simulator.min_cross_simulator_agreement``.
+    - ``ledger_scope`` — ``case`` | ``run`` (batch root ledger,
+      unattributed) | ``missing``.
+    - ``status`` — ``calibrated`` iff >= 1 human-provenance pair exists,
+      else ``uncalibrated simulator`` (consumed by the validity block's V2
+      stanza).
+    """
+    if not config.inputs.tools:
+        return None
+    from datetime import datetime, timezone
+
+    run_dir = Path(runs_dir) / run_id
+    if case_dirs is None:
+        cases_root = run_dir / "cases"
+        case_dirs = (sorted(d for d in cases_root.iterdir() if d.is_dir())
+                     if cases_root.is_dir() else [])
+    records, ledger_scope = _load_hook_ledgers(run_dir, case_dirs)
+
+    tiers = {"override": 0, "llm": 0, "fallback": 0, "disabled": 0}
+    hook_models = {}
+    deadline_skips = 0
+    cal_errors = 0
+    strata = {"human": {"n": 0, "agree": 0, "pairs": []},
+              "agent": {"n": 0, "agree": 0}}
+    for rec in records:
+        tier = rec.get("tier")
+        if tier in tiers:
+            tiers[tier] += 1
+        model = rec.get("hook_model")
+        if model:
+            hook_models[model] = hook_models.get(model, 0) + 1
+        cal = rec.get("calibration")
+        if not isinstance(cal, dict):
+            continue
+        if cal.get("skipped") == "deadline":
+            deadline_skips += 1
+        if cal.get("error"):
+            cal_errors += 1
+        agree = cal.get("agree")
+        if not isinstance(agree, bool):
+            continue  # not a scored pair (error / skip / no shadow)
+        stratum = "human" if rec.get("source") == "human" else "agent"
+        strata[stratum]["n"] += 1
+        strata[stratum]["agree"] += 1 if agree else 0
+        if stratum == "human" and len(strata["human"]["pairs"]) < _SIM_PAIRS_CAP:
+            strata["human"]["pairs"].append({
+                "question": rec.get("question"),
+                "gold": cal.get("gold"),
+                "shadow": cal.get("shadow"),
+                "agree": agree,
+            })
+
+    n_questions = tiers["override"] + tiers["llm"] + tiers["fallback"]
+    # Question-scoped only: disabled records are per-hook-invocation events
+    # with no question, so they must not dilute (or inflate) this rate.
+    fallback_rate = (round(tiers["fallback"] / n_questions, 3)
+                     if n_questions else None)
+
+    def _stratum_block(name, label):
+        s = strata[name]
+        block = {
+            "n": s["n"],
+            "agree": s["agree"],
+            "rate": round(s["agree"] / s["n"], 3) if s["n"] else None,
+            "label": label,
+        }
+        if name == "human":
+            block["pairs"] = s["pairs"]
+        return block
+
+    human_block = _stratum_block("human", SIM_GOLD_HUMAN_LABEL)
+    agent_block = _stratum_block("agent", SIM_GOLD_AGENT_LABEL)
+    calibration = {
+        "n_pairs": strata["human"]["n"] + strata["agent"]["n"],
+        "by_source": {"human": human_block, "agent": agent_block},
+        # The HUMAN-stratum raw agreement is THE gold agreement — the only
+        # human-anchored calibration evidence (paper Prescription 1).
+        "gold_agreement": human_block["rate"],
+        "gold_agreement_label": SIM_GOLD_HUMAN_LABEL,
+        "errors": cal_errors,
+        "validated": human_block["n"] >= 1,
+    }
+
+    block = {
+        "status": ("calibrated" if human_block["n"] >= 1
+                   else "uncalibrated simulator"),
+        "tiers": tiers,
+        "n_questions": n_questions,
+        "fallback_rate": fallback_rate,
+        "disabled_events": tiers["disabled"],
+        "calibration": calibration,
+        "deadline_skips": deadline_skips,
+        "ledger_scope": ledger_scope,
+        "generated_at": datetime.now(timezone.utc).isoformat(
+            timespec="seconds"),
+    }
+    if hook_models:
+        block["hook_model"] = max(hook_models, key=hook_models.get)
+    # Cross-simulator agreement (models.hook_shadow). The primary rater id:
+    # the modal recorded hook_model, else the configured models.hook, else
+    # the interceptor's hardcoded default (override-only runs record no
+    # hook_model — the primary answers still came from the tiers, and the
+    # family label wants the model that WOULD have answered tier 2).
+    primary_model = (block.get("hook_model") or config.models.hook
+                     or DEFAULT_HOOK_MODEL)
+    cross = _aggregate_cross_simulator(records, primary_model)
+    if cross is not None:
+        block["cross_simulator"] = cross
+    if ledger_scope == "run":
+        block["note"] = ("run-level ledger — answers not attributed to "
+                         "cases (batch mode)")
+    return block
+
+
+def _aggregate_cross_simulator(records, primary_model):
+    """The ``cross_simulator`` sub-block, or ``None`` without shadow records.
+
+    Units are questions; raters are the primary hook answer plus each
+    ``models.hook_shadow`` shadow answer from the record's ``shadows``
+    array. ``n_questions``/``all_agree_rate``/``alpha`` cover only FULLY
+    shadow-covered questions (primary answered, every shadow model
+    answered) so partial coverage never inflates agreement;
+    ``per_model_agreement`` is per-model over that model's own answered
+    questions. ``single_family`` is true ONLY when every model classifies
+    (zero unknown-family models) into exactly one known family — the PR8
+    panel rule: an unclassifiable gateway alias silences the claim rather
+    than letting within-family agreement be sold as cross-family
+    robustness (paper Prescription 4). The nominal
+    alpha needs >= ``_XSIM_ALPHA_MIN_QUESTIONS`` covered questions;
+    below that it is suppressed with ``reason_code: insufficient_data``.
+    """
+    rows = []          # (question, primary answer|None, {model: answer|None})
+    model_order = []   # first-seen shadow model order
+    shadow_skips = 0
+    shadow_errors = 0
+    for rec in records:
+        shadows = rec.get("shadows")
+        if not isinstance(shadows, list) or not shadows:
+            continue
+        answers = {}
+        for s in shadows:
+            if not isinstance(s, dict) or not s.get("model"):
+                continue
+            model = s["model"]
+            if model not in model_order:
+                model_order.append(model)
+            if s.get("skipped") == "deadline":
+                shadow_skips += 1
+            if s.get("error"):
+                shadow_errors += 1
+            ans = s.get("answer")
+            answers[model] = ans if isinstance(ans, str) else None
+        if not answers:
+            continue
+        primary = rec.get("answer")
+        rows.append((rec.get("question"),
+                     primary if isinstance(primary, str) else None, answers))
+    if not rows:
+        return None
+
+    covered = [(q, primary, answers) for q, primary, answers in rows
+               if primary is not None
+               and all(answers.get(m) is not None for m in model_order)]
+    all_agree = sum(1 for _, primary, answers in covered
+                    if all(answers[m] == primary for m in model_order))
+
+    per_model = {}
+    for model in model_order:
+        pairs = [(primary, answers[model]) for _, primary, answers in rows
+                 if primary is not None and answers.get(model) is not None]
+        per_model[model] = (round(sum(1 for p, s in pairs if p == s)
+                                  / len(pairs), 3)
+                            if pairs else None)
+
+    disagreements = []
+    for question, primary, answers in rows:
+        if primary is None:
+            continue
+        answered = {m: a for m, a in answers.items() if a is not None}
+        if answered and any(a != primary for a in answered.values()):
+            if len(disagreements) < _XSIM_DISAGREEMENTS_CAP:
+                by_model = {primary_model: primary}
+                by_model.update(answered)
+                disagreements.append({"question": question,
+                                      "answers": by_model})
+
+    units = [[primary] + [answers[m] for m in model_order]
+             for _, primary, answers in covered]
+    if len(units) >= _XSIM_ALPHA_MIN_QUESTIONS:
+        result = krippendorff_alpha(units, NOMINAL)
+        alpha = result.to_dict()
+        alpha["rationale"] = XSIM_ALPHA_RATIONALE
+    else:
+        alpha = {
+            "metric": "krippendorff_alpha",
+            "level": NOMINAL,
+            "value": None,
+            "n_units": len(units),
+            "reason_code": REASON_INSUFFICIENT_DATA,
+            "reason": (f"alpha suppressed: {len(units)} fully "
+                       "shadow-covered question(s), fewer than "
+                       f"{_XSIM_ALPHA_MIN_QUESTIONS} — the coefficient "
+                       "would be noise"),
+        }
+
+    models = [primary_model] + model_order
+    families = family_composition(models)
+    return {
+        "models": models,
+        "families": families,
+        # PR8 panel rule: single-family is claimed ONLY when there are zero
+        # unknown-family models AND exactly one known family — an
+        # unclassifiable gateway alias silences the claim (silence
+        # contract), it never converts a mixed panel into a single family.
+        "single_family": len(families) == 1 and "unknown" not in families,
+        "n_questions": len(covered),
+        "n_shadowed_questions": len(rows),
+        "all_agree_rate": (round(all_agree / len(covered), 3)
+                           if covered else None),
+        "all_agree_label": XSIM_AGREE_LABEL,
+        "per_model_agreement": per_model,
+        "alpha": alpha,
+        "disagreements": disagreements,
+        "shadow_deadline_skips": shadow_skips,
+        "shadow_errors": shadow_errors,
+    }
+
+
+def _print_simulator_block(sim_block):
+    """Console summary of a simulator block (tiers + gold agreement)."""
+    tiers = sim_block.get("tiers") or {}
+    parts = [f"{tiers.get('override', 0)} override",
+             f"{tiers.get('llm', 0)} llm",
+             f"{tiers.get('fallback', 0)} fallback"]
+    if tiers.get("disabled"):
+        parts.append(f"{tiers['disabled']} disabled")
+    scope_note = (" (run-level ledger, unattributed)"
+                  if sim_block.get("ledger_scope") == "run" else "")
+    print(f"  simulator: {sim_block.get('n_questions', 0)} question(s) — "
+          f"{' · '.join(parts)}{scope_note}")
+    calibration = sim_block.get("calibration") or {}
+    human = (calibration.get("by_source") or {}).get("human") or {}
+    agent = (calibration.get("by_source") or {}).get("agent") or {}
+    if human.get("n"):
+        print(f"  simulator gold agreement: {human['rate']:.1%} over "
+              f"{human['n']} human-provenance pair(s) — uncorrected "
+              "agreement, held out")
+    elif agent.get("n"):
+        print(f"  simulator calibration: {agent['n']} agent-provenance "
+              "pair(s) only — LLM-vs-LLM consistency, NOT human "
+              "calibration (mark case_overrides with source: human)")
+    if sim_block.get("deadline_skips"):
+        print(f"  simulator: {sim_block['deadline_skips']} calibration "
+              "shadow(s) skipped by the in-hook deadline budget")
+    cross = sim_block.get("cross_simulator") or {}
+    if cross:
+        rate = cross.get("all_agree_rate")
+        rate_txt = (f"{rate:.1%}" if isinstance(rate, (int, float))
+                    and not isinstance(rate, bool) else "n/a")
+        families = cross.get("families") or {}
+        fam_txt = ", ".join(f"{fam} x{count}"
+                            for fam, count in sorted(families.items()))
+        print(f"  cross-simulator agreement: {rate_txt} over "
+              f"{cross.get('n_questions', 0)} fully covered question(s) — "
+              f"uncorrected; families: {fam_txt}")
+        if cross.get("single_family"):
+            print("  cross-simulator: single-family panel — within-family "
+                  "agreement is not cross-family robustness")
+
+
+# ---------------------------------------------------------------------------
 # Regression detection
 # ---------------------------------------------------------------------------
 
@@ -2513,9 +3754,47 @@ def _unavailable_reason(current, metric, kind):
             f"or not {kind}")
 
 
-def detect_regressions(current_results, thresholds, baseline_results=None):
+def detect_regressions(current_results, thresholds, baseline_results=None, *,
+                       pairwise=None, include_irr=True, simulator=None,
+                       human_calibration=None):
+    """Evaluate per-judge thresholds against aggregated results.
+
+    ``thresholds`` should come from ``EvalConfig.effective_thresholds()`` on
+    the local scoring path (detection-time consequence-tier resolution) and
+    from raw ``config.thresholds`` on the Harbor/EvalHub paths (with
+    ``include_irr=False``, since those aggregations carry no sampling
+    stability data and no judge-panel data — ``include_irr`` scopes both
+    ``min_alpha`` and ``min_panel_alpha``).
+
+    ``human_calibration`` is the summary's run-level ``human_calibration``
+    block (written by ``score.py calibration``), consumed only by the
+    ``min_human_agreement`` gate's stale-calibration check — a judge row that
+    lacks ``human_agreement`` while this block lists the judge was calibrated
+    once and then re-scored (``cmd_judges`` wholesale-rewrites
+    ``summary['judges']``).
+
+    ``simulator`` is the summary's run-level ``simulator`` block (written by
+    ``aggregate_simulator``), consumed by the RESERVED ``thresholds
+    .simulator`` mapping key — never a judge key, so the per-judge loop
+    skips it. Three-state semantics match the judge gates: breach /
+    clean / configured-but-unavailable (no simulator block, no answered
+    questions, or — for ``min_gold_agreement`` — zero HUMAN-provenance
+    calibration pairs) = regression. Under ``include_irr=False``
+    (Harbor/EvalHub) the simulator gates are skipped like the other
+    reliability gates — those aggregations carry no ledger data, and both
+    paths additionally strip the key with a stderr notice.
+
+    ``pairwise`` is accepted but RESERVED for a future pairwise
+    verdict-alpha gate (deferred follow-up); unused for now.
+    """
     regressions = []
     for judge_name, threshold in thresholds.items():
+        if judge_name == "simulator":
+            # RESERVED mapping key (simulator gates) — never a judge lookup:
+            # falling through would fetch a judge named 'simulator' or be
+            # silently dropped by the None-check below. Handled after the
+            # judge loop.
+            continue
         current = current_results.get(judge_name)
         if current is None:
             continue
@@ -2563,6 +3842,128 @@ def detect_regressions(current_results, thresholds, baseline_results=None):
             elif mean < threshold["min_mean"]:
                 regressions.append(Regression(judge_name, "mean",
                                               f">= {threshold['min_mean']}", str(mean)))
+        # min_alpha gates the single-judge self-consistency alpha computed
+        # over the sampling matrix (stability.irr). THREE-STATE semantics:
+        #   1. irr value present and < threshold      -> regression (breach)
+        #   2. value None with reason_code
+        #      'perfect_agreement'                    -> PASSES (healthy
+        #      degenerate: every rating identical, the coefficient is 0/0 —
+        #      a mature all-pass suite must not fail CI)
+        #   3. configured but unavailable — no stability.irr at all
+        #      (samples: 1, deterministic judge) or reason_code in
+        #      {insufficient_data, below_floor, undefined} -> regression
+        #      (configured-but-unavailable, the established pattern)
+        # EXCEPT when include_irr=False: min_alpha keys are skipped entirely
+        # with no regression (Harbor/EvalHub aggregations carry no sampling
+        # stability data, so the gate cannot be evaluated there).
+        if "min_alpha" in threshold and include_irr:
+            stability = current.get("stability")
+            irr = (stability.get("irr")
+                   if isinstance(stability, dict) else None) or {}
+            t = threshold["min_alpha"]
+            value = irr.get("value")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if value < t:
+                    regressions.append(Regression(
+                        judge_name, "alpha", f">= {t}", f"{value:.3f}",
+                        f"{irr.get('metric', 'alpha')}/"
+                        f"{irr.get('level', '?')}, "
+                        f"n_units={irr.get('n_units', '?')} — "
+                        f"{IRR_SELF_CONSISTENCY_LABEL}"))
+            elif irr.get("reason_code") == REASON_PERFECT_AGREEMENT:
+                pass  # degenerate PASS: zero variance, gate satisfied
+            else:
+                detail = irr.get("reason") or (
+                    "alpha unavailable — judge ran with samples: 1, is "
+                    "deterministic, or produced no IRR data")
+                regressions.append(Regression(
+                    judge_name, "alpha", f">= {t}", "n/a", detail))
+        # min_panel_alpha gates the cross-model panel alpha (units = cases,
+        # raters = the panel's models). Same THREE-STATE semantics as
+        # min_alpha, and the same include_irr scoping: Harbor/EvalHub
+        # aggregations carry no panel data, so the gate is skipped there
+        # with the combined reliability skip-notice.
+        if "min_panel_alpha" in threshold and include_irr:
+            panel = current.get("panel")
+            panel = panel if isinstance(panel, dict) else {}
+            t = threshold["min_panel_alpha"]
+            value = panel.get("value")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if value < t:
+                    detail = (
+                        f"{panel.get('metric', 'krippendorff_alpha')}/"
+                        f"{panel.get('level', '?')}, "
+                        f"n_units={panel.get('n_units', '?')} — "
+                        f"{panel.get('label', PANEL_ALPHA_LABEL)}")
+                    families = panel.get("families")
+                    if isinstance(families, dict) and families:
+                        detail += "; families: " + ", ".join(
+                            f"{fam} x{count}"
+                            for fam, count in sorted(families.items()))
+                    regressions.append(Regression(
+                        judge_name, "panel_alpha", f">= {t}", f"{value:.3f}",
+                        detail))
+            elif panel.get("reason_code") == REASON_PERFECT_AGREEMENT:
+                pass  # degenerate PASS: zero variance, gate satisfied
+            else:
+                detail = panel.get("reason") or (
+                    "panel alpha unavailable — no judge panel data; "
+                    "configure judges[].model as a list of 2-4 models and "
+                    "re-score")
+                regressions.append(Regression(
+                    judge_name, "panel_alpha", f">= {t}", "n/a", detail))
+        # min_human_agreement gates the post-hoc judge-vs-human calibration
+        # merged by `score.py calibration`. THREE-STATE semantics, with one
+        # deliberate deviation from the configured-but-unavailable pattern:
+        #   1. human_agreement value present and < threshold -> regression.
+        #   2. value None with reason_code 'perfect_agreement' -> PASSES
+        #      (healthy degenerate: judge and reviewer point-mass on one
+        #      identical category, the coefficient is 0/0).
+        #   3. judge row LACKS human_agreement entirely:
+        #      - summary has NO human_calibration block -> SILENT skip.
+        #        Calibration is post-hoc: cmd_judges gates at scoring time
+        #        before any review can exist, and Harbor/EvalHub aggregates
+        #        never carry the key. (include_irr=False does NOT govern this
+        #        gate — it is not sampling-derived; the missing key is the
+        #        scoping mechanism on those paths.)
+        #      - human_calibration EXISTS and lists this judge -> the
+        #        calibration was dropped by a re-score (cmd_judges rewrites
+        #        summary['judges'] wholesale): loud stale-calibration
+        #        regression.
+        #   Any other unavailable state (insufficient_data below the floor,
+        #   undefined) -> regression (configured-but-unavailable).
+        if "min_human_agreement" in threshold:
+            t = threshold["min_human_agreement"]
+            ha = current.get("human_agreement")
+            if not isinstance(ha, dict):
+                calibrated = ((human_calibration or {}).get("judges")
+                              if isinstance(human_calibration, dict)
+                              else None) or []
+                if judge_name in calibrated:
+                    regressions.append(Regression(
+                        judge_name, "human_agreement", f">= {t}", "n/a",
+                        "stale calibration — summary['judges'] was rewritten "
+                        "after calibration; re-run score.py calibration"))
+                # else: never calibrated -> silent skip (post-hoc gate)
+            else:
+                value = ha.get("value")
+                if isinstance(value, (int, float)) and not isinstance(value,
+                                                                      bool):
+                    if value < t:
+                        regressions.append(Regression(
+                            judge_name, "human_agreement", f">= {t}",
+                            f"{value:.3f}",
+                            f"{ha.get('metric', '?')} vs a single human "
+                            f"reviewer (n={ha.get('n_units', '?')})"))
+                elif ha.get("reason_code") == REASON_PERFECT_AGREEMENT:
+                    pass  # degenerate PASS: zero variance, gate satisfied
+                else:
+                    detail = ha.get("reason") or (
+                        "human agreement unavailable — re-run "
+                        "score.py calibration")
+                    regressions.append(Regression(
+                        judge_name, "human_agreement", f">= {t}", "n/a",
+                        detail))
         if "min_win_rate" in threshold:
             win_rate = current.get("win_rate")
             if win_rate is None:
@@ -2584,6 +3985,146 @@ def detect_regressions(current_results, thresholds, baseline_results=None):
                             regressions.append(Regression(
                                 judge_name, f"{key}_vs_baseline",
                                 str(base_val), str(curr_val), "Degraded vs baseline"))
+
+    # Reserved thresholds.simulator gates (evaluated against the run-level
+    # simulator block, never a judge aggregate). Scoped off with the other
+    # reliability gates on Harbor/EvalHub (include_irr=False): those
+    # aggregations carry no hook-ledger data, and both paths also strip the
+    # key with a notice — keeping the report/MLflow consumers (which compute
+    # include_irr from execution_mode) in lockstep with those CLIs.
+    sim_thresholds = thresholds.get("simulator")
+    if isinstance(sim_thresholds, dict) and sim_thresholds and include_irr:
+        regressions.extend(
+            _detect_simulator_regressions(simulator, sim_thresholds))
+    return regressions
+
+
+def _detect_simulator_regressions(simulator, sim_thresholds):
+    """Evaluate the reserved ``thresholds.simulator`` gates.
+
+    ``max_fallback_rate`` gates the question-scoped arbitrary-answer share
+    (fallback answers over answered questions) AND additionally regresses
+    whenever ``disabled_events`` is non-zero — disabled records are
+    per-hook-invocation (no question), so they never enter the rate, but an
+    interception-disabled run must still fail the gate;
+    ``min_gold_agreement`` gates ONLY the human-provenance calibration
+    stratum (agent-authored pairs are LLM-vs-LLM consistency, not human
+    calibration — fail-loud when no human pairs exist, paper Sec 5.3
+    anti-distortion). ``min_cross_simulator_agreement`` gates the
+    ``cross_simulator.all_agree_rate`` recorded by ``models.hook_shadow``
+    shadow simulators — configured with no ``cross_simulator`` block (no
+    shadows ever answered) is a regression, and a breach on a
+    single-family panel says so in the detail (within-family agreement is
+    not cross-family robustness).
+    """
+
+    def _numeric(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+    regressions = []
+    active = [k for k in ("max_fallback_rate", "min_gold_agreement",
+                          "min_cross_simulator_agreement")
+              if k in sim_thresholds]
+    if not active:
+        return regressions
+    if not isinstance(simulator, dict) or not simulator:
+        # Configured-but-unavailable is a regression, never a silent skip.
+        metrics = {"max_fallback_rate": "fallback_rate",
+                   "min_gold_agreement": "gold_agreement",
+                   "min_cross_simulator_agreement":
+                       "cross_simulator_agreement"}
+        for key in active:
+            bound = (f"<= {sim_thresholds[key]}"
+                     if key == "max_fallback_rate"
+                     else f">= {sim_thresholds[key]}")
+            regressions.append(Regression(
+                "simulator", metrics[key], bound, "n/a",
+                "thresholds.simulator configured but no simulator block in "
+                "summary — re-run score.py judges (or score.py simulator) "
+                "on a locally scored run"))
+        return regressions
+    if "max_fallback_rate" in sim_thresholds:
+        t = sim_thresholds["max_fallback_rate"]
+        rate = simulator.get("fallback_rate")
+        tiers = simulator.get("tiers") or {}
+        disabled = simulator.get("disabled_events")
+        if disabled is None:  # pre-disabled_events summary
+            disabled = tiers.get("disabled") or 0
+        if not _numeric(rate):
+            regressions.append(Regression(
+                "simulator", "fallback_rate", f"<= {t}", "n/a",
+                "fallback_rate unavailable — no answered questions recorded "
+                "in the hook_answers ledger"))
+        elif rate > t:
+            regressions.append(Regression(
+                "simulator", "fallback_rate", f"<= {t}", f"{rate:.3f}",
+                f"{tiers.get('fallback', 0)} fallback answer(s) over "
+                f"{simulator.get('n_questions', '?')} answered question(s) "
+                "— the agent under test received arbitrary answers"))
+        if disabled:
+            # Disabled records carry no question, so they cannot enter the
+            # question-scoped rate — but an interception-disabled run must
+            # still fail the gate.
+            regressions.append(Regression(
+                "simulator", "disabled_events", "0", str(disabled),
+                f"interception was disabled during the run "
+                f"({disabled} events)"))
+    if "min_gold_agreement" in sim_thresholds:
+        t = sim_thresholds["min_gold_agreement"]
+        calibration = simulator.get("calibration")
+        calibration = calibration if isinstance(calibration, dict) else {}
+        human = (calibration.get("by_source") or {}).get("human") or {}
+        n_human = human.get("n") or 0
+        rate = human.get("rate")
+        if not n_human:
+            regressions.append(Regression(
+                "simulator", "gold_agreement", f">= {t}", "n/a",
+                "no human-provenance calibration pairs "
+                "(case_overrides_source: human required) — agent-authored "
+                "pairs measure LLM-vs-LLM consistency, not human "
+                "calibration"))
+        elif not _numeric(rate):
+            regressions.append(Regression(
+                "simulator", "gold_agreement", f">= {t}", "n/a",
+                "gold agreement unavailable — human-provenance pairs exist "
+                "but carry no agreement rate; re-run score.py simulator"))
+        elif rate < t:
+            regressions.append(Regression(
+                "simulator", "gold_agreement", f">= {t}", f"{rate:.3f}",
+                f"{SIM_GOLD_HUMAN_LABEL}, n={n_human}"))
+    if "min_cross_simulator_agreement" in sim_thresholds:
+        t = sim_thresholds["min_cross_simulator_agreement"]
+        cross = simulator.get("cross_simulator")
+        cross = cross if isinstance(cross, dict) else {}
+        rate = cross.get("all_agree_rate")
+        if not cross:
+            regressions.append(Regression(
+                "simulator", "cross_simulator_agreement", f">= {t}", "n/a",
+                "no cross-simulator answers recorded — configure "
+                "models.hook_shadow (shadow answers are logged by the "
+                "interception hook, never injected) and re-run"))
+        elif not _numeric(rate):
+            regressions.append(Regression(
+                "simulator", "cross_simulator_agreement", f">= {t}", "n/a",
+                "cross-simulator agreement unavailable — shadow records "
+                "exist but no question has full shadow coverage (deadline "
+                "skips or shadow errors); see "
+                "simulator.cross_simulator.shadow_deadline_skips/"
+                "shadow_errors"))
+        elif rate < t:
+            n = cross.get("n_questions", "?")
+            families = cross.get("families") or {}
+            detail = (f"{XSIM_AGREE_LABEL}, n={n}")
+            if isinstance(families, dict) and families:
+                detail += "; families: " + ", ".join(
+                    f"{fam} x{count}"
+                    for fam, count in sorted(families.items()))
+            if cross.get("single_family"):
+                detail += ("; single_family: true — within-family "
+                           "agreement is not cross-family robustness")
+            regressions.append(Regression(
+                "simulator", "cross_simulator_agreement", f">= {t}",
+                f"{rate:.3f}", detail))
     return regressions
 
 
@@ -2597,6 +4138,14 @@ def _get_case_dirs(run_id, runs_dir):
         print(f"No cases directory: {cases_dir}", file=sys.stderr)
         sys.exit(1)
     return sorted(d for d in cases_dir.iterdir() if d.is_dir())
+
+
+def _strip_judge_values(aggregated):
+    """Persistable judge aggregates: drop only the top-level raw ``values``
+    list per judge. Nested keys — notably ``stability.irr`` — survive the
+    merge into summary.yaml."""
+    return {name: {k: v for k, v in agg.items() if k != "values"}
+            for name, agg in aggregated.items()}
 
 
 def _merge_summary(run_id, key, data, runs_dir=None):
@@ -2733,19 +4282,80 @@ def cmd_judges(args):
         if isinstance(st, dict) and st.get("samples", 1) > 1:
             stable, tot = st.get("stable_cases", 0), st.get("total_cases", 0)
             st_note = f"  [{stable}/{tot} stable over {st['samples']} samples]"
+            irr = st.get("irr")
+            if isinstance(irr, dict):
+                value = irr.get("value")
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    st_note += (f"  [self-consistency α={value:.3f} "
+                                f"({irr.get('metric')}/{irr.get('level')}, "
+                                f"n={irr.get('n_units')})]")
+                elif irr.get("reason_code") == REASON_PERFECT_AGREEMENT:
+                    st_note += "  [α n/a (perfect agreement)]"
+                else:
+                    st_note += (f"  [α n/a "
+                                f"({irr.get('reason_code') or 'unavailable'})]")
+        panel = agg.get("panel")
+        if isinstance(panel, dict):
+            n_models = len(panel.get("models") or [])
+            fams = panel.get("families") or {}
+            fam_note = ", ".join(f"{fam} x{count}"
+                                 for fam, count in sorted(fams.items()))
+            value = panel.get("value")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                st_note += (f"  [panel α={value:.3f} ({n_models} models: "
+                            f"{fam_note}; n={panel.get('n_units')})]")
+            elif panel.get("reason_code") == REASON_PERFECT_AGREEMENT:
+                st_note += f"  [panel α n/a (perfect agreement; {fam_note})]"
+            else:
+                st_note += (f"  [panel α n/a "
+                            f"({panel.get('reason_code') or 'unavailable'})]")
         if rate is not None:
             print(f"  {name}: pass_rate={rate:.1%}{st_note}")
         elif mean is not None:
             print(f"  {name}: mean={mean:.2f}{st_note}")
 
-    _merge_summary(args.run_id, "judges", {
-        name: {k: v for k, v in agg.items() if k != "values"}
-        for name, agg in judge_results.get("aggregated", {}).items()
-    }, runs_dir)
+    # A prior `score.py calibration` merged human_agreement blocks into
+    # summary['judges']; rewriting that key drops them (intended: new judge
+    # values invalidate old calibration). The surviving human_calibration
+    # block is what the stale-calibration gate keys on. A prior `score.py
+    # clarity` block goes stale the same way: new judge values change the
+    # candidate basis its subsample was drawn from.
+    summary_path = runs_dir / args.run_id / "summary.yaml"
+    prior_human_calibration = None
+    prior_clarity = None
+    if summary_path.exists():
+        with open(summary_path) as f:
+            _prior_summary = yaml.safe_load(f) or {}
+        prior_human_calibration = _prior_summary.get("human_calibration")
+        prior_clarity = _prior_summary.get("clarity")
+
+    _merge_summary(args.run_id, "judges",
+                   _strip_judge_values(judge_results.get("aggregated", {})),
+                   runs_dir)
     _merge_summary(args.run_id, "per_case", judge_results.get("per_case", {}), runs_dir)
+
+    # Simulator block from the collected hook_answers ledgers — merged
+    # BEFORE the validity block is assembled (its V2 stanza reads the fresh
+    # calibration status) and BEFORE regression detection (the reserved
+    # thresholds.simulator gates evaluate against it). Re-aggregate without
+    # re-scoring via `score.py simulator`.
+    sim_block = aggregate_simulator(config, args.run_id, runs_dir, case_dirs)
+    if sim_block is not None:
+        _merge_summary(args.run_id, "simulator", sim_block, runs_dir)
+        _print_simulator_block(sim_block)
+
+    invalidated = []
+    if prior_human_calibration:
+        invalidated.append("judge calibration — re-run: score.py calibration")
+    if prior_clarity:
+        invalidated.append("instrument clarity — re-run: score.py clarity")
+    if invalidated:
+        print("NOTE: re-scoring invalidated " + "; ".join(invalidated),
+              file=sys.stderr)
 
     # Workload-agnostic run metrics for cross-run / cross-model comparison
     rr_path = runs_dir / args.run_id / "run_result.json"
+    run_result = None
     if rr_path.exists():
         with open(rr_path) as f:
             run_result = json.load(f)
@@ -2760,17 +4370,51 @@ def cmd_judges(args):
                 else:
                     print(f"  {k}: {v:,.1f}")
 
-    # Regression detection
+    # Validity block (P8, non-gating) — derived data, re-assembled on every
+    # scoring run AFTER the judges/per_case merges (reads the merged summary
+    # for defensive simulator/pairwise state) and merged BEFORE the
+    # regression exit so a failing run still carries it.
+    summary_now = {}
+    if summary_path.exists():
+        with open(summary_path) as f:
+            summary_now = yaml.safe_load(f) or {}
+    _merge_summary(args.run_id, "validity",
+                   build_validity_block(config,
+                                        judge_results.get("aggregated", {}),
+                                        summary=summary_now,
+                                        run_result=run_result),
+                   runs_dir)
+
+    # Regression detection — thresholds resolved at detection time via
+    # effective_thresholds(), so a consequence-tagged judge gets its
+    # tier-default min_alpha without config.thresholds ever being mutated.
     has_regressions = False
-    if config.thresholds:
+    eff_thresholds = config.effective_thresholds()
+    if eff_thresholds:
+        raw_thresholds = config.thresholds or {}
+        for judge_name, entry in sorted(eff_thresholds.items()):
+            raw_entry = raw_thresholds.get(judge_name)
+            if (isinstance(entry, dict) and "min_alpha" in entry
+                    and not (isinstance(raw_entry, dict)
+                             and "min_alpha" in raw_entry)):
+                print(f"  NOTE: min_alpha {entry['min_alpha']} injected for "
+                      f"judge '{judge_name}' from its consequence tier "
+                      "(only 0.67 is literature-backed; 0.70/0.80 are "
+                      "author-proposed)", file=sys.stderr)
         current_agg = judge_results.get("aggregated", {})
-        regressions = detect_regressions(current_agg, config.thresholds)
+        regressions = detect_regressions(
+            current_agg, eff_thresholds,
+            simulator=sim_block,
+            human_calibration=prior_human_calibration)
         if regressions:
             has_regressions = True
             print(f"\n  REGRESSIONS: {len(regressions)} detected")
             for r in regressions:
-                print(f"    [{r.judge_name}] {r.metric}: "
-                      f"{r.baseline_value} -> {r.current_value}")
+                line = (f"    [{r.judge_name}] {r.metric}: "
+                        f"{r.baseline_value} -> {r.current_value}")
+                if r.detail:
+                    line += f" — {r.detail}"
+                print(line)
         else:
             print("\n  REGRESSIONS: 0")
 
@@ -2833,6 +4477,13 @@ def cmd_pairwise(args):
             sys.exit(1)
         print(f"  A wins: {r['wins_a']} | B wins: {r['wins_b']} | "
               f"Ties: {r['ties']} | Errors: {r['errors']}")
+        sc = r.get("swap_consistency") or {}
+        if sc.get("rate") is not None:
+            scored_pairs = sc.get("consistent", 0) + sc.get("inconsistent", 0)
+            print(f"  Swap consistency: {sc.get('consistent', 0)}/"
+                  f"{scored_pairs} ({sc['rate']:.0%}) position-consistent "
+                  f"AB/BA verdict pairs (uncorrected agreement; "
+                  f"{sc.get('errors', 0)} errored comparison(s) excluded)")
         runs.append(r)
 
     # The first run is the primary (its per-case reasoning is rendered).
@@ -2872,15 +4523,465 @@ def cmd_regression(args):
             with open(baseline_path) as f:
                 baseline_agg = (yaml.safe_load(f) or {}).get("judges", {})
 
-    regressions = detect_regressions(current_agg, config.thresholds, baseline_agg)
+    # Execution-path scoping (parity with report.py's _include_irr and the
+    # Harbor/EvalHub CLIs): those aggregations carry no sampling stability,
+    # judge-panel, or hook-ledger data, so the reliability gates
+    # (min_alpha/min_panel_alpha) and the reserved thresholds.simulator
+    # gates must be skipped for such runs — the detector scopes all of them
+    # under include_irr. A missing or unreadable run_result.json means
+    # local semantics (include_irr=True).
+    execution_mode = None
+    rr_path = runs_dir / args.run_id / "run_result.json"
+    try:
+        with open(rr_path) as f:
+            _run_meta = json.load(f)
+        if isinstance(_run_meta, dict):
+            execution_mode = _run_meta.get("execution_mode")
+    except (OSError, ValueError):
+        pass
+    include_irr = execution_mode not in ("harbor", "evalhub")
+    eff_thresholds = config.effective_thresholds()
+    if not include_irr:
+        skipped = sorted({key
+                          for t in (eff_thresholds or {}).values()
+                          if isinstance(t, dict)
+                          for key in ("min_alpha", "min_panel_alpha")
+                          if key in t})
+        if skipped:
+            print(f"NOTE: reliability gates ({', '.join(skipped)}) skipped on "
+                  "this execution path: no sampling stability data or "
+                  "judge-panel data in aggregated results", file=sys.stderr)
+
+    regressions = detect_regressions(
+        current_agg, eff_thresholds, baseline_agg,
+        pairwise=summary.get("pairwise"),
+        include_irr=include_irr,
+        simulator=summary.get("simulator"),
+        human_calibration=summary.get("human_calibration"))
     if regressions:
         print(f"REGRESSIONS: {len(regressions)} detected")
         for r in regressions:
-            print(f"  [{r.judge_name}] {r.metric}: "
-                  f"{r.baseline_value} -> {r.current_value}")
+            line = (f"  [{r.judge_name}] {r.metric}: "
+                    f"{r.baseline_value} -> {r.current_value}")
+            if r.detail:
+                line += f" — {r.detail}"
+            print(line)
         sys.exit(1)
     else:
         print("REGRESSIONS: 0")
+
+
+def cmd_simulator(args):
+    """Re-aggregate the simulator block from collected ledgers.
+
+    Standalone re-aggregation of ``summary['simulator']`` (cmd_judges runs
+    the same aggregation inline) — useful after marking case_overrides with
+    ``source: human`` or when scoring artifacts moved. Merge-only: gate via
+    ``score.py regression``, which reads the merged block.
+    """
+    config = EvalConfig.from_yaml(args.config)
+    runs_dir = _get_runs_dir(config.eval_name())
+    if not config.inputs.tools:
+        print("No inputs.tools configured — nothing to aggregate.",
+              file=sys.stderr)
+        sys.exit(1)
+    case_dirs = _get_case_dirs(args.run_id, runs_dir)
+    sim_block = aggregate_simulator(config, args.run_id, runs_dir, case_dirs)
+    _merge_summary(args.run_id, "simulator", sim_block, runs_dir)
+    _print_simulator_block(sim_block)
+    print(f"Merged summary['simulator'] "
+          f"(ledger_scope={sim_block.get('ledger_scope')}) into "
+          f"{runs_dir / args.run_id / 'summary.yaml'}")
+
+
+def cmd_calibration(args):
+    """Judge-vs-human calibration from /eval-review verdicts.
+
+    Joins review.yaml verdicts against the reduced per-case judge values,
+    computes the structurally selected coefficient per judge, and persists
+    BOTH targets: per-judge ``human_agreement`` merged into
+    ``summary['judges'][<name>]`` (what the gate and report read) and the
+    run-level ``summary['human_calibration']`` block — plus an in-place
+    refresh of the persisted ``summary['validity']`` per-judge rows
+    (``build_validity_block`` runs only in ``cmd_judges``, which drops
+    calibration first, so without this refresh the validity table's
+    human_agreement column could never carry data). Exits 1 iff a
+    configured ``min_human_agreement`` is breached.
+    """
+    from datetime import datetime, timezone
+
+    config = EvalConfig.from_yaml(args.config)
+    runs_dir = _get_runs_dir(config.eval_name())
+    run_dir = runs_dir / args.run_id
+    summary_path = run_dir / "summary.yaml"
+    if not summary_path.exists():
+        print("No summary found. Run judges first.", file=sys.stderr)
+        sys.exit(1)
+    with open(summary_path) as f:
+        summary = yaml.safe_load(f) or {}
+    per_case = summary.get("per_case") or {}
+    judges_block = summary.get("judges") or {}
+    if not per_case or not judges_block:
+        print("summary.yaml has no judge results. Run judges first.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    review, verdicts = _load_review_verdicts(run_dir)
+    judge_configs = {jc.name: jc for jc in config.judges}
+    joined = _calibration_join(per_case, verdicts, judge_configs)
+
+    floor = args.floor if getattr(args, "floor", None) else CALIBRATION_FLOOR
+    calibrated = []
+    for judge_name in sorted(joined):
+        entry = joined[judge_name]
+        pairs = entry["pairs"]
+        if not pairs and not any(entry["excluded"].values()):
+            continue
+        scale = _calibration_scale(judge_configs.get(judge_name), pairs)
+        block = compute_human_agreement(pairs, scale, floor=floor)
+        excluded = {k: v for k, v in entry["excluded"].items() if v}
+        if excluded:
+            block["excluded"] = excluded
+        judges_block.setdefault(judge_name, {})["human_agreement"] = block
+        calibrated.append(judge_name)
+
+        value = block.get("value")
+        raw = block.get("agreement_raw")
+        raw_note = (f", uncorrected agreement {raw:.3f}"
+                    if isinstance(raw, (int, float)) else "")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            print(f"  {judge_name}: {block['metric']}={value:.3f} "
+                  f"({scale}, n={block['n_units']}{raw_note}) — "
+                  f"{block['label']}")
+        else:
+            print(f"  {judge_name}: no coefficient — "
+                  f"{block.get('reason') or block.get('reason_code')}"
+                  f"{raw_note} — {block['label']}")
+            for p in block["pairs"]:
+                mark = "match" if p["match"] else "MISMATCH"
+                print(f"    {p['case']}: human={p['human']} "
+                      f"judge={p['judge']} ({mark})")
+
+    if not calibrated:
+        print("calibration: no verdicts joined any configured judge — "
+              "nothing to persist", file=sys.stderr)
+        sys.exit(1)
+
+    human_calibration = {
+        "reviewer_id": str(review.get("reviewer_id")
+                           or review.get("reviewer") or "human"),
+        # Self-reported by the reviewer (prose-enforced in /eval-review),
+        # conservative default: not blind.
+        "blind": bool(review.get("blind", False)),
+        "selection": str(review.get("selection") or "unspecified"),
+        "n_reviewed": sum(1 for v in verdicts.values()
+                          if isinstance(v, dict)),
+        "n_total_cases": len(per_case),
+        "judges": calibrated,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _merge_summary(args.run_id, "judges", judges_block, runs_dir)
+    _merge_summary(args.run_id, "human_calibration", human_calibration,
+                   runs_dir)
+    # Refresh the persisted validity block's per-judge rows in place.
+    # build_validity_block runs only in cmd_judges — which drops any prior
+    # calibration first — so this producer is the ONLY place the
+    # summary['validity'].judges human_agreement rows can ever carry data
+    # (the report's validity table and the MLflow {judge}/human_agreement
+    # metric both read them). Row shape matches build_validity_block's
+    # human_agreement passthrough exactly: {metric, value, n}.
+    with open(summary_path) as f:
+        merged_summary = yaml.safe_load(f) or {}
+    validity = merged_summary.get("validity")
+    if isinstance(validity, dict):
+        v3 = (validity.get("layers") or {}).get("v3")
+        row_lists = [validity.get("judges"),
+                     v3.get("judges") if isinstance(v3, dict) else None]
+        for rows in row_lists:
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                name = row.get("judge")
+                if name not in calibrated:
+                    continue
+                ha = (judges_block.get(name) or {}).get("human_agreement")
+                ha = ha if isinstance(ha, dict) else {}
+                row["human_agreement"] = {"metric": ha.get("metric"),
+                                          "value": ha.get("value"),
+                                          "n": ha.get("n_units")}
+        _merge_summary(args.run_id, "validity", validity, runs_dir)
+    print(f"CALIBRATION: {len(calibrated)} judge(s) calibrated against "
+          f"reviewer '{human_calibration['reviewer_id']}' "
+          f"({human_calibration['n_reviewed']}/"
+          f"{human_calibration['n_total_cases']} cases reviewed; "
+          f"reviewer-reported blind: "
+          f"{'yes' if human_calibration['blind'] else 'no'})")
+
+    # Gate ONLY the min_human_agreement subset here (mirrors cmd_judges'
+    # scoring-time gate; the other keys re-fire on their own paths and must
+    # not exit this subcommand).
+    subset = {}
+    for judge_name, entry in (config.effective_thresholds() or {}).items():
+        if isinstance(entry, dict) and "min_human_agreement" in entry:
+            subset[judge_name] = {
+                "min_human_agreement": entry["min_human_agreement"]}
+    if subset:
+        regressions = detect_regressions(judges_block, subset,
+                                         human_calibration=human_calibration)
+        if regressions:
+            print(f"\n  REGRESSIONS: {len(regressions)} detected")
+            for r in regressions:
+                line = (f"    [{r.judge_name}] {r.metric}: "
+                        f"{r.baseline_value} -> {r.current_value}")
+                if r.detail:
+                    line += f" — {r.detail}"
+                print(line)
+            sys.exit(1)
+        print("\n  REGRESSIONS: 0")
+
+
+# ---------------------------------------------------------------------------
+# Instrument clarity — does the rubric admit consistent application? (Sec 10.2)
+# ---------------------------------------------------------------------------
+
+#: Literature-backed exploratory floor (Krippendorff's customary minimum for
+#: tentative conclusions) the clarity alpha is compared against. Report-only:
+#: never a CI gate, no thresholds key.
+CLARITY_FLOOR = 0.67
+
+#: Mandatory label: the m raters share the judge's rubric, so their agreement
+#: measures whether the INSTRUMENT admits consistent application — it says
+#: nothing about whether any rater is right.
+CLARITY_LABEL = ("instrument clarity (does the rubric admit consistent "
+                 "application?) — not rater validity")
+
+CLARITY_RATIONALE = (
+    "m-way Krippendorff alpha over independent rater models applying the "
+    "judge's own rubric to a deterministic case subsample, compared against "
+    "the 0.67 exploratory floor (paper Sec 10.2). Below the floor, refine "
+    "the rubric rather than lowering the bar.")
+
+#: Below this many rated cases no coefficient is computed (the raw case x
+#: rater table is printed instead) — same small-N honesty as the
+#: calibration floor. Enforced via the reliability primitive's `min_units`
+#: policy floor, surfacing as reason_code `below_floor`.
+CLARITY_MIN_CASES = 5
+
+
+def _stride_subsample(items, max_n):
+    """Deterministic stride subsample of a pre-sorted list (no random).
+
+    Returns the items unchanged when they fit; otherwise every
+    ``len/max_n``-th item of the sorted input. With value-sorted candidates
+    this is systematic sampling across the verdict range — stratified
+    coverage with seedless determinism.
+    """
+    items = list(items)
+    if max_n <= 0 or len(items) <= max_n:
+        return items
+    step = len(items) / max_n
+    return [items[min(int(i * step), len(items) - 1)] for i in range(max_n)]
+
+
+def _clarity_sort_key(value, case_id):
+    """Sort key grouping candidates by incumbent verdict, then case id.
+
+    bool is numeric here on purpose (False < True groups the two verdict
+    strata); non-numeric values fall back to their string form.
+    """
+    if isinstance(value, (bool, int, float)):
+        return (0, float(value), case_id)
+    return (1, str(value), case_id)
+
+
+def cmd_clarity(args):
+    """Instrument-clarity diagnostic (paper Sec 10.2): m rater models
+    re-rate a deterministic case subsample with each judge's own rubric;
+    the m-way chance-corrected alpha answers "does the rubric admit
+    consistent application?" — NOT rater validity. Report-only: merged into
+    ``summary['clarity']``, never a CI gate.
+    """
+    config = EvalConfig.from_yaml(args.config)
+    runs_dir = _get_runs_dir(config.eval_name())
+    case_dirs = _get_case_dirs(args.run_id, runs_dir)
+
+    raters = [m.strip() for m in (args.raters or "").split(",") if m.strip()]
+    if len(raters) < 2:
+        print("clarity: needs at least 2 rater models "
+              "(--raters m1,m2[,m3])", file=sys.stderr)
+        sys.exit(1)
+    if len(set(raters)) != len(raters):
+        print("clarity: duplicate rater model — a duplicate would "
+              "double-weight a rater", file=sys.stderr)
+        sys.exit(1)
+    families = family_composition(raters)
+    if len(families) == 1 and "unknown" not in families:
+        print("clarity WARNING: all raters resolve to one provider family "
+              f"({next(iter(families))}) — within-family agreement can be "
+              "spuriously high (paper Prescription 4); prefer cross-family "
+              "raters (gateway aliases via ANTHROPIC_BASE_URL)",
+              file=sys.stderr)
+
+    n_samples = max(1, args.samples or 1)
+    max_cases = max(1, args.max_cases or 20)
+
+    summary_path = runs_dir / args.run_id / "summary.yaml"
+    summary = {}
+    if summary_path.exists():
+        with open(summary_path) as f:
+            summary = yaml.safe_load(f) or {}
+    per_case = summary.get("per_case") or {}
+
+    loaded = load_judges(config, Path.cwd())
+    jc_by_name = {jc.name: jc for jc in config.judges}
+    wanted = list(args.judge or [])
+    known = {n for n, *_ in loaded}
+    for w in wanted:
+        if w not in known:
+            print(f"clarity: unknown judge '{w}' (configured: "
+                  f"{sorted(known)})", file=sys.stderr)
+            sys.exit(1)
+    selected = []
+    for name, scorer, condition, judge_type, _s in loaded:
+        if wanted and name not in wanted:
+            continue
+        if not hasattr(scorer, "for_model"):
+            if wanted:
+                print(f"clarity: judge '{name}' has no per-model call path "
+                      "(not an LLM-rubric judge) — clarity re-rates with "
+                      "the judge's own rubric", file=sys.stderr)
+                sys.exit(1)
+            continue
+        selected.append((name, scorer, condition, judge_type))
+    if not selected:
+        print("clarity: no LLM-scored judges to check", file=sys.stderr)
+        sys.exit(1)
+
+    judge_bounds = {jc.name: _numeric_bounds(jc)
+                    for jc in config.judges if jc.score_range}
+    judge_steps = {jc.name: jc.step for jc in config.judges if jc.step}
+
+    # Deterministic subsample per judge: candidates are the cases with a
+    # non-None incumbent value when a summary exists (excludes if:-skipped
+    # and errored cases), sorted by incumbent verdict then case id, and
+    # strided to <= max_cases. Seedless — same run, same subsample.
+    plan = []
+    for name, scorer, condition, judge_type in selected:
+        if per_case:
+            cands = [d for d in case_dirs
+                     if isinstance(per_case.get(d.name, {}).get(name), dict)
+                     and per_case[d.name][name].get("value") is not None]
+        else:
+            cands = list(case_dirs)
+        cands.sort(key=lambda d: _clarity_sort_key(
+            (per_case.get(d.name, {}).get(name) or {}).get("value")
+            if per_case else None, d.name))
+        plan.append((name, scorer, condition, judge_type,
+                     _stride_subsample(cands, max_cases)))
+
+    total_calls = (sum(len(sampled) for *_, sampled in plan)
+                   * len(raters) * n_samples)
+    print(f"clarity: {len(plan)} judge(s) x {len(raters)} raters x "
+          f"{n_samples} sample(s) — {total_calls} judge call(s) planned")
+
+    clarity_judges = {}
+    rated_cases = set()
+    for name, scorer, condition, judge_type, sampled in plan:
+        matrix = {}
+        for case_dir in sampled:
+            record = load_case_record(case_dir, config, run_id=args.run_id)
+            rec = (_step_scoped_record(record, judge_steps[name])
+                   if name in judge_steps else record)
+            # Without a summary the candidate filter could not consult
+            # per-case values, so honor the judge's `if:` condition here.
+            if condition and not per_case:
+                try:
+                    annotations = rec.get("annotations", {})
+                    if not eval(condition, {"__builtins__": {}},
+                                {"annotations": annotations, "outputs": rec}):
+                        continue
+                except Exception:
+                    continue
+            row = {}
+            for rater in raters:
+                model_scorer = scorer.for_model(rater)
+                runs = []
+                for _ in range(n_samples):
+                    try:
+                        v, rat = _normalize_result(model_scorer(outputs=rec))
+                        v = _enforce_bounds(v, judge_bounds.get(name), name)
+                        runs.append({"value": v, "rationale": rat})
+                    except Exception as e:
+                        _log_judge_error(case_dir.name, e)
+                        runs.append({"value": None, "error": str(e)})
+                reduced = (_aggregate_samples(runs, judge_type)
+                           if n_samples > 1 else runs[0])
+                # A rater that errored is a missing rating, never a category.
+                row[rater] = reduced.get("value")
+            matrix[case_dir.name] = row
+            rated_cases.add(case_dir.name)
+
+        jc = jc_by_name.get(name)
+        level = _irr_level(jc)
+        observed = [v for row in matrix.values() for v in row.values()
+                    if v is not None]
+        if level != NOMINAL and any(
+                isinstance(v, bool) or not isinstance(v, (int, float))
+                for v in observed):
+            level = NOMINAL
+        units = [[matrix[c].get(r) for r in raters] for c in sorted(matrix)]
+        result = krippendorff_alpha(units, level,
+                                    min_units=CLARITY_MIN_CASES)
+        value = result.value
+        clarity_judges[name] = {
+            "metric": result.metric,
+            "level": level,
+            "value": value,
+            "reason_code": result.reason_code,
+            "reason": result.reason,
+            "n_units": result.n_units,
+            "label": CLARITY_LABEL,
+            "rationale": CLARITY_RATIONALE,
+            "n_cases": len(matrix),
+            "meets_floor": (None if value is None
+                            else bool(value >= CLARITY_FLOOR)),
+            "cases": {c: dict(matrix[c]) for c in sorted(matrix)},
+        }
+
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            verdict = (
+                f"meets the {CLARITY_FLOOR} exploratory floor"
+                if value >= CLARITY_FLOOR else
+                f"below {CLARITY_FLOOR} — the rubric likely underspecifies "
+                "the construct; refine the rubric rather than lowering the "
+                "bar (paper Sec 10.2)")
+            print(f"  {name}: clarity α={value:.3f} ({result.metric}/"
+                  f"{level}, n={result.n_units}, {len(raters)} raters) — "
+                  f"{verdict}")
+        else:
+            print(f"  {name}: clarity α n/a — "
+                  f"{result.reason or result.reason_code} — raw case x "
+                  "rater table:")
+            for c in sorted(matrix):
+                cells = "  ".join(f"{r}={matrix[c].get(r)}" for r in raters)
+                print(f"    {c}: {cells}")
+
+    block = {
+        "label": CLARITY_LABEL,
+        "raters": raters,
+        "families": families,
+        "n_raters": len(raters),
+        "floor": CLARITY_FLOOR,
+        "n_cases": len(rated_cases),
+        "samples": n_samples,
+        "judges": clarity_judges,
+    }
+    _merge_summary(args.run_id, "clarity", block, runs_dir)
+    print(f"CLARITY: {len(clarity_judges)} judge(s) checked over "
+          f"{len(rated_cases)} case(s); merged into summary['clarity'] "
+          "(report-only diagnostic — no CI gate)")
 
 
 def main():
@@ -2901,7 +5002,8 @@ def main():
                        help="Override per-judge samples config: sample each LLM "
                             "judge N times per case; median (score) / majority "
                             "(bool) becomes the value, spread recorded for "
-                            "stability reporting")
+                            "stability reporting. For panel judges, N applies "
+                            "PER PANEL MODEL (N x m calls per case)")
     jdg_p.add_argument("--workspace", default=None,
                        help="Workspace path (for before_scoring hook env vars)")
     jdg_p.add_argument("--model", default=None,
@@ -2928,6 +5030,64 @@ def main():
     reg_p.add_argument("--config", required=True)
     reg_p.add_argument("--baseline", default=None)
 
+    # simulator — re-aggregate summary['simulator'] from collected ledgers
+    _sim_help = ("re-aggregate the simulator block (tier distribution, "
+                 "fallback rate, held-out gold agreement by provenance) "
+                 "from the collected hook_answers.jsonl ledgers")
+    sim_p = subparsers.add_parser(
+        "simulator", help=_sim_help,
+        description=_sim_help + ". cmd `judges` runs the same aggregation "
+        "inline; this re-runs it without re-scoring (e.g. after marking "
+        "case_overrides with source: human). Gate via `score.py "
+        "regression` and the reserved thresholds.simulator key.")
+    sim_p.add_argument("--run-id", required=True)
+    sim_p.add_argument("--config", required=True)
+
+    # calibration — judge-vs-human agreement from /eval-review verdicts
+    _cal_help = ("judge-vs-human calibration (see inputs.tools calibration "
+                 "for simulator calibration — a different feature)")
+    cal_p = subparsers.add_parser(
+        "calibration", help=_cal_help,
+        description=_cal_help + ": joins review.yaml verdicts against the "
+        "reduced per-case judge values, computes Cohen's kappa / "
+        "Krippendorff's alpha per judge, and merges human_agreement into "
+        "summary['judges'] plus a run-level human_calibration block. Below "
+        "--floor joined pairs no coefficient is computed — the raw "
+        "(uncorrected) agreement table is emitted instead.")
+    cal_p.add_argument("--run-id", required=True)
+    cal_p.add_argument("--config", required=True)
+    cal_p.add_argument("--floor", type=int, default=CALIBRATION_FLOOR,
+                       help="Minimum joined pairs before a coefficient is "
+                            "computed (below: raw agreement table only; "
+                            f"default {CALIBRATION_FLOOR})")
+
+    # clarity — instrument-clarity diagnostic (rubric consistency, Sec 10.2)
+    _clr_help = ("instrument clarity (does the rubric admit consistent "
+                 "application?) — not rater validity; report-only, no CI "
+                 "gate")
+    clr_p = subparsers.add_parser(
+        "clarity", help=_clr_help,
+        description=_clr_help + ": each rater model re-rates a "
+        "deterministic case subsample (sorted + strided, seedless) with the "
+        "judge's own rubric; the m-way chance-corrected alpha is compared "
+        f"against the {CLARITY_FLOOR} exploratory floor and merged into "
+        "summary['clarity'].")
+    clr_p.add_argument("--run-id", required=True)
+    clr_p.add_argument("--config", required=True)
+    clr_p.add_argument("--raters", required=True,
+                       help="Comma-separated rater model ids (>= 2; prefer "
+                            "3 cross-family via gateway aliases)")
+    clr_p.add_argument("--judge", action="append", default=None,
+                       help="Restrict to this judge (repeatable; default: "
+                            "all LLM-scored judges)")
+    clr_p.add_argument("--max-cases", type=int, default=20,
+                       help="Deterministic stride-subsample size (default "
+                            "20)")
+    clr_p.add_argument("--samples", type=int, default=1,
+                       help="Draws per rater per case; each rater's draws "
+                            "are reduced (majority/median) before the "
+                            "alpha (default 1)")
+
     args = parser.parse_args()
 
     # Validate run_id / baseline to prevent path traversal (CWE-22)
@@ -2936,7 +5096,10 @@ def main():
         _validate_path_segment(args.baseline, "--baseline")
 
     {"judges": cmd_judges, "pairwise": cmd_pairwise,
-     "regression": cmd_regression}[args.command](args)
+     "regression": cmd_regression,
+     "simulator": cmd_simulator,
+     "calibration": cmd_calibration,
+     "clarity": cmd_clarity}[args.command](args)
 
 
 if __name__ == "__main__":

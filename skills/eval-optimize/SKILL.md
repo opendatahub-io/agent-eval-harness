@@ -77,6 +77,8 @@ test -f $AGENT_EVAL_RUNS_DIR/<eval-name>/<id>/review.yaml && echo "REVIEW_EXISTS
 
 If `review.yaml` exists, read its `feedback` section (human feedback from `/eval-review`) and `mlflow_feedback` section (annotations pulled from MLflow UI). Human feedback is higher-signal than judge rationale — prioritize issues the user flagged.
 
+Also check judge reliability before optimizing against a judge: in `summary.yaml`, a sampled judge's `judges.<name>.stability.irr` block carries the single-judge self-consistency alpha (an upper bound on inter-rater reliability), a calibrated judge carries a `human_agreement` block, and `report.html` surfaces both in the **Validity & Reliability** section. A low alpha or low human agreement is a construct-development signal (paper Sec 11.3): the judge's rubric is underspecified, so its verdicts are noise — optimizing the skill to chase them overfits measurement noise, not quality. The prescribed response is to refine the judge's rubric/prompt or instructions and re-measure through this optimize loop — report the judge to the user as underspecified and suggest the clarification, consistent with the existing rule that you never edit judges or eval.yaml yourself — and **never lower the threshold** to make the signal pass.
+
 If `--target-judge` was specified, focus only on that judge's failures.
 
 Build a failure map, noting each judge's type (`judge_type` in results: `builtin`, `check`, `llm`, `code`) — the type determines what you can do about it:

@@ -302,6 +302,11 @@ class ToolInputConfig:
     match: str = ""  # Natural language: what to intercept (tools, scripts, APIs)
     prompt: str = ""  # Natural language instruction for how to handle
     prompt_file: str = ""  # External file with detailed instructions
+    # Simulator calibration shadow: when True, tools.py ALSO runs the LLM
+    # tier on every override-answered AskUserQuestion — held out (the shadow
+    # context excludes answers.yaml) and logged to the hook_answers.jsonl
+    # ledger, never injected. Feeds summary['simulator'].calibration.
+    calibration: bool = False
 
 
 @dataclass
@@ -503,8 +508,20 @@ def _parse_runner_config(runner_raw, *, context="runner"):
     if workspace_mode is not None and workspace_mode not in ("repo",):
         raise ValueError(
             f"{context}.workspace_mode must be None or 'repo', got: {workspace_mode!r}")
+    # Runner type. YAML `type: null` parses to None — that is just an absent
+    # key (default applies), NOT the null probe runner. Only the literal
+    # string "null" is rejected: the null runner is the CLI-only solvability
+    # probe, and a config permanently pinned to it is always a mistake.
+    runner_type = runner_raw.get("type")
+    if runner_type is None:
+        runner_type = "claude-code"
+    if runner_type == "null":
+        raise ValueError(
+            f'{context}.type "null" is not a valid config runner: the null '
+            "(do-nothing) runner is the CLI-only dataset solvability probe — "
+            "invoke it with `--agent null` on execute.py instead")
     return RunnerConfig(
-        type=runner_raw.get("type", "claude-code"),
+        type=runner_type,
         command=command,
         workspace_mode=workspace_mode,
         settings=runner_raw.get("settings", {}) or {},
@@ -585,6 +602,15 @@ class ModelsConfig:
     subagent: Optional[str] = None
     judge: Optional[str] = None
     hook: Optional[str] = None
+    #: Cross-family shadow simulators (max 2 model ids): every intercepted
+    #: AskUserQuestion is ALSO answered by each shadow model, logged to the
+    #: hook_answers ledger (`shadows` entries) and NEVER injected — the
+    #: primary hook answer is what the agent under test receives. Feeds
+    #: `summary['simulator'].cross_simulator` and the
+    #: `thresholds.simulator.min_cross_simulator_agreement` gate. Entries
+    #: must be distinct and differ from `hook`; non-Anthropic ids are
+    #: gateway aliases (ANTHROPIC_BASE_URL / LiteLLM).
+    hook_shadow: list = field(default_factory=list)
 
 
 @dataclass
@@ -626,6 +652,164 @@ class GenerationConfig:
     strategy: str = "skill"
     context: Union[str, dict] = field(default_factory=dict)
     seeds: list = field(default_factory=list)  # List of GenerationSeed
+
+
+#: Valid ``JudgeConfig.consequence`` tiers (measurement-validity program).
+CONSEQUENCE_LEVELS = ("exploratory", "safety", "gating")
+
+#: Tier-default ``min_alpha`` for consequence-tagged judges, resolved at
+#: detection time via ``effective_thresholds()`` — never written into
+#: ``config.thresholds``. The gated coefficient is the single-judge
+#: self-consistency alpha, an upper bound on inter-rater reliability.
+#: Only 0.67 is literature-backed (Krippendorff's customary floor for
+#: tentative conclusions); 0.70 and 0.80 are author-proposed tiers.
+CONSEQUENCE_TIER_MIN_ALPHA = {
+    "exploratory": 0.67,
+    "safety": 0.70,
+    "gating": 0.80,
+}
+
+#: Recognized per-judge ``thresholds`` keys. Unknown keys warn at config load
+#: (never error); regression detection ignores them. ``min_human_agreement``
+#: gates the post-hoc judge-vs-human calibration coefficient merged by
+#: ``score.py calibration`` (its value validation rides the generic
+#: ``*_agreement`` rule in ``_parse_thresholds``).
+#: ``min_panel_alpha`` gates the cross-model panel alpha of a judge whose
+#: ``model`` is a list (a judge panel); its value validation rides the
+#: generic ``*_alpha`` rule below. Consequence tiers inject ``min_alpha``
+#: ONLY — a panel gate is always explicit (user decision Q3).
+THRESHOLD_KEYS = frozenset({
+    "min_mean", "min_pass_rate", "min_win_rate", "max_error_rate", "min_alpha",
+    "min_human_agreement", "min_panel_alpha",
+})
+
+#: RESERVED ``thresholds`` mapping key: ``thresholds.simulator`` gates the
+#: run-level ``summary['simulator']`` block (aggregated from the
+#: hook_answers.jsonl ledgers by ``score.py``), never a judge — a judge
+#: literally named "simulator" is rejected when the block coexists (and
+#: DeprecationWarning'd otherwise). ``min_cross_simulator_agreement`` gates
+#: the cross-simulator all-agree rate recorded by ``models.hook_shadow``
+#: shadow simulators (``summary['simulator'].cross_simulator``).
+SIMULATOR_THRESHOLD_KEYS = frozenset({
+    "max_fallback_rate", "min_gold_agreement", "min_cross_simulator_agreement",
+})
+
+
+def _parse_simulator_thresholds(entry):
+    """Validate the reserved ``thresholds.simulator`` block (see above).
+
+    Sub-keys outside :data:`SIMULATOR_THRESHOLD_KEYS` warn (parallel to the
+    judge-key rule: never error on unknown). Values must be numeric, finite
+    and <= 1.0; ``max_fallback_rate`` must additionally be >= 0 (it is a
+    rate, and a negative bound would regress every run).
+    """
+    import warnings
+    if not isinstance(entry, dict):
+        raise ValueError(
+            "thresholds.simulator is a RESERVED key and must be a mapping "
+            f"with keys from: {', '.join(sorted(SIMULATOR_THRESHOLD_KEYS))}")
+    for key, value in entry.items():
+        if key not in SIMULATOR_THRESHOLD_KEYS:
+            warnings.warn(
+                f"thresholds.simulator: unknown key '{key}' is ignored by "
+                "regression detection (valid keys: "
+                f"{', '.join(sorted(SIMULATOR_THRESHOLD_KEYS))})",
+                stacklevel=3)
+            continue
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(float(value)) or float(value) > 1.0):
+            raise ValueError(
+                f"thresholds.simulator.{key} must be a finite number <= 1.0, "
+                f"got: {value!r}")
+        if key == "max_fallback_rate" and float(value) < 0:
+            raise ValueError(
+                f"thresholds.simulator.max_fallback_rate must be >= 0 "
+                f"(it is a rate), got: {value!r}")
+
+
+def _parse_thresholds(raw_thresholds):
+    """Validate the ``thresholds`` block; returns it unchanged.
+
+    The one thresholds validation helper. Unknown keys warn — never error —
+    so a typo like ``min_apha`` stops silently never gating; their values
+    are never validated (an unknown key is ignored by detection, so its
+    value cannot matter). A KNOWN ``*_alpha`` / ``*_agreement`` key value
+    must be numeric, finite, and <= 1.0 (the coefficient maximum);
+    anything else raises ``ValueError``.
+    The ``simulator`` mapping key is RESERVED (never a judge name) and
+    validated against :data:`SIMULATOR_THRESHOLD_KEYS` instead.
+    """
+    if raw_thresholds is None:
+        return {}
+    if not isinstance(raw_thresholds, dict):
+        raise ValueError("thresholds must be a mapping")
+    import warnings
+    for judge_name, entry in raw_thresholds.items():
+        if judge_name == "simulator":
+            _parse_simulator_thresholds(entry)
+            continue
+        if not isinstance(entry, dict):
+            continue
+        for key, value in entry.items():
+            if key not in THRESHOLD_KEYS:
+                warnings.warn(
+                    f"thresholds.{judge_name}: unknown key '{key}' is ignored "
+                    "by regression detection (valid keys: "
+                    f"{', '.join(sorted(THRESHOLD_KEYS))})",
+                    stacklevel=2)
+                # Warn-never-error: an unknown key is ignored by regression
+                # detection, so its VALUE must not be validated either
+                # (mirrors _parse_simulator_thresholds) — otherwise a typo'd
+                # *_alpha/*_agreement key errors instead of warning.
+                continue
+            if key.endswith("_alpha") or key.endswith("_agreement"):
+                if (isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not math.isfinite(float(value))
+                        or float(value) > 1.0):
+                    raise ValueError(
+                        f"thresholds.{judge_name}.{key} must be a finite "
+                        f"number <= 1.0 (the coefficient maximum), "
+                        f"got: {value!r}")
+    return raw_thresholds
+
+
+def effective_thresholds(thresholds: dict, judges) -> dict:
+    """Merged thresholds VIEW with consequence-tier defaults injected.
+
+    Returns a copy: an explicit threshold always wins; a consequence-tagged
+    judge with no explicit ``min_alpha`` gets its tier default injected into
+    the returned view only. ``thresholds`` itself is NEVER mutated —
+    ``harbor/run.py`` reads ``config.thresholds`` as a required-judges set,
+    so tier resolution happens at detection time, not at load time.
+
+    ``judges`` entries are duck-typed: ``JudgeConfig`` instances or raw dicts
+    (report.py passes the raw eval.yaml judges list). Invalid consequence
+    strings in raw dicts are skipped silently — ``EvalConfig.from_yaml``
+    already rejects them at load.
+
+    The RESERVED ``simulator`` mapping key passes through UNTOUCHED: it is
+    not a judge key, so the tier-injection loop below never writes into it
+    (a deprecated judge literally named "simulator" is skipped here — its
+    tier default would otherwise leak ``min_alpha`` into the simulator
+    gate block).
+    """
+    out = {k: (dict(v) if isinstance(v, dict) else v)
+           for k, v in (thresholds or {}).items()}
+    for judge in judges or []:
+        if isinstance(judge, dict):
+            name = judge.get("name") or ""
+            consequence = judge.get("consequence") or ""
+        else:
+            name = getattr(judge, "name", "") or ""
+            consequence = getattr(judge, "consequence", "") or ""
+        tier = CONSEQUENCE_TIER_MIN_ALPHA.get(consequence)
+        if not name or name == "simulator" or tier is None:
+            continue
+        entry = out.setdefault(name, {})
+        if isinstance(entry, dict):
+            entry.setdefault("min_alpha", tier)
+    return out
 
 
 @dataclass
@@ -691,7 +875,15 @@ class JudgeConfig:
     # normalizes the judge over; `reward.score_range` is only a fallback for
     # composed judges that declare none.
     score_range: Optional[list] = None
-    model: str = ""  # Override model for this judge (pairwise, LLM)
+    # Override model for this judge (pairwise, LLM). In YAML, `model` also
+    # accepts a LIST of 2-4 model ids — a judge panel: `model` then holds the
+    # first entry and `panel_models` the full list.
+    model: str = ""
+    # Judge panel — derived from a list-valued `model:` in YAML, never its
+    # own YAML key. Non-empty only for LLM judges (llm_rubric/prompt/
+    # prompt_file); the scorer fans out per model and reduces by majority
+    # (bool) / median_low (numeric) over the per-model reduced verdicts.
+    panel_models: list = field(default_factory=list)
     # External code judge
     module: str = ""
     function: str = ""
@@ -705,6 +897,14 @@ class JudgeConfig:
     # Sampling — run this judge N times per case and reduce (median/majority).
     # Only meaningful for stochastic (LLM and agent) judges; ignored otherwise.
     samples: int = 1
+    # Consequence tier (measurement-validity P5): exploratory | safety |
+    # gating. Injects a tier-default `min_alpha` at detection time via
+    # `effective_thresholds()` (0.67 / 0.70 / 0.80 — only 0.67 is
+    # literature-backed; 0.70 and 0.80 are author-proposed). The gated
+    # coefficient is the single-judge self-consistency alpha, an UPPER BOUND
+    # on inter-rater reliability — a self-consistent-but-biased judge still
+    # passes. Needs `samples >= 2` on an LLM/agent judge to produce IRR data.
+    consequence: str = ""
     # Agent judge — presence of this block upgrades an (otherwise LLM) judge to
     # a tool-using agent run through the runner abstraction, with read-only file
     # tools and a staged, isolated workspace. Permissive mapping (mirrors
@@ -1081,11 +1281,37 @@ class EvalConfig:
 
         # Models block
         models_raw = raw.get("models", {}) or {}
+        hook_shadow_raw = models_raw.get("hook_shadow") or []
+        if not isinstance(hook_shadow_raw, list):
+            raise ValueError(
+                "models.hook_shadow must be a list of at most 2 model ids, "
+                f"got: {hook_shadow_raw!r}")
+        if len(hook_shadow_raw) > 2:
+            raise ValueError(
+                "models.hook_shadow must be a list of at most 2 model ids "
+                f"(got {len(hook_shadow_raw)}) — every shadow adds one LLM "
+                "call per intercepted question inside the hook budget")
+        for i, entry in enumerate(hook_shadow_raw):
+            if not isinstance(entry, str) or not entry.strip():
+                raise ValueError(
+                    f"models.hook_shadow[{i}] must be a non-empty string, "
+                    f"got: {entry!r}")
+        if len(set(hook_shadow_raw)) != len(hook_shadow_raw):
+            raise ValueError(
+                "models.hook_shadow entries must be distinct — a duplicate "
+                "shadow measures nothing")
+        if models_raw.get("hook") and models_raw["hook"] in hook_shadow_raw:
+            raise ValueError(
+                f"models.hook_shadow entry {models_raw['hook']!r} duplicates "
+                "models.hook — a shadow of the primary simulator itself "
+                "measures nothing; pick a different (ideally cross-family) "
+                "model")
         models = ModelsConfig(
             skill=models_raw.get("skill"),
             subagent=models_raw.get("subagent"),
             judge=models_raw.get("judge"),
             hook=models_raw.get("hook"),
+            hook_shadow=list(hook_shadow_raw),
         )
 
         # MLflow block. Experiment defaults to the eval's top-level
@@ -1206,14 +1432,37 @@ class EvalConfig:
 
         # Inputs (tool interception)
         inputs_raw = raw.get("inputs", {})
-        for t in inputs_raw.get("tools") or []:
+        for i, t in enumerate(inputs_raw.get("tools") or []):
+            calibration_val = t.get("calibration", False)
+            if not isinstance(calibration_val, bool):
+                raise ValueError(
+                    f"inputs.tools[{i}].calibration must be a boolean, "
+                    f"got: {calibration_val!r}")
+            if (calibration_val
+                    and "askuserquestion" not in str(t.get("match", "")).lower()):
+                import warnings
+                warnings.warn(
+                    f"inputs.tools[{i}].calibration is set but the match text "
+                    "does not mention AskUserQuestion — the calibration "
+                    "shadow only affects the AskUserQuestion answering tier",
+                    stacklevel=2)
             config.inputs.tools.append(
                 ToolInputConfig(
                     match=t.get("match", ""),
                     prompt=t.get("prompt", ""),
                     prompt_file=t.get("prompt_file", ""),
+                    calibration=calibration_val,
                 )
             )
+
+        if models.hook_shadow and not config.inputs.tools:
+            import warnings
+            warnings.warn(
+                "models.hook_shadow is set but inputs.tools is empty — "
+                "shadow simulators only run inside the AskUserQuestion "
+                "interception hook, so no shadow answer will ever be "
+                "recorded",
+                stacklevel=2)
 
         # Traces
         traces = raw.get("traces", {})
@@ -1278,6 +1527,42 @@ class EvalConfig:
                         f"Judge '{jname}': 'score_range' must be finite and "
                         "increasing [min, max]")
                 score_range_val = [lo, hi]
+            # `model` — a string, or a LIST of 2-4 model ids (a judge panel).
+            # Normalize None FIRST: a bare `model:` key (explicit YAML null)
+            # loaded fine before lists existed and must keep loading.
+            jname = j.get("name", "")
+            model_raw = j.get("model", "")
+            if model_raw is None:
+                model_raw = ""
+            panel_models_val = []
+            if isinstance(model_raw, list):
+                entries = list(model_raw)
+                if not entries:
+                    raise ValueError(
+                        f"Judge '{jname}': 'model' list cannot be empty — "
+                        "use a string, or 2-4 model ids for a judge panel")
+                if not all(isinstance(e, str) and e.strip() for e in entries):
+                    raise ValueError(
+                        f"Judge '{jname}': model list entries must be "
+                        "non-empty strings")
+                if len(set(entries)) != len(entries):
+                    raise ValueError(
+                        f"Judge '{jname}': duplicate model in panel list — "
+                        "a duplicate panel model would double-weight a rater")
+                if len(entries) > 4:
+                    raise ValueError(
+                        f"Judge '{jname}': a judge panel supports 2-4 "
+                        f"models, got {len(entries)}")
+                # A 1-item list is a plain single-model judge, not a panel.
+                model_val = entries[0]
+                if len(entries) >= 2:
+                    panel_models_val = entries
+            elif isinstance(model_raw, str):
+                model_val = model_raw
+            else:
+                raise ValueError(
+                    f"Judge '{jname}': 'model' must be a string or a list "
+                    "of strings")
             config.judges.append(
                 JudgeConfig(
                     name=j.get("name", ""),
@@ -1290,13 +1575,15 @@ class EvalConfig:
                     context=j.get("context", []),
                     feedback_type=j.get("feedback_type", ""),
                     score_range=score_range_val,
-                    model=j.get("model", ""),
+                    model=model_val,
+                    panel_models=panel_models_val,
                     module=j.get("module", ""),
                     function=j.get("function", ""),
                     builtin=builtin_val,
                     arguments=args_val,
                     step=j.get("step", "") or "",
                     samples=int(j.get("samples", 1)),
+                    consequence=str(j.get("consequence", "") or ""),
                     agent=agent_val,
                 )
             )
@@ -1328,6 +1615,29 @@ class EvalConfig:
                 raise ValueError(
                     f"Judge '{jc.name}': unknown builtin judge '{jc.builtin}' "
                     f"(available: {', '.join(builtin_judge_names())})")
+            # Judge panels (list-valued `model`) are valid ONLY on LLM judges
+            # (llm_rubric/prompt/prompt_file): deterministic judges take no
+            # model, builtins own their prompt contract, and the agent-judge
+            # runner path resolves one model per judge — a panel there would
+            # silently run one model, so it is rejected loudly at load.
+            if jc.panel_models:
+                if jc.builtin or jc.check or jc.module:
+                    kind = ("builtin" if jc.builtin
+                            else "check" if jc.check else "module")
+                    raise ValueError(
+                        f"Judge '{jc.name}': 'model' list (judge panel) is "
+                        f"not valid on a {kind} judge — a panel needs an "
+                        "LLM judge (llm_rubric/prompt/prompt_file)")
+                if jc.agent:
+                    raise ValueError(
+                        f"Judge '{jc.name}': judge panels are not supported "
+                        "for agent judges — the agent-judge runner path is "
+                        "pinned to one model per judge")
+                if not (jc.prompt or jc.prompt_file or jc.llm_rubric):
+                    raise ValueError(
+                        f"Judge '{jc.name}': 'model' list on a non-LLM "
+                        "judge — a judge panel needs an LLM judge "
+                        "(llm_rubric/prompt/prompt_file)")
             if jc.feedback_type == "bool" and jc.score_range:
                 raise ValueError(
                     f"Judge '{jc.name}': 'score_range' has no meaning with "
@@ -1358,6 +1668,40 @@ class EvalConfig:
                     "so it is scored on the unenforced [1, 5] default — "
                     "declare one to have the returned value checked",
                     stacklevel=2)
+            # Consequence tiers gate the sampling-stability alpha; warn at
+            # load when the judge cannot produce IRR data, because the
+            # tier-default min_alpha will then regress as
+            # configured-but-unavailable at detection time.
+            if jc.consequence and jc.consequence not in CONSEQUENCE_LEVELS:
+                raise ValueError(
+                    f"Judge '{jc.name}': consequence must be one of "
+                    f"{', '.join(CONSEQUENCE_LEVELS)}, got: {jc.consequence!r}")
+            if jc.consequence:
+                import warnings
+                stochastic = bool(jc.prompt or jc.prompt_file or jc.llm_rubric
+                                  or jc.agent)
+                if builtin_kind == "llm":
+                    warnings.warn(
+                        f"Judge '{jc.name}': consequence '{jc.consequence}' "
+                        f"is set but builtin LLM judge '{jc.builtin}' is "
+                        "pinned to samples: 1 at scoring time, so no IRR "
+                        "data will exist and the tier-default min_alpha will "
+                        "regress as unavailable",
+                        stacklevel=2)
+                elif stochastic and jc.samples <= 1:
+                    warnings.warn(
+                        f"Judge '{jc.name}': consequence '{jc.consequence}' "
+                        "is set but samples: 1 produces no IRR data — the "
+                        "tier-default min_alpha will regress as unavailable "
+                        "unless the judge runs with --samples >= 2",
+                        stacklevel=2)
+                elif not stochastic:
+                    warnings.warn(
+                        f"Judge '{jc.name}': consequence '{jc.consequence}' "
+                        "is set on a deterministic judge, which is never "
+                        "sampled and produces no IRR data — the tier-default "
+                        "min_alpha will regress as unavailable",
+                        stacklevel=2)
 
         # Reward composition
         if "reward" in raw:
@@ -1447,8 +1791,75 @@ class EvalConfig:
                 _warn_reward_range_precedence(config)
             _warn_reward_judge_clamp(config)
 
-        # Thresholds
-        config.thresholds = raw.get("thresholds", {})
+        # Thresholds — validated (unknown keys warn; bad *_alpha values
+        # raise) but stored verbatim; consequence-tier defaults resolve at
+        # detection time via `effective_thresholds()`, never here.
+        config.thresholds = _parse_thresholds(raw.get("thresholds", {}))
+
+        # TWO-STAGE reservation of the judge name "simulator" (backcompat):
+        # `thresholds.simulator` is the reserved simulator-gate block, so a
+        # judge with that name plus the block is a genuine collision — the
+        # detector could not tell the judge's gates from the simulator's.
+        # Without the block, existing configs keep loading with a
+        # DeprecationWarning nudging a rename.
+        if any(jc.name == "simulator" for jc in config.judges):
+            if "simulator" in (config.thresholds or {}):
+                raise ValueError(
+                    "'simulator' is a reserved thresholds key (simulator "
+                    "gates: max_fallback_rate/min_gold_agreement) and cannot "
+                    "also be a judge name — rename the judge")
+            import warnings
+            warnings.warn(
+                "the name 'simulator' is reserved for simulator gates "
+                "(thresholds.simulator); rename the judge",
+                DeprecationWarning, stacklevel=2)
+
+        # Q3 (consequence x panels): tiers inject `min_alpha` ONLY — the
+        # self-consistency gate. A consequence-tagged PANEL judge without an
+        # explicit `min_panel_alpha` has an ungated panel alpha; say so at
+        # load rather than silently leaving the truer coefficient ungated.
+        for jc in config.judges:
+            if not (jc.consequence and jc.panel_models):
+                continue
+            entry = (config.thresholds or {}).get(jc.name)
+            if not (isinstance(entry, dict) and "min_panel_alpha" in entry):
+                import warnings
+                warnings.warn(
+                    f"Judge '{jc.name}': consequence '{jc.consequence}' "
+                    "injects a tier-default min_alpha only (single-judge "
+                    "self-consistency); the judge's cross-model panel alpha "
+                    "is NOT tier-gated — set an explicit "
+                    f"thresholds.{jc.name}.min_panel_alpha to gate it",
+                    stacklevel=2)
+
+        # Appendix-B.4 same-family advisory (user decision Q2): fires ONLY
+        # when reliability features are engaged — a judges[].model panel, a
+        # consequence-tagged judge, or models.hook_shadow shadow simulators.
+        # At most one warning per load; unknown ids (gateway aliases) stay
+        # silent inside same_family_advisory, and cross-family shadows
+        # suppress the hook role there (they ARE the mitigation for the
+        # simulator layer). The run-report same-family caveat is independent
+        # of this and always renders.
+        if (models.hook_shadow
+                or any(jc.panel_models or jc.consequence
+                       for jc in config.judges)):
+            from agent_eval.model_families import same_family_advisory
+            role_models = [m for m in (models.skill, models.subagent,
+                                       models.judge)
+                           if m and isinstance(m, str)]
+            panel_entries = []
+            for jc in config.judges:
+                if jc.panel_models:
+                    panel_entries.extend(jc.panel_models)
+                elif jc.model:
+                    role_models.append(jc.model)
+            advisory = same_family_advisory(
+                role_models, panel_entries,
+                hook_model=models.hook,
+                hook_shadow_models=models.hook_shadow)
+            if advisory:
+                import warnings
+                warnings.warn(advisory, stacklevel=2)
 
         # Hooks
         hooks_raw = raw.get("hooks", {}) or {}
@@ -1521,6 +1932,15 @@ class EvalConfig:
     def project_root(self) -> Path:
         """Project root directory (always CWD, not the eval.yaml location)."""
         return Path.cwd()
+
+    def effective_thresholds(self) -> dict:
+        """Thresholds view with consequence-tier ``min_alpha`` defaults.
+
+        Detection-time resolution: explicit thresholds win, and
+        ``self.thresholds`` is never mutated (see the module-level
+        ``effective_thresholds``).
+        """
+        return effective_thresholds(self.thresholds or {}, self.judges)
 
 
 def _is_valid_eval_name(name: object) -> bool:

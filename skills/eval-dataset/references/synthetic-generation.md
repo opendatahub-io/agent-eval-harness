@@ -28,6 +28,8 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/generate_synthetic.py \
 ```
 
 Replace `<config_path>` with the actual value from the --config argument (default: eval.yaml).
+Add `--force` when regenerating over an existing `case-NNN` set (see the resize flow under
+Report Results) — without it the script refuses to overwrite previously generated cases.
 
 The script will:
 1. Read `generation.seeds` from the eval config
@@ -35,11 +37,18 @@ The script will:
 3. Use Claude API to generate test cases following the prompt instructions
 4. Apply `generation.context` for repository-specific knowledge
 5. Write cases to `<dataset_path>/case-NNN/`, stamping each with `annotations.category`
+6. Write `manifest.yaml` at the dataset root — generation provenance: generator model,
+   temperature, sha256 of each seed's resolved prompt, `generation.context` hash,
+   timestamp, per-seed requested/returned/written counts (what the LLM produced vs
+   what per-case validation kept), `failed_categories`, and per-case provenance
+   (case_id, category, seed source). A root-level file: case discovery ignores it.
 
 ## After generation
 
 Provenance-independent steps still apply:
-- **Validate** a generated case against `dataset.schema` (see SKILL.md Step 6).
+- **Audit + validate** the dataset (see SKILL.md Step 6): run `audit_dataset.py`
+  (writes `dataset_audit.yaml` at the dataset root), then review a generated case
+  against `dataset.schema`.
 - If `--harbor` was passed, **emit Harbor task packages** (see SKILL.md Step 8) — Harbor packaging works for any provenance.
 
 ## Report Results
@@ -50,10 +59,17 @@ Tell the user:
 - **Categories**: List which categories and how many cases per category
 - **Context**: What repository-specific knowledge was used
 - **Model used**: Which model generated the cases (from `models.judge` or default)
+- **Provenance**: `manifest.yaml` at the dataset root (model, per-seed prompt hashes, realized counts)
 - **Next steps**:
   - Review generated cases in `<dataset_path>/`
   - Run evaluation: `/eval-run --model <model>`
-  - Generate more: increase per-seed `count` in `generation.seeds`, then re-run `/eval-dataset` (`--count` does not apply in synthetic mode)
+  - Generate more: increase per-seed `count` in `generation.seeds`, then re-run
+    `/eval-dataset` passing `--force` to the generation script (`--count` does not
+    apply in synthetic mode). Regeneration **REPLACES the entire `case-NNN` set**
+    with fresh stochastic content — temperature 1.0, seed counts are declarative
+    totals, and numbering restarts at `case-001` — so the script refuses to
+    overwrite without `--force`. Hand-edits such as `TODO_` replacements are lost
+    and must be reapplied; `manifest.yaml` is rewritten to describe the new set.
 
 ## Example Output
 

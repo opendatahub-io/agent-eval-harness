@@ -1,5 +1,6 @@
 """Tests for synthetic test case generation."""
 
+import hashlib
 import json
 import tempfile
 from pathlib import Path
@@ -12,6 +13,8 @@ import yaml
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "skills/eval-dataset/scripts"))
 from generate_synthetic import (
+    GENERATION_TEMPERATURE,
+    MANIFEST_FILENAME,
     generate_synthetic,
     _extract_json_from_response,
     _generate_category_cases,
@@ -320,6 +323,271 @@ class TestGenerationStrategy:
                 "strategy": "from-traces",
                 "seeds": [{"category": "n", "builtin": "docs/navigation", "count": 1}],
             })
+
+
+def _write_config(tmp_path, seeds, context=None):
+    """Write an eval.yaml with a synthetic generation block and load it."""
+    from agent_eval.config import EvalConfig
+
+    config_data = {
+        "name": "test-eval",
+        "execution": {"mode": "case", "prompt": "{{ input.prompt }}"},
+        "dataset": {"path": "eval/dataset", "schema": "input.yaml with prompt"},
+        "generation": {
+            "strategy": "synthetic",
+            "context": context if context is not None else {"type": "test-repo"},
+            "seeds": seeds,
+        },
+        "outputs": [{"path": "output", "schema": "stdout.log"}],
+    }
+    config_path = tmp_path / "eval.yaml"
+    config_path.write_text(yaml.dump(config_data))
+    return EvalConfig.from_yaml(config_path)
+
+
+def _mock_anthropic(monkeypatch, side_effect):
+    """Install a mocked anthropic module; returns the mock client."""
+    mock_module = Mock()
+    mock_cls = Mock()
+    mock_module.Anthropic = mock_cls
+    monkeypatch.setitem(sys.modules, "anthropic", mock_module)
+    client = Mock()
+    mock_cls.return_value = client
+    client.messages.create.side_effect = side_effect
+    return client
+
+
+def _response(payload):
+    """Build a mock Anthropic response whose first block is JSON text."""
+    response = Mock()
+    block = Mock()
+    block.text = json.dumps(payload)
+    response.content = [block]
+    return response
+
+
+def _nav_case(prompt):
+    return {"input": {"prompt": prompt},
+            "annotations": {"category": "navigation", "difficulty": "easy"}}
+
+
+class TestManifest:
+    """manifest.yaml — persisted generation provenance at the dataset root."""
+
+    def test_manifest_written_with_expected_fields(self, tmp_path, monkeypatch):
+        seeds = [{"category": "navigation", "builtin": "docs/navigation",
+                  "count": 2}]
+        config = _write_config(tmp_path, seeds)
+        _mock_anthropic(monkeypatch, [
+            _response([_nav_case("q1"), _nav_case("q2")])])
+        output_dir = tmp_path / "dataset"
+
+        cases = generate_synthetic(
+            config=config, output_dir=output_dir, model="claude-opus-4-6",
+            api_key="test-key", now="2026-08-21T00:00:00+00:00")
+
+        manifest = yaml.safe_load(
+            (output_dir / MANIFEST_FILENAME).read_text())
+        assert manifest["manifest_version"] == 1
+        assert manifest["generated_at"] == "2026-08-21T00:00:00+00:00"
+        assert manifest["model"] == "claude-opus-4-6"
+        assert manifest["temperature"] == GENERATION_TEMPERATURE == 1.0
+        expected_context_hash = hashlib.sha256(
+            yaml.dump(config.generation.context,
+                      sort_keys=True).encode("utf-8")).hexdigest()
+        assert manifest["context_sha256"] == expected_context_hash
+        assert manifest["failed_categories"] == []
+        # Per-case provenance mirrors the function's return value (C9)
+        assert manifest["cases"] == cases
+        (seed_record,) = manifest["seeds"]
+        assert seed_record["category"] == "navigation"
+        assert seed_record["source"] == "docs/navigation"
+        assert seed_record["requested"] == 2
+        assert seed_record["returned"] == 2
+        assert seed_record["written"] == 2
+        assert seed_record["failed"] is False
+        resolved = resolve_seed_prompt(config.generation.seeds[0],
+                                       config.config_dir)
+        assert seed_record["prompt_sha256"] == hashlib.sha256(
+            resolved.encode("utf-8")).hexdigest()
+
+    def test_manifest_records_partial_shortfall(self, tmp_path, monkeypatch):
+        """C7: the LLM returning 1-of-2 is recorded per seed, durably."""
+        seeds = [{"category": "navigation", "builtin": "docs/navigation",
+                  "count": 2}]
+        config = _write_config(tmp_path, seeds)
+        _mock_anthropic(monkeypatch, [_response([_nav_case("only one")])])
+        output_dir = tmp_path / "dataset"
+
+        generate_synthetic(config=config, output_dir=output_dir,
+                           api_key="test-key")
+
+        manifest = yaml.safe_load(
+            (output_dir / MANIFEST_FILENAME).read_text())
+        (seed_record,) = manifest["seeds"]
+        assert seed_record["requested"] == 2
+        assert seed_record["returned"] == 1
+        assert seed_record["written"] == 1
+        assert seed_record["failed"] is False
+        assert manifest["failed_categories"] == []
+
+    def test_manifest_records_validation_skips(self, tmp_path, monkeypatch):
+        """returned counts what the LLM produced; written what survived."""
+        seeds = [{"category": "navigation", "builtin": "docs/navigation",
+                  "count": 2}]
+        config = _write_config(tmp_path, seeds)
+        _mock_anthropic(monkeypatch, [_response([
+            _nav_case("valid"),
+            {"annotations": {"category": "navigation"}},  # no 'input' → skip
+        ])])
+        output_dir = tmp_path / "dataset"
+
+        generate_synthetic(config=config, output_dir=output_dir,
+                           api_key="test-key")
+
+        manifest = yaml.safe_load(
+            (output_dir / MANIFEST_FILENAME).read_text())
+        (seed_record,) = manifest["seeds"]
+        assert seed_record["returned"] == 2
+        assert seed_record["written"] == 1
+
+    def test_manifest_records_failed_category(self, tmp_path, monkeypatch):
+        seeds = [
+            {"category": "navigation", "builtin": "docs/navigation",
+             "count": 1},
+            {"category": "authoring", "builtin": "docs/authoring",
+             "count": 1},
+        ]
+        config = _write_config(tmp_path, seeds)
+        _mock_anthropic(monkeypatch, [
+            ValueError("API exploded"),
+            _response([{"input": {"prompt": "ok"},
+                        "annotations": {"category": "authoring"}}]),
+        ])
+        output_dir = tmp_path / "dataset"
+
+        generate_synthetic(config=config, output_dir=output_dir,
+                           api_key="test-key")
+
+        manifest = yaml.safe_load(
+            (output_dir / MANIFEST_FILENAME).read_text())
+        nav, auth = manifest["seeds"]
+        assert nav["category"] == "navigation"
+        assert nav["failed"] is True
+        assert nav["returned"] is None
+        assert nav["written"] == 0
+        assert auth["failed"] is False
+        assert auth["written"] == 1
+        assert manifest["failed_categories"] == ["navigation"]
+
+    def test_no_manifest_when_zero_cases(self, tmp_path, monkeypatch):
+        seeds = [{"category": "navigation", "builtin": "docs/navigation",
+                  "count": 1}]
+        config = _write_config(tmp_path, seeds)
+        _mock_anthropic(monkeypatch, [ValueError("API exploded")])
+        output_dir = tmp_path / "dataset"
+
+        with pytest.raises(RuntimeError, match="Failed to generate"):
+            generate_synthetic(config=config, output_dir=output_dir,
+                               api_key="test-key")
+        assert not (output_dir / MANIFEST_FILENAME).exists()
+
+
+class TestForceOverwrite:
+    """Regeneration REPLACES the case-NNN set; refuses without --force (C2)."""
+
+    def _config(self, tmp_path, count=2):
+        seeds = [{"category": "navigation", "builtin": "docs/navigation",
+                  "count": count}]
+        return _write_config(tmp_path, seeds)
+
+    def test_refuses_overwrite_without_force(self, tmp_path, monkeypatch):
+        config = self._config(tmp_path)
+        client = _mock_anthropic(monkeypatch, [_response([_nav_case("q")])])
+        output_dir = tmp_path / "dataset"
+        (output_dir / "case-001").mkdir(parents=True)
+
+        with pytest.raises(ValueError) as exc:
+            generate_synthetic(config=config, output_dir=output_dir,
+                               api_key="test-key")
+        assert "--force" in str(exc.value)
+        assert "case-001" in str(exc.value)
+        # Guard fires BEFORE any API call
+        client.messages.create.assert_not_called()
+
+    def test_force_replaces_case_nnn_dirs(self, tmp_path, monkeypatch):
+        """--force removes the whole old set — even numbering beyond the
+        new total — and regenerates from case-001."""
+        config = self._config(tmp_path, count=2)
+        _mock_anthropic(monkeypatch, [
+            _response([_nav_case("new q1"), _nav_case("new q2")])])
+        output_dir = tmp_path / "dataset"
+        for name in ("case-001", "case-002", "case-003"):
+            d = output_dir / name
+            d.mkdir(parents=True)
+            (d / "sentinel.txt").write_text("stale content")
+
+        cases = generate_synthetic(config=config, output_dir=output_dir,
+                                   api_key="test-key", force=True)
+
+        assert [c["case_id"] for c in cases] == ["case-001", "case-002"]
+        assert not (output_dir / "case-003").exists()
+        assert not (output_dir / "case-001" / "sentinel.txt").exists()
+        assert (output_dir / "case-001" / "input.yaml").is_file()
+
+    def test_force_preserves_hand_authored_named_dirs(self, tmp_path,
+                                                      monkeypatch):
+        config = self._config(tmp_path, count=1)
+        _mock_anthropic(monkeypatch, [_response([_nav_case("fresh")])])
+        output_dir = tmp_path / "dataset"
+        hand = output_dir / "case-001-simple-basic-input"
+        hand.mkdir(parents=True)
+        (hand / "input.yaml").write_text("prompt: hand-authored\n")
+        (output_dir / "case-001").mkdir()
+
+        generate_synthetic(config=config, output_dir=output_dir,
+                           api_key="test-key", force=True)
+
+        assert (hand / "input.yaml").read_text() == "prompt: hand-authored\n"
+
+    def test_manifest_rewritten_on_force(self, tmp_path, monkeypatch):
+        config = self._config(tmp_path, count=1)
+        _mock_anthropic(monkeypatch, [
+            _response([_nav_case("first run")]),
+            _response([_nav_case("second run")]),
+        ])
+        output_dir = tmp_path / "dataset"
+
+        generate_synthetic(config=config, output_dir=output_dir,
+                           api_key="test-key", now="run-1")
+        generate_synthetic(config=config, output_dir=output_dir,
+                           api_key="test-key", force=True, now="run-2")
+
+        manifest = yaml.safe_load(
+            (output_dir / MANIFEST_FILENAME).read_text())
+        assert manifest["generated_at"] == "run-2"
+
+    def test_documented_resize_flow_with_force(self, tmp_path, monkeypatch):
+        """The resize flow (increase seed count, re-run with --force) works."""
+        config_small = self._config(tmp_path, count=1)
+        _mock_anthropic(monkeypatch, [_response([_nav_case("q1")])])
+        output_dir = tmp_path / "dataset"
+        generate_synthetic(config=config_small, output_dir=output_dir,
+                           api_key="test-key")
+
+        # User edits the seed count in eval.yaml, then re-runs with --force.
+        config_big = self._config(tmp_path, count=3)
+        _mock_anthropic(monkeypatch, [
+            _response([_nav_case("q1"), _nav_case("q2"), _nav_case("q3")])])
+        cases = generate_synthetic(config=config_big, output_dir=output_dir,
+                                   api_key="test-key", force=True)
+
+        assert [c["case_id"] for c in cases] == [
+            "case-001", "case-002", "case-003"]
+        manifest = yaml.safe_load(
+            (output_dir / MANIFEST_FILENAME).read_text())
+        assert manifest["seeds"][0]["requested"] == 3
+        assert manifest["seeds"][0]["written"] == 3
 
 
 class TestCLIIntegration:

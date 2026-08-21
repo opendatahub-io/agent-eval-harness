@@ -121,11 +121,11 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/log_results.py \
 
 This logs:
 - **Params**: skill, runner.type, model, run_id
-- **Metrics**: per-judge mean and pass_rate, execution metrics (duration, cost, turns), per-model cost/token breakdown
+- **Metrics**: per-judge mean and pass_rate, execution metrics (duration, cost, turns), per-model cost/token breakdown, per-judge `<judge>/irr_value` and `<judge>/human_agreement` (numeric coefficients from the summary's `validity` block only)
 - **Artifacts**: summary.yaml
 - **Table**: per-case results with case_id, judge, value, rationale
 - **Traces**: one per case (case mode) or one for the run (batch mode), built from stdout.log
-- **Tags**: regressions_detected (yes/no), num_judges, plus any `mlflow.tags` from eval.yaml
+- **Tags**: regressions_detected (yes/no), num_judges, validity routing (`validity/v1`..`v3` layer statuses, `validity/same_family` — family name or `no`, per-judge `validity/<judge>/irr_metric`), plus any `mlflow.tags` from eval.yaml
 
 ## Step 5: Push Feedback (if `--action push-feedback` or `all`)
 
@@ -141,6 +141,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/attach_feedback.py \
 This pushes:
 - **Judge feedback** (from `summary.yaml`): `source_type=CODE`, named `{case_id}/{judge_name}`
 - **Human feedback** (from `review.yaml`, if it exists): `source_type=HUMAN`, named `{case_id}/human_review`
+- **Calibration verdicts** (from `review.yaml` `verdicts`, if present): `source_type=HUMAN`, named `{case_id}/{judge_name}/human`, `source_id` = the review's `reviewer_id` — joinable against the CODE-source `{case_id}/{judge_name}` assessment for MLflow-side judge-vs-human queries
 
 If no traces are found (tracing not enabled), the script reports 0 and succeeds — tracing is optional.
 

@@ -599,6 +599,7 @@ def validate_config(path="eval.yaml"):
         "name", "description", "builtin", "check", "prompt", "prompt_file",
         "module", "function", "arguments", "context", "model", "if", "llm_rubric",
         "feedback_type", "samples", "score_range", "step", "agent",
+        "consequence",
     }
 
     for j in judges:
@@ -812,6 +813,30 @@ def validate_config(path="eval.yaml"):
         thresholds = {}
     judge_names = {j.get("name", "") for j in judges if isinstance(j, dict) and j.get("name")}
     for thresh_name in thresholds:
+        if thresh_name == "simulator":
+            # RESERVED key: gates the run-level simulator block (hook-ledger
+            # aggregation), never a judge — validate its sub-keys against
+            # the same whitelist config load uses.
+            from agent_eval.config import SIMULATOR_THRESHOLD_KEYS
+            entry = thresholds[thresh_name]
+            if not isinstance(entry, dict):
+                errors.append(
+                    "thresholds.simulator is a reserved key and must be a "
+                    "mapping (valid sub-keys: "
+                    f"{', '.join(sorted(SIMULATOR_THRESHOLD_KEYS))})")
+                continue
+            for sub_key in entry:
+                if sub_key not in SIMULATOR_THRESHOLD_KEYS:
+                    warnings.append(
+                        f"thresholds.simulator.{sub_key} is not a known "
+                        "simulator gate (valid sub-keys: "
+                        f"{', '.join(sorted(SIMULATOR_THRESHOLD_KEYS))})")
+            if "simulator" in judge_names:
+                errors.append(
+                    "'simulator' is a reserved thresholds key (simulator "
+                    "gates) and cannot also be a judge name — rename the "
+                    "judge")
+            continue
         if thresh_name not in judge_names:
             warnings.append(
                 f"thresholds.{thresh_name} references non-existent judge "

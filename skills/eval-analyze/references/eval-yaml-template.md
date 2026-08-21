@@ -123,6 +123,10 @@ models:
   # subagent: claude-sonnet-4-6  # Defaults to skill model
   judge: claude-opus-4-6         # LLM and pairwise judges need a strong model
   # hook: claude-sonnet-4-6      # For AskUserQuestion answering (fast, cheaper than Opus)
+  # hook_shadow:                 # Cross-family shadow simulators (max 2, must differ
+  #   - gemini-2.5-flash         # from hook; gateway alias). Answer every intercepted
+  #                              # question too — logged for cross-simulator agreement,
+  #                              # NEVER injected. Adds up to 2 LLM calls per question.
 
 # Permissions for headless execution
 # The Skill tool requires explicit permission in --print mode.
@@ -209,6 +213,15 @@ inputs:
     #     Answer based on the test case context in input.yaml and answers.yaml.
     #     Use answers.yaml guidance for domain-specific decisions.
     #     Default: pick the first option or answer "yes" for confirmations.
+    #   calibration: true
+    #   # Shadow-run the LLM tier on override-answered questions (held out —
+    #   # answers.yaml stripped; logged, never injected). Feeds the
+    #   # summary['simulator'] calibration block and the reserved
+    #   # thresholds.simulator gates. Note: case_overrides a HUMAN authored
+    #   # in a resolved tool_handlers.yaml should carry
+    #   # `case_overrides_source: human` (or per-entry `source: human`) so
+    #   # gold agreement counts them as human calibration pairs — unmarked
+    #   # entries count as agent-authored.
 
     # Control external service access (MCP tools AND scripts)
     # - match: |
@@ -353,6 +366,11 @@ judges:
     #                               # needs feedback_type: float (never with bool,
     #                               # never fractional with int — both rejected at
     #                               # load).
+    # samples: 3                    # run this stochastic judge 3x per case:
+    #                               # reduces by majority (bool) / median_low
+    #                               # (numeric) and computes the self-consistency
+    #                               # alpha that min_alpha gates on.
+    # consequence: safety  # exploratory|safety|gating -> min_alpha 0.67/0.70/0.80 at detection time
     # arguments:                      # optional, available as {{ arguments }} in prompt
     #   focus: completeness
     # context:                        # optional supplementary files
@@ -381,6 +399,16 @@ judges:
   #   prompt_file: eval/prompts/comparison-judge.md
   #   # model: <model-id>   # Optional override; default is models.judge
 
+  # Judge panel (cross-family ensemble) — `model` as a LIST of 2-4 ids.
+  # The judge call fans out per model (samples apply per model), reduces by
+  # majority/median over the per-model verdicts, and scoring adds a
+  # cross-model Krippendorff alpha + family composition.
+  # - name: <name>
+  #   llm_rubric: <criteria>
+  #   score_range: [1, 5]
+  #   model: [claude-sonnet-4-5, gpt-4o, gemini-2.5-pro]  # list = judge panel;
+  #     # non-Anthropic ids are gateway aliases via ANTHROPIC_BASE_URL (LiteLLM)
+
 # Thresholds for regression detection
 thresholds:
   <judge_name>:
@@ -388,6 +416,25 @@ thresholds:
     # min_mean: 3.5        # for numeric judges (llm)
     # max_error_rate: 0.2  # optional coverage gate: fail if >20% of cases errored.
     #                      # min_mean is computed over the survivors only.
+    # min_alpha: 0.7  # self-consistency alpha over the sampling matrix (samples > 1); tier defaults via consequence:
+    # min_human_agreement: 0.6  # judge-vs-human kappa/alpha, merged by
+    #                      # `score.py calibration` after /eval-review verdicts.
+    #                      # Never regresses until the judge has been calibrated.
+    # min_panel_alpha: 0.67  # cross-model panel alpha, for a judge whose
+    #                      # `model` is a list. Perfect-agreement matrices
+    #                      # pass; skipped with a notice on --runner harbor.
+  # simulator:             # RESERVED key (never a judge name): gates the
+  #   max_fallback_rate: 0.0     # simulator block aggregated from the
+  #   min_gold_agreement: 0.8    # hook_answers ledgers. Gold agreement is
+  #                              # human-provenance pairs ONLY (requires
+  #                              # calibration: true + case_overrides_source:
+  #                              # human); stripped with a notice on the
+  #                              # Harbor/EvalHub paths.
+  #   min_cross_simulator_agreement: 0.7  # all-agree rate between the
+  #                              # primary hook answer and every
+  #                              # models.hook_shadow shadow answer;
+  #                              # configured without recorded shadow
+  #                              # answers is a regression.
 
 # Reward composition (OPTIONAL) — collapse per-judge results into a single
 # scalar in [0, 1] for RL training (GRPO). Only needed when training; the

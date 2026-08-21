@@ -16,6 +16,7 @@ You are an interactive reviewer. You present evaluation results to the user, col
 | `--run-id <id>` | **yes** | — | Which eval run to review |
 | `--config <path>` | no | auto-discover | Path to eval config |
 | `--cases <name> [<name> ...]` | no | all | Exact case directory names to review |
+| `--calibrate` | no | off | Collect per-judge human verdicts BEFORE any judge scores or report content are shown (blind mode) |
 
 ### Config Discovery
 
@@ -47,20 +48,32 @@ If `$AGENT_EVAL_RUNS_DIR/<eval-name>/<id>/analysis.md` exists, read it — it co
 
 If an HTML report exists at `$AGENT_EVAL_RUNS_DIR/<eval-name>/<id>/report.html`, mention it. If the user just ran `/eval-run` (which opens the report automatically), they've likely already seen it — skip the overview and ask which cases they want to discuss.
 
+If `--calibrate` was passed, **defer** the analysis.md/report.html overview (and the per-judge summary below) until after verdict collection in Step 3 — showing judge results first destroys the blind.
+
+**Determine and record the blind flag** (used in Step 5): `blind: true` only if the user has seen *neither* report.html nor any judge scores this session before giving verdicts — `/eval-run` auto-opens the report, so a review right after a run is typically **not** blind. Ask if unsure; the flag is self-reported by the reviewer, not enforced.
+
 Show a high-level summary:
 - Overall pass rates per judge
 - How many cases passed all judges vs had failures
 - If a pairwise comparison was run, show the win/loss/tie counts
 
-Ask: "Want to review all cases, only failures, or specific cases?"
+Ask: "Want to review all cases, only failures, or specific cases?" — record the answer as the `selection` basis (`all` | `failures` | `manual`).
 
 ## Step 3: Walk Through Cases
 
+### Calibration verdicts (optional sub-step)
+
+Offer once at walkthrough start (default to it when `--calibrate` was passed): "Want to record your own verdicts per judge, for judge calibration?" When accepted, also ask **who is reviewing** (a name or handle, recorded as `reviewer_id`; default `"human"` if declined).
+
+When calibrating, **reorder the per-case presentation**: show the output summary FIRST, then elicit the human's own verdict for each judge **on that judge's own scale** — pass/fail for bool judges, a number within `score_range` for numeric ones (including deterministic `check` judges — they are calibration targets too); "skip" is allowed per judge. Only **after** the verdict is recorded do you reveal that judge's score, rationale, and pairwise results. This elicit-before-reveal order is what makes a verdict blind — it is prose-enforced (nothing stops a peek), which is why the recorded `blind` flag is self-reported.
+
+### Per-case presentation
+
 For each case the user wants to review, present:
 
-1. **Judge scores** — which judges passed/failed, with rationale. Note the judge type (builtin/check/llm/code) for context.
+1. **Judge scores** — which judges passed/failed, with rationale. Note the judge type (builtin/check/llm/code) for context. (When calibrating: only after the human's verdicts for this case are recorded.)
 2. **Pairwise results** — if a baseline comparison was run, show which version won for this case and the comparison rationale.
-3. **Output summary** — read the key output files from `$AGENT_EVAL_RUNS_DIR/<eval-name>/<id>/cases/<case>/` and summarize what the skill produced. Don't dump full file contents — describe what's there and let the user ask to see specifics.
+3. **Output summary** — read the key output files from `$AGENT_EVAL_RUNS_DIR/<eval-name>/<id>/cases/<case>/` and summarize what the skill produced. Don't dump full file contents — describe what's there and let the user ask to see specifics. (When calibrating: this comes first.)
 4. **Ask for feedback** — "How does this look? Anything the judges missed?"
 
 Collect the user's feedback for each case. Keep notes on what they flagged — these are the signals that judges can't capture.
@@ -92,16 +105,36 @@ Write `$AGENT_EVAL_RUNS_DIR/<eval-name>/<id>/review.yaml` with this structure:
 run_id: "<id>"
 reviewed_cases: <count>
 feedback_cases: <count_with_feedback>
-reviewer: "human"
+reviewer: "human"          # legacy coarse source field — keep it
+# Optional calibration keys (when verdicts were collected in Step 3):
+reviewer_id: "antonin"     # who reviewed; default "human" if declined
+blind: false               # run-level, self-reported: true ONLY if verdicts were
+                           # collected before the report/overview or any judge
+                           # score was shown (see Step 2)
+selection: failures        # all | failures | manual — which cases were reviewed
 feedback:
   case-001-simple-null-pointer-fix: "User's comment about this case"
   case-002-complex-refactor: "Another comment"
   case-003-edge-case: ""  # empty = acceptable
+verdicts:                  # optional; the human's own verdict per judge,
+  case-001-simple-null-pointer-fix:   # on each judge's OWN scale
+    format_check: true     # bool judge → true/false
+    output_quality: 4      # numeric judge → value within score_range
+  case-002-complex-refactor:
+    format_check: false
 ```
 
-Feedback keys must match the case directory names exactly (the same values accepted by `--cases`) — `/eval-optimize` uses these keys to look up which cases had human feedback.
+Feedback and verdict keys must match the case directory names exactly (the same values accepted by `--cases`) — `/eval-optimize` uses these keys to look up which cases had human feedback, and `score.py calibration` joins verdicts on them. The flat `verdicts` form is single-reviewer; multiple reviewers are a forward path (a future `verdicts_by_reviewer` nesting).
 
 Use the Write tool to create the file directly — do NOT use `state.py` commands (they produce a different format). This file is read by `/eval-optimize` to ground changes in human judgment, and by `/eval-mlflow` to push feedback to MLflow traces.
+
+### Step 5b: Calibrate judges (when verdicts were collected)
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/../eval-run/scripts/score.py calibration --run-id <id> --config <config>
+```
+
+This joins the verdicts against the per-case judge results, computes judge-vs-human agreement (Cohen's kappa / Krippendorff's alpha; below 5 joined pairs, a raw agreement table instead), and merges `human_agreement` blocks into `summary.yaml`. Optionally regenerate `report.html` afterwards to see the Human Calibration section.
 
 ## Step 6: Analyze Patterns
 
@@ -132,7 +165,8 @@ After applying approved changes, suggest (include `--config <config>` if a non-d
 - `/eval-run --model <model> --baseline <run-id>` to re-run and compare
 - `/eval-optimize --model <model>` if they want automated iteration from here
 - `/eval-dataset` to add cases if the feedback revealed coverage gaps (augments the existing dataset)
-- `/eval-mlflow --run-id <run-id> --action push-feedback` to push review feedback to MLflow traces
+- `/eval-mlflow --run-id <run-id> --action push-feedback` to push review feedback to MLflow traces (calibration verdicts are pushed as HUMAN-source `{case}/{judge}/human` assessments)
+- `score.py calibration --run-id <run-id> --config <config>` (Step 5b) if verdicts were collected but not yet calibrated — and again after any re-score, which invalidates prior calibration. A `min_human_agreement` threshold on a judge then gates CI on the judge-vs-human agreement.
 
 ## Rules
 

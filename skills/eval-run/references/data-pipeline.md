@@ -22,6 +22,7 @@ How data flows from dataset cases through execution, collection, and scoring.
   {output_dirs}/          # Empty dirs for skill outputs
   .claude/settings.json   # Generated hook config (if inputs.tools)
   hooks/tools.py          # Hook script (if inputs.tools)
+  hooks/hook_answers.jsonl # Answer-provenance ledger (written at runtime)
   tool_handlers.yaml      # Handler config (if inputs.tools)
   scripts/ → symlink
   .claude/ → symlink (or generated)
@@ -30,6 +31,28 @@ How data flows from dataset cases through execution, collection, and scoring.
   .staged-plugins/        # Staged copies of out-of-workspace runner.plugin_dirs
                           # (claude-code runner; skipped in workspace_mode: repo)
 ```
+
+### Dataset-root artifacts (never enter workspaces)
+
+Two provenance/audit artifacts live at the **dataset root as files**:
+
+- `dataset_audit.yaml` — written by `audit_dataset.py` (`/eval-dataset` Step 6):
+  deterministic audit findings (contamination, near-duplicates, composition,
+  conditional-judge branch coverage, reference resolution) plus per-case
+  **content hashes** (sha256 over each case dir's file contents).
+- `manifest.yaml` — synthetic-generation provenance (generator model, temperature,
+  per-seed resolved-prompt hashes, realized counts, per-case provenance).
+
+Case discovery is **directory-only** everywhere (workspace.py, collect.py, Harbor
+task generation, EvalHub, dataset sync), so these root-level files never become
+cases, never enter workspaces, and are never collected.
+
+Before creating workspaces, `workspace.py` runs a **soft preflight**: it WARNS on
+stderr when `dataset_audit.yaml` is missing, or when a selected case's recorded
+content hash no longer matches (stale audit — an in-place edit changes the content
+hash even though the dir mtime is unchanged). It never fails or blocks the run.
+The Harbor task-generation path (`agent_eval/harbor/tasks.py`) emits the same
+warning for execution-path parity.
 
 ### Case Mode (execution.mode: case)
 
@@ -45,6 +68,8 @@ When `execution.mode` is `case` (default), workspace.py creates a separate works
       answers.yaml        # Copied from dataset (if present)
       {output_dirs}/      # Empty dirs for skill outputs
       .claude/settings.json  # Generated (hooks + permissions)
+      hooks/tools.py       # Hook script (if inputs.tools)
+      hooks/hook_answers.jsonl  # Answer-provenance ledger (written at runtime)
       subagents/           # SubagentStop hook target
       .staged-plugins/     # Staged copies of out-of-workspace runner.plugin_dirs
       scripts/ → symlink
@@ -101,6 +126,7 @@ $AGENT_EVAL_RUNS_DIR/{id}/
   stdout.log              # Full stdout
   stderr.log              # Full stderr
   collection.json         # Per-case artifact counts
+  hook_answers.jsonl      # Batch mode only: run-level answer-provenance ledger
   cases/
     case-001-name/
       artifacts/          # Files from outputs[0].path
@@ -109,6 +135,7 @@ $AGENT_EVAL_RUNS_DIR/{id}/
         RFE-001-review.md
       _modified/          # In-place edits (auto-detected via git diff)
         source.md
+      hook_answers.jsonl  # Case mode: per-case answer-provenance ledger
     case-002-name/
       artifacts/
         RFE-002-slug.md
@@ -182,6 +209,19 @@ Skills that modify input files using the Edit tool (rather than writing to an ou
     # --- Annotations (from dataset case directory) ---
     "annotations": {"expected_voice": "technical", "difficulty": "easy"},
 
+    # --- Simulated-user answer provenance (hook_answers.jsonl) ---
+    # None when no ledger was found (load-bearing: with AskUserQuestion
+    # calls in events this means unrecorded simulation); [] when a ledger
+    # exists but recorded nothing; else one record per answered question.
+    # See references/tool-interception.md for the frozen record schema.
+    "hook_answers": [
+        {"ts": "2026-08-21T10:00:00+00:00", "question": "Which priority?",
+         "options": ["Normal", "High"], "answer": "Normal",
+         "tier": "override"},
+    ],
+    "hook_answers_scope": "case",     # "case" | "run" (batch, unattributed) | None
+    "interception_configured": True,  # bool(config.inputs.tools)
+
     # --- Context ---
     "case_dir": "/absolute/path/to/case"
 }
@@ -247,6 +287,7 @@ For each judge across all cases:
 - **Boolean values**: aggregated as `pass_rate` (fraction True)
 - **Numeric values**: aggregated as `mean`
 - Results written to `summary.yaml` with `per_case` and `aggregated` sections
+- Every scoring run also rebuilds a non-gating `validity` section (per-judge IRR triple, V1/V2/V3 layer statuses, same-family caveat) — regression detection never reads it
 
 ## Traces Configuration
 

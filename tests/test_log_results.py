@@ -3,7 +3,9 @@
 import pytest
 
 try:
-    from log_results import _is_within, _safe_trajectory_path
+    from log_results import (
+        _is_within, _safe_trajectory_path, _validity_mlflow_fields,
+    )
     _has_mlflow = True
 except ModuleNotFoundError as exc:
     # Skip only when mlflow itself is missing; re-raise unrelated import errors
@@ -95,3 +97,78 @@ class TestIsWithin:
         root = tmp_path / "root"
         root.mkdir()
         assert _is_within(root / "missing.txt", root) is False
+
+
+@pytest.mark.skipif(not _has_mlflow, reason="mlflow not installed")
+class TestValidityMlflowFields:
+    """MLflow routing for summary['validity'] — pure helper, no tracking
+    server: numeric coefficients become metrics (never fabricated for
+    degenerate/absent values), statuses and metric names become tags."""
+
+    def _summary(self):
+        return {"validity": {
+            "judges": [
+                {"judge": "quality",
+                 "irr": {"metric": "krippendorff_alpha", "value": 0.72,
+                         "threshold": 0.75, "rationale": "r"},
+                 "human_agreement": {"metric": "cohen_kappa",
+                                     "value": 0.61, "n": 8}},
+                {"judge": "format", "irr": None, "human_agreement": None},
+                {"judge": "degenerate",
+                 "irr": {"metric": "krippendorff_alpha", "value": None,
+                         "reason_code": "perfect_agreement",
+                         "threshold": None, "rationale": "r"},
+                 "human_agreement": None},
+            ],
+            "layers": {
+                "v1": {"status": "unmeasured"},
+                "v2": {"status": "not-applicable"},
+                "v3": {"status": "partially-measured"},
+            },
+            "v_total": {"frame": "V_total <= V1 x V2 x V3", "value": None},
+            "same_family": {"family": "anthropic",
+                            "models": ["claude-opus-4-8"]},
+        }}
+
+    def test_absent_validity_returns_empty(self):
+        assert _validity_mlflow_fields({}) == ({}, {})
+        assert _validity_mlflow_fields(None) == ({}, {})
+        assert _validity_mlflow_fields(
+            {"judges": {"q": {"mean": 4.0}}}) == ({}, {})
+
+    def test_metrics_only_for_numeric_values(self):
+        metrics, _ = _validity_mlflow_fields(self._summary())
+        assert metrics == {"quality/irr_value": 0.72,
+                           "quality/human_agreement": 0.61}
+        # No metric fabricated for the null-irr or degenerate rows.
+        assert not any(k.startswith(("format/", "degenerate/"))
+                       for k in metrics)
+
+    def test_tags_shape(self):
+        _, tags = _validity_mlflow_fields(self._summary())
+        assert tags["validity/v1"] == "unmeasured"
+        assert tags["validity/v2"] == "not-applicable"
+        assert tags["validity/v3"] == "partially-measured"
+        assert tags["validity/same_family"] == "anthropic"
+        assert tags["validity/quality/irr_metric"] == "krippendorff_alpha"
+        # The degenerate row still names its metric (searchable), the
+        # null-irr row does not.
+        assert tags["validity/degenerate/irr_metric"] == "krippendorff_alpha"
+        assert "validity/format/irr_metric" not in tags
+
+    def test_same_family_no_when_absent(self):
+        summary = self._summary()
+        summary["validity"]["same_family"] = None
+        _, tags = _validity_mlflow_fields(summary)
+        assert tags["validity/same_family"] == "no"
+
+    def test_boolean_value_is_not_a_metric(self):
+        summary = self._summary()
+        summary["validity"]["judges"][0]["irr"]["value"] = True
+        metrics, _ = _validity_mlflow_fields(summary)
+        assert "quality/irr_value" not in metrics
+
+    def test_pure_function_no_tracking_calls(self):
+        """Callable without a tracking server or env config — pure dict work."""
+        metrics, tags = _validity_mlflow_fields(self._summary())
+        assert isinstance(metrics, dict) and isinstance(tags, dict)

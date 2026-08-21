@@ -45,6 +45,7 @@ one `judge`.
           <span class="sd-f">match<span class="sd-badge llm">LLM</span></span>
           <span class="sd-f">prompt<span class="sd-badge llm">LLM</span></span>
           <span class="sd-f">prompt_file<span class="sd-badge llm">LLM</span></span>
+          <span class="sd-f">calibration</span>
         </div>
       </div>
       <div class="sd-card">
@@ -98,6 +99,7 @@ one `judge`.
           <span class="sd-f">subagent</span>
           <span class="sd-f">judge</span>
           <span class="sd-f">hook</span>
+          <span class="sd-f">hook_shadow[]</span>
         </div>
       </div>
       <div class="sd-card">
@@ -149,6 +151,7 @@ one `judge`.
           <span class="sd-f">samples</span>
           <span class="sd-f">score_range</span>
           <span class="sd-f">feedback_type</span>
+          <span class="sd-f">consequence</span>
         </div>
       </div>
       <div class="sd-card">
@@ -159,6 +162,10 @@ one `judge`.
           <span class="sd-f">min_pass_rate</span>
           <span class="sd-f">min_win_rate</span>
           <span class="sd-f">max_error_rate</span>
+          <span class="sd-f">min_alpha</span>
+          <span class="sd-f">min_human_agreement</span>
+          <span class="sd-f">min_panel_alpha</span>
+          <span class="sd-f">simulator (reserved)</span>
         </div>
       </div>
       <div class="sd-card">
@@ -211,7 +218,7 @@ one `judge`.
 | `title` | HTML report heading (default: `Agent Eval Report`; `--title` overrides) | *(inline)* |
 | `execution` | What to run and how cases are processed | [execution](config/execution.md) |
 | `runner` | Agent runtime + runtime-specific knobs | [runner](config/runner.md) |
-| `models` | Model per role: skill, subagent, judge, hook | [models](config/models.md) |
+| `models` | Model per role: skill, subagent, judge, hook (+ hook_shadow) | [models](config/models.md) |
 | `permissions` | Tool allow/deny for headless runs | [permissions](config/permissions.md) |
 | `mlflow` | Experiment tracking (opt-in) | [mlflow](config/mlflow.md) |
 | `dataset` | Where cases live and what they contain | [dataset](config/dataset.md) |
@@ -293,7 +300,7 @@ execution:
   arguments: "{prompt}"   # resolved per case from input.yaml fields
 
 runner:
-  type: claude-code       # claude-code | cli | responses-api
+  type: claude-code       # claude-code | codex | cli | responses-api ("null" rejected — CLI-only probe)
   # effort: high          # low | medium | high | xhigh | max
 
 models:
@@ -333,10 +340,13 @@ judges:
   - name: output_quality
     prompt: "Score 1-5 vs the reference for completeness, clarity, accuracy."
     score_range: [1, 5]     # declare the scale — omitting it warns at config load
+    # model: [claude-sonnet-4-5, gpt-4o, gemini-2.5-pro]  # list = judge panel;
+    #   non-Anthropic ids are gateway aliases via ANTHROPIC_BASE_URL (LiteLLM)
 
 thresholds:
   has_content: { min_pass_rate: 1.0 }
   output_quality: { min_mean: 3.5 }
+  # output_quality: { min_panel_alpha: 0.67 }  # cross-model panel alpha gate
 ```
 
 ## Conventions
@@ -354,7 +364,7 @@ thresholds:
 
 - [**execution**](config/execution.md) — mode, skill/prompt, arguments, timeout, budget, parallelism, env
 - [**runner**](config/runner.md) — type, effort, permission_mode, settings, plugin_dirs, env, system_prompt, command, workspace_mode
-- [**models**](config/models.md) — skill, subagent, judge, hook roles and precedence
+- [**models**](config/models.md) — skill, subagent, judge, hook roles and precedence, plus hook_shadow shadow simulators
 - [**permissions**](config/permissions.md) — allow/deny patterns and the path-based compiler
 - [**mlflow**](config/mlflow.md) — experiment, tracking_uri, tags
 - [**dataset**](config/dataset.md) — path, schema, workspace.files
@@ -362,9 +372,9 @@ thresholds:
 - [**inputs.tools**](config/inputs-tools.md) — tool interception handlers
 - [**outputs**](config/outputs.md) — path vs tool, schema, batch_pattern, types
 - [**traces**](config/traces.md) — stdout, stderr, events, metrics
-- [**hooks**](config/hooks.md) — before/after all/each, before_scoring
+- [**hooks**](config/hooks.md) — before/after all/each/step, before_scoring, before_report
 - [**judges**](config/judges.md) — the five judge types and all fields
-- [**thresholds**](config/thresholds.md) — min_mean, min_pass_rate, min_win_rate, max_error_rate
+- [**thresholds**](config/thresholds.md) — min_mean, min_pass_rate, min_win_rate, max_error_rate, min_alpha, min_human_agreement, min_panel_alpha, plus the reserved `simulator` mapping key
 - [**reward**](config/reward.md) — single-judge and formula reward modes
 
 </div>

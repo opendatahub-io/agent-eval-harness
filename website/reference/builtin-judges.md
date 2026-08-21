@@ -16,7 +16,8 @@ graph LR
   J --> S[safety/]
   E --> E1["cost_budget · python"]
   P --> P1["consulted_docs · python"]
-  P --> P2["tool_call_validation · python"]
+  P --> P2["simulator_provenance · python"]
+  P --> P3["tool_call_validation · python"]
   Q --> Q1["output_completeness · LLM"]
   S --> S1["no_harmful_content · LLM"]
 ```
@@ -25,6 +26,7 @@ graph LR
 | --- | --- | --- | --- | --- |
 | `cost_budget` | efficiency | python | Execution cost stays within budget | `cost_usd` |
 | `consulted_docs` | process | python | Agent read the expected docs | `events`, `annotations.expected_files` |
+| `simulator_provenance` | process | python | Simulated-user answers all came from recorded tiers | `hook_answers`, `interception_configured`, `events` |
 | `tool_call_validation` | process | python | Tool calls completed without errors | `tool_calls` |
 | `output_completeness` | quality | LLM | Output addresses all aspects of the task | `conversation`, `files` |
 | `no_harmful_content` | safety | LLM | Output has no harmful/dangerous content | `conversation`, `files` |
@@ -147,6 +149,50 @@ If a case has no `expected_files`, the judge passes with *"nothing to verify"*.
     `suffix` match uses path-component boundaries, so repo-relative `docs/setup.md` matches
     an absolute read of `/home/user/project/docs/setup.md` without false-matching
     `final-report.md` against `report.md`.
+
+## process/simulator_provenance
+
+Passes when every simulated-user answer to an intercepted `AskUserQuestion` came
+from a recorded tier (`override` or `llm`) in the
+[answer-provenance ledger](../concepts/tool-interception.md#the-answer-provenance-ledger-hook_answersjsonl)
+— and interception was never silently disabled.
+
+| | |
+| --- | --- |
+| **Required fields** | `hook_answers`, `interception_configured`, `events` |
+| **Fails when** | Any `fallback`/`disabled`/error record exists; recorded answers don't cover the questions in the trace (case scope); or interception is configured, the trace shows `AskUserQuestion` calls, and no ledger was collected (unrecorded simulation) |
+| **Arguments** | *(none)* |
+
+```yaml
+judges:
+  - name: simulator_provenance
+    builtin: simulator_provenance      # or process/simulator_provenance
+thresholds:
+  simulator_provenance:
+    min_pass_rate: 1.0   # no case may run on fallback/disabled/unrecorded answers
+```
+
+When no interception is configured it passes trivially. In batch mode the single
+run-level ledger cannot be attributed to cases — the judge still fails on bad
+records but skips per-case coverage counting and labels the rationale as run-level
+(unattributed) provenance.
+
+!!! warning "Provenance, not calibration"
+    A pass certifies **answer-provenance coverage only** — `tier: llm` answers are
+    reported, not validated against human answers. This is not simulator
+    calibration. Blind spot: a hook killed from outside is pass-through and cannot
+    write a record; the missing-ledger check is its detectable signature.
+
+    Not to be confused with the reserved
+    [`thresholds.simulator`](config/thresholds.md#the-reserved-simulator-key)
+    mapping key, which gates the run-level simulator *calibration/agreement*
+    block (`max_fallback_rate`, `min_gold_agreement`,
+    `min_cross_simulator_agreement`) rather than per-case provenance.
+
+!!! note "Bool judges gate the default reward"
+    Adding this judge gates the default reward composition — a fallback-answered
+    case scores 0. Teams using eval-anova composites or RL rewards should exclude
+    it via the `reward:` section or accept the gate.
 
 ## process/tool_call_validation
 

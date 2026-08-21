@@ -631,6 +631,8 @@ details.case[open] > summary::before { transform: rotate(90deg); }
 details.case > summary:hover { color: var(--accent); }
 .info-box { background: var(--accent-soft); border: 1px solid var(--border); border-radius: 6px; padding: 0.8em 1em; margin: 0.6em 0; font-size: 0.9em; }
 .feedback-box { background: var(--warning-soft); border: 1px solid var(--warning-border); border-radius: 6px; padding: 0.8em 1em; margin: 0.6em 0; font-size: 0.9em; color: var(--text); }
+.sim-user { color: var(--text-muted); font-size: 0.85em; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0.4em 0 0.6em; }
+.validity-note { color: var(--text-muted); font-size: 0.9em; }
 .file-badge { display: inline-block; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.82em; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 5px; padding: 3px 10px; margin: 1em 0 0.5em 0; color: var(--text-soft); }
 details.file-entry { margin: 1em 0 0.5em 0; }
 details.file-entry > summary { cursor: pointer; list-style: none; user-select: none; }
@@ -670,6 +672,8 @@ details.io-diff { border-left-color: var(--warning); }
 .stab-wrap { display: inline-flex; align-items: center; gap: 5px; }
 .stab-bar { vertical-align: middle; }
 .stab-label { font-size: 0.8em; color: var(--text-muted); }
+.irr-badge { font-size: 0.8em; color: var(--text-muted); white-space: nowrap; }
+.irr-badge.irr-warn { color: var(--warning); }
 .ascii-range { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.85em; letter-spacing: 1px; color: var(--text-muted); margin-left: 6px; white-space: pre; }
 .ascii-range .med { color: var(--accent); font-weight: 700; }
 .sample-tabs { display: flex; gap: 0; border-bottom: 2px solid var(--border); margin-bottom: 0.5em; }
@@ -1299,15 +1303,142 @@ def _stability_proportion_bar(stable, total, samples):
         f'</svg><span class="stab-label">{stable}/{total} · {samples}×</span></span>')
 
 
-def _render_scoring_summary(summary, config, baseline_summary=None):
+def _irr_badge(irr):
+    """Compact chance-corrected reliability badge beside the stability bar.
+
+    Shows the coefficient (3 decimals), metric name, n_units and the CI when
+    present; the tooltip carries the verbatim upper-bound label plus the
+    metric-selection rationale. Degenerate results render "α n/a (perfect
+    agreement)" — never 1.0. No strength-of-agreement adjectives, ever.
+    """
+    if not isinstance(irr, dict) or not irr:
+        return ""
+    label = irr.get("label") or ("single-judge self-consistency alpha "
+                                 "(upper bound on inter-rater reliability)")
+    metric = irr.get("metric", "krippendorff_alpha")
+    level = irr.get("level")
+    n_units = irr.get("n_units", "?")
+    tooltip = f"{label} — {metric}"
+    if level:
+        tooltip += f"/{level}"
+    tooltip += f", n_units={n_units}"
+    if irr.get("n_ratings") is not None:
+        tooltip += f", n_ratings={irr['n_ratings']}"
+    if irr.get("rationale"):
+        tooltip += f". {irr['rationale']}"
+    tooltip += (" Consequence-tier defaults: only 0.67 is literature-backed; "
+                "0.70/0.80 are author-proposed.")
+
+    value = irr.get("value")
+    cls = "irr-badge"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        text = f"self-consistency α = {value:.3f} ({metric}, n={n_units}"
+        ci = irr.get("ci")
+        if isinstance(ci, (list, tuple)) and len(ci) == 2:
+            text += f", CI [{ci[0]:.3f}, {ci[1]:.3f}]"
+        text += ")"
+    elif irr.get("reason_code") == "perfect_agreement":
+        text = "α n/a (perfect agreement)"
+    else:
+        text = f"α n/a ({irr.get('reason_code') or 'unavailable'})"
+        cls += " irr-warn"
+    return f'<span class="{cls}" title="{_esc(tooltip)}">{_esc(text)}</span>'
+
+
+def _panel_badge(panel):
+    """Cross-model judge-panel alpha badge beside the IRR badge.
+
+    Shows the panel alpha (3 decimals), rater count and family composition;
+    the tooltip carries the full label (including the single-family caveat
+    when every member resolves to one known family), the models list, the
+    metric/level, n_units and k_samples. Degenerate results render
+    "panel α n/a (…)" — never 1.0. No strength-of-agreement adjectives.
+    """
+    if not isinstance(panel, dict) or not panel:
+        return ""
+    models = panel.get("models") or []
+    families = panel.get("families") or {}
+    fam_str = " + ".join(f"{count} {fam}"
+                         for fam, count in sorted(families.items()))
+    label = panel.get("label") or "cross-model panel alpha"
+    tooltip = f"{label} — {panel.get('metric', 'krippendorff_alpha')}"
+    if panel.get("level"):
+        tooltip += f"/{panel['level']}"
+    tooltip += f", n_units={panel.get('n_units', '?')}"
+    if panel.get("k_samples"):
+        tooltip += f", {panel['k_samples']} sample(s) per model"
+    if models:
+        tooltip += f". Panel: {', '.join(str(m) for m in models)}"
+    if panel.get("rationale"):
+        tooltip += f". {panel['rationale']}"
+
+    value = panel.get("value")
+    cls = "irr-badge"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        text = (f"panel α = {value:.3f} ({len(models)} models — {fam_str}, "
+                f"n={panel.get('n_units', '?')})")
+    elif panel.get("reason_code") == "perfect_agreement":
+        text = f"panel α n/a (perfect agreement — {len(models)} models)"
+    else:
+        text = f"panel α n/a ({panel.get('reason_code') or 'unavailable'})"
+        cls += " irr-warn"
+    return f'<span class="{cls}" title="{_esc(tooltip)}">{_esc(text)}</span>'
+
+
+def _human_agreement_badge(ha, human_calibration=None):
+    """Judge-vs-human calibration annotation beside the IRR badge.
+
+    Value + metric + n; the tooltip carries the mandatory label ("agreement
+    with a single human reviewer (n=X)"), the metric-selection rationale, the
+    uncorrected raw agreement, and the reviewer-reported blind flag
+    (self-reported, not enforced). Perfect agreement renders as raw 100% —
+    never a coefficient of 1.0. No strength-of-agreement adjectives, ever.
+    """
+    if not isinstance(ha, dict) or not ha:
+        return ""
+    n = ha.get("n_units", "?")
+    tooltip = ha.get("label") or (
+        f"agreement with a single human reviewer (n={n})")
+    if ha.get("rationale"):
+        tooltip += f" — {ha['rationale']}"
+    raw = ha.get("agreement_raw")
+    if isinstance(raw, (int, float)):
+        tooltip += f" Uncorrected agreement {raw:.3f}."
+    if isinstance(human_calibration, dict):
+        tooltip += (" reviewer-reported blind: "
+                    f"{'yes' if human_calibration.get('blind') else 'no'}")
+    metric = str(ha.get("metric") or "")
+    symbol = "κ" if "kappa" in metric else "α"
+
+    value = ha.get("value")
+    cls = "irr-badge"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        text = f"{symbol}={value:.3f} vs human ({metric}, n={n})"
+    elif ha.get("reason_code") == "perfect_agreement":
+        raw_pct = f"{raw:.0%}" if isinstance(raw, (int, float)) else "100%"
+        text = f"vs human: {raw_pct} raw (uncorrected — perfect agreement)"
+    else:
+        text = (f"vs human: n={n}, no coefficient "
+                f"({ha.get('reason_code') or 'unavailable'})")
+        cls += " irr-warn"
+    return f'<span class="{cls}" title="{_esc(tooltip)}">{_esc(text)}</span>'
+
+
+def _render_scoring_summary(summary, config, baseline_summary=None,
+                            run_result=None):
     judges = summary.get("judges", {})
-    thresholds = config.get("thresholds", {})
+    thresholds = _effective_thresholds(config)
+    include_irr = _include_irr(run_result)
     # Authoritative PASS/FAIL per judge, from the same detector the CLI exits
     # on — the column below only picks which bound to display.
     try:
         _breached = {r.judge_name
-                     for r in _detect_regressions(summary.get("judges", {}),
-                                                  thresholds)}
+                     for r in _detect_regressions(
+                         summary.get("judges", {}), thresholds,
+                         pairwise=summary.get("pairwise"),
+                         include_irr=include_irr,
+                         simulator=summary.get("simulator"),
+                         human_calibration=summary.get("human_calibration"))}
         _breach_known = True
     except Exception:
         # Unknown, not clean: fall back to the metrics this table can compute
@@ -1323,12 +1454,19 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
                      or "—")
     for jc in config.get("judges", []):
         jname = jc.get("name", "")
+        # `model` may be a list (a judge panel) — render a readable label,
+        # never a Python list repr, in the Model column.
+        model_raw = jc.get("model")
+        if isinstance(model_raw, list):
+            model_label = "panel: " + ", ".join(str(m) for m in model_raw)
+        else:
+            model_label = model_raw
         if jc.get("builtin"):
-            judge_info[jname] = ("builtin", jc.get("model") or "—")
+            judge_info[jname] = ("builtin", model_label or "—")
         elif jc.get("check"):
             judge_info[jname] = ("check", "—")
         elif jc.get("prompt") or jc.get("prompt_file"):
-            judge_info[jname] = ("llm", jc.get("model") or default_model)
+            judge_info[jname] = ("llm", model_label or default_model)
         elif jc.get("module"):
             judge_info[jname] = ("code", "—")
 
@@ -1350,18 +1488,38 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
             metric_val = f"{pass_rate:.0%}"
         elif mean is not None:
             metric_name = "mean"
-            metric_val = f"{mean:.2f}"
+            # Displayed-precision restraint (paper Appendix B.5): two
+            # decimals max, annotated — more digits than the measurement
+            # supports would claim precision the sample size cannot back.
+            metric_val = (
+                '<span title="precision limited by measurement reliability '
+                '— see the Validity &amp; Reliability section">'
+                f"{mean:.2f}</span>")
         else:
             metric_name = "—"
             metric_val = "—"
 
         # Sampling stability (from `score.py judges --samples N`) — a proportion
-        # bar (stable vs varied across cases) appended to the metric.
+        # bar (stable vs varied across cases) appended to the metric, plus the
+        # chance-corrected self-consistency alpha badge when computed.
         jst = agg.get("stability")
         if isinstance(jst, dict) and jst.get("samples", 1) > 1 and metric_val != "—":
             metric_val += " " + _stability_proportion_bar(
                 jst.get("stable_cases", 0), jst.get("total_cases", 0),
                 jst.get("samples"))
+        if isinstance(jst, dict) and isinstance(jst.get("irr"), dict):
+            metric_val += " " + _irr_badge(jst["irr"])
+        # Cross-model panel alpha (judges[].model as a list) beside the IRR
+        # badge — self-consistency and inter-rater agreement are different
+        # measurements and render as separate annotations.
+        if isinstance(agg.get("panel"), dict):
+            metric_val += " " + _panel_badge(agg["panel"])
+        # Judge-vs-human calibration (score.py calibration) beside the IRR
+        # badge — self-consistency and criterion anchoring are different
+        # measurements and render as separate annotations.
+        if isinstance(agg.get("human_agreement"), dict):
+            metric_val += " " + _human_agreement_badge(
+                agg["human_agreement"], summary.get("human_calibration"))
 
         # Baseline
         bl_val = ""
@@ -1391,6 +1549,22 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
                 thresh_str = f"&ge; {_pct(thresh['min_win_rate'])}"
             elif "max_error_rate" in thresh:
                 thresh_str = f"&le; {_pct(thresh['max_error_rate'])} errored"
+            elif "min_alpha" in thresh and include_irr:
+                # Skipped (not evaluated) on harbor/evalhub runs — don't
+                # display a bound the detector never checked.
+                thresh_str = f"&ge; &alpha; {thresh['min_alpha']}"
+            elif "min_panel_alpha" in thresh and include_irr:
+                # Same execution-path scoping as min_alpha: the panel gate
+                # is skipped on harbor/evalhub runs.
+                thresh_str = f"&ge; panel &alpha; {thresh['min_panel_alpha']}"
+            elif "min_human_agreement" in thresh and (
+                    isinstance(agg.get("human_agreement"), dict)
+                    or judge_name in ((summary.get("human_calibration") or {})
+                                      .get("judges") or [])):
+                # Displayed only once the judge was calibrated (or a stale
+                # calibration exists) — a never-calibrated gate is silently
+                # skipped by the detector, so no bound to show.
+                thresh_str = f"&ge; {thresh['min_human_agreement']} vs human"
 
         # A breach is authoritative and is checked FIRST, because the metric it
         # gates on need not be one this table can display: a judge gated only
@@ -1472,31 +1646,165 @@ def _render_scoring_summary(summary, config, baseline_summary=None):
         html += f'<td>—</td><td><span class="{pw_status_cls}">{pw_status}</span></td></tr>\n'
 
     html += "</table>\n"
+    html += _render_clarity(summary.get("clarity"))
     return html
 
 
-def _detect_regressions(judges, thresholds):
+def _render_clarity(clarity):
+    """Compact instrument-clarity table under the scoring summary.
+
+    Renders ``summary['clarity']`` (written by ``score.py clarity``):
+    per-judge m-way alpha vs the 0.67 exploratory floor, the rater models
+    and their family composition. Explicitly instrument clarity — whether
+    the rubric admits consistent application — not rater validity.
+    Report-only: no CI gate. Renders nothing when the block is absent.
+    """
+    if not isinstance(clarity, dict) or not isinstance(
+            clarity.get("judges"), dict) or not clarity["judges"]:
+        return ""
+    raters = clarity.get("raters") or []
+    families = clarity.get("families") or {}
+    fam_str = " + ".join(f"{count} {fam}"
+                         for fam, count in sorted(families.items()))
+    floor = clarity.get("floor", 0.67)
+    label = clarity.get("label") or (
+        "instrument clarity (does the rubric admit consistent "
+        "application?) — not rater validity")
+    html = "<h3>Instrument clarity</h3>\n"
+    html += (f'<p class="clarity-note">{_esc(label)} — '
+             f"{len(raters)} raters ({_esc(fam_str)}), "
+             f"floor {floor} (report-only diagnostic, no CI gate)</p>\n")
+    html += "<table>\n<tr><th>Judge</th><th>Clarity &alpha;</th>"
+    html += f"<th>n cases</th><th>vs {floor} floor</th></tr>\n"
+    for name in sorted(clarity["judges"]):
+        block = clarity["judges"][name]
+        if not isinstance(block, dict):
+            continue
+        value = block.get("value")
+        n_units = block.get("n_units", block.get("n_cases", "?"))
+        tooltip = (f"{block.get('metric', 'krippendorff_alpha')}/"
+                   f"{block.get('level', '?')}")
+        if block.get("rationale"):
+            tooltip += f" — {block['rationale']}"
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            val_str = f'<span title="{_esc(tooltip)}">{value:.3f}</span>'
+            if value >= floor:
+                verdict = '<span class="pass">meets floor</span>'
+            else:
+                verdict = ('<span class="fail" title="the rubric likely '
+                           'underspecifies the construct; refine the rubric '
+                           'rather than lowering the bar (paper Sec 10.2)">'
+                           'below floor</span>')
+        else:
+            reason = block.get("reason_code") or "unavailable"
+            val_str = (f'<span title="{_esc(block.get("reason") or reason)}">'
+                       f"n/a ({_esc(reason)})</span>")
+            verdict = '<span class="skip">—</span>'
+        html += (f"<tr><td>{_esc(name)}</td><td>{val_str}</td>"
+                 f"<td>{n_units}</td><td>{verdict}</td></tr>\n")
+    html += "</table>\n"
+    return html
+
+
+def _render_sim_user_line(case_dir, run_dir):
+    """One-line simulated-user provenance summary from hook_answers.jsonl.
+
+    Prefers the per-case ledger (case mode), falls back to the run-root
+    ledger (batch mode — run-level, unattributed). Uses score.py's lenient
+    ledger parser (the ONE parser — no second implementation here). Returns
+    "" when no ledger exists.
+    """
+    from score import _parse_hook_ledger
+    scope = "case"
+    ledger_path = case_dir / "hook_answers.jsonl"
+    if not ledger_path.is_file():
+        ledger_path = run_dir / "hook_answers.jsonl"
+        scope = "run"
+    if not ledger_path.is_file():
+        return ""
+    records = _parse_hook_ledger(ledger_path) or []
+    counts = {"override": 0, "llm": 0, "fallback": 0, "disabled": 0}
+    flagged = []
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        tier = rec.get("tier")
+        if tier in counts:
+            counts[tier] += 1
+        if tier in ("fallback", "disabled"):
+            text = str(rec.get("question") or rec.get("reason") or "?")[:120]
+            flagged.append(f'<span class="fail">{tier}: {_esc(text)}</span>')
+    answered = counts["override"] + counts["llm"] + counts["fallback"]
+    parts = [f'{counts["override"]} override', f'{counts["llm"]} llm']
+    if counts["fallback"]:
+        parts.append(f'{counts["fallback"]} fallback')
+    if counts["disabled"]:
+        parts.append(f'{counts["disabled"]} disabled')
+    note = " (run-level ledger — batch mode)" if scope == "run" else ""
+    html = (f'<div class="sim-user">Simulated user: {answered} answer(s) — '
+            f'{" · ".join(parts)}{_esc(note)}')
+    if flagged:
+        html += "<br>" + " · ".join(flagged)
+    html += "</div>\n"
+    return html
+
+
+def _detect_regressions(judges, thresholds, pairwise=None, include_irr=True,
+                        simulator=None, human_calibration=None):
     """score.py's regression detector.
 
     score.py sits beside this file but is a script, not a package module, so
     it is imported by name off the same directory. Raises rather than
     returning [] — a detector that could not run is not a clean run, and
-    callers render that distinction.
+    callers render that distinction. The reliability kwargs are forwarded
+    verbatim (``pairwise`` is a reserved pass-through; ``simulator`` is the
+    summary's run-level simulator block, evaluated by the reserved
+    ``thresholds.simulator`` gates; ``include_irr=False`` skips the
+    ``min_alpha``-family AND simulator gates on execution paths whose
+    aggregation carries no sampling stability or ledger data;
+    ``human_calibration`` is the summary's run-level block, needed by the
+    ``min_human_agreement`` stale-calibration check).
     """
     from score import detect_regressions
-    return detect_regressions(judges, thresholds)
+    return detect_regressions(judges, thresholds, pairwise=pairwise,
+                              include_irr=include_irr, simulator=simulator,
+                              human_calibration=human_calibration)
 
 
-def _render_regressions(summary, config):
+def _effective_thresholds(config):
+    """Thresholds with consequence-tier min_alpha defaults injected.
+
+    Detection-time resolution through the same accessor the CLI gate uses,
+    so a consequence-tagged judge shows its tier bound (and FAILs) exactly
+    when the CLI exits 1. Raw-dict judges are handled by the duck-typed
+    reader in agent_eval.config.
+    """
+    from agent_eval.config import effective_thresholds
+    return effective_thresholds(config.get("thresholds") or {},
+                                config.get("judges") or [])
+
+
+def _include_irr(run_result):
+    """min_alpha gates apply on the local scoring path only — Harbor and
+    EvalHub aggregations carry no sampling stability data."""
+    return (run_result or {}).get("execution_mode") not in ("harbor", "evalhub")
+
+
+def _render_regressions(summary, config, run_result=None):
     judges = summary.get("judges", {})
-    thresholds = config.get("thresholds", {})
+    thresholds = _effective_thresholds(config)
     regressions = []
 
     # Reuse score.py's detector rather than restating it. This section had
     # drifted to two of the four keys, so a `min_win_rate` or `max_error_rate`
     # breach failed the run while the report showed no Regressions table at all.
     try:
-        for reg in _detect_regressions(judges, thresholds):
+        for reg in _detect_regressions(
+                judges, thresholds,
+                pairwise=summary.get("pairwise"),
+                include_irr=_include_irr(run_result),
+                simulator=summary.get("simulator"),
+                human_calibration=summary.get("human_calibration")):
             regressions.append((reg.judge_name, reg.metric,
                                 reg.baseline_value, reg.current_value))
     except Exception as exc:
@@ -1518,6 +1826,496 @@ def _render_regressions(summary, config):
     return html
 
 
+def _tier_proportion_bar(tiers):
+    """3-segment proportion bar over simulated-user answer tiers.
+
+    Shares _stability_proportion_bar's SVG visual language: override
+    (case-specific, success-colored) · llm (accent) · fallback+disabled
+    (arbitrary/uninterceded, warning background). Counts in the label.
+    """
+    override = tiers.get("override", 0) or 0
+    llm = tiers.get("llm", 0) or 0
+    bad = (tiers.get("fallback", 0) or 0) + (tiers.get("disabled", 0) or 0)
+    total = override + llm + bad
+    if not total:
+        return ""
+    W, H = 92, 7
+    w_override = W * override / total
+    w_llm = W * llm / total
+    title = (f"{override} override · {llm} llm · {bad} fallback/disabled "
+             f"of {total} answer(s)")
+    return (
+        f'<span class="stab-wrap">'
+        f'<svg class="stab-bar" width="{W}" height="{H}" viewBox="0 0 {W} {H}" '
+        f'role="img" aria-label="{_esc(title)}"><title>{_esc(title)}</title>'
+        f'<rect x="0" y="0" width="{W}" height="{H}" rx="3.5" fill="var(--warning)"/>'
+        f'<rect x="0" y="0" width="{w_override + w_llm:.1f}" height="{H}" rx="3.5" fill="var(--accent)"/>'
+        f'<rect x="0" y="0" width="{w_override:.1f}" height="{H}" rx="3.5" fill="var(--success)"/>'
+        f'</svg><span class="stab-label">{override} · {llm} · {bad}</span></span>')
+
+
+def _render_simulator(summary, config):
+    """Simulator Calibration card (measurement-validity V2 layer).
+
+    Renders ``summary['simulator']`` (assembled by score.py's
+    ``aggregate_simulator``): the answer-tier proportion bar, the fallback
+    rate against its gate, and the held-out gold agreement stratified by
+    case_overrides provenance — the HUMAN stratum is the calibration
+    evidence; the agent stratum renders with its verbatim LLM-vs-LLM
+    label. The P1 banner fires whenever zero human-provenance pairs
+    exist. When the block carries ``cross_simulator`` (models.hook_shadow
+    shadow answers), the card adds the agreement rate WITH its family
+    composition (the sensitivity observable — within-family agreement is
+    never sold as robustness), per-model rates, the nominal alpha or its
+    suppression reason, a compact collapsible disagreement list, and a
+    single-family caveat when every classifiable model shares the
+    primary's family. Returns '' when the run carries no simulator block.
+    """
+    block = summary.get("simulator") if isinstance(summary, dict) else None
+    if not isinstance(block, dict) or not block:
+        return ""
+    html = "<h2>Simulator Calibration</h2>\n"
+
+    calibration = (block.get("calibration")
+                   if isinstance(block.get("calibration"), dict) else {})
+    by_source = calibration.get("by_source") or {}
+    human = by_source.get("human") or {}
+    agent = by_source.get("agent") or {}
+
+    # P1 banner: no human-provenance pairs = the simulator's answers were
+    # never validated against a human, whatever the agent stratum says.
+    if not human.get("n"):
+        html += ('<p class="fail">Simulator calibration not validated '
+                 "against human answers — no human-provenance override "
+                 "pairs (Prescription 1). Agent-authored overrides measure "
+                 "LLM-vs-LLM consistency, not human calibration. Mark "
+                 "human-authored case_overrides with "
+                 "<code>case_overrides_source: human</code> (or per-entry "
+                 "<code>source: human</code>).</p>\n")
+
+    tiers = block.get("tiers") or {}
+    thresholds = (config.get("thresholds") or {}) if isinstance(
+        config, dict) else {}
+    sim_gates = (thresholds.get("simulator")
+                 if isinstance(thresholds.get("simulator"), dict) else {})
+
+    html += "<table>\n"
+    bar = _tier_proportion_bar(tiers)
+    if bar:
+        html += ("<tr><th>Answer tiers</th><td>" + bar
+                 + ' <span class="stab-label">override · llm · '
+                   "fallback/disabled</span></td></tr>\n")
+    html += (f"<tr><th>Questions answered</th>"
+             f"<td>{block.get('n_questions', 0)}</td></tr>\n")
+    rate = block.get("fallback_rate")
+    if isinstance(rate, (int, float)) and not isinstance(rate, bool):
+        val = f"{rate:.1%}"
+        gate = sim_gates.get("max_fallback_rate")
+        if isinstance(gate, (int, float)) and not isinstance(gate, bool):
+            cls = "fail" if rate > gate else "pass"
+            val = (f'<span class="{cls}">{val}</span> '
+                   f"(gate: &le; {gate})")
+        html += ("<tr><th>Fallback rate</th><td>" + val
+                 + " — fallback answers over answered questions"
+                   "</td></tr>\n")
+    disabled_events = block.get("disabled_events")
+    if disabled_events is None:
+        disabled_events = tiers.get("disabled") or 0
+    if disabled_events:
+        html += ("<tr><th>Interception disabled</th><td>"
+                 f'<span class="fail">{disabled_events} event(s)</span> — '
+                 "interception was disabled during the run; these records "
+                 "carry no question and are excluded from the fallback "
+                 "rate (the max_fallback_rate gate still regresses on "
+                 "them)</td></tr>\n")
+    if block.get("hook_model"):
+        html += (f"<tr><th>Hook model</th>"
+                 f"<td>{_esc(str(block['hook_model']))}</td></tr>\n")
+
+    gate = sim_gates.get("min_gold_agreement")
+    gate_txt = (f" (gate: &ge; {gate}, human stratum only)"
+                if isinstance(gate, (int, float))
+                and not isinstance(gate, bool) else "")
+    for name, stratum, prominent in (("human", human, True),
+                                     ("agent", agent, False)):
+        if not stratum.get("n"):
+            continue
+        label = str(stratum.get("label") or "")
+        r = stratum.get("rate")
+        val = (f"{r:.1%}" if isinstance(r, (int, float))
+               and not isinstance(r, bool) else "n/a")
+        detail = (f"{val} — {stratum.get('agree', 0)}/{stratum['n']} "
+                  f"pair(s) · {_esc(label)}")
+        if prominent:
+            row_label = "Gold agreement (human)"
+            detail = f"<strong>{detail}</strong>{gate_txt}"
+        else:
+            row_label = "Agent-stratum agreement"
+        html += f"<tr><th>{row_label}</th><td>{detail}</td></tr>\n"
+    if block.get("deadline_skips"):
+        html += (f"<tr><th>Deadline skips</th><td>"
+                 f"{block['deadline_skips']} calibration shadow(s) skipped "
+                 f"by the in-hook deadline budget</td></tr>\n")
+    cross = (block.get("cross_simulator")
+             if isinstance(block.get("cross_simulator"), dict) else {})
+    if cross:
+        html += _cross_simulator_rows(cross, sim_gates)
+    html += "</table>\n"
+    if cross:
+        html += _cross_simulator_notes(cross)
+
+    if not calibration.get("n_pairs") and tiers.get("llm"):
+        html += ('<p class="validity-note">Calibration shadow disabled — '
+                 "llm-tier answers are provenance only, not calibration. "
+                 "Enable <code>inputs.tools[].calibration: true</code> with "
+                 "human-provenance case_overrides to measure gold "
+                 "agreement.</p>\n")
+    if block.get("ledger_scope") == "run":
+        html += ('<p class="validity-note">run-level ledger — answers not '
+                 "attributed to cases (batch mode)</p>\n")
+    return html
+
+
+def _families_text(families):
+    """`anthropic x2, google x1` composition string (plain text)."""
+    if not isinstance(families, dict) or not families:
+        return ""
+    return ", ".join(f"{fam} x{count}"
+                     for fam, count in sorted(families.items()))
+
+
+def _cross_simulator_rows(cross, sim_gates):
+    """Table rows for the cross-simulator block (models.hook_shadow).
+
+    The agreement rate always renders NEXT TO its family composition — the
+    sensitivity observable: a high all-agree rate over one family is a very
+    different finding than the same rate across families.
+    """
+    html = ""
+    rate = cross.get("all_agree_rate")
+    families_txt = _esc(_families_text(cross.get("families")))
+    if isinstance(rate, (int, float)) and not isinstance(rate, bool):
+        val = f"{rate:.1%}"
+        gate = sim_gates.get("min_cross_simulator_agreement")
+        if isinstance(gate, (int, float)) and not isinstance(gate, bool):
+            cls = "fail" if rate < gate else "pass"
+            val = f'<span class="{cls}">{val}</span> (gate: &ge; {gate})'
+        detail = (f"{val} — {cross.get('n_questions', 0)} fully covered "
+                  f"question(s), uncorrected · families: {families_txt}")
+    else:
+        detail = ("n/a — shadow records exist but no question has full "
+                  f"shadow coverage · families: {families_txt}")
+    html += f"<tr><th>Cross-simulator agreement</th><td>{detail}</td></tr>\n"
+
+    per_model = cross.get("per_model_agreement")
+    if isinstance(per_model, dict) and per_model:
+        parts = []
+        for model, r in per_model.items():
+            r_txt = (f"{r:.1%}" if isinstance(r, (int, float))
+                     and not isinstance(r, bool) else "n/a")
+            parts.append(f"{_esc(str(model))} {r_txt}")
+        html += ("<tr><th>Per-shadow vs primary</th><td>"
+                 + " · ".join(parts) + "</td></tr>\n")
+
+    alpha = cross.get("alpha")
+    if isinstance(alpha, dict) and alpha:
+        value = alpha.get("value")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            a_txt = (f"{value:.3f} ({_esc(str(alpha.get('metric', '?')))}/"
+                     f"{_esc(str(alpha.get('level', '?')))}, "
+                     f"n_units={alpha.get('n_units', '?')})")
+        else:
+            a_txt = ('<span class="skip">n/a</span> — '
+                     + _esc(str(alpha.get("reason")
+                                or alpha.get("reason_code") or "?")))
+        html += f"<tr><th>Cross-simulator alpha</th><td>{a_txt}</td></tr>\n"
+    return html
+
+
+def _cross_simulator_notes(cross):
+    """Caveat + compact disagreement list rendered under the card table."""
+    html = ""
+    if cross.get("single_family"):
+        html += ('<p class="validity-note">Single-family shadow panel — '
+                 "every classifiable simulator shares the primary's "
+                 "provider family, so this agreement is within-family "
+                 "consistency, not cross-family robustness (paper "
+                 "Prescription 4). Configure a cross-family "
+                 "<code>models.hook_shadow</code> via a gateway alias.</p>\n")
+    disagreements = cross.get("disagreements")
+    if isinstance(disagreements, list) and disagreements:
+        html += ("<details><summary>"
+                 f"{len(disagreements)} cross-simulator disagreement(s)"
+                 "</summary>\n<table>\n<tr><th>Question</th>"
+                 "<th>Answers by model</th></tr>\n")
+        for d in disagreements:
+            if not isinstance(d, dict):
+                continue
+            answers = d.get("answers")
+            answers = answers if isinstance(answers, dict) else {}
+            answers_txt = " · ".join(
+                f"<code>{_esc(str(m))}</code>: {_esc(str(a))}"
+                for m, a in answers.items())
+            html += (f"<tr><td>{_esc(str(d.get('question', '')))}</td>"
+                     f"<td>{answers_txt}</td></tr>\n")
+        html += "</table>\n</details>\n"
+    return html
+
+
+#: Hint rendered (as a title tooltip) on judge rows that carry no IRR data.
+_IRR_ABSENT_HINT = ("no IRR data — run with judges[].samples >= 3 "
+                    "(or score.py judges --samples 3) to compute the "
+                    "self-consistency alpha")
+
+
+def _validity_layer_detail(key, layer):
+    """One-line detail text for a V-layer stanza (plain text, escaped later)."""
+    if key == "v1":
+        parts = [f"generation: {layer.get('generation_strategy') or 'skill'}",
+                 f"dataset audit: {layer.get('dataset_audit') or 'absent'}",
+                 f"manifest: {layer.get('manifest') or 'absent'}"]
+        probe = layer.get("null_probe")
+        if isinstance(probe, dict) and isinstance(
+                probe.get("null_pass_rate"), (int, float)):
+            parts.append(f"null-pass rate: {probe['null_pass_rate']:.1%} "
+                         "(joint task/judge non-discriminativeness)")
+        return " · ".join(parts)
+    if key == "v2":
+        if not layer.get("intercepts_ask_user"):
+            return "no AskUserQuestion interception configured"
+        parts = ["AskUserQuestion intercepted"]
+        if layer.get("hook_model"):
+            parts.append(f"hook model: {layer['hook_model']}")
+        return " · ".join(parts)
+    if key == "v3":
+        rows = layer.get("judges") or []
+        with_irr = sum(1 for r in rows
+                       if isinstance(r, dict) and r.get("irr"))
+        parts = [f"{with_irr}/{len(rows)} judge(s) with self-consistency "
+                 "IRR data"]
+        mga = layer.get("min_gated_alpha")
+        if isinstance(mga, (int, float)) and not isinstance(mga, bool):
+            parts.append(f"min gated alpha: {mga:.3f}")
+        return " · ".join(parts)
+    return ""
+
+
+def _render_validity(summary, config):
+    """Validity & Reliability — the P8 measurement-validity section.
+
+    Renders ``summary['validity']`` (assembled by score.py's
+    ``build_validity_block``): the three V-layer stanzas with unmeasured
+    badges, the conceptual V_total frame as ADVISORY TEXT (this function
+    never formats a numeric V_total — a mechanical invariant), the
+    per-judge P8 table (metric / value + CI / threshold / selection
+    rationale), and the same-family caveat box. Old summaries and
+    non-local execution paths render an honest 'not computed' note.
+    """
+    html = "<h2>Validity &amp; Reliability</h2>\n"
+    block = summary.get("validity") if isinstance(summary, dict) else None
+    if not isinstance(block, dict) or not block:
+        html += ('<p class="validity-note"><span class="skip">not computed'
+                 "</span> validity block not computed for this run (older "
+                 "scoring run or non-local execution path) — re-run "
+                 "score.py judges to generate it.</p>\n")
+        return html
+
+    # --- layer stanzas -------------------------------------------------
+    layers = block.get("layers") or {}
+    html += "<table>\n<tr><th>Layer</th><th>Status</th><th>Detail</th></tr>\n"
+    for key, label in (("v1", "V1 — task generation"),
+                       ("v2", "V2 — simulator"),
+                       ("v3", "V3 — judgment")):
+        layer = layers.get(key) if isinstance(layers.get(key), dict) else {}
+        status = str(layer.get("status") or "unmeasured")
+        cls = ("pass" if status == "measured"
+               else "skip" if status == "not-applicable" else "warn")
+        detail = _validity_layer_detail(key, layer)
+        html += (f"<tr><td>{_esc(label)}</td>"
+                 f'<td><span class="{cls}">{_esc(status)}</span></td>'
+                 f"<td>{_esc(detail)}</td></tr>\n")
+    html += "</table>\n"
+
+    # --- the V_total frame: advisory text, never a metric ---------------
+    vt = block.get("v_total") or {}
+    frame_bits = []
+    if vt.get("frame"):
+        frame_bits.append(f"<em>{_esc(str(vt['frame']))}</em>")
+    unmeasured = vt.get("unmeasured_layers") or []
+    if unmeasured:
+        frame_bits.append("Unmeasured layers: "
+                          + _esc(", ".join(str(u) for u in unmeasured)))
+    if vt.get("note"):
+        frame_bits.append(_esc(str(vt["note"])))
+    if frame_bits:
+        html += ('<p class="validity-note">'
+                 + "<br>\n".join(frame_bits) + "</p>\n")
+
+    # --- per-judge P8 table ----------------------------------------------
+    rows = block.get("judges")
+    if not isinstance(rows, list):
+        v3 = layers.get("v3")
+        rows = (v3.get("judges") if isinstance(v3, dict) else None) or []
+    rows = [r for r in rows if isinstance(r, dict)]
+    if rows:
+        any_human = any(isinstance(r.get("human_agreement"), dict)
+                        for r in rows)
+        html += ('<p class="validity-note">Per-judge reliability — '
+                 "single-judge self-consistency alpha "
+                 "(upper bound on inter-rater reliability)</p>\n")
+        html += ("<table>\n<tr><th>Judge</th><th>IRR metric</th>"
+                 "<th>Value</th><th>Threshold</th>")
+        if any_human:
+            html += "<th>Human agreement</th>"
+        html += "</tr>\n"
+        for row in rows:
+            irr = row.get("irr")
+            if isinstance(irr, dict) and irr:
+                metric = str(irr.get("metric") or "—")
+                rationale = str(irr.get("rationale") or "")
+                metric_cell = (f'<span title="{_esc(rationale)}">'
+                               f"{_esc(metric)}</span>"
+                               if rationale else _esc(metric))
+                value = irr.get("value")
+                if isinstance(value, (int, float)) and not isinstance(
+                        value, bool):
+                    val_txt = f"{value:.3f}"
+                    ci = irr.get("ci")
+                    if isinstance(ci, (list, tuple)) and len(ci) == 2:
+                        val_txt += f" [{ci[0]:.3f}, {ci[1]:.3f}]"
+                    if irr.get("n_units") is not None:
+                        val_txt += f" (n={irr['n_units']})"
+                    val_cell = _esc(val_txt)
+                else:
+                    reason = str(irr.get("reason_code") or "unavailable")
+                    val_cell = (f'<span title="{_esc(reason)}">'
+                                f"— ({_esc(reason)})</span>")
+                thr = irr.get("threshold")
+                thr_cell = (f"&ge; {thr}"
+                            if isinstance(thr, (int, float))
+                            and not isinstance(thr, bool) else "—")
+            else:
+                metric_cell = "—"
+                val_cell = f'<span title="{_esc(_IRR_ABSENT_HINT)}">—</span>'
+                thr_cell = "—"
+            html += (f"<tr><td>{_esc(str(row.get('judge', '')))}</td>"
+                     f"<td>{metric_cell}</td><td>{val_cell}</td>"
+                     f"<td>{thr_cell}</td>")
+            if any_human:
+                ha = row.get("human_agreement")
+                if (isinstance(ha, dict)
+                        and isinstance(ha.get("value"), (int, float))
+                        and not isinstance(ha.get("value"), bool)):
+                    ha_cell = _esc(
+                        f"{ha['value']:.3f} ({ha.get('metric') or '?'}) — "
+                        f"agreement with a single human reviewer "
+                        f"(n={ha.get('n', '?')})")
+                elif isinstance(ha, dict):
+                    ha_cell = _esc(f"no coefficient (n={ha.get('n', '?')})")
+                else:
+                    ha_cell = "—"
+                html += f"<td>{ha_cell}</td>"
+            html += "</tr>\n"
+        html += "</table>\n"
+
+    # --- same-family caveat (report-only, silent on unknown ids) ---------
+    sf = block.get("same_family")
+    if isinstance(sf, dict) and sf.get("family"):
+        models_txt = ", ".join(str(m) for m in sf.get("models") or [])
+        html += ('<p><span class="warn">same-family models</span> '
+                 f"<strong>{_esc(str(sf['family']))}</strong>"
+                 + (f" — {_esc(models_txt)}" if models_txt else "")
+                 + (f"<br>{_esc(str(sf.get('caveat') or ''))}"
+                    if sf.get("caveat") else "")
+                 + "</p>\n")
+    return html
+
+
+def _render_calibration(summary):
+    """Human Calibration section — judge-vs-human agreement detail.
+
+    Reads the run-level ``human_calibration`` block plus each calibrated
+    judge's ``human_agreement`` block (both written by ``score.py
+    calibration``). Mandatory caveats: not-blind exposure, non-random case
+    selection (kappa is prevalence-sensitive), and the single-reviewer limit.
+    The per-judge raw pairs table (chance-uncorrected) renders for every
+    calibrated judge — below the calibration floor it is the only deliverable.
+    Returns '' when the run was never calibrated.
+    """
+    hc = summary.get("human_calibration")
+    if not isinstance(hc, dict) or not hc:
+        return ""
+    judges = summary.get("judges", {}) or {}
+    blind = bool(hc.get("blind"))
+    selection = str(hc.get("selection") or "unspecified")
+
+    html = "<h2>Human Calibration</h2>\n"
+    html += (f"<p>Reviewer "
+             f"<strong>{_esc(str(hc.get('reviewer_id', 'human')))}</strong>"
+             f" — {hc.get('n_reviewed', '?')}/{hc.get('n_total_cases', '?')}"
+             f" cases reviewed · selection: {_esc(selection)} · "
+             f"reviewer-reported blind: {'yes' if blind else 'no'}</p>\n")
+
+    caveats = []
+    if not blind:
+        caveats.append("Verdicts were collected after judge results were "
+                       "visible (reviewer-reported blind: no).")
+    if selection != "all":
+        caveats.append(
+            f"Coefficients computed on a non-random subset (selection: "
+            f"{_esc(selection)}) are prevalence-biased — kappa is "
+            "prevalence-sensitive; interpret with caution.")
+    caveats.append("Single human reviewer — no reliability estimate exists "
+                   "on the human anchor itself.")
+    html += "<ul>\n" + "".join(f"<li>{c}</li>\n" for c in caveats) + "</ul>\n"
+
+    for judge_name in hc.get("judges") or []:
+        agg = judges.get(judge_name)
+        ha = agg.get("human_agreement") if isinstance(agg, dict) else None
+        if not isinstance(ha, dict):
+            # Re-scored after calibration: the per-judge block is gone.
+            html += (f"<h3>{_esc(str(judge_name))}</h3>\n"
+                     '<p class="fail">stale calibration — '
+                     "summary['judges'] was rewritten after calibration; "
+                     "re-run score.py calibration</p>\n")
+            continue
+        value = ha.get("value")
+        n = ha.get("n_units", "?")
+        raw = ha.get("agreement_raw")
+        raw_txt = (f"uncorrected agreement {raw:.3f}"
+                   if isinstance(raw, (int, float)) else "")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            head = (f"{ha.get('metric', '?')} = {value:.3f} "
+                    f"({ha.get('level', '?')}, n={n})")
+        else:
+            head = (f"no coefficient (n={n}) — "
+                    f"{ha.get('reason') or ha.get('reason_code') or 'unavailable'}")
+        label = str(ha.get("label") or "")
+        html += (f"<h3>{_esc(str(judge_name))}</h3>\n"
+                 f"<p>{_esc(head)}"
+                 + (f" · {_esc(raw_txt)}" if raw_txt else "")
+                 + (f" · <em>{_esc(label)}</em>" if label else "")
+                 + "</p>\n")
+        pairs = ha.get("pairs")
+        if isinstance(pairs, list) and pairs:
+            html += ('<details><summary>Raw agreement table '
+                     f'({len(pairs)} pairs, uncorrected)</summary>\n'
+                     "<table>\n<tr><th>Case</th><th>Human</th><th>Judge</th>"
+                     "<th>Match</th></tr>\n")
+            for p in pairs:
+                if not isinstance(p, dict):
+                    continue
+                match = bool(p.get("match"))
+                cls = "pass" if match else "warn"
+                html += (f"<tr><td>{_esc(str(p.get('case', '')))}</td>"
+                         f"<td>{_esc(str(p.get('human')))}</td>"
+                         f"<td>{_esc(str(p.get('judge')))}</td>"
+                         f'<td><span class="{cls}">'
+                         f"{'yes' if match else 'NO'}</span></td></tr>\n")
+            html += "</table>\n</details>\n"
+    return html
+
+
 def _render_pairwise(summary):
     pw = summary.get("pairwise")
     if not pw:
@@ -1533,6 +2331,15 @@ def _render_pairwise(summary):
     if pw.get("errors"):
         html += f" | Errors: {pw['errors']}"
     html += "</p>\n"
+
+    sc = pw.get("swap_consistency") or {}
+    if sc.get("rate") is not None:
+        scored_pairs = sc.get("consistent", 0) + sc.get("inconsistent", 0)
+        html += (f"<p>Swap consistency: {sc.get('consistent', 0)}/"
+                 f"{scored_pairs} ({sc['rate']:.0%}) position-consistent "
+                 f"AB/BA verdict pairs (uncorrected agreement; "
+                 f"{sc.get('errors', 0)} errored comparison(s) excluded from "
+                 "the denominator)</p>\n")
 
     per_case = pw.get("per_case", [])
     if per_case:
@@ -2515,6 +3322,14 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
     output_paths = [o.get("path", ".") for o in config.get("outputs", [])
                     if o.get("path") and o.get("path") not in shared_paths]
     feedback = review.get("feedback", {}) if review else {}
+    # Calibration verdicts (optional, agent-written): {case: {judge: value}}.
+    # Rendered beside the judge verdict; malformed entries are ignored here —
+    # the calibration CLI already warned about them.
+    verdicts = (review or {}).get("verdicts")
+    if not isinstance(verdicts, dict):
+        verdicts = {}
+    reviewer_id = str((review or {}).get("reviewer_id")
+                      or (review or {}).get("reviewer") or "human")
     cases_dir = run_dir / "cases"
     bl_cases_dir = baseline_dir / "cases" if baseline_dir else None
 
@@ -2648,6 +3463,21 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
                 val_html += (f' <span class="ascii-range" '
                              f'title="{npass}/{nsamp} pass">{glyph}</span>')
 
+            # Human verdict badge (from review.yaml calibration verdicts):
+            # pass-tinted on exact match with the judge's reduced value,
+            # warn-tinted on mismatch. Purely presentational and defensive —
+            # only scalar verdicts on an existing judge row render.
+            hv_map = verdicts.get(case_id)
+            if isinstance(hv_map, dict) and jname in hv_map:
+                hv = hv_map[jname]
+                if hv is not None and not isinstance(hv, (dict, list)):
+                    hv_txt = ("PASS" if hv is True
+                              else "FAIL" if hv is False else str(hv))
+                    hv_cls = "pass" if hv == val else "warn"
+                    val_html += (f' <span class="{hv_cls}" title="human '
+                                 f'verdict (reviewer: {_esc(reviewer_id)})">'
+                                 f'human: {_esc(hv_txt)}</span>')
+
             sample_rats = jresult.get("sample_rationales")
             if sample_rats and len(sample_rats) > 1:
                 tab_id = f"sr-{_esc(case_id)}-{_esc(jname)}"
@@ -2702,6 +3532,9 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
 
         html += "</table>\n"
 
+        # Simulated-user answer provenance (hook_answers.jsonl)
+        html += _render_sim_user_line(case_dir, run_dir)
+
         # Human feedback
         case_feedback = feedback.get(case_id, "")
         if case_feedback:
@@ -2731,7 +3564,8 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
         # Execution logs at the case root — not skill output, exclude from
         # the report.  Only exclude root-level files, not nested ones with the
         # same name (a skill could legitimately produce artifacts/stdout.log).
-        _EXEC_LOG_PATHS = {"stdout.log", "stderr.log", "run_result.json", "input.yaml"}
+        _EXEC_LOG_PATHS = {"stdout.log", "stderr.log", "run_result.json",
+                           "input.yaml", "hook_answers.jsonl"}
         if case_dir.exists():
             def _file_sort_key(f):
                 """Sort visual artifacts first: images, then diagrams, then the rest."""
@@ -2930,8 +3764,16 @@ def generate_report(config, summary, run_result, run_dir,
     html += _render_header(config, run_id, run_result, baseline_id, title=report_title)
     html += _wrap_section(_render_run_config(run_result, baseline_result))
     html += _render_analysis(run_dir, summary, run_result, baseline_summary)
-    html += _wrap_section(_render_scoring_summary(summary, config, baseline_summary))
-    html += _wrap_section(_render_regressions(summary, config))
+    html += _wrap_section(_render_scoring_summary(summary, config,
+                                                  baseline_summary,
+                                                  run_result=run_result))
+    # Simulator Calibration card (above Validity & Reliability, whose V2
+    # stanza summarizes the same block).
+    html += _wrap_section(_render_simulator(summary, config))
+    html += _wrap_section(_render_validity(summary, config))
+    html += _wrap_section(_render_regressions(summary, config,
+                                              run_result=run_result))
+    html += _wrap_section(_render_calibration(summary))
     html += _wrap_section(_render_shared_outputs(run_dir, config))
     # Per-Case Reward Overview is an RL-training reward summary — only render it
     # when a reward is configured. For judge-only evals the Scoring Summary

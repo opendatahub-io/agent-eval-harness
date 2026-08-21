@@ -61,10 +61,16 @@ def eval_config_to_provider(config: EvalConfig) -> dict:
         }
     }
 
-    # Add pass_criteria if thresholds are defined
-    if config.thresholds:
+    # Add pass_criteria if thresholds are defined. The reserved 'simulator'
+    # key is excluded: it gates the run-level simulator block (hook-ledger
+    # aggregation), which the EvalHub path never carries — forwarding it
+    # would advertise a pass criterion no EvalHub run can evaluate
+    # (runner.py strips it from regression detection with a notice).
+    pass_thresholds = {k: v for k, v in (config.thresholds or {}).items()
+                       if k != "simulator"}
+    if pass_thresholds:
         benchmark["pass_criteria"] = {
-            "threshold": config.thresholds
+            "threshold": pass_thresholds
         }
 
     # Build provider

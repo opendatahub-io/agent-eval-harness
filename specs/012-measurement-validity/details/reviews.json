@@ -1,0 +1,181 @@
+{
+ "code_reality": {
+  "findings": [
+   {
+    "severity": "blocker",
+    "workstream": "WS1 \u2194 WS6/WS8 interface",
+    "issue": "Cross-plan API contract mismatch on agent_eval/reliability.py: WS1 ships dataclass returns (krippendorff_alpha/fleiss_kappa/cohen_kappa -> IRRResult), but WS8's score.py specs tuple-unpack it verbatim twice ('alpha, reason = reliability.krippendorff_alpha(units, level)' in both the panel aggregation and cmd_clarity specs) and WS6's depends_on block declares 'cohen_kappa(ratings_a, ratings_b) -> (value_or_None, reason_str)' / 'krippendorff_alpha(units, level) -> (value|None, reason)'. Additionally WS1 specs fleiss_kappa/cohen_kappa with a keyword-only min_units that has no written default, while WS6 calls cohen_kappa(h_vec, j_vec) with no min_units. Composed as written, WS6/WS8 raise TypeError at runtime. The integration plan's naming_coherence harmonizes summary block field names but never freezes the return shape.",
+    "fix": "Freeze IRRResult as the one contract in WS1 (give all three coefficient functions min_units=DEFAULT_MIN_UNITS defaults), rewrite WS6's compute_human_agreement and WS8's aggregation/cmd_clarity call sites to attribute access (r.value / r.reason / r.n_units), and add the return-shape rule to the integration plan's naming_coherence list so whichever branch lands first can't re-diverge. WS2 is already written attribute-style and needs no change."
+   },
+   {
+    "severity": "major",
+    "workstream": "WS8",
+    "issue": "EvalHub scoping is missing from WS8's changes list: agent_eval/evalhub/runner.py:216-218 calls score.detect_regressions(summary['judges'], config.thresholds) with raw thresholds (verified; _metrics_to_summary at :55-71 produces {mean, pass_rate}-only aggregates with no panel data), and WS8's 'panel absent -> regression n/a' rule plus its RELIABILITY_THRESHOLD_KEYS strip touch only harbor/run.py \u2014 so any config with min_panel_alpha fails every EvalHub run. The integration plan flags this amendment but WS8's spec text still ships the harbor-only mechanism.",
+    "fix": "Apply the integration amendment inside PR8: route the min_panel_alpha branch under WS2's include_irr guard in detect_regressions (PR2 already passes include_irr=False at both harbor/run.py:695 and evalhub/runner.py:218), delete RELIABILITY_THRESHOLD_KEYS and the second harbor strip, and add an evalhub-shaped row to the tests (mirroring WS2's tests/test_harbor_run.py addition)."
+   },
+   {
+    "severity": "major",
+    "workstream": "WS9",
+    "issue": "validate_eval.py is missing from WS9's changes: skills/eval-analyze/scripts/validate_eval.py:813-818 warns for every thresholds key that doesn't match a judge name ('thresholds.X references non-existent judge'), so the reserved thresholds.simulator key makes /eval-analyze --validate warn on every WS9 config. (WS2/WS6/WS8 keys are safe \u2014 they live under real judge names; WS6's 'validate_eval only checks judge names' claim is correct for its key but the same check bites WS9's reserved key.)",
+    "fix": "In PR9, teach validate_eval.py that 'simulator' is a reserved thresholds key (skip the judge-name warning, optionally validate its sub-keys against {max_fallback_rate, min_gold_agreement, min_cross_simulator_agreement}), and add a test beside the existing thresholds warning tests."
+   },
+   {
+    "severity": "major",
+    "workstream": "WS9",
+    "issue": "The PreToolUse wall-clock fix is in the integration plan's risk list but in nobody's change specs: generated hook entries carry no timeout (verified \u2014 build_settings_hooks at agent_eval/tools/interception.py:92-98 and the in-repo wiring at workspace.py:540-549 both emit bare command entries), and WS9's worst case per QUESTION is 30s primary + 15s calibration + 2\u00d710s shadows, with AskUserQuestion batching multiple questions per call. Claude Code's default hook timeout kills the hook, and a killed PreToolUse hook is pass-through \u2014 ALL interception silently disabled, unrecordable even by WS3's disabled-record (the process is dead).",
+    "fix": "Add to WS9's changes: (a) an explicit per-hook timeout field in build_settings_hooks and _setup_in_repo_tool_hooks sized to the worst-case budget, and (b) an in-hook overall deadline in tools.py that skips calibration/shadow draws when near budget, writing a 'skipped: deadline' marker into the ledger record so the aggregation can report degraded coverage instead of losing interception."
+   },
+   {
+    "severity": "major",
+    "workstream": "WS4/WS5 interface",
+    "issue": "dataset_audit.yaml has asymmetric write semantics across its two writers: WS4's write_audit yaml.safe_dump's the fresh audit dict wholesale, while WS5's write_null_probe carefully merge-preserves foreign top-level keys. Re-running the full audit (the documented Step 6 flow, expected after every dataset edit) silently deletes the null_probe section (and v1-3's construct_fidelity/human_review if shipped) \u2014 WS5's test_merge_preserves_foreign_audit_keys only covers the WS5\u2192WS4 direction.",
+    "fix": "Make WS4's write_audit load-and-merge: replace only the keys the audit owns (audit_version, generated_at, dataset_path, parameters, checks, summary, cases) and preserve unknown top-level keys; add a WS4-side round-trip test that a pre-existing null_probe key survives a full audit re-run."
+   },
+   {
+    "severity": "major",
+    "workstream": "WS6",
+    "issue": "WS6's 'No config.py or validate_eval.py changes' claim (stated in depends_on AND as an acceptance criterion) is contradicted by WS2 landing first: PR2 introduces THRESHOLD_KEYS validation at the config.py:1451 site (today a raw passthrough \u2014 verified), after which every config declaring min_human_agreement warns 'unknown threshold key' at load. The integration plan mandates the amendment but WS6's plan text still ships the stale criterion.",
+    "fix": "Amend WS6: add a one-line config.py change appending 'min_human_agreement' to THRESHOLD_KEYS, drop the no-config-changes acceptance criterion, and add the corresponding accepted-key row to tests/test_config.py's thresholds-validation section in PR6."
+   },
+   {
+    "severity": "major",
+    "workstream": "WS7",
+    "issue": "WS7's _judge_irr accessor reads flat keys (agg['stability']['irr_metric'/'irr_value'/'n_units'/...]) that WS2 never writes \u2014 WS2 persists a NESTED dict at aggregated[name]['stability']['irr'] = {metric, level, value, reason_code, ...} (which survives the values-strip at score.py:2741-2744, verified). As written, after both merge, every validity judge row silently renders '\u2014' with the 'run with samples>=3' hint even for fully-sampled judges \u2014 a wrong-output no-op, not a crash. WS7's _provider_family also re-implements family inference that WS8 (reliability.py) and WS9 (model_families.py) each spec differently, risking the same model getting different family labels across the validity block, panel labels, and simulator advisory.",
+    "fix": "Apply the integration rulings inside PR7's spec text: _judge_irr reads the nested stability.irr dict (WS2's shape is canonical), and family inference lands once as agent_eval/model_families.py::infer_model_family using WS8's regex-anchored table (openai anchored so 'olmo' can't match, Bedrock vendor-dot prefixes, LiteLLM route stripping), with score.py importing it \u2014 delete _provider_family from WS7's score.py change."
+   },
+   {
+    "severity": "minor",
+    "workstream": "WS2",
+    "issue": "The consequence 'never sampled' load warning explicitly exempts builtin kind == 'llm' judges, but builtin-LLM judges can never produce IRR data: load_judges pins judge_type 'builtin' to n=1 with a warning (score.py:785-790) and CLI --samples applies only to llm/agent (score.py:1574-1577). A consequence-tagged builtin-llm judge is therefore a guaranteed 'alpha unavailable' CI regression with no load-time warning \u2014 exactly the case the warning exists for.",
+    "fix": "Include builtin_kind == 'llm' in the never-sampled warning condition (message: 'builtin LLM judges are never sampled; consequence tiers cannot be satisfied \u2014 use an inline llm_rubric judge instead')."
+   },
+   {
+    "severity": "minor",
+    "workstream": "WS2",
+    "issue": "min_alpha double-duty trap: cmd_pairwise resolves its judge from config.judges (score.py:2796-2801), so the pairwise judge is normally also a per-case-scored judge; a single thresholds.<name>.min_alpha entry then gates BOTH the judge's per-case self-consistency alpha (main detector loop) and the pairwise verdict alpha (pairwise kwarg). A user gating only pairwise stability gets a spurious 'alpha unavailable' regression from cmd_judges unless that judge is also sampled per-case.",
+    "fix": "Either document the dual semantics prominently in the thresholds docs (min_alpha on a judge that both scores cases and judges pairwise gates both) or split the pairwise gate into its own key (min_pairwise_alpha), which also removes the detect_regressions pairwise-name lookup ambiguity."
+   },
+   {
+    "severity": "minor",
+    "workstream": "WS8",
+    "issue": "The model-list parsing spec ('if str -> unchanged. Else ValueError') newly rejects configs with an explicit-null model: \u2014 j.get('model', '') returns None when the key is present with a null value, which loads fine today (JudgeConfig.model=None; jc.model or config.models.judge falls back at score.py:1714). WS8's type check would turn that into a load-time ValueError, a backcompat regression its 'string models byte-identical' acceptance criterion claims can't happen.",
+    "fix": "Normalize None (and empty list already covered) to '' before the str/list type check at the config.py:1281-1301 construction site, and add a model: null row to TestPanelConfig."
+   },
+   {
+    "severity": "minor",
+    "workstream": "WS7",
+    "issue": "The v2 'not-applicable' detection ('no ToolInputConfig has AskUserQuestion in extract_tool_patterns(t.match)') misses wildcard handlers: extract_tool_patterns returns ['*'] for match text naming no known tool (interception.py:54), and '*' matches AskUserQuestion at runtime via the prefix rule at tools.py:118 \u2014 so the validity block could declare the simulator layer not-applicable while a wildcard handler is actually answering questions.",
+    "fix": "Treat a handler whose patterns include '*' as intercepting AskUserQuestion for the v2 stanza (i.e. check 'AskUserQuestion' in patterns or '*' in patterns)."
+   },
+   {
+    "severity": "minor",
+    "workstream": "WS2/WS8/WS9 docs",
+    "issue": "README.md:359 enumerates the thresholds valid keys ('Valid keys: min_mean, min_pass_rate, min_win_rate, max_error_rate...') but only WS6 lists README.md in docs_updates \u2014 after PR2 (min_alpha), PR8 (min_panel_alpha), and PR9 (simulator) the README enumeration is stale while CLAUDE.md/AGENTS.md/website stay current, violating the enumerations-match-code invariant the plans otherwise enforce.",
+    "fix": "Add README.md:359 to the docs_updates of WS2, WS8, and WS9 (one appended key each, same PR as the code), or explicitly assign the README sweep to the PR11 docs consolidation with a note that it's knowingly stale in between."
+   },
+   {
+    "severity": "minor",
+    "workstream": "WS1",
+    "issue": "IRRResult.passes_gate and WS1's hyphenated reason constants ('perfect-agreement', 'insufficient-units') are consumed by no downstream plan: WS2, WS6, and WS8 each re-derive their own snake_case reason_code degenerate checks (WS2 prechecks zero-variance itself; WS6 derives degenerate from agreement_raw==1.0; WS8 originally string-matched, corrected by integration to reason_code). That leaves two parallel encodings of the verdict-#1 carve-out \u2014 the exact drift the integration plan's reason_code vocabulary exists to prevent \u2014 with passes_gate as untested-in-anger dead surface.",
+    "fix": "Move the integration plan's snake_case reason_code vocabulary (perfect_agreement | insufficient_data | undefined | below_floor) into WS1's constants so adapters map 1:1 (or consume IRRResult.reason directly), and either have WS6/WS8 use passes_gate for their degenerate checks or drop it from WS1's public API."
+   }
+  ],
+  "overall": "Code-reality verification of all 9 workstream plans + integration plan against commit 157d917 (working tree). The plans are exceptionally well-grounded: of ~120 load-bearing anchors spot-checked, essentially all hold exactly or within 1-3 lines \u2014 detect_regressions single-loop at score.py:2516 with the current-is-None-continue trap, the values-strip merge at :2741-2744 and per_case merge at :2745, _aggregate_samples strict-majority/median_low at :1190-1240, the scored[0]-only n_samples inference at :1668, pairwise pref_ab/pref_ba genuinely dropped at :2225-2233 with winner='error' leakage at :2250, RUNNERS at agent/__init__.py:9-14 and the exact from_config override set at execute.py:1403-1411, the resolved-tool_handlers bypass at interception.py:143-149 plus the duplicated in-repo builder at workspace.py:512-531, 'hooks' already in collect.py's _HARNESS_PATHS:35, harbor's thresholds-as-required-judges at run.py:329 and the raw detect calls at run.py:695/evalhub runner.py:218, tools.py's temperature=0 pin at :248 / haiku default at :246 / 'Step 3b' staleness at :93/:105, the JudgeConfig explicit-kwargs silent-drop site at config.py:1281-1301, thresholds raw passthrough at :1451, and the ensure_deps pyyaml/mlflow/anthropic/jinja2-only constraint. All six verdicts' mandatory corrections are genuinely incorporated as claimed; nothing proposed already exists (no kappa/alpha/ICC, ledger, manifest/audit, NullRunner, or model-family code anywhere); stdlib-only scoring-path and bootstrap/symlink conventions are respected (eval-dataset/eval-run symlinks confirmed on disk; test_venv_activation scope confirmed to exempt package library modules without __main__). The 13 findings are the residue: one blocker (the WS1 IRRResult return type vs WS6/WS8's tuple-unpacking call sites \u2014 a composed-program TypeError the integration plan's naming section doesn't resolve), six majors that are mostly cross-plan seams (WS8's missing EvalHub scoping, WS9's missing validate_eval.py reserved-key whitelist and missing hook-timeout work, WS4/WS5's asymmetric dataset_audit.yaml write semantics, WS6's stale no-config-changes claim vs PR2's THRESHOLD_KEYS, WS7 reading flat stability.irr_* keys WS2 never writes), and six minors. Notably, several majors are already mandated as amendments by the integration plan but remain absent from the owning workstream's change specs \u2014 they should be folded into those specs before implementation so a spec-faithful implementer can't ship the bug."
+ },
+ "scope": null,
+ "config_compat": {
+  "findings": [
+   {
+    "severity": "blocker",
+    "workstream": "WS3 \u2014 simulator answer-provenance ledger + builtin judge",
+    "issue": "The documented recipe (builtin process/simulator_provenance + thresholds min_pass_rate: 1.0) silently breaks Harbor path parity for the same eval.yaml. Verified chain: harbor/reward.py score_case() runs score_cases over the in-container case_dir (reward.py:213-227); WS3's load_case_record looks for the ledger at case_dir/hook_answers.jsonl (the collected layout), but in-container the interceptor writes it to <workspace>/hooks/hook_answers.jsonl \u2014 so hook_answers is None while interception_configured is True and events show AskUserQuestion \u2192 the judge FAILS every question-asking case. Under the default reward composition ('boolean judges gate, any fail -> 0.0', reward.py:15-18) this zeros Harbor mean_reward, and the min_pass_rate threshold makes harbor/run.py:695 regress every run \u2014 with none of the skip-with-notice scoping that min_alpha/min_panel_alpha/thresholds.simulator all received. WS3 only says 'judge fails honestly there'; the reward-gating and guaranteed-regression consequences are never stated, and nothing prints a notice.",
+    "fix": "Cheapest real fix: add a case_dir/'hooks'/hook_answers.jsonl fallback to WS3's ledger lookup in load_case_record \u2014 in-container the trial case_dir IS the agent workspace, so the judge then works on Harbor for free (and the fallback is harmless locally since collect.py copies to the flat name). If that isn't taken, PR3 must give this feature the same explicit degradation as the other gates: skip the simulator_provenance judge and strip its threshold on the Harbor path with a stderr notice, and state the reward-gate interaction in tool-interception.md (recommend reward gate:false or judge exclusion for Harbor-bound evals)."
+   },
+   {
+    "severity": "major",
+    "workstream": "WS2 \u2014 IRR wiring + consequence tiers",
+    "issue": "Adding JudgeConfig.consequence without touching skills/eval-analyze/scripts/validate_eval.py breaks the validator and CI. valid_judge_fields is a HARDCODED set (validate_eval.py:598-602) and unknown judge fields are appended to errors, not warnings (:607-610) \u2014 so after PR2, '/eval-analyze --validate' declares a valid 'consequence: safety' config INVALID. Simultaneously tests/test_validate_eval.py::test_every_judge_config_field_is_accepted (pins dataclasses.fields(JudgeConfig) \u2286 allowlist, lines 75-87) fails the moment the field lands. Neither file is in WS2's changes list, contradicting its own acceptance criterion 'all existing tests pass unchanged except the deliberately extended files'.",
+    "fix": "In PR2, add \"consequence\" to the valid_judge_fields literal in validate_eval.py (the pin tests then pass automatically since they derive from the dataclass). Add validate_eval.py to WS2's changes and a round-trip test that /eval-analyze --validate accepts a consequence-tagged judge. (WS8 already handles its analogous case for panel_models via the test exclusion \u2014 WS2 must do the mirror-image fix.)"
+   },
+   {
+    "severity": "major",
+    "workstream": "WS9 \u2014 simulator calibration shadow (thresholds.simulator)",
+    "issue": "Backward-compat break: the reserved-name check 'if any(jc.name == \"simulator\") -> ValueError' is specified as UNCONDITIONAL at config load. Any existing, previously-valid eval.yaml with a judge literally named 'simulator' hard-fails after PR9 even when thresholds.simulator is never used. Every other new surface in the program is opt-in; this is the one place a load error is introduced for configs that opted into nothing.",
+    "fix": "Two-stage reservation: raise ValueError only when a judge named 'simulator' AND a thresholds.simulator block coexist (genuine collision); otherwise emit a DeprecationWarning ('the name \"simulator\" is reserved for simulator gates; rename the judge'). Add a CHANGELOG 'reserved name' note either way, and a test for both branches."
+   },
+   {
+    "severity": "major",
+    "workstream": "WS9 \u2014 simulator calibration shadow (thresholds.simulator)",
+    "issue": "Internal surface inconsistency: validate_eval.py:814-818 warns for every thresholds key that doesn't name a defined judge ('thresholds.<name> references non-existent judge'). After PR9, config.py accepts and validates thresholds.simulator while /eval-analyze's validator flags the same config \u2014 the harness contradicts itself about its own reserved key. WS9's changes list never touches validate_eval.py.",
+    "fix": "In PR9, exempt 'simulator' from the judge-name loop in validate_eval.py and (optionally) validate its sub-keys there against the same {max_fallback_rate, min_gold_agreement, min_cross_simulator_agreement} whitelist as _parse_thresholds. Add a test asserting a thresholds.simulator config produces zero validate_eval warnings. Related nit: evalhub/config_translator.py:64-67 forwards config.thresholds verbatim as EvalHub pass_criteria, so 'simulator' will appear there as a pseudo-judge criterion \u2014 strip or document it alongside the runner.py:216-218 strip."
+   },
+   {
+    "severity": "major",
+    "workstream": "WS2 + WS8 \u2014 consequence tiers vs panel alpha",
+    "issue": "Consequence tier semantics are internally inconsistent across the cumulative surface: 'consequence: gating' injects min_alpha 0.80 on the single-judge self-consistency alpha (explicitly labeled an UPPER BOUND on IRR) but injects nothing for min_panel_alpha even when the same judge declares a model panel \u2014 so the paper's P5 tier governs the weaker coefficient while the truer cross-family IRR the tiers were written for stays ungated unless separately configured. A user reading 'consequence' as the judge's reliability tier gets a surface where the tier silently does not apply to the panel. WS8's open question #1 acknowledges but defers the decision; WS7's _alpha_threshold additionally duplicates the explicit-wins-then-tier resolution logic instead of reusing effective_thresholds, creating a second drift point.",
+    "fix": "Decide before PR8 merges and encode once: either (a) effective_thresholds also setdefaults min_panel_alpha to the tier value for judges with panel_models (documenting that both gates then apply), or (b) document consequence as self-consistency-only and warn at load when a consequence-tagged judge has panel_models but no explicit min_panel_alpha. In PR7, make _alpha_threshold delegate to config.effective_thresholds()/CONSEQUENCE_TIER_MIN_ALPHA rather than re-implementing resolution."
+   },
+   {
+    "severity": "major",
+    "workstream": "WS8 \u2014 cross-family judge panels (B.4 advisory)",
+    "issue": "Default-behavior change for unchanged configs: the Appendix-B.4 same-family advisory (warnings.warn at every from_yaml) fires on any existing config with >=2 recognized same-family models \u2014 i.e. essentially every current all-Anthropic eval.yaml that sets models.skill + models.judge, the harness's documented default posture. That violates the 'existing eval.yaml files keep working unchanged / no default-behavior changes' contract (new warning on every load, every command, every CI run), and warnings.warn-based noise also risks polluting parseable CLI output. The integration plan flags it as a risk but leaves the decision open.",
+    "fix": "Resolve before PR8: gate the advisory on the new opt-in surfaces (fire only when a judges[].model list, models.hook_shadow, or a consequence-tagged judge is present \u2014 the user has engaged with reliability features), or ship the acknowledgment knob (e.g. models.single_family: accepted) in the same PR, or downgrade to the report-only same-family caveat WS7 already renders. Do not ship warn-on-every-load as specced."
+   },
+   {
+    "severity": "major",
+    "workstream": "WS6 \u2014 human-anchored judge calibration",
+    "issue": "A configured min_human_agreement CI gate can be silently disarmed: score.py judges wholesale-rewrites summary['judges'] (score.py:2741-2744), dropping human_agreement, and WS6's three-state rule treats the absent key as a silent skip \u2014 so after any routine re-score, `score.py regression` exits 0 on a threshold the user believes is enforced, with no output distinguishing 'never calibrated' from 'calibration invalidated'. The integration plan's mitigation (a note in cmd_judges stderr) still leaves the gate itself silent.",
+    "fix": "Use the surviving evidence: the run-level summary['human_calibration'] block (renamed per naming_coherence) is NOT dropped by the judges rewrite. In detect_regressions (or cmd_regression), when min_human_agreement is configured, the judge row lacks human_agreement, but summary carries a human_calibration block naming that judge \u2192 emit a 'stale calibration \u2014 re-run score.py calibration' regression (or at minimum a loud stderr warning), keeping the silent skip only for the genuinely never-calibrated case. Also confirm the integration amendment lands: min_human_agreement joins THRESHOLD_KEYS in PR6 (WS6's 'no config.py changes' claim is stale after PR2) with the same numeric/finite/<=1.0 value validation as min_alpha."
+   },
+   {
+    "severity": "major",
+    "workstream": "WS9 \u2014 simulator calibration shadow (hook wall-clock)",
+    "issue": "The PreToolUse timeout fix exists only in the integration plan's risk list \u2014 no workstream's changes list contains it. Verified: workspace.py:540-549 and interception.py build_settings_hooks write hook entries with no timeout field, and WS9's worst case is ~65s of in-hook LLM calls per AskUserQuestion (30s primary + 15s calibration + 2\u00d710s shadows, multiplied by multi-question calls). Claude Code's default hook timeout kills the hook, which the CLI treats as pass-through \u2014 ALL interception silently disabled, and the kill is external so even WS3's disabled-record cannot ledger it. A risk bullet that is in no PR's change list is a risk that ships.",
+    "fix": "Make it a named change item in PR9's spec: (a) generated settings hook entries gain an explicit timeout sized to the worst-case in-hook budget (all three generation sites: interception.py build_settings_hooks, workspace.py case/batch path, _setup_in_repo_tool_hooks); (b) tools.py enforces an overall in-hook deadline budget across primary/calibration/shadow calls so it degrades to fallback-with-ledger-record instead of being killed; (c) PR3's tool-interception.md names the external-kill blind spot as planned."
+   },
+   {
+    "severity": "minor",
+    "workstream": "WS6 + WS8 \u2014 threshold value validation",
+    "issue": "WS2's _parse_thresholds validates only min_alpha's value ('numeric, finite, <= 1.0'). The integration plan has WS6/WS8 append min_human_agreement and min_panel_alpha to THRESHOLD_KEYS (suppressing the unknown-key warning) but neither plan specs value validation for them \u2014 'min_panel_alpha: 1.5' or a string value would load clean and only misbehave at detection time.",
+    "fix": "When appending each key to THRESHOLD_KEYS (PR6, PR8), extend the same value rule to it \u2014 generalize _parse_thresholds to validate all *_alpha/*_agreement keys as numeric, finite, <= 1.0 \u2014 with one parametrized test row per key in tests/test_config.py."
+   },
+   {
+    "severity": "minor",
+    "workstream": "WS8 \u2014 cross-family judge panels (Harbor bundling)",
+    "issue": "harbor/tasks.py _bundle_eval_config copies the raw eval.yaml verbatim (tasks.py:93-100), so judges[].model lists reach containers. Two unstated consequences: (a) an OLDER agent-eval-harness container image parses the list straight into jc.model (config.py:1293 today) and blows up at judge-call time \u2014 a type change of an existing key fails at runtime instead of being silently dropped like a new key would be; (b) on current images the in-container verifier RUNS the panel (m\u00d7 judge cost per case) while the host aggregation drops panel data and min_panel_alpha is skipped \u2014 users pay for a panel whose coefficient never materializes on Harbor, and WS8's docs only mention the skipped gate, not the incurred cost.",
+    "fix": "Document both in website/reference/config/judges.md and the thresholds Harbor note ('panels still execute in-container; the cross-case alpha is not aggregated on this path yet'), and add a task-package provenance hint (e.g. a min-harness-version field in task.toml metadata checked by _validate_task_package_reuse, or at minimum a docs note that panel configs require images >= the PR8 release)."
+   },
+   {
+    "severity": "minor",
+    "workstream": "WS7 \u2014 validity report + anova ICC",
+    "issue": "Two modules named reliability.py in one package tree: agent_eval/reliability.py (WS1, chance-corrected IRR) and agent_eval/anova/stats/reliability.py (WS7, pipeline test-retest ICC). Import paths differ so nothing breaks, but the program's own naming-coherence goal ('no key meaning two things') is violated at module level for the two constructs the docs work hardest to keep distinct.",
+    "fix": "Rename WS7's module (agent_eval/anova/stats/icc.py or test_retest.py) before it ships; the only consumers are the new stats __init__ re-export and analyze.py, so it's a zero-cost rename at PR7 time."
+   },
+   {
+    "severity": "minor",
+    "workstream": "WS2 \u2014 IRR wiring (min_alpha dual role)",
+    "issue": "One key, two coefficients: for a judge that is both scored per-case and selected as the pairwise judge, thresholds.<name>.min_alpha gates BOTH stability.irr (main loop) and the pairwise verdict alpha (pairwise kwarg, metric 'pairwise_alpha') at the same bound \u2014 a single YAML key silently enforcing two different matrices, and a breach report where the user must read the metric column to know which alpha failed.",
+    "fix": "Document the dual-role behavior explicitly in website/reference/config/thresholds.md (WS2's docs currently describe the two uses as if they were disjoint judges), or introduce a distinct min_pairwise_alpha key if the overlap is judged confusing; at minimum add a test pinning the both-fire behavior for a dual-role judge."
+   },
+   {
+    "severity": "minor",
+    "workstream": "WS5 \u2014 null-agent solvability probe",
+    "issue": "The runner name 'null' collides with YAML's null scalar: execute.py resolves `args.agent or config.runner.type`, so `runner.type: null` in eval.yaml parses to None (not the runner), while `runner.type: \"null\"` (quoted) WOULD silently enable the do-nothing runner from config \u2014 an undocumented eval.yaml surface for a runner the plan declares CLI-only, and a confusing YAML footgun either way.",
+    "fix": "Either reject 'null' as config.runner.type at load with a pointer to --agent null (keeping it genuinely CLI-only, one ValueError + test), or document the quoting requirement and the config-side availability in website/concepts/runners.md."
+   },
+   {
+    "severity": "minor",
+    "workstream": "WS9 \u2014 simulator calibration shadow (hook_model setdefault)",
+    "issue": "merge_calibration_knobs' `handler_data.setdefault('hook_model', config.models.hook)` is a behavior change for existing setups: resolved tool_handlers.yaml files that omit hook_model today silently use the hardcoded haiku default even when eval.yaml sets models.hook; after PR9 the configured model takes over, changing simulated-user answers (and their cost/latency) with zero user config edits. Correct as a bug fix, but it alters eval results across a harness upgrade.",
+    "fix": "Keep the fix, but ship it loudly: CHANGELOG entry under a 'behavior fixes' heading, a one-line note in tool-interception.md's hook_model row, and (cheap) a stderr notice from generate_interception when the merge supplies a hook_model that the resolved file lacked."
+   },
+   {
+    "severity": "minor",
+    "workstream": "WS6 + WS9 \u2014 'calibration' naming overload",
+    "issue": "Even after the integration plan renames summary['calibration'] to human_calibration, the word still means two things at the user-facing surface: the `score.py calibration` subcommand (judge-vs-human) vs inputs.tools[].calibration: true (simulator shadow). A user running 'the calibration feature' has two unrelated features answering.",
+    "fix": "Lowest-cost: keep both names but make the PR11 glossary entry and each doc page cross-reference the other ('not to be confused with\u2026'), and have `score.py calibration --help` open with 'judge-vs-human calibration (see inputs.tools calibration for simulator calibration)'. If renaming is on the table before PR6 freezes the subcommand, `score.py human-calibration` (or calibrate-human) removes the ambiguity entirely."
+   }
+  ],
+  "overall": "Config-coherence and backward-compatibility review of the 9 workstream plans + integration plan, with every load-bearing anchor re-verified against the working tree at 157d917. The cumulative surface is fundamentally sound: every new eval.yaml key has specced load-time validation at its construction site (consequence, model-as-list, calibration, hook_shadow, thresholds.simulator sub-keys) or is explicitly CLI-only (WS4 audit flags, WS5 probe, WS8 clarity); all summary.yaml changes are additive (no existing field is mutated \u2014 the only rewrite hazard is the pre-existing judges-block wholesale rewrite, which WS6 inherits); detect_regressions changes are keyed on new opt-in threshold names with keyword-only signature growth, so existing configs' gating behavior is byte-identical; and the WS2-established include_irr/reserved-key scoping plus the integration plan's EvalHub amendments give Harbor/EvalHub honest skip-with-notice degradation for min_alpha, min_panel_alpha and thresholds.simulator. The integration plan's amendments (THRESHOLD_KEYS registry, single model_families.py, evalhub strips, reason_code vocabulary) resolve most cross-plan collisions correctly. I found 1 blocker and 7 majors the plans do not cover: (1) BLOCKER \u2014 WS3's simulator_provenance + min_pass_rate:1.0 recipe silently breaks Harbor parity: the in-container verifier can't find the ledger (it's at <ws>/hooks/, not case_dir/), the judge fails every question-asking case, the DEFAULT reward composition ('boolean judges gate, any fail \u2192 0.0', harbor/reward.py:18) zeros mean_reward, and harbor/run.py:695 regresses every run \u2014 the one reliability feature that got no Harbor scoping; a hooks/ fallback in the ledger lookup likely fixes it for free. (2) WS2's consequence field trips validate_eval.py's hardcoded allowlist (unknown judge fields are ERRORS at :607-610) and the dataclass pin test \u2014 /eval-analyze would call valid configs invalid; neither file is in WS2's changes. (3) WS9's unconditional rejection of a judge named 'simulator' breaks previously-valid configs; stage it. (4) validate_eval.py:814-818 will warn that thresholds.simulator 'references non-existent judge' \u2014 WS9 must exempt the reserved key. (5) Consequence tiers don't extend to min_panel_alpha, leaving the truer IRR ungated on tier-tagged panel judges (plus WS7 duplicates the tier-resolution logic). (6) WS8's B.4 advisory warns on every existing all-Anthropic config \u2014 a default-behavior change that must be gated/acknowledged before merge. (7) min_human_agreement silently disarms after re-scoring; the surviving human_calibration block should drive a stale-calibration signal. (8) The PreToolUse timeout fix for WS9's ~65s in-hook budget lives only in the integration risk list \u2014 it must become a named PR9 change or interception dies silently in the field. Minors cover value validation for the two new alpha-like keys, Harbor bundling of model lists (old-image skew + pay-without-aggregation), the duplicate reliability.py module name, min_alpha's dual role on dual-role judges, the 'null'-vs-YAML-null runner name, the hook_model setdefault behavior fix, and the residual 'calibration' naming overload. With the blocker and majors folded into the owning PRs, the sequence preserves the 'same eval.yaml across three execution paths' promise and the all-new-surface-is-opt-in contract."
+ }
+}

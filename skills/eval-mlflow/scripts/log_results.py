@@ -46,13 +46,19 @@ from agent_eval.mlflow.trace_builder import build_trace, log_trace
 from agent_eval.harbor.results import _extract_transcript_metrics
 
 
-def _detect_regressions(judges, thresholds):
+def _detect_regressions(judges, thresholds, pairwise=None, include_irr=True,
+                        simulator=None, human_calibration=None):
     """score.py's regression detector, loaded by path.
 
     The judge engine lives with the eval-run skill rather than in the
     agent_eval package — same approach as agent_eval/harbor/reward.py. Raises
     if it cannot be loaded; the caller tags the run "unknown" rather than
-    claiming a clean one.
+    claiming a clean one. The reliability kwargs are forwarded verbatim
+    (``pairwise`` is a reserved pass-through; ``simulator`` is the summary's
+    run-level simulator block for the reserved ``thresholds.simulator``
+    gates; ``human_calibration`` feeds the ``min_human_agreement``
+    stale-calibration check) so the MLflow tag agrees with the CLI exit
+    code and the report.
     """
     import importlib.util
     root = Path(__file__).resolve().parent.parent.parent.parent
@@ -63,7 +69,68 @@ def _detect_regressions(judges, thresholds):
                                                   score_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.detect_regressions(judges, thresholds)
+    return mod.detect_regressions(judges, thresholds, pairwise=pairwise,
+                                  include_irr=include_irr,
+                                  simulator=simulator,
+                                  human_calibration=human_calibration)
+
+
+def _validity_mlflow_fields(summary: dict) -> tuple[dict, dict]:
+    """MLflow routing for ``summary['validity']`` (pure — no tracking calls).
+
+    Returns ``(metrics, tags)``: per-judge METRICS ``{judge}/irr_value`` and
+    ``{judge}/human_agreement`` (numeric values only — never fabricated for
+    degenerate/absent coefficients; metrics are the cross-run plottable
+    channel), plus run TAGS ``validity/v1..v3`` (compact layer statuses),
+    ``validity/same_family`` (family name or ``'no'``), and per-judge
+    ``validity/{judge}/irr_metric`` (searchable metric names). No params —
+    params are immutable inputs, validity is a computed outcome. Full
+    fidelity (rationales, CI, frame text) rides the summary.yaml artifact
+    that is already logged verbatim. Pre-validity summaries return
+    ``({}, {})``.
+    """
+    validity = (summary or {}).get("validity")
+    if not isinstance(validity, dict) or not validity:
+        return {}, {}
+
+    def _numeric(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+    metrics: dict = {}
+    tags: dict = {}
+    layers = validity.get("layers") or {}
+
+    rows = validity.get("judges")
+    if not isinstance(rows, list):
+        v3 = layers.get("v3")
+        rows = (v3.get("judges") if isinstance(v3, dict) else None) or []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        judge = row.get("judge")
+        if not judge:
+            continue
+        irr = row.get("irr")
+        if isinstance(irr, dict):
+            if _numeric(irr.get("value")):
+                metrics[f"{judge}/irr_value"] = float(irr["value"])
+            if irr.get("metric"):
+                tags[f"validity/{judge}/irr_metric"] = str(irr["metric"])
+        ha = row.get("human_agreement")
+        if isinstance(ha, dict) and _numeric(ha.get("value")):
+            metrics[f"{judge}/human_agreement"] = float(ha["value"])
+
+    for key in ("v1", "v2", "v3"):
+        layer = layers.get(key)
+        if isinstance(layer, dict) and layer.get("status"):
+            tags[f"validity/{key}"] = str(layer["status"])
+
+    same_family = validity.get("same_family")
+    tags["validity/same_family"] = (
+        str(same_family["family"])
+        if isinstance(same_family, dict) and same_family.get("family")
+        else "no")
+    return metrics, tags
 
 
 def _resolve_skill(config: EvalConfig) -> str | None:
@@ -318,18 +385,46 @@ def main():
                     mlflow.log_metric(f"{judge_name}/mean", agg["mean"])
                     metric_count += 1
 
+        # ── Validity routing (measurement-validity P8) ───────────
+        # Numeric IRR / human-agreement coefficients as metrics (plottable
+        # cross-run), layer statuses + same-family + per-judge metric names
+        # as tags (searchable). Full block rides the summary.yaml artifact.
+        validity_metrics, validity_tags = _validity_mlflow_fields(summary)
+        for metric_key, metric_val in validity_metrics.items():
+            mlflow.log_metric(metric_key, metric_val)
+            metric_count += 1
+        for tag_key, tag_val in validity_tags.items():
+            mlflow.set_tag(tag_key, tag_val)
+        if validity_metrics or validity_tags:
+            print(f"VALIDITY: {len(validity_metrics)} metrics, "
+                  f"{len(validity_tags)} tags")
+
         # ── Tags ─────────────────────────────────────────────────
         # Ask score.py rather than restating its rules: this had drifted to two
         # of the four threshold keys, so a run that exited 1 on `min_win_rate`
         # or `max_error_rate` was still tagged regressions_detected=no.
         # "unknown" is a third state on purpose — tagging a run clean because
         # the detector could not run is the failure this whole change is about.
-        if not config.thresholds:
+        # Effective thresholds (consequence-tier min_alpha injected at
+        # detection time) so CLI / report / MLflow agree; min_alpha is
+        # skipped for harbor/evalhub runs, whose aggregation carries no
+        # sampling stability data.
+        eff_thresholds = (config.effective_thresholds()
+                          if hasattr(config, "effective_thresholds")
+                          else (config.thresholds or {}))
+        if not eff_thresholds:
             regressions_tag = "no"
         else:
             try:
+                include_irr = (run_result.get("execution_mode")
+                               not in ("harbor", "evalhub"))
                 regressions_tag = (
-                    "yes" if _detect_regressions(judges, config.thresholds)
+                    "yes" if _detect_regressions(
+                        judges, eff_thresholds,
+                        pairwise=summary.get("pairwise"),
+                        include_irr=include_irr,
+                        simulator=summary.get("simulator"),
+                        human_calibration=summary.get("human_calibration"))
                     else "no")
             except Exception as exc:
                 print(f"Warning: could not evaluate thresholds: {exc}",

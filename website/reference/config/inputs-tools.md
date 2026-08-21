@@ -13,18 +13,26 @@ concrete runtime checks.
 
 ## What you author
 
-Each entry in `inputs.tools` is a handler with **at most three user-authored keys**:
+Each entry in `inputs.tools` is a handler with **at most four user-authored keys**:
 
 | Key | Type | Purpose |
 | --- | --- | --- |
 | `match` | string | Natural-language description of *what* to intercept (which tools, scripts, or APIs). |
 | `prompt` | string | Natural-language instruction for *how* to handle it. |
 | `prompt_file` | string | External file (path relative to the eval config) holding a longer instruction, as an alternative to inline `prompt`. |
+| `calibration` | bool | Shadow-run the LLM answering tier on every override-answered `AskUserQuestion` — **held out** (`answers.yaml` stripped from the shadow's context) and logged to the answer ledger, never injected. Feeds `summary['simulator']` and the reserved [`thresholds.simulator`](thresholds.md#the-reserved-simulator-key) gates. Default `false`. |
 
 That is the complete authoring surface — the `ToolInputConfig` dataclass in
 [`config.py`](https://github.com/opendatahub-io/agent-eval-harness/blob/main/agent_eval/config.py)
-parses only `match`, `prompt`, and `prompt_file`. Everything else in the runtime
-artifact is **derived**, not declared.
+parses only `match`, `prompt`, `prompt_file`, and `calibration`. Everything else
+in the runtime artifact is **derived**, not declared.
+
+!!! note "`calibration` here is *simulator* calibration"
+    Not to be confused with `score.py calibration`, which calibrates the
+    **judges** against a human reviewer
+    ([/eval-review](../../guides/eval-review.md#calibration-anchor-your-judges-to-a-human)).
+    This flag measures the simulated *user* — see the
+    [glossary](../glossary.md#measurement-validity-reliability).
 
 ```yaml title="eval.yaml"
 inputs:
@@ -54,16 +62,27 @@ Handlers pass through three stages before they run. Each stage adds derived fiel
 
 ```mermaid
 flowchart LR
-    A["eval.yaml<br/>inputs.tools<br/>(match / prompt)"] --> B["workspace.py<br/>writes tool_handlers.yaml<br/>+ patterns + hook_model"]
-    B --> C["eval-run agent (Step 3b)<br/>reads prompt, adds<br/>input_filters / env_checks /<br/>case_overrides"]
+    A["eval.yaml<br/>inputs.tools<br/>(match / prompt / calibration)"] --> B["workspace.py<br/>writes tool_handlers.yaml<br/>+ patterns + merged knobs<br/>(hook_model, calibration)"]
+    B --> C["eval-run agent (Step 3a)<br/>reads prompt, adds<br/>input_filters / env_checks /<br/>case_overrides"]
     C --> D["tools.py<br/>PreToolUse hook<br/>enforces at runtime"]
 ```
 
-1. **`workspace.py`** extracts basic tool-name `patterns` from the `match` text, writes
-   `tool_handlers.yaml`, and stamps in `hook_model` from [`models.hook`](models.md).
+1. **`workspace.py`** extracts basic tool-name `patterns` from the `match` text and
+   writes `tool_handlers.yaml`. The harness-owned knobs are applied by a
+   **post-load merge** regardless of source — a pre-resolved
+   `tool_handlers.yaml` gets the same treatment: `hook_model` from
+   [`models.hook`](models.md) as a *setdefault* (an explicit value in the
+   resolved file wins), `calibration` joined from the matching `inputs.tools`
+   entry.
 2. **The eval-run agent** reads each handler's `prompt` and resolves it into concrete
-   runtime checks (`input_filters`, `env_checks`, and any `case_overrides`).
-3. **`tools.py`** (the `PreToolUse` hook) executes those checks on every tool call.
+   runtime checks (`input_filters`, `env_checks`, and any `case_overrides` —
+   optionally with provenance: file-level `case_overrides_source: human|agent`
+   or per-entry `{answer, source}`; unmarked entries count as agent-authored).
+   The rewrite preserves the harness-owned keys.
+3. **`tools.py`** (the `PreToolUse` hook) executes those checks on every tool call,
+   under an explicit 120s per-hook `timeout` plus an in-hook deadline budget
+   that skips optional calls (the calibration shadow) with a ledger record
+   instead of being killed mid-flight.
 
 ## The generated `tool_handlers.yaml`
 
@@ -91,8 +110,10 @@ handlers:
 hook_model: claude-haiku-4-5-20251001
 
 # Per-case exact-match answer overrides (optional)
+case_overrides_source: human            # provenance default for flat entries
 case_overrides:
   "What priority should this have?": "Normal"
+  "Which region?": {answer: "eu-west", source: human}
 ```
 
 ### Field reference (set-by / used-by)
@@ -102,10 +123,12 @@ case_overrides:
 | `match` | workspace.py (from eval.yaml) | eval-run agent | Natural-language description of what to intercept. |
 | `prompt` | workspace.py (from eval.yaml) | eval-run agent, tools.py | Instruction the agent reads to generate checks; also passed to the LLM answerer as context. |
 | `patterns` | workspace.py (heuristic extraction) | tools.py | Tool-name patterns for matching (exact or glob). |
-| `input_filters` | eval-run agent (Step 3b) | tools.py | Regex patterns matched against Bash command content. With `"Bash"` in `patterns`, **both** must match. |
-| `env_checks` | eval-run agent (Step 3b) | tools.py | Env-var validation. Each key is a var name; `must_contain` lists required substrings. **All** must pass to allow. |
-| `hook_model` | workspace.py (from `models.hook`) | tools.py | Model ID for LLM-based `AskUserQuestion` answering. Defaults to `claude-haiku-4-5-20251001`. |
-| `case_overrides` | eval-run agent (optional) | tools.py | Question → answer map for `AskUserQuestion`; exact-match tier checked before the LLM and fallback. |
+| `input_filters` | eval-run agent (Step 3a) | tools.py | Regex patterns matched against Bash command content. With `"Bash"` in `patterns`, **both** must match. |
+| `env_checks` | eval-run agent (Step 3a) | tools.py | Env-var validation. Each key is a var name; `must_contain` lists required substrings. **All** must pass to allow. |
+| `hook_model` | post-load merge (setdefault from `models.hook`) | tools.py | Model ID for LLM-based `AskUserQuestion` answering. Defaults to `claude-haiku-4-5-20251001`. |
+| `case_overrides` | eval-run agent / human (optional) | tools.py | Question → answer map for `AskUserQuestion`; exact-match tier checked before the LLM and fallback. Flat values, or per-entry `{answer, source}`. |
+| `calibration` | post-load merge (from `inputs.tools[].calibration`) | tools.py | Shadow-run the LLM tier on override-answered questions — held out, logged, never injected. |
+| `case_overrides_source` | eval-run agent / human | tools.py, score.py | Provenance default for flat `case_overrides` entries (`human` \| `agent`, default `agent`). Only explicit `human` markings reach the human calibration stratum and the `min_gold_agreement` gate. |
 
 ## Runtime behavior by tool type
 
@@ -120,6 +143,13 @@ case_overrides:
     3. **Fallback** — pick the first option, or `"yes"`.
 
     The hook returns `permissionDecision: "allow"` with the answers in `updatedInput`.
+
+    With `calibration: true`, every **override-answered** question additionally
+    shadow-runs tier 2 — held out (`input.yaml` only, `answers.yaml` stripped so
+    gold agreement is calibration, not answer-key transcription) — and records
+    `{gold, shadow, agree, held_out, decoding}` in the answer ledger. The shadow
+    never changes the injected answer; `score.py` aggregates the pairs into
+    `summary['simulator']`, stratified by override provenance (human vs agent).
 
     !!! warning "Case files are sent to the model"
         In tier 2, `input.yaml` and `answers.yaml` are sent to the model API. **Do not

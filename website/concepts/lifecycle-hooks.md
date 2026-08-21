@@ -13,12 +13,14 @@ or clean up. They are configured under the top-level `hooks:` key in `eval.yaml`
     [tool interception](tool-interception.md). If you're trying to fake a Jira API or
     auto-answer an `AskUserQuestion`, you want tool interception, not this page.
 
-## The six phases
+## The eight phases
 
 | Phase | Runs | Working directory | Guaranteed? |
 | --- | --- | --- | --- |
 | `before_all` | Once, before any case/batch executes | project root | No — a failure aborts the run |
 | `before_each` | Before every case (case/prompt mode only) | case workspace | No — a failure aborts that case |
+| `before_step` | Before every step of a multi-step case (`execution.steps` only) | case workspace | No — a failure aborts the remaining steps |
+| `after_step` | After every step (multi-step only) | case workspace | **Yes** — `finally`, even on error |
 | `after_each` | After every case (case/prompt mode only) | case workspace | **Yes** — `finally`, even on error |
 | `before_scoring` | Once, before judges run (in `score.py`) | project root | No — a failure aborts scoring |
 | `after_all` | Once, after all cases complete | project root | **Yes** — `finally`, even on error |

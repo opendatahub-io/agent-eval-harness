@@ -16,6 +16,7 @@ interceptor itself lives at ``skills/eval-run/scripts/tools.py``.
 import json
 import re
 import shutil
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -35,6 +36,18 @@ _INTERCEPTOR_SCRIPT = (
     Path(__file__).resolve().parent.parent.parent
     / "skills" / "eval-run" / "scripts" / "tools.py"
 )
+
+#: Explicit wall-clock timeout (seconds) for every generated PreToolUse hook
+#: entry. Sized to the worst case of one AskUserQuestion batch: ~30s primary
+#: LLM answer + ~15s calibration shadow + up to 2 × ~10s cross-simulator
+#: shadows per question, times a small question-batch factor (a batch
+#: carries a handful of questions) ≈ 120s.
+#: The interceptor enforces its own in-hook deadline budget BELOW this bound
+#: (see the mirrored constants in skills/eval-run/scripts/tools.py) so
+#: optional calls degrade to a ledger-recorded skip instead of an external
+#: kill (cross-simulator shadows yield first, then the calibration shadow)
+#: — a killed PreToolUse hook is silent pass-through.
+HOOK_TIMEOUT_SECONDS = 120
 
 
 def extract_tool_patterns(match_text: str) -> list[str]:
@@ -80,8 +93,91 @@ def build_handlers(config: "EvalConfig") -> tuple[dict, set[str]]:
     return handler_data, hook_matchers
 
 
+def _patterns_hit_ask_user(patterns) -> bool:
+    """True when a handler's patterns would match AskUserQuestion at runtime.
+
+    Mirrors tools.py ``_find_handler``: exact name, or a trailing-``*``
+    prefix pattern (the bare ``*`` wildcard prefix-matches every tool).
+    """
+    for pattern in patterns or []:
+        if pattern == "AskUserQuestion":
+            return True
+        if (isinstance(pattern, str) and pattern.endswith("*")
+                and "AskUserQuestion".startswith(pattern[:-1])):
+            return True
+    return False
+
+
+def merge_handler_knobs(handler_data: dict, config: "EvalConfig") -> dict:
+    """Post-load merge of harness-owned runtime knobs onto ``handler_data``.
+
+    Applied to the handler config REGARDLESS of source — the heuristic
+    :func:`build_handlers` output AND a pre-resolved ``tool_handlers.yaml``
+    (whose load path bypasses ``build_handlers`` entirely). eval.yaml owns
+    the runtime knobs (``hook_model`` from ``models.hook``, ``calibration``
+    from ``inputs.tools``, ``hook_shadow_models`` from
+    ``models.hook_shadow``); the resolved file owns patterns /
+    input_filters / env_checks / case_overrides (+ their
+    ``case_overrides_source`` / per-entry ``source`` provenance), which flow
+    through untouched.
+
+    - ``hook_model``: ``setdefault`` from ``config.models.hook`` — an
+      explicit value in the resolved file wins. Deliberate behavior fix,
+      announced on stderr: resolved files that omitted ``hook_model``
+      previously fell back to the interceptor's hardcoded haiku default even
+      when eval.yaml set ``models.hook``.
+    - ``calibration``: joined onto handlers by exact ``match`` text; when a
+      calibration-enabled tool config joins nothing (the eval-run agent
+      rewrote the match text), it falls back to every handler whose patterns
+      would match AskUserQuestion, with a stderr warning naming the
+      unjoined match.
+    - ``hook_shadow_models``: overwritten from ``config.models.hook_shadow``
+      when non-empty — eval.yaml owns the models; the interceptor answers
+      every intercepted AskUserQuestion with each shadow too (logged to the
+      ledger, never injected).
+    """
+    handlers = handler_data.get("handlers") or []
+    by_match = {h.get("match"): h for h in handlers if isinstance(h, dict)}
+    for tool_cfg in config.inputs.tools:
+        if not getattr(tool_cfg, "calibration", False):
+            continue
+        joined = by_match.get(tool_cfg.match)
+        if joined is not None:
+            joined["calibration"] = True
+            continue
+        fallback = [h for h in handlers if isinstance(h, dict)
+                    and _patterns_hit_ask_user(h.get("patterns"))]
+        for h in fallback:
+            h["calibration"] = True
+        print(
+            f"tool_handlers.yaml: no handler matches inputs.tools entry "
+            f"{tool_cfg.match!r} — applying calibration: true to "
+            f"{len(fallback)} AskUserQuestion-matching handler(s)",
+            file=sys.stderr)
+    if config.models.hook and "hook_model" not in handler_data:
+        handler_data["hook_model"] = config.models.hook
+        print(
+            f"tool_handlers.yaml: resolved file lacked hook_model — "
+            f"supplied {config.models.hook!r} from models.hook (previously "
+            "the interceptor silently fell back to its hardcoded default)",
+            file=sys.stderr)
+    if config.models.hook_shadow:
+        # Overwrite, never setdefault: eval.yaml owns the models. The
+        # interceptor caps at 2 as well (defense in depth on a hand-edited
+        # handler file).
+        handler_data["hook_shadow_models"] = list(
+            config.models.hook_shadow)[:2]
+    return handler_data
+
+
 def build_settings_hooks(hook_matchers: set[str], hooks_command: str) -> dict:
     """Build the ``.claude/settings.json`` PreToolUse hooks block.
+
+    Every hook entry carries an explicit ``timeout`` of
+    :data:`HOOK_TIMEOUT_SECONDS` — sized to the interceptor's worst-case
+    LLM work per AskUserQuestion batch, and paired with the in-hook
+    deadline budget in tools.py that skips optional calls before the CLI
+    would kill the hook (silent pass-through).
 
     Args:
         hook_matchers: tool name patterns to intercept.
@@ -93,7 +189,8 @@ def build_settings_hooks(hook_matchers: set[str], hooks_command: str) -> dict:
     for matcher in sorted(hook_matchers):
         settings["hooks"]["PreToolUse"].append({
             "matcher": matcher,
-            "hooks": [{"type": "command", "command": hooks_command}],
+            "hooks": [{"type": "command", "command": hooks_command,
+                       "timeout": HOOK_TIMEOUT_SECONDS}],
         })
     return settings
 
@@ -115,8 +212,12 @@ def generate_interception(
     ``env_checks``, ``case_overrides``), it is used as-is — the heuristic
     :func:`build_handlers` is skipped. This lets ``/eval-analyze`` do the LLM
     work once, producing a resolved file alongside ``eval.yaml``, which task
-    generation and Harbor bundle unchanged. ``/eval-run`` Step 3b can still
+    generation and Harbor bundle unchanged. ``/eval-run`` Step 3a can still
     refine the workspace copy at execution time.
+
+    Either way, :func:`merge_handler_knobs` then stamps the harness-owned
+    runtime knobs (``hook_model``, ``calibration``) onto the handler data —
+    the resolved-file branch would otherwise bypass them entirely.
 
     Args:
         target_dir: workspace or ``environment/`` dir to write into.
@@ -147,6 +248,8 @@ def generate_interception(
             hook_matchers.update(h.get("patterns", []))
     else:
         handler_data, hook_matchers = build_handlers(config)
+    # Harness-owned knobs ride eval.yaml, whatever produced the handlers.
+    handler_data = merge_handler_knobs(handler_data, config)
     (target_dir / "tool_handlers.yaml").write_text(
         yaml.safe_dump(handler_data, sort_keys=False))
 

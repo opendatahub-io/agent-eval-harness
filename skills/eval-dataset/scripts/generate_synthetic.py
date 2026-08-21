@@ -8,17 +8,25 @@ generate test cases following the prompt instructions.
 
 import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
 
+import hashlib
 import json
 import os
 import re
+import shutil
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 import yaml
 
 from agent_eval.config import EvalConfig, GenerationSeed
+from agent_eval.dataset_audit import ANNOTATION_FIELDS, MANIFEST_FILENAME
 from agent_eval.prompts import resolve_seed_prompt
+
+#: Sampling temperature for generation calls — higher for variety. Recorded
+#: in manifest.yaml so regeneration provenance is explicit.
+GENERATION_TEMPERATURE = 1.0
 
 
 def _seed_source(seed: GenerationSeed) -> str:
@@ -26,31 +34,73 @@ def _seed_source(seed: GenerationSeed) -> str:
     return seed.builtin or seed.prompt_file or ("inline" if seed.prompt else "?")
 
 
+def _existing_generated_dirs(output_dir: Path) -> list:
+    """Previously generated ``case-NNN`` dirs under *output_dir*.
+
+    Only exact ``case-\\d{3}`` names match — hand-authored dirs like
+    ``case-001-simple-basic-input`` never match and are never deleted.
+    """
+    output_dir = Path(output_dir)
+    if not output_dir.is_dir():
+        return []
+    return sorted(d for d in output_dir.iterdir()
+                  if d.is_dir() and re.fullmatch(r"case-\d{3}", d.name))
+
+
 def generate_synthetic(
     config: EvalConfig,
     output_dir: Path,
     model: str = "claude-opus-4-6",
     api_key: Optional[str] = None,
+    force: bool = False,
+    now=None,
 ) -> list[dict]:
     """Generate test cases from the generation seeds in ``config``.
+
+    Regeneration REPLACES the whole ``case-NNN`` set: seed counts are
+    declarative totals and the case counter always restarts at 1, so the
+    documented resize flow (increase a seed's ``count``, re-run) rewrites
+    ``case-001..N``. Existing ``case-NNN`` dirs therefore refuse to be
+    overwritten unless ``force`` is set (raised BEFORE any API call);
+    with ``force`` they are removed and regenerated, and ``manifest.yaml``
+    is fully replaced to describe the new set.
 
     Args:
         config: EvalConfig with a ``generation`` block (seeds + context)
         output_dir: Where to write generated test cases
         model: Claude model to use for generation
         api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY or uses ANTHROPIC_VERTEX_PROJECT_ID)
+        force: Replace pre-existing ``case-NNN`` dirs (see above)
+        now: ``generated_at`` timestamp for manifest.yaml (datetime or ISO
+            string; default: system clock) — injectable for tests
 
     Returns:
         List of generated case metadata
 
     Raises:
-        ValueError: If no generation seeds defined
+        ValueError: If no generation seeds defined, or existing ``case-NNN``
+            dirs would be overwritten without ``force``
         ImportError: If anthropic package not installed
     """
     if not config.generation.seeds:
         raise ValueError(
             "No generation seeds defined in config. "
             "Synthetic generation requires generation.seeds.")
+
+    # Overwrite guard — BEFORE any API call (and before client auth).
+    existing = _existing_generated_dirs(Path(output_dir))
+    if existing and not force:
+        names = ", ".join(d.name for d in existing[:5])
+        if len(existing) > 5:
+            names += f", … ({len(existing)} total)"
+        raise ValueError(
+            f"Refusing to overwrite existing generated case dir(s) in "
+            f"{output_dir}: {names}. Synthetic regeneration REPLACES the "
+            "whole case-NNN set (seed counts are declarative totals and "
+            "numbering restarts at case-001), and hand-edits such as TODO_ "
+            "replacements would be lost. Re-run with --force to replace "
+            "them — see skills/eval-dataset/references/"
+            "synthetic-generation.md (resize flow).")
 
     try:
         import anthropic
@@ -75,8 +125,17 @@ def generate_synthetic(
         raise ValueError(
             "Authentication required: set either ANTHROPIC_API_KEY or "
             "ANTHROPIC_VERTEX_PROJECT_ID environment variable.")
+
+    # --force: replace the pre-existing generated set (after auth checks so
+    # an auth failure can never delete the dataset). Hand-authored
+    # case-001-slug style dirs never match and survive.
+    if existing and force:
+        for stale_dir in existing:
+            shutil.rmtree(stale_dir)
+
     all_cases = []
     failed_categories = []
+    seed_records = []
     case_counter = 1
 
     for seed in config.generation.seeds:
@@ -92,6 +151,21 @@ def generate_synthetic(
                 file=sys.stderr,
             )
             raise
+
+        # Per-seed manifest record — realized counts are tracked durably:
+        # `returned` is what the LLM produced (null when the category
+        # failed), `written` is what per-case validation actually kept.
+        seed_record = {
+            "category": seed.category,
+            "source": _seed_source(seed),
+            "prompt_sha256": hashlib.sha256(
+                generation_prompt.encode("utf-8")).hexdigest(),
+            "requested": seed.count,
+            "returned": None,
+            "written": 0,
+            "failed": False,
+        }
+        seed_records.append(seed_record)
 
         # Generate cases for this category
         try:
@@ -109,13 +183,17 @@ def generate_synthetic(
                 f"Continuing with other categories...",
                 file=sys.stderr,
             )
+            seed_record["failed"] = True
             failed_categories.append(seed.category)
             # Continue with next category instead of failing entirely
             continue
         except Exception as e:
             print(f"ERROR: Unexpected error for category '{seed.category}': {e}", file=sys.stderr)
+            seed_record["failed"] = True
             failed_categories.append(seed.category)
             continue
+
+        seed_record["returned"] = len(cases)
 
         # Write cases to disk
         for case in cases:
@@ -178,6 +256,7 @@ def generate_synthetic(
                 "source": _seed_source(seed),
             })
 
+            seed_record["written"] += 1
             case_counter += 1
 
     if not all_cases:
@@ -185,7 +264,60 @@ def generate_synthetic(
             "Failed to generate any synthetic cases"
             + (f": {', '.join(failed_categories)}" if failed_categories else "")
         )
+
+    # Persist generation provenance at the dataset root — only on success,
+    # after the empty-dataset check, so the manifest always describes a
+    # dataset that exists. Fully replaced on --force regeneration.
+    manifest = _build_manifest(
+        config=config,
+        model=model,
+        seed_records=seed_records,
+        failed_categories=failed_categories,
+        cases=all_cases,
+        now=now,
+    )
+    _write_manifest(Path(output_dir), manifest)
+
     return all_cases
+
+
+def _context_sha256(context) -> str:
+    """sha256 of the canonical YAML dump of ``generation.context``."""
+    return hashlib.sha256(
+        yaml.dump(context, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _build_manifest(config, model, seed_records, failed_categories, cases,
+                    now=None) -> dict:
+    """Build the manifest.yaml content (generation provenance)."""
+    if now is None:
+        generated_at = datetime.now(timezone.utc).isoformat()
+    elif isinstance(now, str):
+        generated_at = now
+    else:
+        generated_at = now.isoformat()
+    return {
+        "manifest_version": 1,
+        "generated_at": generated_at,
+        "model": model,
+        "temperature": GENERATION_TEMPERATURE,
+        "context_sha256": _context_sha256(config.generation.context),
+        "seeds": seed_records,
+        "failed_categories": failed_categories,
+        "cases": cases,
+    }
+
+
+def _write_manifest(output_dir: Path, manifest: dict) -> Path:
+    """Write manifest.yaml at the dataset root.
+
+    A root-level FILE — invisible to dir-only case discovery (workspace.py,
+    collect.py, harbor task generation all iterate directories only).
+    """
+    path = Path(output_dir) / MANIFEST_FILENAME
+    path.write_text(
+        yaml.dump(manifest, sort_keys=False, allow_unicode=True))
+    return path
 
 
 def _generate_category_cases(
@@ -278,7 +410,7 @@ Return the JSON array now:"""
         model=model,
         max_tokens=4096,
         messages=[{"role": "user", "content": prompt}],
-        temperature=1.0,  # Higher temperature for variety
+        temperature=GENERATION_TEMPERATURE,  # Higher temperature for variety
     )
 
     # Parse response (validate content exists and has text attribute - CWE-20)
@@ -312,14 +444,9 @@ Return the JSON array now:"""
     return cases
 
 
-_ANNOTATION_FIELDS = {
-    "expected_files", "expected_mentions", "expected_rejection",
-    "expected_guidance", "expected_constraint", "expected_structure",
-    "expected_patterns", "expected_api", "expected_example_type",
-    "expected_fields", "expected_components", "expected_interactions",
-    "correct_approach", "category", "difficulty", "severity",
-    "constraint_type", "topic",
-}
+# Back-compat alias — the canonical set lives in agent_eval.dataset_audit
+# so the audit and the generator cannot diverge.
+_ANNOTATION_FIELDS = ANNOTATION_FIELDS
 
 
 def _fix_misplaced_annotation_fields(cases: list[dict]) -> None:
@@ -438,6 +565,11 @@ def main():
     parser.add_argument(
         "--dry-run", action="store_true",
         help="Print what would be generated without calling API")
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Replace existing case-NNN dirs (regeneration rewrites the "
+             "whole set — seed counts are declarative totals and numbering "
+             "restarts at case-001; hand-edits are lost)")
 
     args = parser.parse_args()
 
@@ -469,6 +601,7 @@ def main():
             config=config,
             output_dir=output_dir,
             model=args.model,
+            force=args.force,
         )
 
         print(f"\nGenerated {len(cases)} test cases:")
@@ -476,6 +609,7 @@ def main():
             print(f"  {case['case_id']}: {case['category']}")
 
         print(f"\nOutput written to: {output_dir}")
+        print(f"Manifest: {output_dir / MANIFEST_FILENAME}")
 
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
