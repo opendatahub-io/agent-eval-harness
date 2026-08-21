@@ -743,3 +743,38 @@ thresholds:
     min_alpha: 0.7
 """))
     assert cfg.thresholds == {"q": {"min_mean": 3.5, "min_alpha": 0.7}}
+
+
+def test_min_human_agreement_is_a_known_threshold_key(tmp_path):
+    """PR6: min_human_agreement is in THRESHOLD_KEYS — no unknown-key warning,
+    block stored verbatim."""
+    import warnings as _warnings
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")
+        cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution: {skill: s}
+judges:
+  - {name: q, check: "return (True, 'ok')"}
+thresholds:
+  q:
+    min_human_agreement: 0.6
+"""))
+    assert cfg.thresholds == {"q": {"min_human_agreement": 0.6}}
+
+
+@pytest.mark.parametrize("value", ["1.5", '"high"', ".nan"])
+def test_bad_min_human_agreement_values_raise(tmp_path, value):
+    """The generic *_agreement rule in _parse_thresholds covers the new key:
+    values must be finite numbers <= 1.0 (the coefficient maximum)."""
+    with pytest.raises(ValueError,
+                       match=r"min_human_agreement must be a finite"):
+        EvalConfig.from_yaml(_write(tmp_path, f"""
+name: t
+execution: {{skill: s}}
+judges:
+  - {{name: q, check: "return (True, 'ok')"}}
+thresholds:
+  q:
+    min_human_agreement: {value}
+"""))

@@ -1344,6 +1344,45 @@ def _irr_badge(irr):
     return f'<span class="{cls}" title="{_esc(tooltip)}">{_esc(text)}</span>'
 
 
+def _human_agreement_badge(ha, human_calibration=None):
+    """Judge-vs-human calibration annotation beside the IRR badge.
+
+    Value + metric + n; the tooltip carries the mandatory label ("agreement
+    with a single human reviewer (n=X)"), the metric-selection rationale, the
+    uncorrected raw agreement, and the reviewer-reported blind flag
+    (self-reported, not enforced). Perfect agreement renders as raw 100% —
+    never a coefficient of 1.0. No strength-of-agreement adjectives, ever.
+    """
+    if not isinstance(ha, dict) or not ha:
+        return ""
+    n = ha.get("n_units", "?")
+    tooltip = ha.get("label") or (
+        f"agreement with a single human reviewer (n={n})")
+    if ha.get("rationale"):
+        tooltip += f" — {ha['rationale']}"
+    raw = ha.get("agreement_raw")
+    if isinstance(raw, (int, float)):
+        tooltip += f" Uncorrected agreement {raw:.3f}."
+    if isinstance(human_calibration, dict):
+        tooltip += (" reviewer-reported blind: "
+                    f"{'yes' if human_calibration.get('blind') else 'no'}")
+    metric = str(ha.get("metric") or "")
+    symbol = "κ" if "kappa" in metric else "α"
+
+    value = ha.get("value")
+    cls = "irr-badge"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        text = f"{symbol}={value:.3f} vs human ({metric}, n={n})"
+    elif ha.get("reason_code") == "perfect_agreement":
+        raw_pct = f"{raw:.0%}" if isinstance(raw, (int, float)) else "100%"
+        text = f"vs human: {raw_pct} raw (uncorrected — perfect agreement)"
+    else:
+        text = (f"vs human: n={n}, no coefficient "
+                f"({ha.get('reason_code') or 'unavailable'})")
+        cls += " irr-warn"
+    return f'<span class="{cls}" title="{_esc(tooltip)}">{_esc(text)}</span>'
+
+
 def _render_scoring_summary(summary, config, baseline_summary=None,
                             run_result=None):
     judges = summary.get("judges", {})
@@ -1356,7 +1395,8 @@ def _render_scoring_summary(summary, config, baseline_summary=None,
                      for r in _detect_regressions(
                          summary.get("judges", {}), thresholds,
                          pairwise=summary.get("pairwise"),
-                         include_irr=include_irr)}
+                         include_irr=include_irr,
+                         human_calibration=summary.get("human_calibration"))}
         _breach_known = True
     except Exception:
         # Unknown, not clean: fall back to the metrics this table can compute
@@ -1414,6 +1454,12 @@ def _render_scoring_summary(summary, config, baseline_summary=None,
                 jst.get("samples"))
         if isinstance(jst, dict) and isinstance(jst.get("irr"), dict):
             metric_val += " " + _irr_badge(jst["irr"])
+        # Judge-vs-human calibration (score.py calibration) beside the IRR
+        # badge — self-consistency and criterion anchoring are different
+        # measurements and render as separate annotations.
+        if isinstance(agg.get("human_agreement"), dict):
+            metric_val += " " + _human_agreement_badge(
+                agg["human_agreement"], summary.get("human_calibration"))
 
         # Baseline
         bl_val = ""
@@ -1447,6 +1493,14 @@ def _render_scoring_summary(summary, config, baseline_summary=None,
                 # Skipped (not evaluated) on harbor/evalhub runs — don't
                 # display a bound the detector never checked.
                 thresh_str = f"&ge; &alpha; {thresh['min_alpha']}"
+            elif "min_human_agreement" in thresh and (
+                    isinstance(agg.get("human_agreement"), dict)
+                    or judge_name in ((summary.get("human_calibration") or {})
+                                      .get("judges") or [])):
+                # Displayed only once the judge was calibrated (or a stale
+                # calibration exists) — a never-calibrated gate is silently
+                # skipped by the detector, so no bound to show.
+                thresh_str = f"&ge; {thresh['min_human_agreement']} vs human"
 
         # A breach is authoritative and is checked FIRST, because the metric it
         # gates on need not be one this table can display: a judge gated only
@@ -1575,7 +1629,7 @@ def _render_sim_user_line(case_dir, run_dir):
 
 
 def _detect_regressions(judges, thresholds, pairwise=None, include_irr=True,
-                        simulator=None):
+                        simulator=None, human_calibration=None):
     """score.py's regression detector.
 
     score.py sits beside this file but is a script, not a package module, so
@@ -1584,11 +1638,14 @@ def _detect_regressions(judges, thresholds, pairwise=None, include_irr=True,
     callers render that distinction. The reliability kwargs are forwarded
     verbatim (``pairwise``/``simulator`` are reserved pass-throughs;
     ``include_irr=False`` skips ``min_alpha`` gates on execution paths whose
-    aggregation carries no sampling stability data).
+    aggregation carries no sampling stability data; ``human_calibration`` is
+    the summary's run-level block, needed by the ``min_human_agreement``
+    stale-calibration check).
     """
     from score import detect_regressions
     return detect_regressions(judges, thresholds, pairwise=pairwise,
-                              include_irr=include_irr, simulator=simulator)
+                              include_irr=include_irr, simulator=simulator,
+                              human_calibration=human_calibration)
 
 
 def _effective_thresholds(config):
@@ -1619,9 +1676,11 @@ def _render_regressions(summary, config, run_result=None):
     # drifted to two of the four keys, so a `min_win_rate` or `max_error_rate`
     # breach failed the run while the report showed no Regressions table at all.
     try:
-        for reg in _detect_regressions(judges, thresholds,
-                                       pairwise=summary.get("pairwise"),
-                                       include_irr=_include_irr(run_result)):
+        for reg in _detect_regressions(
+                judges, thresholds,
+                pairwise=summary.get("pairwise"),
+                include_irr=_include_irr(run_result),
+                human_calibration=summary.get("human_calibration")):
             regressions.append((reg.judge_name, reg.metric,
                                 reg.baseline_value, reg.current_value))
     except Exception as exc:
@@ -1640,6 +1699,91 @@ def _render_regressions(summary, config, run_result=None):
         html += (f'<tr><td>{_esc(judge)}</td><td>{metric}</td>'
                  f'<td>{expected}</td><td><span class="fail">{actual}</span></td></tr>\n')
     html += "</table>\n"
+    return html
+
+
+def _render_calibration(summary):
+    """Human Calibration section — judge-vs-human agreement detail.
+
+    Reads the run-level ``human_calibration`` block plus each calibrated
+    judge's ``human_agreement`` block (both written by ``score.py
+    calibration``). Mandatory caveats: not-blind exposure, non-random case
+    selection (kappa is prevalence-sensitive), and the single-reviewer limit.
+    The per-judge raw pairs table (chance-uncorrected) renders for every
+    calibrated judge — below the calibration floor it is the only deliverable.
+    Returns '' when the run was never calibrated.
+    """
+    hc = summary.get("human_calibration")
+    if not isinstance(hc, dict) or not hc:
+        return ""
+    judges = summary.get("judges", {}) or {}
+    blind = bool(hc.get("blind"))
+    selection = str(hc.get("selection") or "unspecified")
+
+    html = "<h2>Human Calibration</h2>\n"
+    html += (f"<p>Reviewer "
+             f"<strong>{_esc(str(hc.get('reviewer_id', 'human')))}</strong>"
+             f" — {hc.get('n_reviewed', '?')}/{hc.get('n_total_cases', '?')}"
+             f" cases reviewed · selection: {_esc(selection)} · "
+             f"reviewer-reported blind: {'yes' if blind else 'no'}</p>\n")
+
+    caveats = []
+    if not blind:
+        caveats.append("Verdicts were collected after judge results were "
+                       "visible (reviewer-reported blind: no).")
+    if selection != "all":
+        caveats.append(
+            f"Coefficients computed on a non-random subset (selection: "
+            f"{_esc(selection)}) are prevalence-biased — kappa is "
+            "prevalence-sensitive; interpret with caution.")
+    caveats.append("Single human reviewer — no reliability estimate exists "
+                   "on the human anchor itself.")
+    html += "<ul>\n" + "".join(f"<li>{c}</li>\n" for c in caveats) + "</ul>\n"
+
+    for judge_name in hc.get("judges") or []:
+        agg = judges.get(judge_name)
+        ha = agg.get("human_agreement") if isinstance(agg, dict) else None
+        if not isinstance(ha, dict):
+            # Re-scored after calibration: the per-judge block is gone.
+            html += (f"<h3>{_esc(str(judge_name))}</h3>\n"
+                     '<p class="fail">stale calibration — '
+                     "summary['judges'] was rewritten after calibration; "
+                     "re-run score.py calibration</p>\n")
+            continue
+        value = ha.get("value")
+        n = ha.get("n_units", "?")
+        raw = ha.get("agreement_raw")
+        raw_txt = (f"uncorrected agreement {raw:.3f}"
+                   if isinstance(raw, (int, float)) else "")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            head = (f"{ha.get('metric', '?')} = {value:.3f} "
+                    f"({ha.get('level', '?')}, n={n})")
+        else:
+            head = (f"no coefficient (n={n}) — "
+                    f"{ha.get('reason') or ha.get('reason_code') or 'unavailable'}")
+        label = str(ha.get("label") or "")
+        html += (f"<h3>{_esc(str(judge_name))}</h3>\n"
+                 f"<p>{_esc(head)}"
+                 + (f" · {_esc(raw_txt)}" if raw_txt else "")
+                 + (f" · <em>{_esc(label)}</em>" if label else "")
+                 + "</p>\n")
+        pairs = ha.get("pairs")
+        if isinstance(pairs, list) and pairs:
+            html += ('<details><summary>Raw agreement table '
+                     f'({len(pairs)} pairs, uncorrected)</summary>\n'
+                     "<table>\n<tr><th>Case</th><th>Human</th><th>Judge</th>"
+                     "<th>Match</th></tr>\n")
+            for p in pairs:
+                if not isinstance(p, dict):
+                    continue
+                match = bool(p.get("match"))
+                cls = "pass" if match else "warn"
+                html += (f"<tr><td>{_esc(str(p.get('case', '')))}</td>"
+                         f"<td>{_esc(str(p.get('human')))}</td>"
+                         f"<td>{_esc(str(p.get('judge')))}</td>"
+                         f'<td><span class="{cls}">'
+                         f"{'yes' if match else 'NO'}</span></td></tr>\n")
+            html += "</table>\n</details>\n"
     return html
 
 
@@ -2649,6 +2793,14 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
     output_paths = [o.get("path", ".") for o in config.get("outputs", [])
                     if o.get("path") and o.get("path") not in shared_paths]
     feedback = review.get("feedback", {}) if review else {}
+    # Calibration verdicts (optional, agent-written): {case: {judge: value}}.
+    # Rendered beside the judge verdict; malformed entries are ignored here —
+    # the calibration CLI already warned about them.
+    verdicts = (review or {}).get("verdicts")
+    if not isinstance(verdicts, dict):
+        verdicts = {}
+    reviewer_id = str((review or {}).get("reviewer_id")
+                      or (review or {}).get("reviewer") or "human")
     cases_dir = run_dir / "cases"
     bl_cases_dir = baseline_dir / "cases" if baseline_dir else None
 
@@ -2781,6 +2933,21 @@ def _render_per_case(summary, run_dir, config, baseline_dir, review):
                     [("fail", nsamp - npass), ("pass", npass)], "F", "P", winner))
                 val_html += (f' <span class="ascii-range" '
                              f'title="{npass}/{nsamp} pass">{glyph}</span>')
+
+            # Human verdict badge (from review.yaml calibration verdicts):
+            # pass-tinted on exact match with the judge's reduced value,
+            # warn-tinted on mismatch. Purely presentational and defensive —
+            # only scalar verdicts on an existing judge row render.
+            hv_map = verdicts.get(case_id)
+            if isinstance(hv_map, dict) and jname in hv_map:
+                hv = hv_map[jname]
+                if hv is not None and not isinstance(hv, (dict, list)):
+                    hv_txt = ("PASS" if hv is True
+                              else "FAIL" if hv is False else str(hv))
+                    hv_cls = "pass" if hv == val else "warn"
+                    val_html += (f' <span class="{hv_cls}" title="human '
+                                 f'verdict (reviewer: {_esc(reviewer_id)})">'
+                                 f'human: {_esc(hv_txt)}</span>')
 
             sample_rats = jresult.get("sample_rationales")
             if sample_rats and len(sample_rats) > 1:
@@ -3073,6 +3240,7 @@ def generate_report(config, summary, run_result, run_dir,
                                                   run_result=run_result))
     html += _wrap_section(_render_regressions(summary, config,
                                               run_result=run_result))
+    html += _wrap_section(_render_calibration(summary))
     html += _wrap_section(_render_shared_outputs(run_dir, config))
     # Per-Case Reward Overview is an RL-training reward summary — only render it
     # when a reward is configured. For judge-only evals the Scoring Summary

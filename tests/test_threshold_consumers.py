@@ -34,54 +34,90 @@ def _irr_judges(**irr):
                                 "total_cases": 3, "irr": irr}}}
 
 
-# judges aggregate, thresholds, and whether the CLI would regress
+def _ha_judges(**ha):
+    return {"q": {"mean": 4.0, "scored_cases": 5, "human_agreement": ha}}
+
+
+# judges aggregate, thresholds, run-level human_calibration block (None =
+# never calibrated), and whether the CLI would regress
 CASES = [
     ("min_mean", {"q": {"mean": 0.5, "scored_cases": 10}},
-     {"q": {"min_mean": 1.0}}, True),
+     {"q": {"min_mean": 1.0}}, None, True),
     ("min_pass_rate", {"q": {"pass_rate": 0.5}},
-     {"q": {"min_pass_rate": 0.9}}, True),
+     {"q": {"min_pass_rate": 0.9}}, None, True),
     ("min_win_rate", {"pairwise": {"win_rate": 0.3}},
-     {"pairwise": {"min_win_rate": 0.6}}, True),
+     {"pairwise": {"min_win_rate": 0.6}}, None, True),
     ("max_error_rate", {"q": {"scored_cases": 1, "errored_cases": 9}},
-     {"q": {"max_error_rate": 0.2}}, True),
+     {"q": {"max_error_rate": 0.2}}, None, True),
     ("clean", {"q": {"mean": 4.0, "scored_cases": 10, "errored_cases": 0}},
-     {"q": {"min_mean": 1.0}}, False),
+     {"q": {"min_mean": 1.0}}, None, False),
     # Reliability gates (measurement-validity PR2). Later commits add rows.
     ("min_alpha breach",
      _irr_judges(value=0.40, metric="krippendorff_alpha", level="ordinal",
                  n_units=3),
-     {"q": {"min_alpha": 0.7}}, True),
+     {"q": {"min_alpha": 0.7}}, None, True),
     ("min_alpha degenerate pass",
      _irr_judges(value=None, reason_code="perfect_agreement",
                  reason="all ratings identical"),
-     {"q": {"min_alpha": 0.7}}, False),
+     {"q": {"min_alpha": 0.7}}, None, False),
     ("min_alpha configured but unavailable",
      {"q": {"mean": 4.0, "scored_cases": 3}},
-     {"q": {"min_alpha": 0.7}}, True),
+     {"q": {"min_alpha": 0.7}}, None, True),
+    # Human-calibration gate (measurement-validity PR6). Three-state rule:
+    # breach / perfect-agreement pass / never-calibrated silent skip — plus
+    # the stale-calibration regression when the run-level block survives a
+    # re-score that dropped the per-judge human_agreement.
+    ("min_human_agreement never calibrated (silent skip)",
+     {"q": {"mean": 4.0, "scored_cases": 5}},
+     {"q": {"min_human_agreement": 0.6}}, None, False),
+    ("min_human_agreement breach",
+     _ha_judges(metric="cohen_kappa", level="nominal", value=0.2, n_units=6),
+     {"q": {"min_human_agreement": 0.6}}, {"judges": ["q"]}, True),
+    ("min_human_agreement clean",
+     _ha_judges(metric="cohen_kappa", level="nominal", value=0.9, n_units=6),
+     {"q": {"min_human_agreement": 0.6}}, {"judges": ["q"]}, False),
+    ("min_human_agreement perfect-agreement pass",
+     _ha_judges(metric="cohen_kappa", level="nominal", value=None,
+                reason_code="perfect_agreement",
+                reason="both raters used one identical category"),
+     {"q": {"min_human_agreement": 0.6}}, {"judges": ["q"]}, False),
+    ("min_human_agreement stale calibration",
+     {"q": {"mean": 4.0, "scored_cases": 5}},
+     {"q": {"min_human_agreement": 0.6}}, {"judges": ["q"]}, True),
+    ("min_human_agreement below-floor (insufficient_data) regresses",
+     _ha_judges(metric="cohen_kappa", level="nominal", value=None,
+                reason_code="insufficient_data",
+                reason="n=3 joined pairs, below the calibration floor (5)"),
+     {"q": {"min_human_agreement": 0.6}}, {"judges": ["q"]}, True),
 ]
 
 
-@pytest.mark.parametrize("key,judges,thresholds,regresses", CASES)
-def test_the_cli_gate_behaves_as_the_table_says(key, judges, thresholds, regresses):
-    assert bool(detect_regressions(judges, thresholds)) is regresses
+@pytest.mark.parametrize("key,judges,thresholds,hc,regresses", CASES)
+def test_the_cli_gate_behaves_as_the_table_says(key, judges, thresholds, hc,
+                                                regresses):
+    assert bool(detect_regressions(judges, thresholds,
+                                   human_calibration=hc)) is regresses
 
 
-@pytest.mark.parametrize("key,judges,thresholds,regresses", CASES)
+@pytest.mark.parametrize("key,judges,thresholds,hc,regresses", CASES)
 def test_the_report_shows_every_breach_the_cli_exits_on(key, judges, thresholds,
-                                                        regresses):
-    html = report._render_regressions({"judges": judges},
-                                      {"thresholds": thresholds})
+                                                        hc, regresses):
+    summary = {"judges": judges}
+    if hc is not None:
+        summary["human_calibration"] = hc
+    html = report._render_regressions(summary, {"thresholds": thresholds})
     assert bool(html) is regresses, f"{key}: report and CLI disagree"
     if regresses:
         assert "Regressions" in html
 
 
-@pytest.mark.parametrize("key,judges,thresholds,regresses", CASES)
-def test_the_mlflow_tag_matches_the_cli(key, judges, thresholds, regresses):
+@pytest.mark.parametrize("key,judges,thresholds,hc,regresses", CASES)
+def test_the_mlflow_tag_matches_the_cli(key, judges, thresholds, hc, regresses):
     log_results = _load(
         REPO_ROOT / "skills" / "eval-mlflow" / "scripts" / "log_results.py",
         "_log_results_under_test")
-    assert bool(log_results._detect_regressions(judges, thresholds)) is regresses
+    assert bool(log_results._detect_regressions(
+        judges, thresholds, human_calibration=hc)) is regresses
 
 
 def test_a_judge_gated_only_on_coverage_is_not_reported_as_passing():
@@ -143,6 +179,27 @@ def test_harbor_report_shows_no_fail_for_a_min_alpha_only_judge():
         summary, config, run_result={"execution_mode": "harbor"})
     assert "FAIL" not in harbor
     assert not report._render_regressions(
+        summary, config, run_result={"execution_mode": "harbor"})
+
+
+def test_harbor_min_human_agreement_never_calibrated_is_silently_skipped():
+    """include_irr=False does NOT govern min_human_agreement (calibration is
+    post-hoc, not sampling-derived) — but the Harbor/EvalHub paths pass raw
+    aggregates without human_agreement and no human_calibration kwarg, so
+    the never-calibrated silent skip applies naturally on that path."""
+    judges = {"q": {"mean": 4.0, "scored_cases": 5}}
+    thresholds = {"q": {"min_human_agreement": 0.6}}
+
+    # The exact Harbor/EvalHub call shape: include_irr=False, no
+    # human_calibration kwarg, aggregate without human_agreement.
+    assert detect_regressions(judges, thresholds, include_irr=False) == []
+
+    # And the harbor-mode report agrees.
+    summary = {"judges": judges, "per_case": {}}
+    config = {"thresholds": thresholds, "judges": []}
+    assert not report._render_regressions(
+        summary, config, run_result={"execution_mode": "harbor"})
+    assert "FAIL" not in report._render_scoring_summary(
         summary, config, run_result={"execution_mode": "harbor"})
 
 

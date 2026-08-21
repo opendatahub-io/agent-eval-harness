@@ -12,16 +12,18 @@ thresholds:
   has_content:
     min_pass_rate: 1.0       # boolean judge — fraction of cases passing (0.0–1.0)
     max_error_rate: 0.2      # optional — fail if >20% of cases errored
+  # format_check:
+  #   min_human_agreement: 0.6  # judge-vs-human kappa/alpha, after `score.py calibration`
   # pairwise:
   #   min_win_rate: 0.6      # pairwise judge — fraction of cases won vs baseline
 ```
 
 The block is a plain mapping (`dict`, default empty). When it is empty or
 omitted, no gate runs and scoring always succeeds. Unknown keys **warn** at
-config load (they never gate); `*_alpha` values must be finite numbers
-≤ 1.0 (the coefficient maximum).
+config load (they never gate); `*_alpha` / `*_agreement` values must be
+finite numbers ≤ 1.0 (the coefficient maximum).
 
-## The five keys
+## The six keys
 
 | Key | Applies to | Metric compared | Passes when |
 | --- | --- | --- | --- |
@@ -30,6 +32,7 @@ config load (they never gate); `*_alpha` values must be finite numbers
 | `min_win_rate` | the `pairwise` judge | fraction of cases won vs the `--baseline` run | `win_rate >= min_win_rate` |
 | `max_error_rate` | any judge | fraction of cases where the judge errored | `error_rate <= max_error_rate` |
 | `min_alpha` | LLM/agent judges run with [`samples > 1`](judges.md) | single-judge self-consistency alpha (upper bound on inter-rater reliability) over the case × sample rating matrix | `alpha >= min_alpha`, or all ratings identical (see below) |
+| `min_human_agreement` | any calibrated judge (deterministic `check` judges included) | judge-vs-human agreement (Cohen's kappa / Krippendorff's alpha) merged by `score.py calibration` from `/eval-review` verdicts | `value >= min_human_agreement`, perfect agreement, or the judge was never calibrated (see below) |
 
 `max_error_rate` is the coverage gate. `min_mean`, `min_pass_rate` and
 `min_win_rate` are computed over the cases that produced a value, so a judge
@@ -69,6 +72,43 @@ for tentative conclusions); 0.70 and 0.80 are author-proposed.
     `min_alpha` (explicit or tier-injected) is **skipped with a stderr
     notice** on those execution paths — it never regresses a containerized
     run. Score the run locally to evaluate the reliability gate.
+
+## `min_human_agreement` — the calibration gate
+
+`min_human_agreement` gates the **judge-vs-human agreement** written by
+`score.py calibration`: `/eval-review` (optionally) collects the reviewer's
+own verdict per judge per case, and the calibration subcommand joins those
+verdicts against the reduced per-case judge values, computes Cohen's kappa
+(bool judges) or Krippendorff's alpha (ordinal/interval scales), and merges
+a `human_agreement` block into the judge's `summary.yaml` entry — labeled
+*"agreement with a single human reviewer (n=X)"*, never validated accuracy.
+Below 5 joined pairs no coefficient is computed; the block carries the raw
+(uncorrected) agreement table instead. Deterministic `check` judges are
+first-class calibration targets.
+
+Calibration is **post-hoc**, so the gate has three states:
+
+1. **Breach** — the coefficient is computed and below the bound →
+   regression. A calibrated-but-unavailable coefficient (below the floor,
+   undefined) also regresses, matching the other keys.
+2. **Perfect agreement** — judge and reviewer agree everywhere with zero
+   variance (`reason_code: perfect_agreement`, the coefficient is 0/0) →
+   **passes**.
+3. **Never calibrated** — the judge row has no `human_agreement` block and
+   the summary has no `human_calibration` block → **silently skipped**.
+   `score.py judges` gates at scoring time, before any review can exist,
+   and Harbor/EvalHub aggregates never carry the key — the gate only
+   activates once you calibrate.
+
+!!! warning "Stale calibration is a regression"
+    Re-running `score.py judges` rewrites `summary['judges']` wholesale and
+    **drops** every `human_agreement` block (new judge values invalidate old
+    calibration; a note is printed). The run-level `human_calibration` block
+    survives — and a judge it lists whose row lost `human_agreement` is
+    reported as *"stale calibration — re-run score.py calibration"*, a loud
+    regression rather than a silent skip. The verdicts in `review.yaml`
+    survive re-scoring, so re-running `score.py calibration` restores the
+    gate.
 
 ## Match the key to the judge's value type
 

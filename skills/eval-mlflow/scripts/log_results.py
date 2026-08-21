@@ -47,15 +47,16 @@ from agent_eval.harbor.results import _extract_transcript_metrics
 
 
 def _detect_regressions(judges, thresholds, pairwise=None, include_irr=True,
-                        simulator=None):
+                        simulator=None, human_calibration=None):
     """score.py's regression detector, loaded by path.
 
     The judge engine lives with the eval-run skill rather than in the
     agent_eval package — same approach as agent_eval/harbor/reward.py. Raises
     if it cannot be loaded; the caller tags the run "unknown" rather than
     claiming a clean one. The reliability kwargs are forwarded verbatim
-    (``pairwise``/``simulator`` are reserved pass-throughs) so the MLflow tag
-    agrees with the CLI exit code and the report.
+    (``pairwise``/``simulator`` are reserved pass-throughs;
+    ``human_calibration`` feeds the ``min_human_agreement`` stale-calibration
+    check) so the MLflow tag agrees with the CLI exit code and the report.
     """
     import importlib.util
     root = Path(__file__).resolve().parent.parent.parent.parent
@@ -68,7 +69,8 @@ def _detect_regressions(judges, thresholds, pairwise=None, include_irr=True,
     spec.loader.exec_module(mod)
     return mod.detect_regressions(judges, thresholds, pairwise=pairwise,
                                   include_irr=include_irr,
-                                  simulator=simulator)
+                                  simulator=simulator,
+                                  human_calibration=human_calibration)
 
 
 def _resolve_skill(config: EvalConfig) -> str | None:
@@ -346,7 +348,8 @@ def main():
                     "yes" if _detect_regressions(
                         judges, eff_thresholds,
                         pairwise=summary.get("pairwise"),
-                        include_irr=include_irr)
+                        include_irr=include_irr,
+                        human_calibration=summary.get("human_calibration"))
                     else "no")
             except Exception as exc:
                 print(f"Warning: could not evaluate thresholds: {exc}",

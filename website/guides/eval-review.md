@@ -28,6 +28,7 @@ it: *"how did my skill do"*, *"what failed"*, *"look at the eval results"*,
 | `--run-id <id>` | **yes** | — | Which eval run to review |
 | `--config <path>` | no | auto-discover | Path to the eval config |
 | `--cases <name> [<name> ...]` | no | all | Exact case directory names to review |
+| `--calibrate` | no | off | Collect per-judge human verdicts **before** any judge scores or report content are shown (blind mode) |
 
 !!! note "Config auto-discovery"
     With no `--config`, the skill discovers configs automatically. One config is
@@ -94,18 +95,63 @@ Feedback is persisted so it survives the conversation and can be consumed by
 run_id: "<id>"
 reviewed_cases: 3
 feedback_cases: 2
-reviewer: "human"
+reviewer: "human"          # legacy coarse source field, kept
+reviewer_id: "antonin"     # optional — who reviewed; default "human"
+blind: false               # optional, self-reported — true only if verdicts
+                           # preceded any judge-score exposure
+selection: failures        # optional — all | failures | manual
 feedback:
   case-001-simple-null-pointer-fix: "User's comment about this case"
   case-002-complex-refactor: "Another comment"
   case-003-edge-case: ""  # empty = acceptable
+verdicts:                  # optional — the reviewer's own verdict per judge,
+  case-001-simple-null-pointer-fix:   # on each judge's own scale
+    format_check: true
+    output_quality: 4
 ```
 
 !!! warning "Keys must match case directory names exactly"
-    The `feedback` keys are the **exact case directory names** — the same values
-    accepted by `--cases`. `/eval-optimize` looks up which cases had human feedback by
-    these keys, so a mismatch silently drops the feedback. The file is written
-    directly (not via `state.py`, which produces a different format).
+    The `feedback` (and `verdicts`) keys are the **exact case directory names** —
+    the same values accepted by `--cases`. `/eval-optimize` looks up which cases had
+    human feedback by these keys, and `score.py calibration` joins verdicts on them,
+    so a mismatch silently drops the entry. The file is written directly (not via
+    `state.py`, which produces a different format).
+
+## Calibration — anchor your judges to a human
+
+The optional calibration sub-step turns a review into a **criterion check on the
+judges themselves**. With `--calibrate` (or when you accept the offer at
+walkthrough start), the skill elicits *your* verdict for each judge — on that
+judge's own scale, deterministic `check` judges included — **before** revealing the
+judge's score and rationale, and records them under `verdicts`. Afterwards:
+
+```bash
+python3 skills/eval-run/scripts/score.py calibration --run-id <id> --config eval.yaml
+```
+
+joins the verdicts against the per-case judge results and merges a
+`human_agreement` block (Cohen's kappa for bool judges, Krippendorff's alpha for
+ordinal/interval scales) into each judge's `summary.yaml` entry, plus a run-level
+`human_calibration` block. A
+[`min_human_agreement` threshold](../reference/config/thresholds.md) then gates CI
+on it.
+
+Semantics to be aware of:
+
+- Every coefficient is labeled **"agreement with a single human reviewer (n=X)"**
+  — one reviewer is a criterion anchor, not a rater pool; there is no reliability
+  estimate on the human anchor itself.
+- **Below 5 joined pairs no coefficient is computed** — the raw (uncorrected)
+  agreement table is stored and rendered instead; a configured gate then
+  regresses until you review more cases.
+- **`blind` is self-reported** — the elicit-before-reveal order is prose-enforced,
+  and `/eval-run` auto-opens the report, so a review right after a run is
+  typically not blind. The report renders "reviewer-reported blind: yes/no".
+- Reviewing **only failures** (`selection: failures`) prevalence-biases kappa —
+  the report carries that caveat.
+- **Re-scoring invalidates calibration**: `score.py judges` rewrites the judge
+  aggregates and drops `human_agreement`; re-run `score.py calibration` (your
+  verdicts in `review.yaml` survive).
 
 ## Analyze patterns, then propose changes
 

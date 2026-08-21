@@ -141,6 +141,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/attach_feedback.py \
 This pushes:
 - **Judge feedback** (from `summary.yaml`): `source_type=CODE`, named `{case_id}/{judge_name}`
 - **Human feedback** (from `review.yaml`, if it exists): `source_type=HUMAN`, named `{case_id}/human_review`
+- **Calibration verdicts** (from `review.yaml` `verdicts`, if present): `source_type=HUMAN`, named `{case_id}/{judge_name}/human`, `source_id` = the review's `reviewer_id` — joinable against the CODE-source `{case_id}/{judge_name}` assessment for MLflow-side judge-vs-human queries
 
 If no traces are found (tracing not enabled), the script reports 0 and succeeds — tracing is optional.
 

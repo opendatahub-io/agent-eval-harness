@@ -381,6 +381,9 @@ thresholds:
     # min_mean: 3.5        # for numeric judges (llm)
     # max_error_rate: 0.2  # optional coverage gate: fail if >20% of cases errored.
     #                      # min_mean is computed over the survivors only.
+    # min_human_agreement: 0.6  # judge-vs-human kappa/alpha, merged by
+    #                      # `score.py calibration` after /eval-review verdicts.
+    #                      # Never regresses until the judge has been calibrated.
 
 # Reward composition (OPTIONAL) — collapse per-judge results into a single
 # scalar in [0, 1] for RL training (GRPO). Only needed when training; the

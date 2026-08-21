@@ -9,6 +9,7 @@ Usage:
     python3 ${CLAUDE_SKILL_DIR}/scripts/score.py judges --run-id <id> --config eval.yaml
     python3 ${CLAUDE_SKILL_DIR}/scripts/score.py pairwise --run-id <id> --baseline <id> --config eval.yaml
     python3 ${CLAUDE_SKILL_DIR}/scripts/score.py regression --run-id <id> --config eval.yaml
+    python3 ${CLAUDE_SKILL_DIR}/scripts/score.py calibration --run-id <id> --config eval.yaml
 """
 
 import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
@@ -38,8 +39,9 @@ from agent_eval.config import (
 )
 from agent_eval.reliability import (
     INTERVAL, NOMINAL, ORDINAL,
-    REASON_PERFECT_AGREEMENT,
-    bootstrap_ci, fleiss_kappa, krippendorff_alpha, select_irr_metric,
+    REASON_INSUFFICIENT_DATA, REASON_PERFECT_AGREEMENT,
+    bootstrap_ci, cohen_kappa, fleiss_kappa, krippendorff_alpha,
+    select_irr_metric,
 )
 
 # Mandatory label for every self-consistency coefficient this file emits:
@@ -2690,6 +2692,207 @@ def _extract_judge_json(text):
 
 
 # ---------------------------------------------------------------------------
+# Human calibration — judge-vs-human agreement from /eval-review verdicts
+# ---------------------------------------------------------------------------
+
+#: Mandatory label for every judge-vs-human coefficient this file emits: one
+#: reviewer is a criterion anchor, not a rater pool — this is agreement with
+#: a single human, never "validated accuracy".
+HUMAN_AGREEMENT_LABEL = "agreement with a single human reviewer (n={n})"
+
+#: Below this many joined pairs no coefficient is computed — the raw
+#: (uncorrected) agreement table is emitted instead. Overridable per
+#: invocation via ``calibration --floor``.
+CALIBRATION_FLOOR = 5
+
+
+def _load_review_verdicts(run_dir):
+    """Load review.yaml and its ``verdicts`` block, validated loudly.
+
+    review.yaml is agent-written YAML: a missing file or ``verdicts`` key
+    exits 1 with a hint; a structurally wrong verdicts block (not a mapping)
+    exits 1 with the expected shape. Individual malformed entries are the
+    join's job to skip (with a stderr warning) — never a crash.
+    """
+    review_path = run_dir / "review.yaml"
+    if not review_path.exists():
+        print(f"No review.yaml in {run_dir} — run /eval-review and collect "
+              "calibration verdicts first", file=sys.stderr)
+        sys.exit(1)
+    with open(review_path) as f:
+        review = yaml.safe_load(f) or {}
+    if not isinstance(review, dict):
+        print(f"review.yaml is not a mapping: {review_path}", file=sys.stderr)
+        sys.exit(1)
+    verdicts = review.get("verdicts")
+    if verdicts is None:
+        print("review.yaml has no 'verdicts' block — run /eval-review and "
+              "collect calibration verdicts first", file=sys.stderr)
+        sys.exit(1)
+    if not isinstance(verdicts, dict):
+        print("review.yaml 'verdicts' must be a mapping of "
+              "{case_dir: {judge_name: value}}; got "
+              f"{type(verdicts).__name__}", file=sys.stderr)
+        sys.exit(1)
+    return review, verdicts
+
+
+def _calibration_join(per_case, verdicts, judge_configs):
+    """Join human verdicts against the REDUCED per-case judge values.
+
+    Pure and unit-testable. Returns ``{judge_name: {"pairs": [(case_id,
+    human, judge)], "excluded": {skipped, errored, malformed, off_scale,
+    unmatched}}}``. The comparison value is ``per_case[case][judge]['value']``
+    — the ``_aggregate_samples`` reduction (majority-vote bool / median_low
+    numeric) — never ``stability.values``. Every exclusion shrinks n toward
+    the calibration floor and is counted + warned to stderr; nothing here
+    crashes on agent-written YAML.
+    """
+    joined = {}
+
+    def _bucket(judge_name):
+        return joined.setdefault(judge_name, {
+            "pairs": [],
+            "excluded": {"skipped": 0, "errored": 0, "malformed": 0,
+                         "off_scale": 0, "unmatched": 0},
+        })
+
+    def _warn(msg):
+        print(f"calibration: {msg}", file=sys.stderr)
+
+    for case_id in sorted(verdicts, key=str):
+        jmap = verdicts[case_id]
+        if not isinstance(jmap, dict):
+            _warn(f"case {case_id!r}: verdict entry is not a mapping "
+                  f"(got {type(jmap).__name__}) — skipped")
+            continue
+        case_row = per_case.get(case_id)
+        if not isinstance(case_row, dict):
+            for judge_name in jmap:
+                if judge_name in judge_configs:
+                    _bucket(judge_name)["excluded"]["unmatched"] += 1
+            _warn(f"case {case_id!r} not found in summary per_case — skipped")
+            continue
+        for judge_name, human in jmap.items():
+            if judge_name not in judge_configs:
+                _warn(f"case {case_id!r}: unknown judge {judge_name!r} "
+                      "(not in eval.yaml) — skipped")
+                continue
+            bucket = _bucket(judge_name)
+            rec = case_row.get(judge_name)
+            if not isinstance(rec, dict):
+                bucket["excluded"]["unmatched"] += 1
+                _warn(f"case {case_id!r}: judge {judge_name!r} has no "
+                      "result in per_case — skipped")
+                continue
+            jv = rec.get("value")
+            if jv is None:
+                # if:-skipped records carry no 'error' key; errored ones do.
+                kind = "errored" if rec.get("error") else "skipped"
+                bucket["excluded"][kind] += 1
+                _warn(f"case {case_id!r}/{judge_name}: judge value is null "
+                      f"({kind}) — excluded")
+                continue
+            # Type harmonization: the human verdict must live on the judge's
+            # own scale. Bool verdicts pair with bool values; numeric with
+            # numeric (bool is NOT a number here — the bool-is-int trap).
+            if isinstance(jv, bool):
+                if not isinstance(human, bool):
+                    bucket["excluded"]["malformed"] += 1
+                    _warn(f"case {case_id!r}/{judge_name}: bool judge but "
+                          f"human verdict {human!r} is not a bool — excluded")
+                    continue
+            elif isinstance(jv, (int, float)):
+                if isinstance(human, bool) or not isinstance(human,
+                                                             (int, float)):
+                    bucket["excluded"]["malformed"] += 1
+                    _warn(f"case {case_id!r}/{judge_name}: numeric judge but "
+                          f"human verdict {human!r} is not numeric — excluded")
+                    continue
+                jc = judge_configs.get(judge_name)
+                bounds = getattr(jc, "score_range", None) if jc else None
+                if bounds and not (bounds[0] <= human <= bounds[1]):
+                    bucket["excluded"]["off_scale"] += 1
+                    _warn(f"case {case_id!r}/{judge_name}: human verdict "
+                          f"{human!r} outside declared score_range "
+                          f"{list(bounds)} — excluded, never clamped")
+                    continue
+            bucket["pairs"].append((case_id, human, jv))
+    return joined
+
+
+def _calibration_scale(judge_config, pairs):
+    """Measurement level of the human-vs-judge join for one judge.
+
+    ``feedback_type: bool`` or all-bool joined values -> nominal; otherwise
+    the judge's declared scale via ``_irr_level`` (integer bounds ->
+    ordinal, fractional -> interval), downgraded to nominal when the joined
+    values are not numeric.
+    """
+    values = [v for _, h, j in pairs for v in (h, j)]
+    if values and all(isinstance(v, bool) for v in values):
+        return NOMINAL
+    level = _irr_level(judge_config)
+    if level != NOMINAL and any(
+            isinstance(v, bool) or not isinstance(v, (int, float))
+            for v in values):
+        return NOMINAL
+    return level
+
+
+def compute_human_agreement(pairs, scale, floor=CALIBRATION_FLOOR):
+    """Canonical ``human_agreement`` coefficient block for one judge.
+
+    Metric selection is structural (``select_irr_metric``): exactly 2 fixed
+    raters (the judge and the human) on a complete-by-construction joined
+    matrix — Cohen's kappa on nominal, Krippendorff's alpha on
+    ordinal/interval. Below ``floor`` joined pairs NO coefficient is
+    computed: the block carries the raw (chance-uncorrected) agreement plus
+    the per-case pairs table instead, with ``reason_code:
+    insufficient_data``. Shape is the canonical coefficient block
+    ``{metric, level, value, reason_code, reason, n_units, label,
+    rationale}`` plus ``agreement_raw`` (uncorrected exact-match proportion)
+    and ``pairs``.
+    """
+    n = len(pairs)
+    metric, rationale = select_irr_metric(
+        n_raters=2, varying_identity=False, complete_matrix=True, scale=scale)
+    matches = sum(1 for _, h, j in pairs if h == j)
+    agreement_raw = round(matches / n, 3) if n else None
+    block = {
+        "metric": metric,
+        "level": scale,
+        "value": None,
+        "reason_code": None,
+        "reason": None,
+        "n_units": n,
+        "label": HUMAN_AGREEMENT_LABEL.format(n=n),
+        "rationale": rationale,
+        # Exact-match proportion: chance-uncorrected agreement, reported
+        # alongside (never instead of) the coefficient.
+        "agreement_raw": agreement_raw,
+        "pairs": [{"case": c, "human": h, "judge": j, "match": h == j}
+                  for c, h, j in pairs],
+    }
+    if n < floor:
+        block["reason_code"] = REASON_INSUFFICIENT_DATA
+        block["reason"] = (
+            f"n={n} joined pairs, below the calibration floor ({floor}) — "
+            "no coefficient computed; raw (uncorrected) agreement table only")
+        return block
+    if metric == "cohen_kappa":
+        result = cohen_kappa([h for _, h, _ in pairs],
+                             [j for _, _, j in pairs])
+    else:
+        result = krippendorff_alpha([[h, j] for _, h, j in pairs],
+                                    level=scale)
+    block["value"] = result.value
+    block["reason_code"] = result.reason_code
+    block["reason"] = result.reason
+    return block
+
+
+# ---------------------------------------------------------------------------
 # Regression detection
 # ---------------------------------------------------------------------------
 
@@ -2718,7 +2921,8 @@ def _unavailable_reason(current, metric, kind):
 
 
 def detect_regressions(current_results, thresholds, baseline_results=None, *,
-                       pairwise=None, include_irr=True, simulator=None):
+                       pairwise=None, include_irr=True, simulator=None,
+                       human_calibration=None):
     """Evaluate per-judge thresholds against aggregated results.
 
     ``thresholds`` should come from ``EvalConfig.effective_thresholds()`` on
@@ -2726,6 +2930,13 @@ def detect_regressions(current_results, thresholds, baseline_results=None, *,
     from raw ``config.thresholds`` on the Harbor/EvalHub paths (with
     ``include_irr=False``, since those aggregations carry no sampling
     stability data).
+
+    ``human_calibration`` is the summary's run-level ``human_calibration``
+    block (written by ``score.py calibration``), consumed only by the
+    ``min_human_agreement`` gate's stale-calibration check — a judge row that
+    lacks ``human_agreement`` while this block lists the judge was calibrated
+    once and then re-scored (``cmd_judges`` wholesale-rewrites
+    ``summary['judges']``).
 
     ``pairwise`` and ``simulator`` are accepted but RESERVED: ``pairwise``
     is the summary's pairwise block for a future pairwise verdict-alpha gate
@@ -2817,6 +3028,58 @@ def detect_regressions(current_results, thresholds, baseline_results=None, *,
                     "deterministic, or produced no IRR data")
                 regressions.append(Regression(
                     judge_name, "alpha", f">= {t}", "n/a", detail))
+        # min_human_agreement gates the post-hoc judge-vs-human calibration
+        # merged by `score.py calibration`. THREE-STATE semantics, with one
+        # deliberate deviation from the configured-but-unavailable pattern:
+        #   1. human_agreement value present and < threshold -> regression.
+        #   2. value None with reason_code 'perfect_agreement' -> PASSES
+        #      (healthy degenerate: judge and reviewer point-mass on one
+        #      identical category, the coefficient is 0/0).
+        #   3. judge row LACKS human_agreement entirely:
+        #      - summary has NO human_calibration block -> SILENT skip.
+        #        Calibration is post-hoc: cmd_judges gates at scoring time
+        #        before any review can exist, and Harbor/EvalHub aggregates
+        #        never carry the key. (include_irr=False does NOT govern this
+        #        gate — it is not sampling-derived; the missing key is the
+        #        scoping mechanism on those paths.)
+        #      - human_calibration EXISTS and lists this judge -> the
+        #        calibration was dropped by a re-score (cmd_judges rewrites
+        #        summary['judges'] wholesale): loud stale-calibration
+        #        regression.
+        #   Any other unavailable state (insufficient_data below the floor,
+        #   undefined) -> regression (configured-but-unavailable).
+        if "min_human_agreement" in threshold:
+            t = threshold["min_human_agreement"]
+            ha = current.get("human_agreement")
+            if not isinstance(ha, dict):
+                calibrated = ((human_calibration or {}).get("judges")
+                              if isinstance(human_calibration, dict)
+                              else None) or []
+                if judge_name in calibrated:
+                    regressions.append(Regression(
+                        judge_name, "human_agreement", f">= {t}", "n/a",
+                        "stale calibration — summary['judges'] was rewritten "
+                        "after calibration; re-run score.py calibration"))
+                # else: never calibrated -> silent skip (post-hoc gate)
+            else:
+                value = ha.get("value")
+                if isinstance(value, (int, float)) and not isinstance(value,
+                                                                      bool):
+                    if value < t:
+                        regressions.append(Regression(
+                            judge_name, "human_agreement", f">= {t}",
+                            f"{value:.3f}",
+                            f"{ha.get('metric', '?')} vs a single human "
+                            f"reviewer (n={ha.get('n_units', '?')})"))
+                elif ha.get("reason_code") == REASON_PERFECT_AGREEMENT:
+                    pass  # degenerate PASS: zero variance, gate satisfied
+                else:
+                    detail = ha.get("reason") or (
+                        "human agreement unavailable — re-run "
+                        "score.py calibration")
+                    regressions.append(Regression(
+                        judge_name, "human_agreement", f">= {t}", "n/a",
+                        detail))
         if "min_win_rate" in threshold:
             win_rate = current.get("win_rate")
             if win_rate is None:
@@ -3012,10 +3275,25 @@ def cmd_judges(args):
         elif mean is not None:
             print(f"  {name}: mean={mean:.2f}{st_note}")
 
+    # A prior `score.py calibration` merged human_agreement blocks into
+    # summary['judges']; rewriting that key drops them (intended: new judge
+    # values invalidate old calibration). The surviving human_calibration
+    # block is what the stale-calibration gate keys on.
+    summary_path = runs_dir / args.run_id / "summary.yaml"
+    prior_human_calibration = None
+    if summary_path.exists():
+        with open(summary_path) as f:
+            prior_human_calibration = (yaml.safe_load(f) or {}).get(
+                "human_calibration")
+
     _merge_summary(args.run_id, "judges",
                    _strip_judge_values(judge_results.get("aggregated", {})),
                    runs_dir)
     _merge_summary(args.run_id, "per_case", judge_results.get("per_case", {}), runs_dir)
+
+    if prior_human_calibration:
+        print("NOTE: re-scoring invalidated judge calibration — re-run: "
+              "score.py calibration", file=sys.stderr)
 
     # Workload-agnostic run metrics for cross-run / cross-model comparison
     rr_path = runs_dir / args.run_id / "run_result.json"
@@ -3050,7 +3328,9 @@ def cmd_judges(args):
                       "(only 0.67 is literature-backed; 0.70/0.80 are "
                       "author-proposed)", file=sys.stderr)
         current_agg = judge_results.get("aggregated", {})
-        regressions = detect_regressions(current_agg, eff_thresholds)
+        regressions = detect_regressions(
+            current_agg, eff_thresholds,
+            human_calibration=prior_human_calibration)
         if regressions:
             has_regressions = True
             print(f"\n  REGRESSIONS: {len(regressions)} detected")
@@ -3167,7 +3447,8 @@ def cmd_regression(args):
 
     regressions = detect_regressions(
         current_agg, config.effective_thresholds(), baseline_agg,
-        pairwise=summary.get("pairwise"))
+        pairwise=summary.get("pairwise"),
+        human_calibration=summary.get("human_calibration"))
     if regressions:
         print(f"REGRESSIONS: {len(regressions)} detected")
         for r in regressions:
@@ -3176,6 +3457,118 @@ def cmd_regression(args):
         sys.exit(1)
     else:
         print("REGRESSIONS: 0")
+
+
+def cmd_calibration(args):
+    """Judge-vs-human calibration from /eval-review verdicts.
+
+    Joins review.yaml verdicts against the reduced per-case judge values,
+    computes the structurally selected coefficient per judge, and persists
+    BOTH targets: per-judge ``human_agreement`` merged into
+    ``summary['judges'][<name>]`` (what the gate and report read) and the
+    run-level ``summary['human_calibration']`` block. Exits 1 iff a
+    configured ``min_human_agreement`` is breached.
+    """
+    from datetime import datetime, timezone
+
+    config = EvalConfig.from_yaml(args.config)
+    runs_dir = _get_runs_dir(config.eval_name())
+    run_dir = runs_dir / args.run_id
+    summary_path = run_dir / "summary.yaml"
+    if not summary_path.exists():
+        print("No summary found. Run judges first.", file=sys.stderr)
+        sys.exit(1)
+    with open(summary_path) as f:
+        summary = yaml.safe_load(f) or {}
+    per_case = summary.get("per_case") or {}
+    judges_block = summary.get("judges") or {}
+    if not per_case or not judges_block:
+        print("summary.yaml has no judge results. Run judges first.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    review, verdicts = _load_review_verdicts(run_dir)
+    judge_configs = {jc.name: jc for jc in config.judges}
+    joined = _calibration_join(per_case, verdicts, judge_configs)
+
+    floor = args.floor if getattr(args, "floor", None) else CALIBRATION_FLOOR
+    calibrated = []
+    for judge_name in sorted(joined):
+        entry = joined[judge_name]
+        pairs = entry["pairs"]
+        if not pairs and not any(entry["excluded"].values()):
+            continue
+        scale = _calibration_scale(judge_configs.get(judge_name), pairs)
+        block = compute_human_agreement(pairs, scale, floor=floor)
+        excluded = {k: v for k, v in entry["excluded"].items() if v}
+        if excluded:
+            block["excluded"] = excluded
+        judges_block.setdefault(judge_name, {})["human_agreement"] = block
+        calibrated.append(judge_name)
+
+        value = block.get("value")
+        raw = block.get("agreement_raw")
+        raw_note = (f", uncorrected agreement {raw:.3f}"
+                    if isinstance(raw, (int, float)) else "")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            print(f"  {judge_name}: {block['metric']}={value:.3f} "
+                  f"({scale}, n={block['n_units']}{raw_note}) — "
+                  f"{block['label']}")
+        else:
+            print(f"  {judge_name}: no coefficient — "
+                  f"{block.get('reason') or block.get('reason_code')}"
+                  f"{raw_note} — {block['label']}")
+            for p in block["pairs"]:
+                mark = "match" if p["match"] else "MISMATCH"
+                print(f"    {p['case']}: human={p['human']} "
+                      f"judge={p['judge']} ({mark})")
+
+    if not calibrated:
+        print("calibration: no verdicts joined any configured judge — "
+              "nothing to persist", file=sys.stderr)
+        sys.exit(1)
+
+    human_calibration = {
+        "reviewer_id": str(review.get("reviewer_id")
+                           or review.get("reviewer") or "human"),
+        # Self-reported by the reviewer (prose-enforced in /eval-review),
+        # conservative default: not blind.
+        "blind": bool(review.get("blind", False)),
+        "selection": str(review.get("selection") or "unspecified"),
+        "n_reviewed": sum(1 for v in verdicts.values()
+                          if isinstance(v, dict)),
+        "n_total_cases": len(per_case),
+        "judges": calibrated,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _merge_summary(args.run_id, "judges", judges_block, runs_dir)
+    _merge_summary(args.run_id, "human_calibration", human_calibration,
+                   runs_dir)
+    print(f"CALIBRATION: {len(calibrated)} judge(s) calibrated against "
+          f"reviewer '{human_calibration['reviewer_id']}' "
+          f"({human_calibration['n_reviewed']}/"
+          f"{human_calibration['n_total_cases']} cases reviewed; "
+          f"reviewer-reported blind: "
+          f"{'yes' if human_calibration['blind'] else 'no'})")
+
+    # Gate ONLY the min_human_agreement subset here (mirrors cmd_judges'
+    # scoring-time gate; the other keys re-fire on their own paths and must
+    # not exit this subcommand).
+    subset = {}
+    for judge_name, entry in (config.effective_thresholds() or {}).items():
+        if isinstance(entry, dict) and "min_human_agreement" in entry:
+            subset[judge_name] = {
+                "min_human_agreement": entry["min_human_agreement"]}
+    if subset:
+        regressions = detect_regressions(judges_block, subset,
+                                         human_calibration=human_calibration)
+        if regressions:
+            print(f"\n  REGRESSIONS: {len(regressions)} detected")
+            for r in regressions:
+                print(f"    [{r.judge_name}] {r.metric}: "
+                      f"{r.baseline_value} -> {r.current_value}")
+            sys.exit(1)
+        print("\n  REGRESSIONS: 0")
 
 
 def main():
@@ -3223,6 +3616,24 @@ def main():
     reg_p.add_argument("--config", required=True)
     reg_p.add_argument("--baseline", default=None)
 
+    # calibration — judge-vs-human agreement from /eval-review verdicts
+    _cal_help = ("judge-vs-human calibration (see inputs.tools calibration "
+                 "for simulator calibration — a different feature)")
+    cal_p = subparsers.add_parser(
+        "calibration", help=_cal_help,
+        description=_cal_help + ": joins review.yaml verdicts against the "
+        "reduced per-case judge values, computes Cohen's kappa / "
+        "Krippendorff's alpha per judge, and merges human_agreement into "
+        "summary['judges'] plus a run-level human_calibration block. Below "
+        "--floor joined pairs no coefficient is computed — the raw "
+        "(uncorrected) agreement table is emitted instead.")
+    cal_p.add_argument("--run-id", required=True)
+    cal_p.add_argument("--config", required=True)
+    cal_p.add_argument("--floor", type=int, default=CALIBRATION_FLOOR,
+                       help="Minimum joined pairs before a coefficient is "
+                            "computed (below: raw agreement table only; "
+                            f"default {CALIBRATION_FLOOR})")
+
     args = parser.parse_args()
 
     # Validate run_id / baseline to prevent path traversal (CWE-22)
@@ -3231,7 +3642,8 @@ def main():
         _validate_path_segment(args.baseline, "--baseline")
 
     {"judges": cmd_judges, "pairwise": cmd_pairwise,
-     "regression": cmd_regression}[args.command](args)
+     "regression": cmd_regression,
+     "calibration": cmd_calibration}[args.command](args)
 
 
 if __name__ == "__main__":

@@ -144,6 +144,7 @@ Finds the run's execution traces and attaches feedback:
 | --- | --- | --- | --- |
 | Judge results | `summary.yaml` | `CODE` | `{case_id}/{judge_name}` |
 | Human review | `review.yaml` (if present) | `HUMAN` | `{case_id}/human_review` |
+| Calibration verdicts | `review.yaml` `verdicts` (if present) | `HUMAN` | `{case_id}/{judge_name}/human` (`source_id` = `reviewer_id`) |
 
 Use `--source judge`, `--source human`, or `--source all` to select what to push
 (`all` is used by the `all` action).

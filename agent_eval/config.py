@@ -652,9 +652,13 @@ CONSEQUENCE_TIER_MIN_ALPHA = {
 }
 
 #: Recognized per-judge ``thresholds`` keys. Unknown keys warn at config load
-#: (never error); regression detection ignores them.
+#: (never error); regression detection ignores them. ``min_human_agreement``
+#: gates the post-hoc judge-vs-human calibration coefficient merged by
+#: ``score.py calibration`` (its value validation rides the generic
+#: ``*_agreement`` rule in ``_parse_thresholds``).
 THRESHOLD_KEYS = frozenset({
     "min_mean", "min_pass_rate", "min_win_rate", "max_error_rate", "min_alpha",
+    "min_human_agreement",
 })
 
 
