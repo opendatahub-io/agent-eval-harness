@@ -7,6 +7,7 @@ subprocess as the "live executor" rather than mocking process liveness.
 import ast
 import importlib.util
 import io
+import os
 import json
 import subprocess
 import sys
@@ -166,10 +167,15 @@ def test_main_escape_hatch(tmp_path, monkeypatch, capsys, live_proc):
     _make_run(runs, "run-1", live_proc.pid, ct)
     monkeypatch.setenv("AGENT_EVAL_RUNS_DIR", str(runs))
 
-    # Pre-seed the first-block timestamp well past the ceiling.
+    # Pre-seed the first-block timestamp well past the ceiling, against the
+    # same run set the hook will see (a differing set resets the timer).
     state_path = guard._state_path("s1", str(tmp_path))
     assert state_path is not None
-    Path(state_path).write_text(json.dumps({"first_block": time.time() - 7200}))
+    runs_key = sorted(guard._live_eval_runs(str(tmp_path)))
+    assert runs_key, "fixture must present a live run"
+    Path(state_path).write_text(
+        json.dumps({"first_block": time.time() - 7200, "runs": runs_key})
+    )
 
     monkeypatch.setattr(
         sys, "stdin",
@@ -180,6 +186,115 @@ def test_main_escape_hatch(tmp_path, monkeypatch, capsys, live_proc):
     assert rc == 0
     assert captured.out == ""  # stop allowed
     assert "escape hatch" in captured.err
+
+
+def test_stale_pidfile_ignored(tmp_path, monkeypatch, live_proc):
+    """A pidfile older than the age bound is abandoned even if the pid lives.
+
+    Backstops the platforms where no create_time marker is obtainable and the
+    pid-reuse check is therefore inert.
+    """
+    runs = tmp_path / "eval" / "runs"
+    ct = guard._process_create_time(live_proc.pid)
+    run_dir = _make_run(runs, "run-1", live_proc.pid, ct)
+    monkeypatch.setenv("AGENT_EVAL_RUNS_DIR", str(runs))
+    assert guard._live_eval_runs(str(tmp_path))  # fresh -> live
+
+    old = time.time() - (guard.MAX_PIDFILE_AGE_S + 3600)
+    os.utime(run_dir / "execute.pid", (old, old))
+    assert guard._live_eval_runs(str(tmp_path)) == []
+
+
+def test_pidfile_found_at_nested_depths(tmp_path, monkeypatch, live_proc):
+    """Bounded-depth globs must still cover the real layout
+    (<runs>/<eval-name>/<run-id>/execute.pid) and shallower variants."""
+    runs = tmp_path / "eval" / "runs"
+    ct = guard._process_create_time(live_proc.pid)
+    monkeypatch.setenv("AGENT_EVAL_RUNS_DIR", str(runs))
+    expected = set()
+    for name in ("run-1", "my-eval/run-2", "a/b/run-3"):
+        expected.add(str(_make_run(runs, name, live_proc.pid, ct)))
+
+    assert set(guard._live_eval_runs(str(tmp_path))) == expected
+
+
+def test_no_recursive_glob_walk(tmp_path, monkeypatch, live_proc):
+    """The scan must not walk deep artifact trees under a run dir."""
+    runs = tmp_path / "eval" / "runs"
+    ct = guard._process_create_time(live_proc.pid)
+    run_dir = _make_run(runs, "my-eval/run-1", live_proc.pid, ct)
+    # A decoy far below the bounded depth: a recursive walk would surface it.
+    deep = run_dir / "cases" / "case-1" / "subagents" / "x" / "y"
+    deep.mkdir(parents=True)
+    (deep / "execute.pid").write_text(json.dumps({"pid": live_proc.pid,
+                                                  "create_time": ct}))
+    monkeypatch.setenv("AGENT_EVAL_RUNS_DIR", str(runs))
+
+    assert guard._live_eval_runs(str(tmp_path)) == [str(run_dir)]
+
+
+def test_escape_hatch_timer_resets_on_new_run(tmp_path, monkeypatch):
+    """A chained eval must not inherit the previous run's first_block."""
+    state = tmp_path / "state.json"
+    old = time.time() - 7200
+    assert guard._first_block_ts(str(state), old, ["/runs/run-1"]) == old
+    # Same run set -> timer preserved.
+    assert guard._first_block_ts(str(state), time.time(), ["/runs/run-1"]) == old
+    # Different run set -> timer restarts.
+    now = time.time()
+    assert guard._first_block_ts(str(state), now, ["/runs/run-2"]) == now
+
+
+def test_pidfile_write_precedes_heavy_imports():
+    """The early write must stay ahead of the agent_eval imports.
+
+    The window this closes is the race the guard exists for: the orchestrator
+    can end its turn immediately after launching execute.py, and the hook is
+    blind until execute.pid lands. Module import dominates startup, so letting
+    the write drift below those imports would silently reopen the hole.
+    """
+    tree = ast.parse(EXECUTE_PATH.read_text())
+    early_call = min(
+        (n.lineno for n in ast.walk(tree)
+         if isinstance(n, ast.Call)
+         and isinstance(n.func, ast.Name)
+         and n.func.id == "_early_pidfile"),
+        default=None,
+    )
+    heavy_import = min(
+        (n.lineno for n in ast.walk(tree)
+         if isinstance(n, ast.ImportFrom)
+         and (n.module or "").startswith("agent_eval.")
+         and n.module != "agent_eval._bootstrap"),
+        default=None,
+    )
+    assert early_call is not None, "_early_pidfile() call disappeared"
+    assert heavy_import is not None
+    assert early_call < heavy_import, (
+        f"_early_pidfile() at line {early_call} runs after the agent_eval "
+        f"import at line {heavy_import}; the Stop guard is blind for the "
+        f"duration of those imports."
+    )
+
+
+@pytest.mark.parametrize("argv,expected", [
+    (["--output", "RUNDIR", "--config", "x.yaml"], True),
+    (["--config", "x.yaml", "--output=RUNDIR"], True),
+    (["--config", "x.yaml"], False),          # no --output -> no write
+    (["--output"], False),                    # dangling flag -> no crash
+])
+def test_early_pidfile_argv_scrape(tmp_path, monkeypatch, argv, expected):
+    """--output is scraped by hand, so cover both spellings and the misses."""
+    import execute
+
+    monkeypatch.setattr(execute, "_PIDFILE_WRITTEN", False)
+    target = tmp_path / "rundir"
+    argv = [a.replace("RUNDIR", str(target)) for a in argv]
+
+    execute._early_pidfile(argv)
+    assert (target / "execute.pid").exists() is expected
+    if expected:
+        assert json.loads((target / "execute.pid").read_text())["pid"] == os.getpid()
 
 
 def _func_ast(path, name):

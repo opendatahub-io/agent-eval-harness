@@ -21,6 +21,7 @@ Usage:
 import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
 
 import argparse
+import atexit
 import copy
 import json
 import os
@@ -30,8 +31,114 @@ import sys
 import time
 from pathlib import Path
 
-from agent_eval.agent import RUNNERS
-from agent_eval.hooks import (
+# ── Stop-guard pidfile ───────────────────────────────────────────────────
+# Defined and invoked *before* the heavy agent_eval imports below, and before
+# argparse/config load, because the window this closes is a race: the
+# orchestrator can launch us with run_in_background and end its turn
+# immediately, and the Stop guard hook can only block that teardown once
+# execute.pid exists. Every millisecond before the write is a millisecond the
+# guard is blind — and module import is the dominant cost (~25 ms warm, far
+# more on a cold container), so waiting until main() would leave the guard
+# weakest at exactly the moment it is needed most.
+
+_PIDFILE_WRITTEN = False
+
+
+def _process_create_time(pid):
+    """Best-effort, stable per-process creation marker used to detect pid reuse.
+
+    Returns a string identity for the process currently at ``pid`` (Linux boot
+    tick count, or the macOS start timestamp), or ``None`` if it cannot be
+    determined. Must match the Stop guard hook's derivation
+    (``scripts/eval_stop_guard.py``) for the reuse check to work, so the two
+    implementations are kept identical.
+    """
+    try:
+        with open("/proc/%d/stat" % pid, encoding="utf-8") as fh:
+            data = fh.read()
+        # comm (field 2) is parenthesised and may itself contain spaces/parens;
+        # starttime is field 22 -> index 19 after the final ')'.
+        after = data[data.rfind(")") + 2:].split()
+        return after[19]
+    except (OSError, IndexError, ValueError):
+        pass
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(
+                ["ps", "-o", "lstart=", "-p", str(pid)],
+                capture_output=True, text=True, timeout=5,
+            )
+            return out.stdout.strip() or None
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return None
+
+
+def _write_pidfile(output_dir):
+    """Write ``<output_dir>/execute.pid`` so the Stop guard hook can tell this
+    executor is still alive.
+
+    The hook blocks the orchestrator from ending its turn (which would tear down
+    the session and kill this process before ``run_result.json`` is written)
+    while an ``execute.pid`` names a live process with no result beside it. The
+    file records the pid plus a process-creation marker so a reused pid can't be
+    mistaken for this run, and is removed at exit.
+
+    Idempotent: only the first call writes, so the early call below and the
+    fallback in ``main()`` never double-register the cleanup.
+    """
+    global _PIDFILE_WRITTEN
+    if _PIDFILE_WRITTEN:
+        return
+    pid = os.getpid()
+    pidfile = Path(output_dir) / "execute.pid"
+    try:
+        with open(pidfile, "w", encoding="utf-8") as fh:
+            json.dump({"pid": pid, "create_time": _process_create_time(pid)}, fh)
+    except OSError:
+        return  # non-fatal: guard just won't see this run
+    _PIDFILE_WRITTEN = True
+
+    def _remove():
+        try:
+            os.remove(pidfile)
+        except OSError:
+            pass
+    atexit.register(_remove)
+
+
+def _early_pidfile(argv):
+    """Write the pidfile straight from ``argv``, before anything else runs.
+
+    ``--output`` is scraped by hand rather than via argparse so the write does
+    not wait on the parser, the config load, or the imports below. Best effort:
+    on any miss ``main()`` still calls ``_write_pidfile`` once ``args.output``
+    is parsed, so the guard degrades to a slightly later write, never to none.
+    """
+    out = None
+    for i, token in enumerate(argv):
+        if token == "--output" and i + 1 < len(argv):
+            out = argv[i + 1]
+            break
+        if token.startswith("--output="):
+            out = token.split("=", 1)[1]
+            break
+    if not out:
+        return
+    try:
+        directory = Path(out)
+        directory.mkdir(parents=True, exist_ok=True)
+        _write_pidfile(directory)
+    except OSError:
+        pass
+
+
+# Guarded so importing execute.py (tests do) never touches the filesystem.
+if __name__ == "__main__":
+    _early_pidfile(sys.argv[1:])
+
+from agent_eval.agent import RUNNERS  # noqa: E402 — after the early pidfile write
+from agent_eval.hooks import (  # noqa: E402 — after the early pidfile write
     HookError, build_hook_env, collect_hook_outputs,
     run_hooks, run_hooks_safe, save_hook_data,
 )
@@ -110,63 +217,6 @@ def _fd_path(fd):
         return os.readlink(f"/proc/self/fd/{fd}")
     except (OSError, ValueError, ImportError):
         return None
-
-
-def _process_create_time(pid):
-    """Best-effort, stable per-process creation marker used to detect pid reuse.
-
-    Returns a string identity for the process currently at ``pid`` (Linux boot
-    tick count, or the macOS start timestamp), or ``None`` if it cannot be
-    determined. Must match the Stop guard hook's derivation
-    (``scripts/eval_stop_guard.py``) for the reuse check to work, so the two
-    implementations are kept identical.
-    """
-    try:
-        with open("/proc/%d/stat" % pid, encoding="utf-8") as fh:
-            data = fh.read()
-        # comm (field 2) is parenthesised and may itself contain spaces/parens;
-        # starttime is field 22 -> index 19 after the final ')'.
-        after = data[data.rfind(")") + 2:].split()
-        return after[19]
-    except (OSError, IndexError, ValueError):
-        pass
-    if sys.platform == "darwin":
-        try:
-            out = subprocess.run(
-                ["ps", "-o", "lstart=", "-p", str(pid)],
-                capture_output=True, text=True, timeout=5,
-            )
-            return out.stdout.strip() or None
-        except (OSError, subprocess.SubprocessError):
-            pass
-    return None
-
-
-def _write_pidfile(output_dir):
-    """Write ``<output_dir>/execute.pid`` so the Stop guard hook can tell this
-    executor is still alive.
-
-    The hook blocks the orchestrator from ending its turn (which would tear down
-    the session and kill this process before ``run_result.json`` is written)
-    while an ``execute.pid`` names a live process with no result beside it. The
-    file records the pid plus a process-creation marker so a reused pid can't be
-    mistaken for this run, and is removed at exit.
-    """
-    pid = os.getpid()
-    pidfile = output_dir / "execute.pid"
-    try:
-        with open(pidfile, "w", encoding="utf-8") as fh:
-            json.dump({"pid": pid, "create_time": _process_create_time(pid)}, fh)
-    except OSError:
-        return  # non-fatal: guard just won't see this run
-
-    import atexit
-    def _remove():
-        try:
-            os.remove(pidfile)
-        except OSError:
-            pass
-    atexit.register(_remove)
 
 
 def _setup_console_log(output_dir):
@@ -307,9 +357,9 @@ def main():
     # viewer). The real stdout/stderr streams still receive everything.
     _setup_console_log(output_dir)
 
-    # Record our pid so the Stop guard hook can tell this executor is still
-    # alive and block the orchestrator from ending its turn (which would kill
-    # us before run_result.json is written).
+    # Fallback for the Stop-guard pidfile: normally already written by
+    # _early_pidfile() before the imports at the top of this module. No-op
+    # unless that scrape missed (e.g. an --output form it didn't recognise).
     _write_pidfile(output_dir)
 
     # Resolve skill args: CLI override > config > empty

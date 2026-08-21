@@ -35,7 +35,10 @@ Instead the harness owns ``execute.py``, so we use a first-party signal that is
 CLI-version-proof and self-scoping:
 
   * ``execute.py`` writes ``<output_dir>/execute.pid`` (pid + an OS process
-    creation marker) at startup and removes it at exit.
+    creation marker) before it does anything else — ahead of its own imports,
+    argument parsing and config load, since the guard is blind until that file
+    exists and the racing orchestrator ends its turn immediately after launch —
+    and removes it at exit.
   * this hook scans ``$AGENT_EVAL_RUNS_DIR`` (default ``eval/runs``) under the
     session cwd for ``execute.pid`` files, and treats a run as *live* when the
     recorded pid is still alive (``os.kill(pid, 0)``), the creation marker still
@@ -63,12 +66,22 @@ Contract (Claude Code ``Stop`` hook)
 * block the stop: print ``{"decision": "block", "reason": "..."}`` and exit 0.
   The reason is surfaced to the model, which then continues instead of stopping.
 
-Scope
------
-Enabled by default, everywhere. The pidfile signal already limits blocking to
-sessions with a live eval executor, so a spurious block outside CI is not
-possible unless an eval really is running. ``AGENT_EVAL_STOP_GUARD=0`` disables
-it entirely if ever needed. Fails open on any error.
+Scope (per project, NOT per session)
+------------------------------------
+Enabled by default, everywhere. Note the deliberate trade-off against the
+transcript version this replaced: a pidfile scan is scoped to the *project*,
+not to the session that launched the run. So a second session working in the
+same repo while an eval runs — a user chatting about the code in another
+terminal, say — is also blocked from ending its turn, until the executor exits
+or the escape-hatch ceiling is reached.
+
+That is accepted rather than fixed: the blast radius is bounded (the ceiling
+applies, the block reason names the offending run directory, and the run really
+is live), whereas tying the block to the launching session means walking the
+process ancestry to a top-level ``claude`` pid and comparing it against the
+hook's own — more machinery, and more ways to be wrong, than the nuisance
+warrants. ``AGENT_EVAL_STOP_GUARD=0`` disables the guard for such a session.
+Fails open on any error.
 
 Environment
 -----------
@@ -90,6 +103,9 @@ import time
 
 DEFAULT_MAX_MIN = 180
 STATE_DIRNAME = "agent-eval-stop-guard"
+# A pidfile older than this is treated as abandoned regardless of pid liveness.
+# Comfortably longer than any eval (the CI step caps at 3h).
+MAX_PIDFILE_AGE_S = 24 * 3600
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 # Sentinel: no durable first-block timestamp exists and one cannot be written.
@@ -231,6 +247,26 @@ def _read_pidfile(path):
     return data if isinstance(data, dict) else None
 
 
+def _pidfile_candidates(root):
+    """Pidfile paths under ``root``, found with bounded-depth globs.
+
+    Pidfiles only ever live at ``<runs>/<eval-name>/<run-id>/execute.pid``, so a
+    handful of fixed-depth patterns covers every layout. A ``**`` recursive glob
+    would instead walk the whole runs tree on *every* Stop — including the
+    subagent transcripts and collected artifacts under each run, which reach
+    six figures of files on a busy tree (measured: 1,859 files → 64 ms recursive
+    vs 0.6 ms bounded).
+    """
+    matches = []
+    for pattern in ("execute.pid", "*/execute.pid", "*/*/execute.pid",
+                    "*/*/*/execute.pid"):
+        try:
+            matches.extend(glob.glob(os.path.join(root, pattern)))
+        except OSError:
+            continue
+    return matches
+
+
 def _live_eval_runs(cwd):
     """Return the output dirs of eval executors that are still alive.
 
@@ -241,13 +277,9 @@ def _live_eval_runs(cwd):
     """
     live = []
     seen = set()
+    now = time.time()
     for root in _run_output_roots(cwd):
-        try:
-            matches = glob.glob(os.path.join(root, "**", "execute.pid"),
-                                recursive=True)
-        except OSError:
-            continue
-        for pidfile in matches:
+        for pidfile in _pidfile_candidates(root):
             real = os.path.realpath(pidfile)
             if real in seen:
                 continue
@@ -263,6 +295,16 @@ def _live_eval_runs(cwd):
             run_dir = os.path.dirname(pidfile)
             if os.path.exists(os.path.join(run_dir, "run_result.json")):
                 continue  # run already finished
+            # Staleness backstop. The create_time check below is the primary
+            # pid-reuse defense, but it is inert where no marker is obtainable
+            # (no /proc and not darwin), leaving a reused pid able to block
+            # until the ceiling. No eval outlives MAX_PIDFILE_AGE_S, so an
+            # older pidfile is abandoned by definition — on every platform.
+            try:
+                if now - os.path.getmtime(pidfile) > MAX_PIDFILE_AGE_S:
+                    continue
+            except OSError:
+                continue
             if not _pid_alive(pid):
                 continue  # executor already dead — nothing to guard
             recorded = info.get("create_time")
@@ -326,8 +368,15 @@ def _state_path(session_id, fallback):
     return os.path.join(directory, f"{key}.json")
 
 
-def _first_block_ts(path, now):
-    """When this session first blocked, recording ``now`` if new.
+def _first_block_ts(path, now, runs_key):
+    """When this session first blocked *on this set of runs*, recording ``now``
+    if new.
+
+    ``runs_key`` scopes the timer to the runs actually being waited on. Without
+    it a session that chains evals back to back — with no intervening idle Stop
+    to clear the state — would inherit the previous run's ``first_block`` and
+    could trip the escape hatch almost immediately on a fresh run. A changed run
+    set means new work, so the clock restarts.
 
     Returns ``_PERSIST_FAILED`` when no durable timestamp exists and one cannot
     be written, so the caller can fail open instead of letting a state-write
@@ -341,8 +390,9 @@ def _first_block_ts(path, now):
     if fh is not None:
         try:
             with fh:
-                ts = json.load(fh).get("first_block")
-            if isinstance(ts, (int, float)):
+                data = json.load(fh)
+            ts = data.get("first_block")
+            if isinstance(ts, (int, float)) and data.get("runs") == runs_key:
                 return ts
         except (OSError, ValueError, TypeError, AttributeError):
             pass
@@ -354,7 +404,7 @@ def _first_block_ts(path, now):
         return _PERSIST_FAILED
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({"first_block": now}, fh)
+            json.dump({"first_block": now, "runs": runs_key}, fh)
     except OSError:
         return _PERSIST_FAILED
     return now
@@ -393,7 +443,7 @@ def main():
     now = time.time()
     max_s = _max_seconds()
     if max_s > 0:
-        first = _first_block_ts(state_path, now)
+        first = _first_block_ts(state_path, now, sorted(live))
         if first is _PERSIST_FAILED:
             # Can't durably track elapsed time (no session identity or an
             # unwritable state dir). Fail open rather than risk blocking forever.
@@ -424,10 +474,10 @@ def main():
 
     run_dir = live[0]
     reason = (
-        f"Eval executor still running ({run_dir}). Don't end your turn — "
-        "stopping now kills it before run_result.json is written. Poll "
-        f"`tail -20 {run_dir}/console.log` every few minutes; stop only once "
-        f"{run_dir}/run_result.json exists."
+        f"Eval executor still running ({run_dir} — possibly another session). "
+        "Don't end your turn: stopping kills it before run_result.json is "
+        f"written. Poll `tail -20 {run_dir}/console.log`; stop once "
+        "run_result.json exists."
     )
     print(json.dumps({"decision": "block", "reason": reason}))
     return 0
