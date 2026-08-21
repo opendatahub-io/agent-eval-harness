@@ -1,0 +1,205 @@
+"""Tests for the Stop guard hook (scripts/eval_stop_guard.py).
+
+The hook is stdlib-only and detects a live eval executor from the
+``execute.pid`` file that execute.py writes, so these tests use a real
+subprocess as the "live executor" rather than mocking process liveness.
+"""
+import ast
+import importlib.util
+import io
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[1]
+HOOK_PATH = REPO / "scripts" / "eval_stop_guard.py"
+EXECUTE_PATH = REPO / "skills" / "eval-run" / "scripts" / "execute.py"
+
+
+def _load_hook():
+    spec = importlib.util.spec_from_file_location("eval_stop_guard", HOOK_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+guard = _load_hook()
+
+
+@pytest.fixture
+def live_proc():
+    """A real, still-running child process to stand in for a live executor."""
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    try:
+        yield p
+    finally:
+        p.terminate()
+        try:
+            p.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            p.kill()
+
+
+def _make_run(runs_dir, name, pid, create_time, with_result=False):
+    d = runs_dir / name
+    d.mkdir(parents=True)
+    (d / "execute.pid").write_text(
+        json.dumps({"pid": pid, "create_time": create_time})
+    )
+    if with_result:
+        (d / "run_result.json").write_text("{}")
+    return d
+
+
+def test_live_executor_detected(tmp_path, monkeypatch, live_proc):
+    runs = tmp_path / "eval" / "runs"
+    ct = guard._process_create_time(live_proc.pid)
+    run_dir = _make_run(runs, "run-1", live_proc.pid, ct)
+    monkeypatch.setenv("AGENT_EVAL_RUNS_DIR", str(runs))
+
+    live = guard._live_eval_runs(str(tmp_path))
+    assert str(run_dir) in live
+
+
+def test_finished_run_not_live(tmp_path, monkeypatch, live_proc):
+    # Process is alive, but run_result.json exists -> already done.
+    runs = tmp_path / "eval" / "runs"
+    ct = guard._process_create_time(live_proc.pid)
+    _make_run(runs, "run-1", live_proc.pid, ct, with_result=True)
+    monkeypatch.setenv("AGENT_EVAL_RUNS_DIR", str(runs))
+
+    assert guard._live_eval_runs(str(tmp_path)) == []
+
+
+def test_dead_pid_not_live(tmp_path, monkeypatch):
+    # Spawn then reap a child so its pid is reliably gone.
+    p = subprocess.Popen([sys.executable, "-c", "pass"])
+    p.wait()
+    runs = tmp_path / "eval" / "runs"
+    _make_run(runs, "run-1", p.pid, None)
+    monkeypatch.setenv("AGENT_EVAL_RUNS_DIR", str(runs))
+
+    assert guard._live_eval_runs(str(tmp_path)) == []
+
+
+def test_pid_reuse_guarded(tmp_path, monkeypatch, live_proc):
+    # pid is alive, but the recorded create_time doesn't match -> treat as a
+    # reused pid belonging to an unrelated process, not this run.
+    runs = tmp_path / "eval" / "runs"
+    _make_run(runs, "run-1", live_proc.pid, "definitely-not-the-real-marker")
+    monkeypatch.setenv("AGENT_EVAL_RUNS_DIR", str(runs))
+
+    # Only assert the guard fires where create_time is actually resolvable.
+    if guard._process_create_time(live_proc.pid) is not None:
+        assert guard._live_eval_runs(str(tmp_path)) == []
+
+
+def test_default_runs_dir(tmp_path, monkeypatch, live_proc):
+    # No AGENT_EVAL_RUNS_DIR -> falls back to <cwd>/eval/runs.
+    monkeypatch.delenv("AGENT_EVAL_RUNS_DIR", raising=False)
+    runs = tmp_path / "eval" / "runs"
+    ct = guard._process_create_time(live_proc.pid)
+    run_dir = _make_run(runs, "run-1", live_proc.pid, ct)
+
+    assert str(run_dir) in guard._live_eval_runs(str(tmp_path))
+
+
+def test_main_blocks_while_live(tmp_path, monkeypatch, capsys, live_proc):
+    monkeypatch.setattr(guard.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    runs = tmp_path / "eval" / "runs"
+    ct = guard._process_create_time(live_proc.pid)
+    _make_run(runs, "run-1", live_proc.pid, ct)
+    monkeypatch.setenv("AGENT_EVAL_RUNS_DIR", str(runs))
+    monkeypatch.setattr(
+        sys, "stdin",
+        io.StringIO(json.dumps({"session_id": "s1", "cwd": str(tmp_path)})),
+    )
+
+    rc = guard.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert json.loads(out)["decision"] == "block"
+
+
+def test_main_allows_when_no_run(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(guard.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("AGENT_EVAL_RUNS_DIR", str(tmp_path / "eval" / "runs"))
+    monkeypatch.setattr(
+        sys, "stdin",
+        io.StringIO(json.dumps({"session_id": "s1", "cwd": str(tmp_path)})),
+    )
+
+    rc = guard.main()
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_main_disabled_env(tmp_path, monkeypatch, capsys, live_proc):
+    monkeypatch.setenv("AGENT_EVAL_STOP_GUARD", "0")
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    runs = tmp_path / "eval" / "runs"
+    ct = guard._process_create_time(live_proc.pid)
+    _make_run(runs, "run-1", live_proc.pid, ct)
+    monkeypatch.setenv("AGENT_EVAL_RUNS_DIR", str(runs))
+    monkeypatch.setattr(
+        sys, "stdin",
+        io.StringIO(json.dumps({"session_id": "s1", "cwd": str(tmp_path)})),
+    )
+
+    rc = guard.main()
+    assert rc == 0
+    assert capsys.readouterr().out == ""  # allowed despite a live run
+
+
+def test_main_escape_hatch(tmp_path, monkeypatch, capsys, live_proc):
+    monkeypatch.setattr(guard.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("AGENT_EVAL_STOP_GUARD_MAX_MIN", "60")
+    runs = tmp_path / "eval" / "runs"
+    ct = guard._process_create_time(live_proc.pid)
+    _make_run(runs, "run-1", live_proc.pid, ct)
+    monkeypatch.setenv("AGENT_EVAL_RUNS_DIR", str(runs))
+
+    # Pre-seed the first-block timestamp well past the ceiling.
+    state_path = guard._state_path("s1", str(tmp_path))
+    assert state_path is not None
+    Path(state_path).write_text(json.dumps({"first_block": time.time() - 7200}))
+
+    monkeypatch.setattr(
+        sys, "stdin",
+        io.StringIO(json.dumps({"session_id": "s1", "cwd": str(tmp_path)})),
+    )
+    rc = guard.main()
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.out == ""  # stop allowed
+    assert "escape hatch" in captured.err
+
+
+def _func_ast(path, name):
+    """AST dump of a function body minus its docstring (format-insensitive)."""
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            body = list(node.body)
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(getattr(body[0], "value", None), ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                body = body[1:]
+            return "\n".join(ast.dump(n) for n in body)
+    return None
+
+
+def test_process_create_time_matches_execute_py():
+    """The hook and execute.py must derive the create-time marker identically,
+    or the pid-reuse guard silently rejects every live run."""
+    hook_code = _func_ast(HOOK_PATH, "_process_create_time")
+    exec_code = _func_ast(EXECUTE_PATH, "_process_create_time")
+    assert hook_code is not None and exec_code is not None
+    assert hook_code == exec_code

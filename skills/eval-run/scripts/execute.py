@@ -112,6 +112,63 @@ def _fd_path(fd):
         return None
 
 
+def _process_create_time(pid):
+    """Best-effort, stable per-process creation marker used to detect pid reuse.
+
+    Returns a string identity for the process currently at ``pid`` (Linux boot
+    tick count, or the macOS start timestamp), or ``None`` if it cannot be
+    determined. Must match the Stop guard hook's derivation
+    (``scripts/eval_stop_guard.py``) for the reuse check to work, so the two
+    implementations are kept identical.
+    """
+    try:
+        with open("/proc/%d/stat" % pid, encoding="utf-8") as fh:
+            data = fh.read()
+        # comm (field 2) is parenthesised and may itself contain spaces/parens;
+        # starttime is field 22 -> index 19 after the final ')'.
+        after = data[data.rfind(")") + 2:].split()
+        return after[19]
+    except (OSError, IndexError, ValueError):
+        pass
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(
+                ["ps", "-o", "lstart=", "-p", str(pid)],
+                capture_output=True, text=True, timeout=5,
+            )
+            return out.stdout.strip() or None
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return None
+
+
+def _write_pidfile(output_dir):
+    """Write ``<output_dir>/execute.pid`` so the Stop guard hook can tell this
+    executor is still alive.
+
+    The hook blocks the orchestrator from ending its turn (which would tear down
+    the session and kill this process before ``run_result.json`` is written)
+    while an ``execute.pid`` names a live process with no result beside it. The
+    file records the pid plus a process-creation marker so a reused pid can't be
+    mistaken for this run, and is removed at exit.
+    """
+    pid = os.getpid()
+    pidfile = output_dir / "execute.pid"
+    try:
+        with open(pidfile, "w", encoding="utf-8") as fh:
+            json.dump({"pid": pid, "create_time": _process_create_time(pid)}, fh)
+    except OSError:
+        return  # non-fatal: guard just won't see this run
+
+    import atexit
+    def _remove():
+        try:
+            os.remove(pidfile)
+        except OSError:
+            pass
+    atexit.register(_remove)
+
+
 def _setup_console_log(output_dir):
     """Mirror console output to ``<output_dir>/console.log`` and warn on a
     stdout redirect into the run directory.
@@ -249,6 +306,11 @@ def main():
     # need to redirect stdout with '>' (which blanks the background-command
     # viewer). The real stdout/stderr streams still receive everything.
     _setup_console_log(output_dir)
+
+    # Record our pid so the Stop guard hook can tell this executor is still
+    # alive and block the orchestrator from ending its turn (which would kill
+    # us before run_result.json is written).
+    _write_pidfile(output_dir)
 
     # Resolve skill args: CLI override > config > empty
     # Treat empty/whitespace-only strings as unset (normalize before fallback)

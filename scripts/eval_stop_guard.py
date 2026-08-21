@@ -1,52 +1,63 @@
 #!/usr/bin/env python3
-"""Stop hook: keep the eval-run orchestrator from ending its turn while it still
-has a live background task (e.g. ``execute.py``), with a bounded escape hatch so
-a genuinely stuck run can never hang the session forever.
+"""Stop hook: keep the eval-run orchestrator from ending its turn while an eval
+executor (``execute.py``) is still alive, with a bounded escape hatch so a
+genuinely stuck run can never hang the session forever.
 
 Root cause it fixes
 -------------------
 In headless / CI runs the orchestrator sometimes launches ``execute.py`` with
 ``run_in_background: true`` and then ends its turn right away ("I'll report
-when it finishes"). The session tears down, the background task is killed
-before it writes ``run_result.json``, and the eval reports an *empty* result as
-green. This has been observed repeatedly on the OpenShift CI
+when it finishes"). The session tears down, the background process is killed
+before it writes ``run_result.json``, and the eval records an *empty* result as
+a false pass. This has been observed repeatedly on the OpenShift CI
 ``eval-payload-analysis`` job — including under harness 1.40.x, whose bg-kill
 handling only *relabels* per-case kills and cannot help when the whole
 orchestrator dies before any ``run_result.json`` exists.
 
 The eval-run skill already tells the agent to poll until completion, but in a
-non-interactive session nothing *enforces* it. This hook does: while the
-session has a live background task, it blocks the Stop, forcing the agent to
-keep polling until the task finishes.
+non-interactive session nothing *enforces* it. This hook does: while an
+executor is alive, it blocks the Stop, forcing the agent to keep polling until
+the run finishes.
 
-Why the transcript, not ``pgrep``
+Why a pidfile, not the transcript
 ---------------------------------
-Claude Code records background-task lifecycle in the session transcript
-(handed to the hook via ``transcript_path``):
+An earlier version reconstructed the live-task set from ``system`` events in
+the session transcript (``background_tasks_changed`` / ``task_started`` /
+``task_updated`` / ``task_notification``). Those event subtypes do not exist as
+structured records in current Claude Code transcripts — background-task
+lifecycle is encoded as Bash ``tool_result`` payloads and ``<task-notification>``
+XML embedded in *user*-role message content, and the exact shape drifts across
+CLI versions. Parsing it made the guard silently inert (it always saw zero
+tasks and allowed every stop), reproducing the very empty-result failure it was
+meant to prevent.
 
-  * ``background_tasks_changed`` — carries the *full* current live-task list
-    (``tasks: []`` once they all end);
-  * ``task_started`` — a task began;
-  * ``task_updated`` / ``task_notification`` — status transitions, terminal
-    when ``completed`` / ``failed`` / ``killed`` / ``stopped`` / ``cancelled``.
+Instead the harness owns ``execute.py``, so we use a first-party signal that is
+CLI-version-proof and self-scoping:
 
-Because the transcript is per-session, this is inherently scoped to *this*
-agent. A host-wide ``pgrep execute.py`` would also match executions from other
-concurrent sessions and block spuriously; reading the transcript does not.
+  * ``execute.py`` writes ``<output_dir>/execute.pid`` (pid + an OS process
+    creation marker) at startup and removes it at exit.
+  * this hook scans ``$AGENT_EVAL_RUNS_DIR`` (default ``eval/runs``) under the
+    session cwd for ``execute.pid`` files, and treats a run as *live* when the
+    recorded pid is still alive (``os.kill(pid, 0)``), the creation marker still
+    matches (defeats pid reuse), and no ``run_result.json`` sits beside it yet.
+
+Because only ``execute.py`` writes ``execute.pid``, the guard is inherently
+scoped to evals: a backgrounded dev server or a deliberately-backgrounded agent
+is never mistaken for one, so it is not blocked.
 
 Escape hatch (stuck runs)
 -------------------------
-If a background task hangs, blocking forever would just defer the failure to
-the CI pod's outer timeout. So the hook records when it *first* blocked this
-session and, once more than ``AGENT_EVAL_STOP_GUARD_MAX_MIN`` (default 180)
-have elapsed, it allows the Stop and emits a loud warning to stderr. Progress
+If an executor hangs, blocking forever would just defer the failure to the CI
+pod's outer timeout. So the hook records when it *first* blocked this session
+and, once more than ``AGENT_EVAL_STOP_GUARD_MAX_MIN`` (default 180) minutes have
+elapsed, it allows the Stop and emits a loud warning to stderr. Progress
 sniffing (e.g. console.log mtime) is deliberately NOT used: at high reasoning
 effort a single case can run ~30 min with no console output, so "quiet" is not
 "stuck". A bounded wall-clock ceiling is the only false-positive-free signal.
 
 Contract (Claude Code ``Stop`` hook)
 ------------------------------------
-* stdin: JSON with ``transcript_path``, ``session_id``, ``cwd``,
+* stdin: JSON with ``session_id``, ``cwd``, ``transcript_path``,
   ``stop_hook_active``, ``hook_event_name`` (best-effort; absence tolerated).
 * allow the stop: exit 0 with no stdout.
 * block the stop: print ``{"decision": "block", "reason": "..."}`` and exit 0.
@@ -54,30 +65,29 @@ Contract (Claude Code ``Stop`` hook)
 
 Scope
 -----
-Enabled by default, everywhere. The background-kill failure is specific to
-headless / print mode (``claude -p`` / the Agent SDK), where ending the turn
-tears down the session and kills background tasks ~5s later — but Claude Code
-exposes no reliable signal (no env var, no Stop-payload field) to distinguish
-headless from interactive, so the guard cannot gate on mode and instead runs
-everywhere. In interactive sessions background tasks *persist* across turns, so
-a spurious block there is at most a nuisance: interrupt with Esc, or set
-``AGENT_EVAL_STOP_GUARD=0``. Disabled explicitly when that variable is falsy.
+Enabled by default, everywhere. The pidfile signal already limits blocking to
+sessions with a live eval executor, so a spurious block outside CI is not
+possible unless an eval really is running. ``AGENT_EVAL_STOP_GUARD=0`` disables
+it entirely if ever needed. Fails open on any error.
 
 Environment
 -----------
 * ``AGENT_EVAL_STOP_GUARD``        — force on/off (default on).
 * ``AGENT_EVAL_STOP_GUARD_MAX_MIN``— escape-hatch ceiling in minutes (default
-  180; ``0`` disables the ceiling and blocks until the task ends).
+  180; ``0`` disables the ceiling and blocks until the executor exits).
+* ``AGENT_EVAL_RUNS_DIR``          — runs directory to scan (default
+  ``eval/runs`` under the session cwd).
 """
 
+import glob
 import hashlib
 import json
 import os
 import stat
+import subprocess
 import sys
 import time
 
-TERMINAL_STATUSES = {"completed", "failed", "killed", "stopped", "cancelled"}
 DEFAULT_MAX_MIN = 180
 STATE_DIRNAME = "agent-eval-stop-guard"
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -93,13 +103,7 @@ def _truthy(value):
 
 
 def _guard_enabled():
-    """Enabled by default; an explicit ``AGENT_EVAL_STOP_GUARD`` always wins.
-
-    The failure this guards against only happens in headless / print mode, but
-    that mode is not detectable from a hook, so the guard defaults on. A
-    spurious block in an interactive session is only a nuisance (background
-    tasks persist there anyway), so defaulting on is safe.
-    """
+    """Enabled by default; an explicit ``AGENT_EVAL_STOP_GUARD`` always wins."""
     override = os.environ.get("AGENT_EVAL_STOP_GUARD")
     if override is not None:
         return _truthy(override)
@@ -116,21 +120,51 @@ def _max_seconds():
         return DEFAULT_MAX_MIN * 60
 
 
-def _transcript_root():
-    """Directory tree Claude Code keeps session transcripts under.
+# ── Process-liveness signal ──────────────────────────────────────────────
 
-    Transcripts live beneath ``${CLAUDE_CONFIG_DIR:-~/.claude}``. Confining
-    reads to this root stops a crafted ``transcript_path`` on hook stdin from
-    pointing the guard at an arbitrary file (CWE-22). Returns ``None`` if the
-    root can't be resolved, in which case the caller fails open.
-    """
-    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(
-        os.path.expanduser("~"), ".claude")
+def _pid_alive(pid):
+    """True if a process with ``pid`` currently exists."""
     try:
-        return os.path.realpath(base)
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists but owned by another user
     except OSError:
-        return None
+        return False
+    return True
 
+
+def _process_create_time(pid):
+    """Best-effort, stable per-process creation marker used to detect pid reuse.
+
+    Returns a string identity for the process currently at ``pid`` (Linux boot
+    tick count, or the macOS start timestamp), or ``None`` if it cannot be
+    determined. Must match ``execute.py``'s derivation for the reuse check to
+    work, so the two implementations are kept identical.
+    """
+    try:
+        with open("/proc/%d/stat" % pid, encoding="utf-8") as fh:
+            data = fh.read()
+        # comm (field 2) is parenthesised and may itself contain spaces/parens;
+        # starttime is field 22 -> index 19 after the final ')'.
+        after = data[data.rfind(")") + 2:].split()
+        return after[19]
+    except (OSError, IndexError, ValueError):
+        pass
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(
+                ["ps", "-o", "lstart=", "-p", str(pid)],
+                capture_output=True, text=True, timeout=5,
+            )
+            return out.stdout.strip() or None
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return None
+
+
+# ── Filesystem helpers (symlink-hardened) ────────────────────────────────
 
 def _within(root, path):
     """True if ``path`` resolves to a location inside ``root`` (no symlink escape)."""
@@ -140,6 +174,7 @@ def _within(root, path):
         real = os.path.realpath(path)
     except OSError:
         return False
+    root = os.path.realpath(root)
     return real == root or real.startswith(root + os.sep)
 
 
@@ -160,69 +195,96 @@ def _open_read_nofollow(path):
         return None
 
 
-def _live_background_tasks(transcript_path):
-    """Reconstruct the set of still-running background tasks from the transcript.
+# ── Live-executor detection ──────────────────────────────────────────────
 
-    Returns a dict of ``task_id -> description`` for tasks that started and have
-    not reached a terminal status, or ``None`` if the transcript cannot be read
-    (caller fails open in that case).
-    """
-    if not transcript_path or not _within(_transcript_root(), transcript_path):
-        return None
+def _run_output_roots(cwd):
+    """Runs directories to scan for ``execute.pid`` (existing dirs, de-duped)."""
+    base = cwd or os.getcwd()
+    candidates = []
+    env = os.environ.get("AGENT_EVAL_RUNS_DIR")
+    if env:
+        candidates.append(env if os.path.isabs(env) else os.path.join(base, env))
+    candidates.append(os.path.join(base, "eval", "runs"))
 
-    fh = _open_read_nofollow(transcript_path)
+    seen = set()
+    roots = []
+    for c in candidates:
+        try:
+            real = os.path.realpath(c)
+        except OSError:
+            continue
+        if real not in seen and os.path.isdir(real):
+            seen.add(real)
+            roots.append(real)
+    return roots
+
+
+def _read_pidfile(path):
+    fh = _open_read_nofollow(path)
     if fh is None:
         return None
-
-    live = {}
     try:
         with fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                except (ValueError, TypeError):
-                    continue
-                if event.get("type") != "system":
-                    continue
-                subtype = event.get("subtype")
-
-                if subtype == "background_tasks_changed":
-                    # Authoritative full snapshot of the current live set.
-                    live = {
-                        t.get("task_id"): t.get("description", "")
-                        for t in (event.get("tasks") or [])
-                        if t.get("task_id")
-                    }
-                elif subtype == "task_started":
-                    tid = event.get("task_id")
-                    if tid:
-                        live[tid] = event.get("description", "")
-                elif subtype in ("task_updated", "task_notification"):
-                    tid = event.get("task_id")
-                    if not tid:
-                        continue
-                    status = (event.get("status")
-                              or (event.get("patch") or {}).get("status"))
-                    if status in TERMINAL_STATUSES:
-                        live.pop(tid, None)
-    except OSError:
+            data = json.load(fh)
+    except (ValueError, TypeError, OSError):
         return None
+    return data if isinstance(data, dict) else None
 
+
+def _live_eval_runs(cwd):
+    """Return the output dirs of eval executors that are still alive.
+
+    An executor counts as live when its ``execute.pid`` names a process that is
+    still running, whose creation marker still matches (not a reused pid), and
+    which has not yet written ``run_result.json`` beside the pidfile. Any error
+    on a given pidfile just skips it — the guard fails open, never closed.
+    """
+    live = []
+    seen = set()
+    for root in _run_output_roots(cwd):
+        try:
+            matches = glob.glob(os.path.join(root, "**", "execute.pid"),
+                                recursive=True)
+        except OSError:
+            continue
+        for pidfile in matches:
+            real = os.path.realpath(pidfile)
+            if real in seen:
+                continue
+            seen.add(real)
+            if not _within(root, pidfile):
+                continue  # symlink escaping the runs tree
+            info = _read_pidfile(pidfile)
+            if not info:
+                continue
+            pid = info.get("pid")
+            if not isinstance(pid, int):
+                continue
+            run_dir = os.path.dirname(pidfile)
+            if os.path.exists(os.path.join(run_dir, "run_result.json")):
+                continue  # run already finished
+            if not _pid_alive(pid):
+                continue  # executor already dead — nothing to guard
+            recorded = info.get("create_time")
+            current = _process_create_time(pid)
+            if (recorded is not None and current is not None
+                    and str(recorded) != str(current)):
+                continue  # pid was reused by an unrelated process
+            live.append(run_dir)
     return live
 
 
-def _state_key(session_id, transcript_path):
+# ── Escape-hatch state (per session, symlink/ownership hardened) ─────────
+
+def _state_key(session_id, fallback):
     """Stable, collision-resistant per-session key for the escape-hatch timer.
 
-    Prefer ``session_id``; fall back to the transcript path (also per-session)
-    when it is absent. Returns ``None`` when neither identity exists — the
-    caller then fails open rather than sharing one ``default`` file across
-    unrelated sessions, where one session could clear or inherit another's timer.
+    Prefer ``session_id``; fall back to the session cwd. Returns ``None`` when
+    neither identity exists — the caller then fails open rather than sharing one
+    ``default`` file across unrelated sessions, where one session could clear or
+    inherit another's timer.
     """
-    ident = session_id or transcript_path
+    ident = session_id or fallback
     if not ident:
         return None
     return hashlib.sha256(ident.encode("utf-8", "replace")).hexdigest()
@@ -254,8 +316,8 @@ def _state_dir():
     return path
 
 
-def _state_path(session_id, transcript_path):
-    key = _state_key(session_id, transcript_path)
+def _state_path(session_id, fallback):
+    key = _state_key(session_id, fallback)
     if not key:
         return None
     directory = _state_dir()
@@ -314,16 +376,16 @@ def main():
         payload = {}
 
     session_id = payload.get("session_id")
-    transcript_path = payload.get("transcript_path")
-    state_path = _state_path(session_id, transcript_path)
+    cwd = payload.get("cwd") or os.getcwd()
+    state_path = _state_path(session_id, cwd)
 
     if not _guard_enabled():
         _clear_state(state_path)
         return 0  # allow stop
 
-    live = _live_background_tasks(transcript_path)
-    # Fail open if we could not read the transcript, or nothing is running —
-    # better to let the agent stop than to hang a session we can't reason about.
+    live = _live_eval_runs(cwd)
+    # Fail open if no executor is alive — better to let the agent stop than to
+    # hang a session with nothing left to wait for.
     if not live:
         _clear_state(state_path)
         return 0
@@ -337,20 +399,19 @@ def main():
             # unwritable state dir). Fail open rather than risk blocking forever.
             print(
                 "eval_stop_guard: cannot persist the escape-hatch timer; "
-                "allowing stop rather than risk hanging the session. A "
-                "background task may still be running and the eval incomplete.",
+                "allowing stop rather than risk hanging the session. An eval "
+                "executor may still be running and the result incomplete.",
                 file=sys.stderr,
             )
             return 0  # allow stop
         elapsed = now - first
         if elapsed > max_s:
-            desc = next(iter(live.values()), "") or "a background task"
             print(
                 "eval_stop_guard: escape hatch — blocked for "
-                f"{elapsed / 60:.0f} min (ceiling "
-                f"{max_s / 60:.0f} min) with {len(live)} task(s) still live "
-                f"(e.g. \"{desc}\"). Allowing stop; the run is likely stuck and "
-                "may be incomplete. Tune with AGENT_EVAL_STOP_GUARD_MAX_MIN.",
+                f"{elapsed / 60:.0f} min (ceiling {max_s / 60:.0f} min) with "
+                f"{len(live)} eval executor(s) still alive (e.g. \"{live[0]}\"). "
+                "Allowing stop; the run is likely stuck and may be incomplete. "
+                "Tune with AGENT_EVAL_STOP_GUARD_MAX_MIN.",
                 file=sys.stderr,
             )
             _clear_state(state_path)
@@ -361,15 +422,12 @@ def main():
     # timeout; it does not itself wait for completion.
     time.sleep(5)
 
-    desc = next(iter(live.values()), "") or "a background task"
+    run_dir = live[0]
     reason = (
-        f"You still have {len(live)} background task(s) running "
-        f"(e.g. \"{desc}\"). Do NOT end your turn — ending it now tears down "
-        "the session and kills the task before it writes run_result.json, "
-        "which reports an empty eval result as green. Poll progress with "
-        "`tail -20 <output_dir>/console.log` (or BashOutput on the task) every "
-        "2-3 minutes, and only stop once the task has finished and "
-        "run_result.json exists."
+        f"Eval executor still running ({run_dir}). Don't end your turn — "
+        "stopping now kills it before run_result.json is written. Poll "
+        f"`tail -20 {run_dir}/console.log` every few minutes; stop only once "
+        f"{run_dir}/run_result.json exists."
     )
     print(json.dumps({"decision": "block", "reason": reason}))
     return 0
