@@ -15,7 +15,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from agent_eval.model_families import (  # noqa: E402
-    family_composition, infer_model_family, same_family_advisory,
+    DEFAULT_HOOK_MODEL, family_composition, infer_model_family,
+    same_family_advisory,
 )
 
 FAMILY_TABLE = [
@@ -149,3 +150,86 @@ def test_advisory_text_on_a_single_known_family():
 ])
 def test_advisory_stays_silent(role_models, panel_models):
     assert same_family_advisory(role_models, panel_models) is None
+
+
+# ---------------------------------------------------------------------------
+# hook_shadow handling (PR10 — cross-family shadow simulators)
+# ---------------------------------------------------------------------------
+
+def test_hook_without_shadows_still_counts_in_the_pool():
+    """Back-compat with the PR8 behavior, where models.hook rode inside
+    role_models: an explicitly configured hook still joins the pool."""
+    text = same_family_advisory(["claude-sonnet-4-5"],
+                                hook_model="claude-haiku-4-5")
+    assert text is not None and "anthropic" in text
+
+
+def test_within_family_shadows_do_not_suppress():
+    """A hook 'mitigated' by same-family shadows is not mitigated at all —
+    hook AND shadows join the pool, so the advisory fires on them alone."""
+    text = same_family_advisory([], hook_model="claude-haiku-4-5",
+                                hook_shadow_models=["claude-opus-4-8"])
+    assert text is not None
+    assert "hook_shadow" in text  # the mitigation is named in the advisory
+
+
+def test_shadows_classify_the_default_hook_when_hook_is_unset():
+    """models.hook unset + shadows configured: the model that will actually
+    answer is the interceptor's hardcoded default — it joins the
+    comparison."""
+    text = same_family_advisory([],
+                                hook_shadow_models=["claude-opus-4-8"])
+    assert text is not None and "anthropic" in text
+
+
+def test_cross_family_shadow_suppresses_the_hook_role():
+    """A shadow introducing a second KNOWN family IS the cross-family
+    mitigation for the simulator layer — hook and shadows leave the pool."""
+    assert same_family_advisory([], hook_model="claude-haiku-4-5",
+                                hook_shadow_models=["gemini-2.5-flash"]) \
+        is None
+
+
+def test_cross_family_shadow_suppresses_only_the_hook_role():
+    """Suppression is per-role: skill and judge still all-anthropic keeps
+    the advisory alive even with a cross-family shadow on the hook."""
+    text = same_family_advisory(
+        ["claude-sonnet-4-5", "claude-opus-4-8"],
+        hook_model="claude-haiku-4-5",
+        hook_shadow_models=["gemini-2.5-flash"])
+    assert text is not None and "anthropic" in text
+
+
+def test_unknown_shadow_is_no_mitigation_and_silences_the_claim():
+    """An unclassifiable shadow cannot prove a second family (no
+    suppression) — and, joining the pool as an unknown, it silences the
+    whole claim: unknown means silent, never a warning."""
+    assert same_family_advisory([], hook_model="claude-haiku-4-5",
+                                hook_shadow_models=["my-gateway-alias"]) \
+        is None
+
+
+def test_unknown_hook_with_known_shadows_stays_silent():
+    """No known hook family means 'introduces a second family' cannot be
+    established; the unknown hook then silences the pooled claim."""
+    assert same_family_advisory(["claude-sonnet-4-5"],
+                                hook_model="my-gateway-hook",
+                                hook_shadow_models=["claude-opus-4-8"]) \
+        is None
+
+
+# ---------------------------------------------------------------------------
+# DEFAULT_HOOK_MODEL drift guard
+# ---------------------------------------------------------------------------
+
+def test_default_hook_model_matches_the_tools_py_literal():
+    """tools.py runs copied into workspaces where agent_eval is not
+    importable, so it hardcodes its haiku default instead of importing
+    DEFAULT_HOOK_MODEL — this source scan is the drift guard between the
+    two literals."""
+    import re
+    source = (REPO_ROOT / "skills" / "eval-run" / "scripts"
+              / "tools.py").read_text()
+    m = re.search(r'\{"model":\s*model or "([^"]+)"\}', source)
+    assert m, "tools.py no longer contains the `model or \"...\"` default"
+    assert m.group(1) == DEFAULT_HOOK_MODEL

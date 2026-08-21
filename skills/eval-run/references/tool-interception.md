@@ -5,19 +5,21 @@ This documents how `inputs.tools` handlers are resolved and executed during head
 ## Flow
 
 1. **eval.yaml** defines handlers with `match` (what to intercept) and `prompt` (how to handle), plus the harness-owned runtime knobs (`calibration`)
-2. **workspace.py** extracts basic tool name patterns from `match` text and writes `tool_handlers.yaml`. Harness-owned knobs (`hook_model` from `models.hook`, `calibration` from `inputs.tools`) are stamped on by a **post-load merge** applied regardless of source — a pre-resolved `tool_handlers.yaml` (from `/eval-analyze`) gets the same knobs, with `hook_model` as a `setdefault` (an explicit value in the resolved file wins; supplying a missing one prints a stderr notice)
+2. **workspace.py** extracts basic tool name patterns from `match` text and writes `tool_handlers.yaml`. Harness-owned knobs (`hook_model` from `models.hook`, `calibration` from `inputs.tools`, `hook_shadow_models` from `models.hook_shadow`) are stamped on by a **post-load merge** applied regardless of source — a pre-resolved `tool_handlers.yaml` (from `/eval-analyze`) gets the same knobs, with `hook_model` as a `setdefault` (an explicit value in the resolved file wins; supplying a missing one prints a stderr notice) and `hook_shadow_models` as an overwrite (eval.yaml owns the models)
 3. **eval-run agent (Step 3a)** reads `tool_handlers.yaml`, interprets the `prompt` field, and adds concrete runtime checks — preserving the harness-owned keys (see SKILL.md Step 3a)
 4. **tools.py** (PreToolUse hook) executes the checks at runtime. AskUserQuestion uses a 3-tier resolution: exact `case_overrides` match → LLM call (using `hook_model`) → first-option fallback. All other tool checks are deterministic.
 
 Every generated PreToolUse hook entry carries an explicit `timeout` of **120s**
 (`HOOK_TIMEOUT_SECONDS`), sized to the worst case of one AskUserQuestion batch
-(~30s primary LLM answer + ~15s calibration shadow per question × a small
-question-batch factor). Inside the hook, an **in-hook deadline budget** (100s
-on the monotonic clock from hook start) is checked before each *optional* LLM
-call — the calibration shadow — which is skipped with a ledger record
-(`calibration: {skipped: "deadline"}`) instead of risking an external kill
-(a killed PreToolUse hook is silent pass-through). Primary answers are always
-attempted.
+(~30s primary LLM answer + ~15s calibration shadow + up to 2 × ~10s
+cross-simulator shadows per question × a small question-batch factor). Inside
+the hook, an **in-hook deadline budget** (100s on the monotonic clock from
+hook start) is checked before each *optional* LLM call, which is skipped with
+a ledger record (`{skipped: "deadline"}`) instead of risking an external kill
+(a killed PreToolUse hook is silent pass-through). The skip order is strict:
+**cross-simulator shadows yield first** (their skip floor reserves the
+calibration shadow's slice), then the calibration shadow. Primary answers are
+always attempted.
 
 ## tool_handlers.yaml Format
 
@@ -43,6 +45,10 @@ handlers:
 # Model for LLM-based AskUserQuestion answering (from models.hook)
 hook_model: claude-haiku-4-5-20251001
 
+# Cross-family shadow simulators (from models.hook_shadow, max 2) — every
+# intercepted question is also answered by each shadow, logged, never injected
+hook_shadow_models: [gemini-2.5-flash]
+
 # Per-case exact-match answer overrides (optional — LLM answering is preferred)
 case_overrides_source: human            # file-level provenance default for flat entries (default: agent)
 case_overrides:
@@ -62,6 +68,7 @@ case_overrides:
 | `hook_model` | post-load merge (setdefault from models.hook; a resolved file's explicit value wins) | tools.py | Model ID for LLM-based AskUserQuestion answering. Defaults to `claude-haiku-4-5-20251001`. |
 | `case_overrides` | eval-run agent / human (optional) | tools.py | Question → answer map for AskUserQuestion. Exact-match tier — checked before LLM and fallback. Values are flat answers or per-entry `{answer, source}` dicts. |
 | `calibration` | post-load merge (from `inputs.tools[].calibration`) | tools.py | Shadow-run the LLM tier on override-answered questions — held-out, logged to the ledger, never injected. Feeds `summary['simulator'].calibration`. |
+| `hook_shadow_models` | post-load merge (overwrite from `models.hook_shadow`) | tools.py | Cross-family shadow simulators (max 2). Every intercepted question is also answered by each shadow with the question's NORMAL context — logged into the record's `shadows` array, never injected. Feeds `summary['simulator'].cross_simulator`. |
 | `case_overrides_source` | eval-run agent / human | tools.py, score.py | File-level provenance default for flat `case_overrides` entries: `human` \| `agent` (default `agent` — agent authorship is the documented default). Only explicit `human` markings reach the human calibration stratum. |
 
 ## How tools.py Handles Each Tool Type
@@ -95,6 +102,31 @@ exit code (never-crash envelope). Downstream, `score.py` stratifies the
 pairs by `source`: only human-provenance pairs count as **gold agreement**
 (the `thresholds.simulator.min_gold_agreement` gate); agent-provenance pairs
 are labeled "LLM-vs-LLM consistency (not human calibration)".
+
+#### Cross-simulator shadows (not held out)
+
+When `hook_shadow_models` is present (merged from `models.hook_shadow`,
+max 2), **every** intercepted question — whatever tier answered it — is also
+put to each shadow model, and the results land in the record's `shadows`
+array. Invariants:
+
+- **Never injected**: like the calibration shadow, a cross-simulator answer
+  can never change what the agent under test receives or the hook's exit.
+- **Not held out**: the shadows use the question's NORMAL context
+  (`input.yaml` + `answers.yaml`) — they measure whether an independent,
+  ideally cross-family simulator answers like the primary under the same
+  conditions, not answer-key independence.
+- **First skipped**: each shadow call runs on a ~10s timeout and only when
+  the in-hook deadline budget still fits a shadow call *plus* the
+  calibration shadow's slice — so as the budget shrinks, cross-simulator
+  shadows are skipped (`{skipped: "deadline"}`) before the calibration
+  shadow, and long before any primary answer.
+
+Downstream, `score.py` aggregates the entries into
+`summary['simulator'].cross_simulator` (all-agree rate, per-model rates,
+nominal alpha at ≥ 10 fully covered questions, family composition,
+disagreement list), gated by
+`thresholds.simulator.min_cross_simulator_agreement`.
 
 ### MCP Tools (e.g., mcp__atlassian__*)
 
@@ -157,10 +189,7 @@ envelope: a logging failure can never break interception.
 | `cwd` | str | `tool-handlers-missing` records | The hook's CWD (surfaces resolution problems) |
 | `source` | str | `override` records | Case-override provenance: `human` \| `agent`. Only explicit human markings (`case_overrides_source: human` or per-entry `source: human`) count as `human` — unmarked defaults to `agent`. |
 | `calibration` | dict | `override` records on a `calibration: true` handler | The held-out shadow result: `{gold, shadow, agree: bool\|null, held_out: true}` plus `error` (shadow call failed), `skipped: "deadline"\|"no_options"`, and `decoding: {temperature: 0, temperature_stripped: bool}` (the effective decoding config — recorded so a future `samples: k` self-consistency follow-up can refuse alpha over greedy draws). |
-
-**Reserved fields** (documented now, emitted by a later commit — do not
-repurpose): `shadows[{model, answer, error, held_out}]` (cross-family shadow
-simulators, `models.hook_shadow`).
+| `shadows` | list | every answered record when `hook_shadow_models` is configured | One entry per shadow model (cross-family shadow simulators, `models.hook_shadow`): `{model, answer: str\|null, held_out: false}` plus `error` on a failed call, or `{model, skipped: "deadline"\|"no_options"}` when the draw never ran. NOT held out — shadows measure cross-simulator agreement under the question's normal conditions, so their context includes `answers.yaml`; the calibration shadow keeps its held-out semantics separately. Never injected. |
 
 ### Tier semantics
 
@@ -233,7 +262,7 @@ answers. This is *not* simulator calibration.
 
 ## What eval-run Agent Does in Step 3a
 
-Read each handler in `tool_handlers.yaml` and resolve the `prompt` into concrete fields — **preserving the harness-owned keys** (`hook_model`, `calibration`, `case_overrides_source`, and the future `hook_shadow_models`) exactly as written:
+Read each handler in `tool_handlers.yaml` and resolve the `prompt` into concrete fields — **preserving the harness-owned keys** (`hook_model`, `calibration`, `case_overrides_source`, and `hook_shadow_models`) exactly as written:
 
 1. **For AskUserQuestion**: The LLM answerer handles most questions automatically using the handler `prompt` + case context. Only add `case_overrides` entries for questions that need exact deterministic answers. The `answers.yaml` file in each case directory provides guidance the LLM reads at runtime — you don't need to load it into `case_overrides`. Entries you author yourself stay flat (or `{answer, source: agent}`); `source: human` is reserved for answers a human actually supplied — never remove or downgrade an existing human marking. When `calibration` is enabled, human-provenance overrides double as the calibration gold set.
 

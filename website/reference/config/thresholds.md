@@ -164,14 +164,19 @@ Three sub-keys (anything else warns at load and is ignored):
 | --- | --- | --- |
 | `max_fallback_rate` | the share of recorded answer events that were `fallback` or `disabled` — answers the agent under test received arbitrarily or without interception | `fallback_rate <= max_fallback_rate` |
 | `min_gold_agreement` | the held-out calibration-shadow agreement over **human-provenance pairs only** (`inputs.tools[].calibration: true` + `case_overrides_source: human`) | `gold_agreement >= min_gold_agreement` with ≥ 1 human pair |
-| `min_cross_simulator_agreement` | **reserved** — activates with cross-family shadow simulators (`models.hook_shadow`, not yet active); accepted with a load warning, never evaluated | — |
+| `min_cross_simulator_agreement` | the cross-simulator **all-agree rate** — the share of fully shadow-covered questions where every [`models.hook_shadow`](models.md#hook_shadow) shadow answered exactly like the primary hook (`summary['simulator'].cross_simulator`) | `all_agree_rate >= min_cross_simulator_agreement` |
 
 The gates follow the configured-but-unavailable rule: a configured
 `thresholds.simulator` with **no simulator block** in the summary (never
-scored locally, or old summary) is a regression per configured sub-key, and
+scored locally, or old summary) is a regression per configured sub-key,
 `min_gold_agreement` with **zero human-provenance pairs** fails loudly —
 agent-authored override pairs measure LLM-vs-LLM consistency, not human
-calibration, and are never silently substituted.
+calibration, and are never silently substituted — and
+`min_cross_simulator_agreement` with **no recorded shadow answers** (no
+`models.hook_shadow`, or every shadow skipped/errored) is a regression
+pointing at the missing configuration. A cross-simulator breach on a
+**single-family** shadow panel says so in the regression detail:
+within-family agreement is not cross-family robustness.
 
 !!! note "Local scoring path only"
     Harbor and EvalHub aggregations carry no hook-ledger data, so the

@@ -99,6 +99,7 @@ one `judge`.
           <span class="sd-f">subagent</span>
           <span class="sd-f">judge</span>
           <span class="sd-f">hook</span>
+          <span class="sd-f">hook_shadow[]</span>
         </div>
       </div>
       <div class="sd-card">
@@ -217,7 +218,7 @@ one `judge`.
 | `title` | HTML report heading (default: `Agent Eval Report`; `--title` overrides) | *(inline)* |
 | `execution` | What to run and how cases are processed | [execution](config/execution.md) |
 | `runner` | Agent runtime + runtime-specific knobs | [runner](config/runner.md) |
-| `models` | Model per role: skill, subagent, judge, hook | [models](config/models.md) |
+| `models` | Model per role: skill, subagent, judge, hook (+ hook_shadow) | [models](config/models.md) |
 | `permissions` | Tool allow/deny for headless runs | [permissions](config/permissions.md) |
 | `mlflow` | Experiment tracking (opt-in) | [mlflow](config/mlflow.md) |
 | `dataset` | Where cases live and what they contain | [dataset](config/dataset.md) |
@@ -363,7 +364,7 @@ thresholds:
 
 - [**execution**](config/execution.md) — mode, skill/prompt, arguments, timeout, budget, parallelism, env
 - [**runner**](config/runner.md) — type, effort, permission_mode, settings, plugin_dirs, env, system_prompt, command, workspace_mode
-- [**models**](config/models.md) — skill, subagent, judge, hook roles and precedence
+- [**models**](config/models.md) — skill, subagent, judge, hook roles and precedence, plus hook_shadow shadow simulators
 - [**permissions**](config/permissions.md) — allow/deny patterns and the path-based compiler
 - [**mlflow**](config/mlflow.md) — experiment, tracking_uri, tags
 - [**dataset**](config/dataset.md) — path, schema, workspace.files

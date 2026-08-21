@@ -1863,7 +1863,13 @@ def _render_simulator(summary, config):
     case_overrides provenance — the HUMAN stratum is the calibration
     evidence; the agent stratum renders with its verbatim LLM-vs-LLM
     label. The P1 banner fires whenever zero human-provenance pairs
-    exist. Returns '' when the run carries no simulator block.
+    exist. When the block carries ``cross_simulator`` (models.hook_shadow
+    shadow answers), the card adds the agreement rate WITH its family
+    composition (the sensitivity observable — within-family agreement is
+    never sold as robustness), per-model rates, the nominal alpha or its
+    suppression reason, a compact collapsible disagreement list, and a
+    single-family caveat when every classifiable model shares the
+    primary's family. Returns '' when the run carries no simulator block.
     """
     block = summary.get("simulator") if isinstance(summary, dict) else None
     if not isinstance(block, dict) or not block:
@@ -1938,7 +1944,13 @@ def _render_simulator(summary, config):
         html += (f"<tr><th>Deadline skips</th><td>"
                  f"{block['deadline_skips']} calibration shadow(s) skipped "
                  f"by the in-hook deadline budget</td></tr>\n")
+    cross = (block.get("cross_simulator")
+             if isinstance(block.get("cross_simulator"), dict) else {})
+    if cross:
+        html += _cross_simulator_rows(cross, sim_gates)
     html += "</table>\n"
+    if cross:
+        html += _cross_simulator_notes(cross)
 
     if not calibration.get("n_pairs") and tiers.get("llm"):
         html += ('<p class="validity-note">Calibration shadow disabled — '
@@ -1949,6 +1961,92 @@ def _render_simulator(summary, config):
     if block.get("ledger_scope") == "run":
         html += ('<p class="validity-note">run-level ledger — answers not '
                  "attributed to cases (batch mode)</p>\n")
+    return html
+
+
+def _families_text(families):
+    """`anthropic x2, google x1` composition string (plain text)."""
+    if not isinstance(families, dict) or not families:
+        return ""
+    return ", ".join(f"{fam} x{count}"
+                     for fam, count in sorted(families.items()))
+
+
+def _cross_simulator_rows(cross, sim_gates):
+    """Table rows for the cross-simulator block (models.hook_shadow).
+
+    The agreement rate always renders NEXT TO its family composition — the
+    sensitivity observable: a high all-agree rate over one family is a very
+    different finding than the same rate across families.
+    """
+    html = ""
+    rate = cross.get("all_agree_rate")
+    families_txt = _esc(_families_text(cross.get("families")))
+    if isinstance(rate, (int, float)) and not isinstance(rate, bool):
+        val = f"{rate:.1%}"
+        gate = sim_gates.get("min_cross_simulator_agreement")
+        if isinstance(gate, (int, float)) and not isinstance(gate, bool):
+            cls = "fail" if rate < gate else "pass"
+            val = f'<span class="{cls}">{val}</span> (gate: &ge; {gate})'
+        detail = (f"{val} — {cross.get('n_questions', 0)} fully covered "
+                  f"question(s), uncorrected · families: {families_txt}")
+    else:
+        detail = ("n/a — shadow records exist but no question has full "
+                  f"shadow coverage · families: {families_txt}")
+    html += f"<tr><th>Cross-simulator agreement</th><td>{detail}</td></tr>\n"
+
+    per_model = cross.get("per_model_agreement")
+    if isinstance(per_model, dict) and per_model:
+        parts = []
+        for model, r in per_model.items():
+            r_txt = (f"{r:.1%}" if isinstance(r, (int, float))
+                     and not isinstance(r, bool) else "n/a")
+            parts.append(f"{_esc(str(model))} {r_txt}")
+        html += ("<tr><th>Per-shadow vs primary</th><td>"
+                 + " · ".join(parts) + "</td></tr>\n")
+
+    alpha = cross.get("alpha")
+    if isinstance(alpha, dict) and alpha:
+        value = alpha.get("value")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            a_txt = (f"{value:.3f} ({_esc(str(alpha.get('metric', '?')))}/"
+                     f"{_esc(str(alpha.get('level', '?')))}, "
+                     f"n_units={alpha.get('n_units', '?')})")
+        else:
+            a_txt = ('<span class="skip">n/a</span> — '
+                     + _esc(str(alpha.get("reason")
+                                or alpha.get("reason_code") or "?")))
+        html += f"<tr><th>Cross-simulator alpha</th><td>{a_txt}</td></tr>\n"
+    return html
+
+
+def _cross_simulator_notes(cross):
+    """Caveat + compact disagreement list rendered under the card table."""
+    html = ""
+    if cross.get("single_family"):
+        html += ('<p class="validity-note">Single-family shadow panel — '
+                 "every classifiable simulator shares the primary's "
+                 "provider family, so this agreement is within-family "
+                 "consistency, not cross-family robustness (paper "
+                 "Prescription 4). Configure a cross-family "
+                 "<code>models.hook_shadow</code> via a gateway alias.</p>\n")
+    disagreements = cross.get("disagreements")
+    if isinstance(disagreements, list) and disagreements:
+        html += ("<details><summary>"
+                 f"{len(disagreements)} cross-simulator disagreement(s)"
+                 "</summary>\n<table>\n<tr><th>Question</th>"
+                 "<th>Answers by model</th></tr>\n")
+        for d in disagreements:
+            if not isinstance(d, dict):
+                continue
+            answers = d.get("answers")
+            answers = answers if isinstance(answers, dict) else {}
+            answers_txt = " · ".join(
+                f"<code>{_esc(str(m))}</code>: {_esc(str(a))}"
+                for m, a in answers.items())
+            html += (f"<tr><td>{_esc(str(d.get('question', '')))}</td>"
+                     f"<td>{answers_txt}</td></tr>\n")
+        html += "</table>\n</details>\n"
     return html
 
 

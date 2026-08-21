@@ -1,8 +1,9 @@
 # models
 
 The `models` block sets a default model for each of the four **roles** the harness
-invokes: the skill under test, its subagents, the LLM judges, and the tool-interception
-hook. Each role has its own precedence chain — a CLI flag or config field usually wins
+invokes — the skill under test, its subagents, the LLM judges, and the tool-interception
+hook — plus optional cross-family [shadow simulators](#hook_shadow) for that hook. Each
+role has its own precedence chain — a CLI flag or config field usually wins
 over the block, and two roles fall back to environment variables.
 
 ```yaml title="eval.yaml"
@@ -11,11 +12,15 @@ models:
   subagent: claude-sonnet-4-5 # subagents the skill spawns (optional)
   judge: claude-opus-4-6      # LLM and pairwise judges
   hook: claude-haiku-4-5      # AskUserQuestion auto-answering (optional)
+  # hook_shadow:              # cross-family shadow simulators (max 2) —
+  #   - gemini-2.5-flash      # logged for cross-simulator agreement,
+  #                           # never injected (gateway alias)
 ```
 
-All four fields are optional (`ModelsConfig` defaults them to `None`). Omitting the whole
-block is valid — as long as each role you actually exercise resolves to a non-empty model
-through one of the fallbacks below.
+All fields are optional (`ModelsConfig` defaults the roles to `None` and
+[`hook_shadow`](#hook_shadow) to an empty list). Omitting the whole block is valid — as
+long as each role you actually exercise resolves to a non-empty model through one of the
+fallbacks below.
 
 ## The four roles
 
@@ -112,16 +117,20 @@ A [judge panel](judges.md#judge-panels-cross-family-ensembles) — a per-judge
 member is named explicitly.
 
 !!! note "Same-family advisory (Appendix B.4)"
-    When reliability features are engaged — a `judges[].model` panel or a
-    `consequence`-tagged judge — config load emits **one** `warnings.warn`
+    When reliability features are engaged — a `judges[].model` panel, a
+    `consequence`-tagged judge, or [`models.hook_shadow`](#hook_shadow) —
+    config load emits **one** `warnings.warn`
     if ≥ 2 explicitly configured models (the `models.*` roles plus per-judge
     models, panel members included) all resolve to **one recognized provider
     family**: same-family agents, judges and simulators share training
     lineage and can fail in correlated ways. The check is conservative and
     silent whenever *any* configured id is unrecognized (opaque gateway
     aliases defeat family inference by design), and it never fires on a
-    config with no panel and no consequence tag. Satisfy it with a
-    cross-family judge panel or a cross-family `models.judge` — non-Anthropic
+    config with no panel, no consequence tag and no shadow simulators.
+    Satisfy it with a cross-family judge panel, a cross-family
+    `models.judge`, or cross-family shadow simulators — a `hook_shadow`
+    entry that introduces a second **recognized** family suppresses the
+    advisory for the hook role (within-family shadows don't). Non-Anthropic
     ids are gateway aliases via `ANTHROPIC_BASE_URL`.
 
 ## hook
@@ -143,6 +152,41 @@ inputs:
     - match: AskUserQuestion
       prompt: "Answer as a backend engineer prioritizing correctness."
 ```
+
+## hook_shadow
+
+Cross-family **shadow simulators** for the interception hook: a list of at most **2**
+model ids. Every intercepted `AskUserQuestion` — whatever tier answered it — is *also*
+put to each shadow model with the question's normal context, and the answers are logged
+into the `hook_answers.jsonl` ledger's `shadows` entries. Shadow answers are **never
+injected**: the primary hook answer is what the agent under test receives, always.
+
+```yaml
+models:
+  hook: claude-haiku-4-5
+  hook_shadow:
+    - gemini-2.5-flash     # gateway alias — a genuinely cross-family shadow
+```
+
+Scoring aggregates the ledger into `summary['simulator'].cross_simulator` — the
+all-agree rate between the primary answer and every shadow, per-model agreement, a
+nominal Krippendorff alpha (at ≥ 10 fully shadow-covered questions), the disagreement
+list, and the **family composition**, so within-family agreement is never sold as
+cross-family robustness. Gate it with
+[`thresholds.simulator.min_cross_simulator_agreement`](thresholds.md#the-reserved-simulator-key).
+
+Validation at config load: at most 2 entries, non-empty, distinct, and none equal to
+`models.hook` (a shadow of the primary itself measures nothing). A `hook_shadow`
+without any `inputs.tools` interception warns — shadows only run inside the hook.
+
+!!! warning "Cost and latency"
+    Each shadow adds **one LLM call per intercepted question** (up to 2 with two
+    shadows), inside the hook's wall-clock budget. When the in-hook deadline budget
+    runs tight, shadow calls are the **first** thing skipped (with a
+    `{skipped: "deadline"}` ledger record) — before the calibration shadow, and long
+    before primary answers. Cross-family members are **gateway aliases only** in v1
+    (one Anthropic-Messages client via `ANTHROPIC_BASE_URL` / LiteLLM — no per-model
+    endpoint or secrets surface inside the never-crash hook).
 
 ## Related environment variables
 

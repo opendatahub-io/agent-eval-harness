@@ -127,11 +127,12 @@ thresholds:
 """))
 
 
-def test_cross_simulator_key_accepted_but_warned_reserved(tmp_path):
-    """min_cross_simulator_agreement activates with cross-family shadow
-    simulators (a later commit) — accepted, warned, never evaluated yet."""
-    with pytest.warns(UserWarning,
-                      match="reserved for cross-family shadow simulators"):
+def test_cross_simulator_key_loads_without_the_reserved_warning(tmp_path):
+    """min_cross_simulator_agreement is ACTIVE (cross-family shadow
+    simulators, models.hook_shadow) — the accepted-but-warned reservation is
+    gone; value validation still rides the generic sub-key rule."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         cfg = EvalConfig.from_yaml(_write(tmp_path, BASE + """
 thresholds:
   simulator:

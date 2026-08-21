@@ -1,11 +1,13 @@
 """summary['simulator'] aggregation + the reserved thresholds.simulator gates.
 
 Covers `aggregate_simulator` (tier distribution, fallback rate, by-source
-gold-agreement stratification, deadline skips, ledger scope),
+gold-agreement stratification, deadline skips, ledger scope, the
+`cross_simulator` block from models.hook_shadow shadow records),
 `_detect_simulator_regressions` (human-stratum-only gold gate, fail-loud on
-zero human pairs, explicit-missing rule), the `score.py simulator`
-re-aggregation subcommand, the report card's P1 banner, and the
-Harbor/EvalHub scoping (strip + include_irr=False skip +
+zero human pairs, explicit-missing rule, the active
+min_cross_simulator_agreement gate), the `score.py simulator`
+re-aggregation subcommand, the report card's P1 banner + cross-simulator
+rows, and the Harbor/EvalHub scoping (strip + include_irr=False skip +
 config_translator's pass_criteria exclusion).
 """
 
@@ -224,9 +226,11 @@ def test_zero_human_pairs_regresses_loudly(tmp_path):
 def test_configured_but_no_simulator_block_regresses_per_key():
     regs = detect_regressions(
         {"q": {"mean": 4.0, "scored_cases": 3}},
-        {"simulator": {"max_fallback_rate": 0.0, "min_gold_agreement": 0.8}},
+        {"simulator": {"max_fallback_rate": 0.0, "min_gold_agreement": 0.8,
+                       "min_cross_simulator_agreement": 0.7}},
         simulator=None)
-    assert sorted(r.metric for r in regs) == ["fallback_rate",
+    assert sorted(r.metric for r in regs) == ["cross_simulator_agreement",
+                                              "fallback_rate",
                                               "gold_agreement"]
     assert all(r.judge_name == "simulator" for r in regs)
     assert all("no simulator block in summary" in r.detail for r in regs)
@@ -246,16 +250,164 @@ def test_the_reserved_key_never_hits_the_judge_loop(tmp_path):
     assert regs == []
 
 
-def test_cross_simulator_key_is_not_evaluated_yet(tmp_path):
-    """min_cross_simulator_agreement is reserved for cross-family shadow
-    simulators (a later commit): configured today, it neither regresses nor
-    errors — config load already warned about it."""
-    block = _sim_block(tmp_path)
+# --- cross_simulator (models.hook_shadow shadow records) ---------------------
+
+def _shadow(model, answer=None, **extra):
+    entry = {"model": model, "answer": answer, "held_out": False}
+    entry.update(extra)
+    return entry
+
+
+SHADOW_RECORDS = [
+    {"tier": "llm", "question": "Q1", "answer": "A",
+     "hook_model": "claude-haiku-4-5",
+     "shadows": [_shadow("gemini-2.5-flash", "A"), _shadow("gpt-4o", "A")]},
+    {"tier": "override", "question": "Q2", "answer": "B", "source": "human",
+     "shadows": [_shadow("gemini-2.5-flash", "B"), _shadow("gpt-4o", "X")]},
+    # partial coverage: gpt-4o deadline-skipped — excluded from n_questions
+    {"tier": "fallback", "question": "Q3", "answer": "C",
+     "shadows": [_shadow("gemini-2.5-flash", "C"),
+                 {"model": "gpt-4o", "skipped": "deadline"}]},
+    # partial coverage: gemini errored
+    {"tier": "llm", "question": "Q4", "answer": "D",
+     "hook_model": "claude-haiku-4-5",
+     "shadows": [_shadow("gemini-2.5-flash", None, error="boom"),
+                 _shadow("gpt-4o", "D")]},
+    # no shadows on this record — never enters cross_simulator
+    {"tier": "llm", "question": "Q5", "answer": "E",
+     "hook_model": "claude-haiku-4-5"},
+]
+
+
+def test_cross_simulator_block_shape_and_rates(tmp_path):
+    block = _sim_block(tmp_path, SHADOW_RECORDS)
+    cross = block["cross_simulator"]
+    # primary = modal recorded hook_model, then each shadow in seen order
+    assert cross["models"] == ["claude-haiku-4-5", "gemini-2.5-flash",
+                               "gpt-4o"]
+    assert cross["families"] == {"anthropic": 1, "google": 1, "openai": 1}
+    assert cross["single_family"] is False
+    # full shadow coverage = Q1, Q2 only (Q3 skipped shadow, Q4 errored one)
+    assert cross["n_questions"] == 2
+    assert cross["n_shadowed_questions"] == 4
+    assert cross["all_agree_rate"] == 0.5
+    assert "uncorrected" in cross["all_agree_label"]
+    # per-model rates run over each model's own answered questions
+    assert cross["per_model_agreement"] == {"gemini-2.5-flash": 1.0,
+                                            "gpt-4o": round(2 / 3, 3)}
+    assert cross["shadow_deadline_skips"] == 1
+    assert cross["shadow_errors"] == 1
+    # 2 covered questions < 10 -> alpha suppressed, never fabricated
+    alpha = cross["alpha"]
+    assert alpha["value"] is None
+    assert alpha["reason_code"] == "insufficient_data"
+    assert alpha["n_units"] == 2
+    # the single disagreement names every answering model
+    assert cross["disagreements"] == [{
+        "question": "Q2",
+        "answers": {"claude-haiku-4-5": "B", "gemini-2.5-flash": "B",
+                    "gpt-4o": "X"}}]
+
+
+def test_cross_simulator_absent_without_shadow_records(tmp_path):
+    assert "cross_simulator" not in _sim_block(tmp_path)  # MIXED_RECORDS
+
+
+def _bulk_shadow_records(n, disagree_on=(), models=("gemini-2.5-flash",)):
+    records = []
+    for i in range(n):
+        primary = "Yes" if i % 2 else "No"
+        shadows = []
+        for m in models:
+            ans = "X" if i in disagree_on else primary
+            shadows.append(_shadow(m, ans))
+        records.append({"tier": "llm", "question": f"Q{i}",
+                        "answer": primary,
+                        "hook_model": "claude-haiku-4-5",
+                        "shadows": shadows})
+    return records
+
+
+def test_cross_simulator_alpha_computed_at_ten_questions(tmp_path):
+    block = _sim_block(tmp_path, _bulk_shadow_records(12, disagree_on=(3, 7)))
+    cross = block["cross_simulator"]
+    assert cross["n_questions"] == 12
+    alpha = cross["alpha"]
+    assert isinstance(alpha["value"], float)
+    assert alpha["metric"] == "krippendorff_alpha"
+    assert alpha["level"] == "nominal"
+    assert alpha["n_units"] == 12
+    assert "reason_code" not in alpha
+    assert cross["all_agree_rate"] == round(10 / 12, 3)
+
+
+def test_cross_simulator_disagreements_capped_at_twenty(tmp_path):
+    records = _bulk_shadow_records(30, disagree_on=range(25))
+    cross = _sim_block(tmp_path, records)["cross_simulator"]
+    assert len(cross["disagreements"]) == 20
+
+
+def test_cross_simulator_single_family_flag(tmp_path):
+    """All KNOWN families identical -> single_family, even next to an
+    unclassifiable gateway alias (the families dict still shows the
+    unknown count)."""
+    cross = _sim_block(
+        tmp_path,
+        _bulk_shadow_records(2, models=("claude-opus-4-8",)))[
+            "cross_simulator"]
+    assert cross["single_family"] is True
+
+    cross = _sim_block(
+        tmp_path / "alias",
+        _bulk_shadow_records(2, models=("claude-opus-4-8", "my-alias")))[
+            "cross_simulator"]
+    assert cross["single_family"] is True
+    assert cross["families"] == {"anthropic": 2, "unknown": 1}
+
+
+def test_cross_simulator_gate_three_states(tmp_path):
+    """Active min_cross_simulator_agreement: breach / clean /
+    configured-but-unavailable (no shadows at all, and shadows without a
+    single fully covered question)."""
+    block = _sim_block(tmp_path, SHADOW_RECORDS)  # all_agree_rate 0.5
+    regs = _detect_simulator_regressions(
+        block, {"min_cross_simulator_agreement": 0.8})
+    assert [r.metric for r in regs] == ["cross_simulator_agreement"]
+    assert regs[0].current_value == "0.500"
+    assert "families:" in regs[0].detail
+    assert "single_family" not in regs[0].detail  # cross-family panel
+
     assert _detect_simulator_regressions(
-        block, {"min_cross_simulator_agreement": 0.7}) == []
-    assert detect_regressions(
-        {}, {"simulator": {"min_cross_simulator_agreement": 0.7}},
-        simulator=None) == []
+        block, {"min_cross_simulator_agreement": 0.5}) == []
+
+    # no shadow records ever -> loud pointer at models.hook_shadow
+    no_shadows = _sim_block(tmp_path / "ns")
+    regs = _detect_simulator_regressions(
+        no_shadows, {"min_cross_simulator_agreement": 0.5})
+    assert len(regs) == 1
+    assert "configure models.hook_shadow" in regs[0].detail
+
+    # shadows exist but zero fully covered questions
+    partial = [{"tier": "llm", "question": "Q1", "answer": "A",
+                "hook_model": "claude-haiku-4-5",
+                "shadows": [{"model": "gemini-2.5-flash",
+                             "skipped": "deadline"}]}]
+    block = _sim_block(tmp_path / "partial", partial)
+    regs = _detect_simulator_regressions(
+        block, {"min_cross_simulator_agreement": 0.5})
+    assert len(regs) == 1
+    assert "no question has full shadow coverage" in regs[0].detail
+
+
+def test_cross_simulator_breach_notes_single_family(tmp_path):
+    block = _sim_block(
+        tmp_path, _bulk_shadow_records(4, disagree_on=(0, 1, 2),
+                                       models=("claude-opus-4-8",)))
+    regs = _detect_simulator_regressions(
+        block, {"min_cross_simulator_agreement": 0.9})
+    assert len(regs) == 1
+    assert "single_family: true" in regs[0].detail
+    assert "not cross-family robustness" in regs[0].detail
 
 
 # --- subcommand re-aggregation ---------------------------------------------
@@ -316,6 +468,42 @@ def test_report_batch_note_and_gates(tmp_path):
 def test_report_renders_nothing_without_a_block():
     assert report._render_simulator({}, {}) == ""
     assert report._render_simulator({"simulator": {}}, {}) == ""
+
+
+def test_report_cross_simulator_rows_and_disagreements(tmp_path):
+    block = _sim_block(tmp_path, SHADOW_RECORDS)
+    html = report._render_simulator(
+        {"simulator": block},
+        {"thresholds": {"simulator": {
+            "min_cross_simulator_agreement": 0.8}}})
+    assert "Cross-simulator agreement" in html
+    # agreement renders NEXT TO the family composition (the sensitivity
+    # observable), with the gate colored as a breach (0.5 < 0.8)
+    assert "anthropic x1, google x1, openai x1" in html
+    assert "gate: &ge; 0.8" in html
+    assert '<span class="fail">50.0%</span>' in html
+    assert "Per-shadow vs primary" in html
+    assert "alpha suppressed" in html  # the suppressed alpha says why
+    # compact, collapsible disagreement list
+    assert "<details>" in html
+    assert "1 cross-simulator disagreement(s)" in html
+    assert "Q2" in html
+    # cross-family panel: no single-family caveat
+    assert "Single-family shadow panel" not in html
+
+
+def test_report_cross_simulator_single_family_caveat(tmp_path):
+    block = _sim_block(
+        tmp_path, _bulk_shadow_records(4, models=("claude-opus-4-8",)))
+    html = report._render_simulator({"simulator": block}, {})
+    assert "Single-family shadow panel" in html
+    assert "not cross-family robustness" in html
+
+
+def test_report_without_cross_simulator_block_has_no_rows(tmp_path):
+    html = report._render_simulator(
+        {"simulator": _sim_block(tmp_path)}, {})
+    assert "Cross-simulator agreement" not in html
 
 
 def test_validity_v2_picks_up_the_simulator_status(tmp_path):

@@ -39,12 +39,14 @@ _INTERCEPTOR_SCRIPT = (
 
 #: Explicit wall-clock timeout (seconds) for every generated PreToolUse hook
 #: entry. Sized to the worst case of one AskUserQuestion batch: ~30s primary
-#: LLM answer + ~15s calibration shadow per question, times a small
-#: question-batch factor (a batch carries a handful of questions) ≈ 120s.
+#: LLM answer + ~15s calibration shadow + up to 2 × ~10s cross-simulator
+#: shadows per question, times a small question-batch factor (a batch
+#: carries a handful of questions) ≈ 120s.
 #: The interceptor enforces its own in-hook deadline budget BELOW this bound
 #: (see the mirrored constants in skills/eval-run/scripts/tools.py) so
 #: optional calls degrade to a ledger-recorded skip instead of an external
-#: kill — a killed PreToolUse hook is silent pass-through.
+#: kill (cross-simulator shadows yield first, then the calibration shadow)
+#: — a killed PreToolUse hook is silent pass-through.
 HOOK_TIMEOUT_SECONDS = 120
 
 
@@ -113,9 +115,11 @@ def merge_handler_knobs(handler_data: dict, config: "EvalConfig") -> dict:
     :func:`build_handlers` output AND a pre-resolved ``tool_handlers.yaml``
     (whose load path bypasses ``build_handlers`` entirely). eval.yaml owns
     the runtime knobs (``hook_model`` from ``models.hook``, ``calibration``
-    from ``inputs.tools``); the resolved file owns patterns / input_filters /
-    env_checks / case_overrides (+ their ``case_overrides_source`` / per-entry
-    ``source`` provenance), which flow through untouched.
+    from ``inputs.tools``, ``hook_shadow_models`` from
+    ``models.hook_shadow``); the resolved file owns patterns /
+    input_filters / env_checks / case_overrides (+ their
+    ``case_overrides_source`` / per-entry ``source`` provenance), which flow
+    through untouched.
 
     - ``hook_model``: ``setdefault`` from ``config.models.hook`` — an
       explicit value in the resolved file wins. Deliberate behavior fix,
@@ -127,6 +131,10 @@ def merge_handler_knobs(handler_data: dict, config: "EvalConfig") -> dict:
       rewrote the match text), it falls back to every handler whose patterns
       would match AskUserQuestion, with a stderr warning naming the
       unjoined match.
+    - ``hook_shadow_models``: overwritten from ``config.models.hook_shadow``
+      when non-empty — eval.yaml owns the models; the interceptor answers
+      every intercepted AskUserQuestion with each shadow too (logged to the
+      ledger, never injected).
     """
     handlers = handler_data.get("handlers") or []
     by_match = {h.get("match"): h for h in handlers if isinstance(h, dict)}
@@ -153,6 +161,12 @@ def merge_handler_knobs(handler_data: dict, config: "EvalConfig") -> dict:
             f"supplied {config.models.hook!r} from models.hook (previously "
             "the interceptor silently fell back to its hardcoded default)",
             file=sys.stderr)
+    if config.models.hook_shadow:
+        # Overwrite, never setdefault: eval.yaml owns the models. The
+        # interceptor caps at 2 as well (defense in depth on a hand-edited
+        # handler file).
+        handler_data["hook_shadow_models"] = list(
+            config.models.hook_shadow)[:2]
     return handler_data
 
 

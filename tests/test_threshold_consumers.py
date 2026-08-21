@@ -128,9 +128,26 @@ def test_the_cli_gate_behaves_as_the_table_says(key, judges, thresholds, hc,
 # carries a REAL judge so a phantom judge-loop lookup for 'simulator'
 # ("n/a pass_rate") would show up as an unexpected regression.
 
-def _sim_summary(fallback_rate=0.0, human_n=2, human_agree=2):
+def _sim_summary(fallback_rate=0.0, human_n=2, human_agree=2,
+                 cross_rate=None):
     human_rate = round(human_agree / human_n, 3) if human_n else None
-    return {
+    cross = None
+    if cross_rate is not None:
+        cross = {
+            "models": ["claude-haiku-4-5", "gemini-2.5-flash"],
+            "families": {"anthropic": 1, "google": 1},
+            "single_family": False,
+            "n_questions": 5,
+            "all_agree_rate": cross_rate,
+            "all_agree_label": "cross-simulator all-agree rate (uncorrected)",
+            "per_model_agreement": {"gemini-2.5-flash": cross_rate},
+            "alpha": {"metric": "krippendorff_alpha", "level": "nominal",
+                      "value": None, "n_units": 5,
+                      "reason_code": "insufficient_data",
+                      "reason": "alpha suppressed: 5 < 10"},
+            "disagreements": [],
+        }
+    out = {
         "status": "calibrated" if human_n else "uncalibrated simulator",
         "tiers": {"override": 4, "llm": 1, "fallback": 0, "disabled": 0},
         "n_questions": 5,
@@ -151,6 +168,9 @@ def _sim_summary(fallback_rate=0.0, human_n=2, human_agree=2):
         "deadline_skips": 0,
         "ledger_scope": "case",
     }
+    if cross is not None:
+        out["cross_simulator"] = cross
+    return out
 
 
 _SIM_JUDGES = {"q": {"mean": 4.0, "pass_rate": 1.0, "scored_cases": 5}}
@@ -172,6 +192,21 @@ SIM_CASES = [
     ("configured but no simulator block in the summary",
      None,
      {"simulator": {"max_fallback_rate": 0.0}}, True),
+    # Cross-simulator gate (measurement-validity PR10). Three-state rule:
+    # breach / clean / configured-but-unavailable (no cross_simulator
+    # block — models.hook_shadow never answered) = regression.
+    ("cross-simulator agreement breach",
+     _sim_summary(cross_rate=0.5),
+     {"simulator": {"min_cross_simulator_agreement": 0.8}}, True),
+    ("cross-simulator agreement clean",
+     _sim_summary(cross_rate=0.9),
+     {"simulator": {"min_cross_simulator_agreement": 0.8}}, False),
+    ("cross-simulator configured but no shadow answers recorded",
+     _sim_summary(),
+     {"simulator": {"min_cross_simulator_agreement": 0.8}}, True),
+    ("cross-simulator configured but no simulator block at all",
+     None,
+     {"simulator": {"min_cross_simulator_agreement": 0.8}}, True),
 ]
 
 
@@ -209,10 +244,12 @@ def test_the_mlflow_tag_matches_the_cli_for_simulator_gates(key, sim,
 
 def test_harbor_paths_skip_the_simulator_gates_like_the_cli():
     """include_irr=False (the Harbor/EvalHub call shape — those paths also
-    strip the key with a notice) evaluates no simulator gate, and the
-    harbor-mode report agrees."""
+    strip the WHOLE reserved key with a notice, so the active
+    min_cross_simulator_agreement is covered for free) evaluates no
+    simulator gate, and the harbor-mode report agrees."""
     thresholds = {"simulator": {"max_fallback_rate": 0.0,
-                                "min_gold_agreement": 0.9}}
+                                "min_gold_agreement": 0.9,
+                                "min_cross_simulator_agreement": 0.9}}
     assert detect_regressions(_SIM_JUDGES, thresholds,
                               include_irr=False, simulator=None) == []
     assert not report._render_regressions(

@@ -116,6 +116,10 @@ models:
   # subagent: claude-sonnet-4-6  # Defaults to skill model
   judge: claude-opus-4-6         # LLM and pairwise judges need a strong model
   # hook: claude-sonnet-4-6      # For AskUserQuestion answering (fast, cheaper than Opus)
+  # hook_shadow:                 # Cross-family shadow simulators (max 2, must differ
+  #   - gemini-2.5-flash         # from hook; gateway alias). Answer every intercepted
+  #                              # question too — logged for cross-simulator agreement,
+  #                              # NEVER injected. Adds up to 2 LLM calls per question.
 
 # Permissions for headless execution
 # The Skill tool requires explicit permission in --print mode.
@@ -413,8 +417,11 @@ thresholds:
   #                              # calibration: true + case_overrides_source:
   #                              # human); stripped with a notice on the
   #                              # Harbor/EvalHub paths.
-  #   # min_cross_simulator_agreement: 0.7  # reserved — activates with
-  #   #                                     # models.hook_shadow (not yet)
+  #   min_cross_simulator_agreement: 0.7  # all-agree rate between the
+  #                              # primary hook answer and every
+  #                              # models.hook_shadow shadow answer;
+  #                              # configured without recorded shadow
+  #                              # answers is a regression.
 
 # Reward composition (OPTIONAL) — collapse per-judge results into a single
 # scalar in [0, 1] for RL training (GRPO). Only needed when training; the

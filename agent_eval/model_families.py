@@ -18,6 +18,16 @@ purity guard keeps free of heavyweight stats/data stacks.
 
 import re
 
+#: The interceptor's hardcoded default hook model — a mirror of the literal
+#: in ``skills/eval-run/scripts/tools.py`` (``_llm_answer``'s
+#: ``model or "..."`` fallback). tools.py runs copied into workspaces where
+#: ``agent_eval`` is not importable, so it cannot import this constant; a
+#: drift-guard test (tests/test_model_families.py) asserts the two literals
+#: match by scanning the tools.py source. Used when ``models.hook`` is unset
+#: but the hook role must still be classified (e.g. the same-family advisory
+#: with ``models.hook_shadow`` configured).
+DEFAULT_HOOK_MODEL = "claude-haiku-4-5-20251001"
+
 # LiteLLM-style route prefixes (``anthropic/claude-…``, ``vertex_ai/gemini-…``,
 # ``openrouter/anthropic/claude-…``): the segments before the last ``/`` are
 # routing, not identity — strip them and classify the final model id only.
@@ -102,26 +112,57 @@ def family_composition(model_ids):
     return composition
 
 
-def same_family_advisory(role_models, panel_models=()):
+def same_family_advisory(role_models, panel_models=(), hook_model=None,
+                         hook_shadow_models=()):
     """Appendix-B.4 advisory text, or ``None`` when no claim can be made.
 
-    ``role_models`` are the explicitly configured role/judge model ids
-    (``models.skill/subagent/judge/hook`` when set, plus per-judge single
+    ``role_models`` are the explicitly configured non-hook role/judge model
+    ids (``models.skill/subagent/judge`` when set, plus per-judge single
     models); ``panel_models`` is the flat list of ``judges[].model`` panel
-    entries. Returns the warning text when >= 2 collected ids ALL classify
-    (no unknowns anywhere) into exactly ONE provider family; otherwise
-    ``None``. An unclassifiable id (opaque gateway alias) silences the claim
-    by design — unknown means silent, never a warning.
+    entries; ``hook_model``/``hook_shadow_models`` are ``models.hook`` and
+    ``models.hook_shadow``. Returns the warning text when >= 2 collected ids
+    ALL classify (no unknowns anywhere) into exactly ONE provider family;
+    otherwise ``None``. An unclassifiable id (opaque gateway alias) silences
+    the claim by design — unknown means silent, never a warning.
+
+    Shadow handling: when shadows are configured, the hook role is compared
+    against them (an unset ``hook_model`` classifies as
+    :data:`DEFAULT_HOOK_MODEL` — the model that will actually answer).
+    Shadows that introduce a second KNOWN family SUPPRESS the hook role from
+    the same-family pool — they are the cross-family mitigation for the
+    simulator layer, so only the remaining roles can still trigger the
+    advisory. Pure within-family (or unclassifiable) shadows do NOT
+    suppress: hook and shadows join the pool, so an all-one-family
+    hook+shadow set still warns (an unknown shadow then silences the claim
+    like any other unknown id).
 
     The CALLER decides when the check is engaged. Per user decision Q2 it
     fires only when reliability features are in play — a ``judges[].model``
-    panel or a consequence-tagged judge (``models.hook_shadow`` does not
-    exist yet; it joins the engagement test when it ships) — and at most
-    once per config load. The run-report same-family caveat is separate and
-    always renders.
+    panel, a consequence-tagged judge, or ``models.hook_shadow`` — and at
+    most once per config load. The run-report same-family caveat is
+    separate and always renders.
     """
     models = [m for m in list(role_models or []) + list(panel_models or [])
               if isinstance(m, str) and m.strip()]
+    shadows = [m for m in list(hook_shadow_models or [])
+               if isinstance(m, str) and m.strip()]
+    hook = (hook_model.strip()
+            if isinstance(hook_model, str) and hook_model.strip() else None)
+    if shadows:
+        # The hook role always answers with SOME model: classify the
+        # interceptor's hardcoded default when models.hook is unset.
+        hook = hook or DEFAULT_HOOK_MODEL
+        hook_family = infer_model_family(hook)
+        cross_family_shadow = hook_family is not None and any(
+            f is not None and f != hook_family
+            for f in (infer_model_family(s) for s in shadows))
+        if not cross_family_shadow:
+            models.append(hook)
+            models.extend(shadows)
+        # else: hook role suppressed — the shadows decorrelate the
+        # simulator layer; the other roles alone may still warn.
+    elif hook:
+        models.append(hook)
     if len(models) < 2:
         return None
     families = [infer_model_family(m) for m in models]
@@ -133,7 +174,8 @@ def same_family_advisory(role_models, panel_models=()):
         f"All configured models resolve to one provider family "
         f"({families[0]}): correlated failures across generation/judgment/"
         "simulation layers (arXiv 2608.00794 Appendix B.4). Consider a "
-        "cross-family judge panel (judges[].model as a list) — "
+        "cross-family judge panel (judges[].model as a list) or "
+        "cross-family shadow simulators (models.hook_shadow) — "
         "non-Anthropic members require an Anthropic-Messages-compatible "
         "gateway via ANTHROPIC_BASE_URL."
     )

@@ -598,6 +598,15 @@ class ModelsConfig:
     subagent: Optional[str] = None
     judge: Optional[str] = None
     hook: Optional[str] = None
+    #: Cross-family shadow simulators (max 2 model ids): every intercepted
+    #: AskUserQuestion is ALSO answered by each shadow model, logged to the
+    #: hook_answers ledger (`shadows` entries) and NEVER injected — the
+    #: primary hook answer is what the agent under test receives. Feeds
+    #: `summary['simulator'].cross_simulator` and the
+    #: `thresholds.simulator.min_cross_simulator_agreement` gate. Entries
+    #: must be distinct and differ from `hook`; non-Anthropic ids are
+    #: gateway aliases (ANTHROPIC_BASE_URL / LiteLLM).
+    hook_shadow: list = field(default_factory=list)
 
 
 @dataclass
@@ -674,9 +683,9 @@ THRESHOLD_KEYS = frozenset({
 #: run-level ``summary['simulator']`` block (aggregated from the
 #: hook_answers.jsonl ledgers by ``score.py``), never a judge — a judge
 #: literally named "simulator" is rejected when the block coexists (and
-#: DeprecationWarning'd otherwise). ``min_cross_simulator_agreement`` is
-#: accepted-but-warned: it activates with cross-family shadow simulators
-#: (``models.hook_shadow``) in a later commit.
+#: DeprecationWarning'd otherwise). ``min_cross_simulator_agreement`` gates
+#: the cross-simulator all-agree rate recorded by ``models.hook_shadow``
+#: shadow simulators (``summary['simulator'].cross_simulator``).
 SIMULATOR_THRESHOLD_KEYS = frozenset({
     "max_fallback_rate", "min_gold_agreement", "min_cross_simulator_agreement",
 })
@@ -712,13 +721,6 @@ def _parse_simulator_thresholds(entry):
             raise ValueError(
                 f"thresholds.simulator.max_fallback_rate must be >= 0 "
                 f"(it is a rate), got: {value!r}")
-        if key == "min_cross_simulator_agreement":
-            warnings.warn(
-                "thresholds.simulator.min_cross_simulator_agreement is "
-                "reserved for cross-family shadow simulators "
-                "(models.hook_shadow — not yet active); it is accepted but "
-                "not evaluated by regression detection yet",
-                stacklevel=3)
 
 
 def _parse_thresholds(raw_thresholds):
@@ -1268,11 +1270,37 @@ class EvalConfig:
 
         # Models block
         models_raw = raw.get("models", {}) or {}
+        hook_shadow_raw = models_raw.get("hook_shadow") or []
+        if not isinstance(hook_shadow_raw, list):
+            raise ValueError(
+                "models.hook_shadow must be a list of at most 2 model ids, "
+                f"got: {hook_shadow_raw!r}")
+        if len(hook_shadow_raw) > 2:
+            raise ValueError(
+                "models.hook_shadow must be a list of at most 2 model ids "
+                f"(got {len(hook_shadow_raw)}) — every shadow adds one LLM "
+                "call per intercepted question inside the hook budget")
+        for i, entry in enumerate(hook_shadow_raw):
+            if not isinstance(entry, str) or not entry.strip():
+                raise ValueError(
+                    f"models.hook_shadow[{i}] must be a non-empty string, "
+                    f"got: {entry!r}")
+        if len(set(hook_shadow_raw)) != len(hook_shadow_raw):
+            raise ValueError(
+                "models.hook_shadow entries must be distinct — a duplicate "
+                "shadow measures nothing")
+        if models_raw.get("hook") and models_raw["hook"] in hook_shadow_raw:
+            raise ValueError(
+                f"models.hook_shadow entry {models_raw['hook']!r} duplicates "
+                "models.hook — a shadow of the primary simulator itself "
+                "measures nothing; pick a different (ideally cross-family) "
+                "model")
         models = ModelsConfig(
             skill=models_raw.get("skill"),
             subagent=models_raw.get("subagent"),
             judge=models_raw.get("judge"),
             hook=models_raw.get("hook"),
+            hook_shadow=list(hook_shadow_raw),
         )
 
         # MLflow block. Experiment defaults to the eval's top-level
@@ -1415,6 +1443,15 @@ class EvalConfig:
                     calibration=calibration_val,
                 )
             )
+
+        if models.hook_shadow and not config.inputs.tools:
+            import warnings
+            warnings.warn(
+                "models.hook_shadow is set but inputs.tools is empty — "
+                "shadow simulators only run inside the AskUserQuestion "
+                "interception hook, so no shadow answer will ever be "
+                "recorded",
+                stacklevel=2)
 
         # Traces
         traces = raw.get("traces", {})
@@ -1785,16 +1822,19 @@ class EvalConfig:
                     stacklevel=2)
 
         # Appendix-B.4 same-family advisory (user decision Q2): fires ONLY
-        # when reliability features are engaged — a judges[].model panel or
-        # a consequence-tagged judge. (models.hook_shadow does not exist
-        # yet; when it ships it joins this engagement test.) At most one
-        # warning per load; unknown ids (gateway aliases) stay silent inside
-        # same_family_advisory. The run-report same-family caveat is
-        # independent of this and always renders.
-        if any(jc.panel_models or jc.consequence for jc in config.judges):
+        # when reliability features are engaged — a judges[].model panel, a
+        # consequence-tagged judge, or models.hook_shadow shadow simulators.
+        # At most one warning per load; unknown ids (gateway aliases) stay
+        # silent inside same_family_advisory, and cross-family shadows
+        # suppress the hook role there (they ARE the mitigation for the
+        # simulator layer). The run-report same-family caveat is independent
+        # of this and always renders.
+        if (models.hook_shadow
+                or any(jc.panel_models or jc.consequence
+                       for jc in config.judges)):
             from agent_eval.model_families import same_family_advisory
             role_models = [m for m in (models.skill, models.subagent,
-                                       models.judge, models.hook)
+                                       models.judge)
                            if m and isinstance(m, str)]
             panel_entries = []
             for jc in config.judges:
@@ -1802,7 +1842,10 @@ class EvalConfig:
                     panel_entries.extend(jc.panel_models)
                 elif jc.model:
                     role_models.append(jc.model)
-            advisory = same_family_advisory(role_models, panel_entries)
+            advisory = same_family_advisory(
+                role_models, panel_entries,
+                hook_model=models.hook,
+                hook_shadow_models=models.hook_shadow)
             if advisory:
                 import warnings
                 warnings.warn(advisory, stacklevel=2)

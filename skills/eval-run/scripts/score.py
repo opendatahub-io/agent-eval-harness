@@ -40,7 +40,9 @@ import yaml
 from agent_eval.config import (
     EvalConfig, RunnerConfig, _is_valid_eval_name, _validate_path_segment,
 )
-from agent_eval.model_families import family_composition, infer_model_family
+from agent_eval.model_families import (
+    DEFAULT_HOOK_MODEL, family_composition, infer_model_family,
+)
 from agent_eval.tools.interception import extract_tool_patterns
 from agent_eval.reliability import (
     INTERVAL, NOMINAL, ORDINAL,
@@ -82,6 +84,22 @@ SIM_GOLD_AGENT_LABEL = ("LLM-vs-LLM consistency (not human calibration) "
                         "— uncorrected")
 #: Cap on the per-pair detail list persisted in the human stratum.
 _SIM_PAIRS_CAP = 50
+
+# Cross-simulator agreement (summary['simulator'].cross_simulator) — the
+# primary hook answer vs each models.hook_shadow shadow answer, per
+# question. Raw agreement is uncorrected; the chance-corrected view is the
+# nominal Krippendorff alpha over questions x (primary + shadows), computed
+# only at >= _XSIM_ALPHA_MIN_QUESTIONS fully-covered questions (below that
+# the coefficient is noise).
+XSIM_AGREE_LABEL = ("cross-simulator all-agree rate — primary answer "
+                    "matched by every shadow (uncorrected)")
+XSIM_ALPHA_RATIONALE = (
+    "Krippendorff's alpha over the questions × simulators matrix: the "
+    "primary hook answer and each shadow model's answer are raters on one "
+    "question; only fully shadow-covered questions enter (paper Sec 5.3).")
+_XSIM_ALPHA_MIN_QUESTIONS = 10
+#: Cap on the persisted cross-simulator disagreement list.
+_XSIM_DISAGREEMENTS_CAP = 20
 
 # Log (don't silently blank) any undefined variable a judge template references.
 _TEMPLATE_LOGGER = logging.getLogger("agent_eval.judge_template")
@@ -3413,6 +3431,13 @@ def aggregate_simulator(config, run_id, runs_dir, case_dirs=None):
       LLM-vs-LLM consistency. Raw agreement + n only (nominal labels,
       tiny n — no chance-corrected coefficient).
     - ``deadline_skips`` — shadows skipped by the in-hook deadline budget.
+    - ``cross_simulator`` — present only when ``models.hook_shadow``
+      shadow answers exist in the ledger: per-question agreement between
+      the primary hook answer and each shadow model (all-agree rate,
+      per-model rates, nominal alpha at >= 10 fully-covered questions,
+      capped disagreement list, family composition + ``single_family`` so
+      within-family agreement is never sold as cross-family robustness).
+      Gated by ``thresholds.simulator.min_cross_simulator_agreement``.
     - ``ledger_scope`` — ``case`` | ``run`` (batch root ledger,
       unattributed) | ``missing``.
     - ``status`` — ``calibrated`` iff >= 1 human-provenance pair exists,
@@ -3509,10 +3534,128 @@ def aggregate_simulator(config, run_id, runs_dir, case_dirs=None):
     }
     if hook_models:
         block["hook_model"] = max(hook_models, key=hook_models.get)
+    # Cross-simulator agreement (models.hook_shadow). The primary rater id:
+    # the modal recorded hook_model, else the configured models.hook, else
+    # the interceptor's hardcoded default (override-only runs record no
+    # hook_model — the primary answers still came from the tiers, and the
+    # family label wants the model that WOULD have answered tier 2).
+    primary_model = (block.get("hook_model") or config.models.hook
+                     or DEFAULT_HOOK_MODEL)
+    cross = _aggregate_cross_simulator(records, primary_model)
+    if cross is not None:
+        block["cross_simulator"] = cross
     if ledger_scope == "run":
         block["note"] = ("run-level ledger — answers not attributed to "
                          "cases (batch mode)")
     return block
+
+
+def _aggregate_cross_simulator(records, primary_model):
+    """The ``cross_simulator`` sub-block, or ``None`` without shadow records.
+
+    Units are questions; raters are the primary hook answer plus each
+    ``models.hook_shadow`` shadow answer from the record's ``shadows``
+    array. ``n_questions``/``all_agree_rate``/``alpha`` cover only FULLY
+    shadow-covered questions (primary answered, every shadow model
+    answered) so partial coverage never inflates agreement;
+    ``per_model_agreement`` is per-model over that model's own answered
+    questions. ``single_family`` is true when every model with a KNOWN
+    family resolves to one family — within-family agreement must never be
+    sold as cross-family robustness (paper Prescription 4). The nominal
+    alpha needs >= ``_XSIM_ALPHA_MIN_QUESTIONS`` covered questions;
+    below that it is suppressed with ``reason_code: insufficient_data``.
+    """
+    rows = []          # (question, primary answer|None, {model: answer|None})
+    model_order = []   # first-seen shadow model order
+    shadow_skips = 0
+    shadow_errors = 0
+    for rec in records:
+        shadows = rec.get("shadows")
+        if not isinstance(shadows, list) or not shadows:
+            continue
+        answers = {}
+        for s in shadows:
+            if not isinstance(s, dict) or not s.get("model"):
+                continue
+            model = s["model"]
+            if model not in model_order:
+                model_order.append(model)
+            if s.get("skipped") == "deadline":
+                shadow_skips += 1
+            if s.get("error"):
+                shadow_errors += 1
+            ans = s.get("answer")
+            answers[model] = ans if isinstance(ans, str) else None
+        if not answers:
+            continue
+        primary = rec.get("answer")
+        rows.append((rec.get("question"),
+                     primary if isinstance(primary, str) else None, answers))
+    if not rows:
+        return None
+
+    covered = [(q, primary, answers) for q, primary, answers in rows
+               if primary is not None
+               and all(answers.get(m) is not None for m in model_order)]
+    all_agree = sum(1 for _, primary, answers in covered
+                    if all(answers[m] == primary for m in model_order))
+
+    per_model = {}
+    for model in model_order:
+        pairs = [(primary, answers[model]) for _, primary, answers in rows
+                 if primary is not None and answers.get(model) is not None]
+        per_model[model] = (round(sum(1 for p, s in pairs if p == s)
+                                  / len(pairs), 3)
+                            if pairs else None)
+
+    disagreements = []
+    for question, primary, answers in rows:
+        if primary is None:
+            continue
+        answered = {m: a for m, a in answers.items() if a is not None}
+        if answered and any(a != primary for a in answered.values()):
+            if len(disagreements) < _XSIM_DISAGREEMENTS_CAP:
+                by_model = {primary_model: primary}
+                by_model.update(answered)
+                disagreements.append({"question": question,
+                                      "answers": by_model})
+
+    units = [[primary] + [answers[m] for m in model_order]
+             for _, primary, answers in covered]
+    if len(units) >= _XSIM_ALPHA_MIN_QUESTIONS:
+        result = krippendorff_alpha(units, NOMINAL)
+        alpha = result.to_dict()
+        alpha["rationale"] = XSIM_ALPHA_RATIONALE
+    else:
+        alpha = {
+            "metric": "krippendorff_alpha",
+            "level": NOMINAL,
+            "value": None,
+            "n_units": len(units),
+            "reason_code": REASON_INSUFFICIENT_DATA,
+            "reason": (f"alpha suppressed: {len(units)} fully "
+                       "shadow-covered question(s), fewer than "
+                       f"{_XSIM_ALPHA_MIN_QUESTIONS} — the coefficient "
+                       "would be noise"),
+        }
+
+    models = [primary_model] + model_order
+    known = [f for f in (infer_model_family(m) for m in models) if f]
+    return {
+        "models": models,
+        "families": family_composition(models),
+        "single_family": bool(known) and len(set(known)) == 1,
+        "n_questions": len(covered),
+        "n_shadowed_questions": len(rows),
+        "all_agree_rate": (round(all_agree / len(covered), 3)
+                           if covered else None),
+        "all_agree_label": XSIM_AGREE_LABEL,
+        "per_model_agreement": per_model,
+        "alpha": alpha,
+        "disagreements": disagreements,
+        "shadow_deadline_skips": shadow_skips,
+        "shadow_errors": shadow_errors,
+    }
 
 
 def _print_simulator_block(sim_block):
@@ -3541,6 +3684,20 @@ def _print_simulator_block(sim_block):
     if sim_block.get("deadline_skips"):
         print(f"  simulator: {sim_block['deadline_skips']} calibration "
               "shadow(s) skipped by the in-hook deadline budget")
+    cross = sim_block.get("cross_simulator") or {}
+    if cross:
+        rate = cross.get("all_agree_rate")
+        rate_txt = (f"{rate:.1%}" if isinstance(rate, (int, float))
+                    and not isinstance(rate, bool) else "n/a")
+        families = cross.get("families") or {}
+        fam_txt = ", ".join(f"{fam} x{count}"
+                            for fam, count in sorted(families.items()))
+        print(f"  cross-simulator agreement: {rate_txt} over "
+              f"{cross.get('n_questions', 0)} fully covered question(s) — "
+              f"uncorrected; families: {fam_txt}")
+        if cross.get("single_family"):
+            print("  cross-simulator: single-family panel — within-family "
+                  "agreement is not cross-family robustness")
 
 
 # ---------------------------------------------------------------------------
@@ -3823,29 +3980,35 @@ def _detect_simulator_regressions(simulator, sim_thresholds):
     ``min_gold_agreement`` gates ONLY the human-provenance calibration
     stratum (agent-authored pairs are LLM-vs-LLM consistency, not human
     calibration — fail-loud when no human pairs exist, paper Sec 5.3
-    anti-distortion). ``min_cross_simulator_agreement`` is reserved for
-    cross-family shadow simulators (``models.hook_shadow``, a later commit)
-    and is not evaluated — config load already warns about it.
+    anti-distortion). ``min_cross_simulator_agreement`` gates the
+    ``cross_simulator.all_agree_rate`` recorded by ``models.hook_shadow``
+    shadow simulators — configured with no ``cross_simulator`` block (no
+    shadows ever answered) is a regression, and a breach on a
+    single-family panel says so in the detail (within-family agreement is
+    not cross-family robustness).
     """
 
     def _numeric(v):
         return isinstance(v, (int, float)) and not isinstance(v, bool)
 
     regressions = []
-    active = [k for k in ("max_fallback_rate", "min_gold_agreement")
+    active = [k for k in ("max_fallback_rate", "min_gold_agreement",
+                          "min_cross_simulator_agreement")
               if k in sim_thresholds]
     if not active:
         return regressions
     if not isinstance(simulator, dict) or not simulator:
         # Configured-but-unavailable is a regression, never a silent skip.
+        metrics = {"max_fallback_rate": "fallback_rate",
+                   "min_gold_agreement": "gold_agreement",
+                   "min_cross_simulator_agreement":
+                       "cross_simulator_agreement"}
         for key in active:
-            metric = ("fallback_rate" if key == "max_fallback_rate"
-                      else "gold_agreement")
             bound = (f"<= {sim_thresholds[key]}"
                      if key == "max_fallback_rate"
                      else f">= {sim_thresholds[key]}")
             regressions.append(Regression(
-                "simulator", metric, bound, "n/a",
+                "simulator", metrics[key], bound, "n/a",
                 "thresholds.simulator configured but no simulator block in "
                 "summary — re-run score.py judges (or score.py simulator) "
                 "on a locally scored run"))
@@ -3888,6 +4051,39 @@ def _detect_simulator_regressions(simulator, sim_thresholds):
             regressions.append(Regression(
                 "simulator", "gold_agreement", f">= {t}", f"{rate:.3f}",
                 f"{SIM_GOLD_HUMAN_LABEL}, n={n_human}"))
+    if "min_cross_simulator_agreement" in sim_thresholds:
+        t = sim_thresholds["min_cross_simulator_agreement"]
+        cross = simulator.get("cross_simulator")
+        cross = cross if isinstance(cross, dict) else {}
+        rate = cross.get("all_agree_rate")
+        if not cross:
+            regressions.append(Regression(
+                "simulator", "cross_simulator_agreement", f">= {t}", "n/a",
+                "no cross-simulator answers recorded — configure "
+                "models.hook_shadow (shadow answers are logged by the "
+                "interception hook, never injected) and re-run"))
+        elif not _numeric(rate):
+            regressions.append(Regression(
+                "simulator", "cross_simulator_agreement", f">= {t}", "n/a",
+                "cross-simulator agreement unavailable — shadow records "
+                "exist but no question has full shadow coverage (deadline "
+                "skips or shadow errors); see "
+                "simulator.cross_simulator.shadow_deadline_skips/"
+                "shadow_errors"))
+        elif rate < t:
+            n = cross.get("n_questions", "?")
+            families = cross.get("families") or {}
+            detail = (f"{XSIM_AGREE_LABEL}, n={n}")
+            if isinstance(families, dict) and families:
+                detail += "; families: " + ", ".join(
+                    f"{fam} x{count}"
+                    for fam, count in sorted(families.items()))
+            if cross.get("single_family"):
+                detail += ("; single_family: true — within-family "
+                           "agreement is not cross-family robustness")
+            regressions.append(Regression(
+                "simulator", "cross_simulator_agreement", f">= {t}",
+                f"{rate:.3f}", detail))
     return regressions
 
 

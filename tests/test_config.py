@@ -800,8 +800,9 @@ thresholds:
 
 class TestSameFamilyAdvisory:
     """Appendix-B.4 same-family advisory (user decision Q2): fires at config
-    load ONLY when reliability features are engaged — a judges[].model panel
-    or a consequence-tagged judge — and never on a plain config."""
+    load ONLY when reliability features are engaged — a judges[].model panel,
+    a consequence-tagged judge, or models.hook_shadow — and never on a plain
+    config."""
 
     ADVISORY = "one provider family"
 
@@ -910,6 +911,68 @@ judges:
     model: [claude-sonnet-4-5, gpt-4o]
 """)
         assert hits == []
+
+    def test_hook_shadow_engages_the_advisory(self, tmp_path):
+        """models.hook_shadow is an engagement surface (PR10): no panel and
+        no consequence tag needed. Within-family shadows are no mitigation —
+        hook (the tools.py default here) + shadows join the pool."""
+        hits = self._load_catching(tmp_path, """
+name: t
+execution: {skill: s}
+models:
+  skill: claude-sonnet-4-5
+  judge: claude-opus-4-8
+  hook_shadow: [claude-haiku-4-5]
+inputs:
+  tools:
+    - match: Questions asked via AskUserQuestion.
+      prompt: answer from input.yaml
+judges:
+  - {name: q, llm_rubric: score it, feedback_type: bool}
+""")
+        assert len(hits) == 1
+        assert "hook_shadow" in str(hits[0].message)
+
+    def test_cross_family_hook_shadow_suppresses_the_hook_role(self,
+                                                               tmp_path):
+        """A cross-family shadow IS the mitigation for the simulator layer:
+        with only skill left in the pool, the advisory stays silent."""
+        hits = self._load_catching(tmp_path, """
+name: t
+execution: {skill: s}
+models:
+  skill: claude-sonnet-4-5
+  hook: claude-haiku-4-5
+  hook_shadow: [gemini-2.5-flash]
+inputs:
+  tools:
+    - match: Questions asked via AskUserQuestion.
+      prompt: answer from input.yaml
+judges:
+  - {name: q, llm_rubric: score it, feedback_type: bool}
+""")
+        assert hits == []
+
+    def test_cross_family_hook_shadow_does_not_silence_other_roles(
+            self, tmp_path):
+        """Suppression is scoped to the hook role: an all-anthropic
+        skill+judge pair still warns despite the cross-family shadow."""
+        hits = self._load_catching(tmp_path, """
+name: t
+execution: {skill: s}
+models:
+  skill: claude-sonnet-4-5
+  judge: claude-opus-4-8
+  hook: claude-haiku-4-5
+  hook_shadow: [gemini-2.5-flash]
+inputs:
+  tools:
+    - match: Questions asked via AskUserQuestion.
+      prompt: answer from input.yaml
+judges:
+  - {name: q, llm_rubric: score it, feedback_type: bool}
+""")
+        assert len(hits) == 1
 
 
 @pytest.mark.parametrize("value", ["1.5", '"high"', ".nan"])
