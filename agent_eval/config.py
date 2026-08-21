@@ -499,8 +499,20 @@ def _parse_runner_config(runner_raw, *, context="runner"):
     if workspace_mode is not None and workspace_mode not in ("repo",):
         raise ValueError(
             f"{context}.workspace_mode must be None or 'repo', got: {workspace_mode!r}")
+    # Runner type. YAML `type: null` parses to None — that is just an absent
+    # key (default applies), NOT the null probe runner. Only the literal
+    # string "null" is rejected: the null runner is the CLI-only solvability
+    # probe, and a config permanently pinned to it is always a mistake.
+    runner_type = runner_raw.get("type")
+    if runner_type is None:
+        runner_type = "claude-code"
+    if runner_type == "null":
+        raise ValueError(
+            f'{context}.type "null" is not a valid config runner: the null '
+            "(do-nothing) runner is the CLI-only dataset solvability probe — "
+            "invoke it with `--agent null` on execute.py instead")
     return RunnerConfig(
-        type=runner_raw.get("type", "claude-code"),
+        type=runner_type,
         command=command,
         workspace_mode=workspace_mode,
         settings=runner_raw.get("settings", {}) or {},

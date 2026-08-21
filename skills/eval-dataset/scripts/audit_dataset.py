@@ -9,10 +9,21 @@ with the composition skew tables.
 Findings are triage input, not a gate: exit code is 0 even with findings
 unless ``--strict`` is passed (then any warning/error exits 1).
 
+``--null-run <run-dir>`` switches to the null-agent solvability probe mode:
+it audits a scored ``--agent null`` run (reads only its summary.yaml
+per_case, recomputes the composite reward via compose_reward) and merges a
+``null_probe`` section into dataset_audit.yaml. Findings, not verdicts: exit
+0 by default; ``--fail-on-null-pass`` exits 1 when any case null-passes.
+Exit 2 when the run has no scored per_case (unscored run, or the documented
+batch-mode limitation).
+
 Usage:
     python3 ${CLAUDE_SKILL_DIR}/scripts/audit_dataset.py --config eval.yaml \\
         [--dataset <dir>] [--duplicate-threshold 0.85] \\
         [--difficulty-values easy,medium,hard] [--timestamp <iso>] [--strict]
+    python3 ${CLAUDE_SKILL_DIR}/scripts/audit_dataset.py --config eval.yaml \\
+        --null-run $AGENT_EVAL_RUNS_DIR/<eval-name>/<null-run-id> \\
+        [--reward-threshold 0.5] [--fail-on-null-pass]
 """
 
 import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
@@ -24,8 +35,13 @@ from pathlib import Path
 from agent_eval.config import EvalConfig
 from agent_eval.dataset_audit import (
     DEFAULT_DUPLICATE_THRESHOLD,
+    DEFAULT_NULL_REWARD_THRESHOLD,
+    NULL_PROBE_LABEL,
+    NullRunError,
+    audit_null_run,
     run_audit,
     write_audit,
+    write_null_probe,
 )
 
 #: Findings printed per check before eliding.
@@ -83,6 +99,57 @@ def _print_report(audit, audit_path):
     print(f"Audit written to: {audit_path}")
 
 
+def _run_null_probe(args, config, dataset_root):
+    """--null-run mode: audit a scored null run, merge null_probe, report."""
+    threshold = (args.reward_threshold if args.reward_threshold is not None
+                 else DEFAULT_NULL_REWARD_THRESHOLD)
+    threshold_source = ("--reward-threshold"
+                        if args.reward_threshold is not None else "default")
+    if not (0 <= threshold <= 1):
+        print("ERROR: --reward-threshold must be in [0, 1], got "
+              f"{threshold}", file=sys.stderr)
+        sys.exit(2)
+
+    try:
+        probe = audit_null_run(
+            Path(args.null_run), config,
+            reward_threshold=threshold, now=args.timestamp)
+    except NullRunError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(2)
+
+    audit_path = write_null_probe(probe, dataset_root)
+
+    cases = probe["cases"]
+    flagged = [c for c in sorted(cases) if cases[c]["null_pass"]]
+    print(f"Null-agent solvability probe — {probe['run_dir']}")
+    print(f"{NULL_PROBE_LABEL}: "
+          f"{probe['null_pass_rate']:.1%} ({len(flagged)}/{len(cases)})")
+    print(f"reward threshold: {probe['reward_threshold']} "
+          f"({threshold_source})")
+    for case_id in flagged:
+        rec = cases[case_id]
+        line = f"  NULL-PASS {case_id}: reward={rec['reward']}"
+        if rec["low_confidence"]:
+            line += (" [low confidence — single-sample stochastic "
+                     "verdict(s); re-score with --samples 3]")
+        print(line)
+        for entry in rec["passing_bool_judges"]:
+            detail = f"    {entry['judge']} ({entry['judge_type']}"
+            if entry.get("samples"):
+                detail += f", samples={entry['samples']}"
+            detail += f"): {entry['rationale']}"
+            print(detail)
+    if flagged:
+        print("Each null-pass is either a degenerate case (fix the case) or "
+              "a vacuous/lenient judge (fix the judge); the judge's "
+              "rationale distinguishes them.")
+    print(f"null_probe merged into: {audit_path}")
+
+    if args.fail_on_null_pass and flagged:
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Deterministic dataset audit (writes dataset_audit.yaml "
@@ -110,6 +177,22 @@ def main():
         "--strict", action="store_true",
         help="Exit 1 when the audit reports any warning or error "
              "(default: exit 0 — findings are triage input, not a gate)")
+    parser.add_argument(
+        "--null-run", default=None, metavar="RUN_DIR",
+        help="Null-agent solvability probe mode: audit a scored "
+             "`--agent null` run dir (reads its summary.yaml per_case, "
+             "recomputes the composite reward) and merge a null_probe "
+             "section into dataset_audit.yaml. Runs ONLY the probe "
+             "(no dataset checks)")
+    parser.add_argument(
+        "--reward-threshold", type=float, default=None,
+        help="Null-probe only: flag a case when its recomputed reward is "
+             f">= this (fixed default: {DEFAULT_NULL_REWARD_THRESHOLD} — "
+             "never derived from thresholds/normalization)")
+    parser.add_argument(
+        "--fail-on-null-pass", action="store_true",
+        help="Null-probe only: exit 1 when any case null-passes "
+             "(default: exit 0 — findings, not verdicts)")
     args = parser.parse_args()
 
     if not (0 < args.duplicate_threshold <= 1):
@@ -133,6 +216,10 @@ def main():
         print(f"ERROR: dataset path not found: {dataset_root}",
               file=sys.stderr)
         sys.exit(1)
+
+    if args.null_run:
+        _run_null_probe(args, config, dataset_root)
+        return
 
     audit = run_audit(
         config,

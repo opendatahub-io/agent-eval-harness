@@ -68,6 +68,7 @@ agent_eval/              # Python package (config, runner, state)
     claude_code.py       # Claude Code CLI runner (claude --print)
     codex.py             # OpenAI Codex CLI runner (codex exec --json)
     cli_runner.py        # Opaque CLI runner (arbitrary command templates)
+    null.py              # Null (do-nothing) runner: dataset solvability probe (--agent null; rejected as runner.type at config load)
     stream_capture.py    # Stream-json processing (events, timestamps, usage, hooks)
   harbor/                # Harbor integration (containerized execution)
     tasks.py             # Generate self-contained Harbor task packages from eval.yaml
@@ -122,7 +123,7 @@ skills/eval-dataset/     # Skill: generate test cases
                          # OR synthetic generation from seeds (prompt mode)
   scripts/
     generate_synthetic.py # Synthetic test case generation (prompt mode); writes manifest.yaml provenance; --force replaces the case-NNN set
-    audit_dataset.py     # CLI: deterministic dataset audit → dataset_audit.yaml at the dataset root (agent_eval/dataset_audit.py engine)
+    audit_dataset.py     # CLI: deterministic dataset audit → dataset_audit.yaml at the dataset root (agent_eval/dataset_audit.py engine) + --null-run probe audit
     list_prompts.py      # List builtin generation prompts (from agent_eval/prompts/)
     harbor.py            # CLI: generate Harbor task packages (thin wrapper → harbor.tasks)
   # Builtin generation prompts live in agent_eval/prompts/ (like builtin judges)

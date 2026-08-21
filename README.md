@@ -775,6 +775,8 @@ runner:
 
 The `cli` runner executes a configurable command template with placeholder substitution. See **[docs/opaque-cli-runner-contract.md](docs/opaque-cli-runner-contract.md)** for the full contract (placeholders, metrics.json format, what the command MUST and SHOULD do).
 
+A diagnostic `null` runner (do-nothing agent, for the `/eval-dataset` solvability probe) is CLI-only — invoke it with `--agent null` on execute.py; `runner.type: "null"` is rejected at config load.
+
 Add new runners by subclassing `EvalRunner` in `agent_eval/agent/` and registering in `RUNNERS`.
 
 ## MLflow Tracing

@@ -18,6 +18,10 @@ Design notes:
 - ``write_audit`` is load-and-merge: it replaces only the audit-owned top-level
   keys and preserves foreign keys (e.g. ``null_probe``) so other tools can
   merge their own sections into the same file.
+- The null-agent solvability probe (:func:`audit_null_run` /
+  :func:`write_null_probe`) is the inverse merge: it replaces ONLY the
+  ``null_probe`` key and preserves the audit-owned sections, so the two write
+  paths round-trip in both directions.
 - Honest labels: reference resolution is a NECESSARY-not-sufficient condition
   for answerability; contamination detection is verbatim/normalized-substring
   only (paraphrased leakage is out of scope).
@@ -84,6 +88,19 @@ REFERENCE_RESOLUTION_LABEL = (
 CONTAMINATION_LABEL = (
     "verbatim/normalized-substring only — paraphrased leakage is out of scope"
 )
+
+#: The null-probe statistic label — verbatim everywhere it renders. Under LLM
+#: judges the probe is a JOINT task/judge measure, not the paper's pure-V1
+#: figure: a null-pass means a degenerate case OR a vacuous judge.
+NULL_PROBE_LABEL = (
+    "null-pass rate (joint task/judge non-discriminativeness, "
+    "upper-bounds 1−V1)"
+)
+
+#: Fixed reward threshold for flagging a null-pass via the recomputed
+#: composite reward. Deliberately NOT derived from thresholds/normalization
+#: semantics — override per invocation with ``--reward-threshold``.
+DEFAULT_NULL_REWARD_THRESHOLD = 0.5
 
 _CHECK_NAMES = (
     "structural", "argument_fields", "reference_resolution", "contamination",
@@ -899,3 +916,184 @@ def audit_preflight_warnings(dataset_root, case_dirs, max_names=5) -> list:
             f"case(s) not covered by {AUDIT_FILENAME}: {_names(unrecorded)}; "
             "re-run audit_dataset.py")
     return warnings
+
+
+# ---------------------------------------------------------------------------
+# Null-agent solvability probe (audit_dataset.py --null-run)
+# ---------------------------------------------------------------------------
+
+class NullRunError(Exception):
+    """The null run cannot be audited (missing/unscored summary.yaml).
+
+    The CLI maps this to exit 2 with the message as guidance.
+    """
+
+
+_NULL_RUN_GUIDANCE = (
+    "score the null run first: python3 score.py judges --run-id <id> "
+    "--config <config> --samples 3. Note the batch-mode limitation: a null "
+    "run produces zero artifacts, so batch-mode collection creates no "
+    "per-case run dirs and scoring exits before per_case exists — the probe "
+    "requires a case-mode eval."
+)
+
+
+def _null_bool_passes(per_judge: dict) -> list:
+    """(name, record) pairs of bool judges that awarded the null agent a pass.
+
+    A judge counts iff its reduced value is boolean ``True`` and the record
+    carries no ``error`` key. ``if:``-skipped records (value None, rationale
+    ``Skipped: ...``), condition-error and errored records (value None +
+    ``error``) never count; numeric ``1`` never counts (bool isinstance).
+    """
+    passes = []
+    for name in sorted(per_judge):
+        rec = per_judge[name]
+        if not isinstance(rec, dict):
+            continue
+        value = rec.get("value")
+        if rec.get("error") or not isinstance(value, bool) or not value:
+            continue
+        passes.append((name, rec))
+    return passes
+
+
+def _null_low_confidence(name: str, rec: dict, config) -> bool:
+    """True when a passing bool judge is a stochastic (LLM/agent) verdict
+    with no sampling evidence — single-sample verdicts are marked, never
+    trusted. Deterministic judges (check/code/python builtins) are never
+    low-confidence. Builtin LLM judges are never sampled (pinned to n=1 at
+    scoring time), so they are always low-confidence."""
+    stability = rec.get("stability") or {}
+    samples = stability.get("samples")
+    sampled = isinstance(samples, int) and samples > 1
+    judge_type = rec.get("judge_type")
+    if judge_type in ("llm", "agent"):
+        return not sampled
+    if judge_type == "builtin":
+        jc = next((j for j in (getattr(config, "judges", None) or [])
+                   if getattr(j, "name", None) == name), None)
+        builtin_name = (getattr(jc, "builtin", "") if jc else "") or name
+        try:  # filesystem scan only — never executes judge modules
+            from agent_eval.judges import builtin_judge_kind
+            return builtin_judge_kind(builtin_name) == "llm"
+        except Exception:
+            return False  # unknown builtin — do not guess
+    return False
+
+
+def audit_null_run(run_dir, config, *,
+                   reward_threshold=DEFAULT_NULL_REWARD_THRESHOLD,
+                   now=None) -> dict:
+    """Audit a scored null run (``--agent null``) for non-discriminative cases.
+
+    Reads ONLY ``<run_dir>/summary.yaml``'s ``per_case`` per-judge records and
+    RECOMPUTES the composite reward per case via
+    :func:`agent_eval.harbor.reward.compose_reward` (the reward is never
+    stored in summary.yaml). A case is a ``null_pass`` when (a) ANY bool judge
+    passed (:func:`_null_bool_passes` — skipped/errored never count), or
+    (b) the recomputed reward is >= *reward_threshold* AND at least one judge
+    actually produced a value (an all-skipped case composes to the vacuous
+    gates-only reward 1.0 and must not flag on it).
+
+    Returns the ``null_probe`` block for :func:`write_null_probe`. Raises
+    :class:`NullRunError` (CLI exit 2) when the run has no scored per_case —
+    including the documented batch-mode limitation.
+    """
+    run_dir = Path(run_dir)
+    summary_path = run_dir / "summary.yaml"
+    if not summary_path.is_file():
+        raise NullRunError(
+            f"no summary.yaml in {run_dir} — {_NULL_RUN_GUIDANCE}")
+    try:
+        summary = yaml.safe_load(summary_path.read_text()) or {}
+    except Exception as e:
+        raise NullRunError(f"unreadable summary.yaml in {run_dir}: {e}")
+    per_case = summary.get("per_case") if isinstance(summary, dict) else None
+    if not isinstance(per_case, dict) or not per_case:
+        mode = ""
+        try:
+            meta = json.loads((run_dir / "run_result.json").read_text())
+            if meta.get("execution_mode") == "batch":
+                mode = ("this is a batch-mode run (execution.mode: batch) — "
+                        "the probe does not support batch mode; ")
+        except Exception:
+            pass
+        raise NullRunError(
+            f"summary.yaml in {run_dir} has no scored per_case — "
+            f"{mode}{_NULL_RUN_GUIDANCE}")
+
+    # Lazy import: keeps module import light; reward.py is stdlib+yaml only.
+    from agent_eval.harbor.reward import compose_reward, judge_ranges
+
+    ranges = judge_ranges(config)
+    reward_cfg = getattr(config, "reward", None)
+
+    cases = {}
+    null_pass_count = 0
+    for case_id in sorted(per_case):
+        per_judge = per_case[case_id]
+        per_judge = per_judge if isinstance(per_judge, dict) else {}
+        reward, _metrics = compose_reward(
+            per_judge, reward_cfg=reward_cfg, judge_ranges=ranges)
+        bool_passes = _null_bool_passes(per_judge)
+        scored_any = any(isinstance(rec, dict) and rec.get("value") is not None
+                         for rec in per_judge.values())
+        null_pass = bool(bool_passes) or (
+            scored_any and reward >= reward_threshold)
+        entries = []
+        low_confidence = False
+        for name, rec in bool_passes:
+            unsampled = _null_low_confidence(name, rec, config)
+            low_confidence = low_confidence or unsampled
+            entry = {
+                "judge": name,
+                "rationale": rec.get("rationale", ""),
+                "judge_type": rec.get("judge_type", ""),
+                "low_confidence": unsampled,
+            }
+            stability = rec.get("stability")
+            if isinstance(stability, dict) and "samples" in stability:
+                entry["samples"] = stability["samples"]
+            entries.append(entry)
+        if null_pass:
+            null_pass_count += 1
+        cases[case_id] = {
+            "null_pass": null_pass,
+            "passing_bool_judges": entries,
+            "reward": round(float(reward), 4),
+            "low_confidence": low_confidence,
+        }
+
+    return {
+        "run_dir": str(run_dir),
+        "generated_at": _timestamp(now),
+        "reward_threshold": float(reward_threshold),
+        "label": NULL_PROBE_LABEL,
+        "null_pass_rate": round(null_pass_count / len(cases), 4),
+        "cases": cases,
+    }
+
+
+def write_null_probe(null_probe: dict, dataset_root) -> Path:
+    """Merge the ``null_probe`` key into dataset_audit.yaml — LOAD-AND-MERGE.
+
+    The inverse of :func:`write_audit`'s ownership: replaces ONLY the
+    ``null_probe`` top-level key; the audit-owned sections and any other
+    foreign key are preserved verbatim, so a probe re-run and a full re-audit
+    round-trip in both directions. Creates the file when the dataset has not
+    been audited yet.
+    """
+    path = Path(dataset_root) / AUDIT_FILENAME
+    existing = {}
+    if path.is_file():
+        try:
+            loaded = yaml.safe_load(path.read_text())
+            if isinstance(loaded, dict):
+                existing = loaded
+        except Exception:
+            pass  # corrupt file — rewrite with the probe section alone
+    existing["null_probe"] = null_probe
+    path.write_text(yaml.safe_dump(existing, sort_keys=False,
+                                   allow_unicode=True))
+    return path

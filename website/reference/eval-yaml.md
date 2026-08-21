@@ -295,7 +295,7 @@ execution:
   arguments: "{prompt}"   # resolved per case from input.yaml fields
 
 runner:
-  type: claude-code       # claude-code | cli | responses-api
+  type: claude-code       # claude-code | codex | cli | responses-api ("null" rejected — CLI-only probe)
   # effort: high          # low | medium | high | xhigh | max
 
 models:

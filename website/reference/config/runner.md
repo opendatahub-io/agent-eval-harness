@@ -55,7 +55,12 @@ Not every runner reads every field. The matrix below shows where each field land
 ### `type`
 
 Selects the runner implementation. One of `claude-code` (default), `codex`, `cli`, or
-`responses-api`. Any other value fails to resolve at run time.
+`responses-api`. Any other value fails to resolve at run time — except the literal
+string `"null"`, which is **rejected at config load**: the do-nothing
+[null runner](../../concepts/runners.md#null-diagnostic-cli-only) is the CLI-only
+dataset solvability probe (`--agent null` on execute.py), never a config runner.
+(YAML's unquoted `type: null` parses to "no type set" and falls back to the
+default.)
 
 ### `effort`
 

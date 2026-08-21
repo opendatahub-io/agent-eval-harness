@@ -253,6 +253,77 @@ The audit exits 0 even with findings (they are triage input, not a gate); pass
 `--strict` to make any warning/error exit 1 (CI). `/eval-run` warns before scoring
 when the audit is missing or its per-case content hashes are stale.
 
+## Step 6.5: Null-agent solvability probe (optional — run once per dataset revision, before the first real /eval-run)
+
+**What it measures**: run the eval pipeline with a do-nothing agent (`--agent null`
+— exits 0 immediately, produces nothing, costs $0) and see which cases the judges
+award anyway. The statistic is labeled exactly
+**"null-pass rate (joint task/judge non-discriminativeness, upper-bounds 1−V1)"** —
+under LLM judges this is a JOINT task/judge probe, not the paper's pure task-validity
+figure: every null-pass means either a degenerate case or a vacuous/lenient judge.
+
+**Cost**: zero agent tokens; the LLM judges still run — and `--samples 3` triples
+that judge-token cost in exchange for majority-voted (rather than single-sample
+stochastic) null-passes.
+
+Run the exact eval-run pipeline against a throwaway run dir (run-id convention:
+`null-probe-<YYYYMMDD>`):
+
+```bash
+# 1. Workspace (eval-run Step 3). Interception/tool-handler resolution
+#    (eval-run Step 3a) is SKIPPABLE: the null runner never executes, so
+#    hooks never fire.
+python3 ${CLAUDE_SKILL_DIR}/../eval-run/scripts/workspace.py \
+  --config <config> --run-id <null-run-id>
+
+# 2. Execute with the null runner. --model is still REQUIRED by execute.py
+#    (any value works) but IGNORED by the null runner — run_result.json
+#    reports resolved_model "null".
+python3 ${CLAUDE_SKILL_DIR}/../eval-run/scripts/execute.py \
+  --config <config> --workspace <workspace_path> \
+  --model sonnet --agent null \
+  --output $AGENT_EVAL_RUNS_DIR/<eval-name>/<null-run-id> \
+  --run-id <null-run-id>
+
+# 3. Collect (expect the normal "0 artifacts" warnings — nothing ran).
+python3 ${CLAUDE_SKILL_DIR}/../eval-run/scripts/collect.py \
+  --config <config> --workspace <workspace_path> \
+  --output $AGENT_EVAL_RUNS_DIR/<eval-name>/<null-run-id>
+
+# 4. Score with sampling: --samples 3 majority-votes stochastic (llm/agent)
+#    judges so a null-pass is not a one-off verdict. Builtin LLM judges are
+#    never sampled — their null-passes stay marked low-confidence.
+python3 ${CLAUDE_SKILL_DIR}/../eval-run/scripts/score.py judges \
+  --run-id <null-run-id> --config <config> --samples 3
+
+# 5. Audit the null run: merges a null_probe section into dataset_audit.yaml.
+python3 ${CLAUDE_SKILL_DIR}/scripts/audit_dataset.py \
+  --config <config> \
+  --null-run $AGENT_EVAL_RUNS_DIR/<eval-name>/<null-run-id> \
+  [--reward-threshold 0.5] [--fail-on-null-pass]
+```
+
+A case null-passes when any bool judge passed the empty run, or when the composite
+reward — recomputed from the per-judge records via the same `compose_reward` the
+reward API uses — reaches `--reward-threshold` (fixed default 0.5). `if:`-skipped
+and errored judges never count.
+
+**Interpretation — fix the case OR fix the judge**: each flagged case is either a
+degenerate case (answerable with no work — tighten the input or expectations) or a
+vacuous/lenient judge; the judge's **rationale string distinguishes them**. Example:
+a `consulted_docs` PASS with rationale "No expected_files specified — nothing to
+verify" on a case without `expected_files` is a judge/case-underspecification
+signal (add the annotation, or condition the judge), not a task problem.
+`low_confidence: true` marks passes from unsampled stochastic judges — re-score
+with `--samples 3` before acting on them.
+
+**Limitations**: batch-mode datasets are not supported — a null run produces zero
+artifacts, so batch collection creates no per-case run dirs and scoring exits
+before `per_case` exists; the audit then exits 2 with guidance. The probe exits 0
+by default (findings, not verdicts); `--fail-on-null-pass` makes CI gate on it.
+`runner.type: "null"` in eval.yaml is rejected at config load — the probe is
+CLI-only via `--agent null`.
+
 ## Step 7: Report
 
 Tell the user what was created:
@@ -260,6 +331,7 @@ Tell the user what was created:
 - **Cases generated**: N new cases at `<path>`
 - **Provenance**: skill / from-traces; and whether this was a fresh set or an augment
 - **Audit summary**: per-check finding counts from Step 6 (errors / warnings / info) and the `dataset_audit.yaml` path at the dataset root
+- **Null probe** (if run, Step 6.5): the null-pass rate + flagged cases with their fix-the-case vs fix-the-judge triage
 - **Manifest** (synthetic provenance only): the `manifest.yaml` path at the dataset root — generator model, temperature, per-seed prompt hashes, realized per-seed counts, per-case provenance
 - **Coverage**: What scenarios are now covered (simple, complex, edge cases)
 - **What's missing**: Reference outputs (if not generated), any gaps still remaining

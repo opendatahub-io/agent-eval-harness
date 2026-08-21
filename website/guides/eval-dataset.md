@@ -246,6 +246,70 @@ These steps run for **every** provenance:
 3. **Harbor packaging** *(if `--harbor`)* — emit self-contained task packages for
    containerized execution.
 
+## Null-agent solvability probe
+
+An optional, once-per-dataset-revision check (SKILL.md Step 6.5): run the eval
+pipeline with a **do-nothing agent** and see which cases the judges award anyway.
+The statistic is labeled exactly:
+
+> **null-pass rate (joint task/judge non-discriminativeness, upper-bounds 1−V1)**
+
+Under LLM judges this is a **joint task/judge probe** — every null-pass means
+either a degenerate case (answerable with no work) or a vacuous/lenient judge; the
+judge's rationale string distinguishes which. It is *not* a pure task-validity
+figure.
+
+The probe reuses the unchanged eval-run pipeline against a throwaway run dir
+(convention: `null-probe-<YYYYMMDD>`):
+
+```bash
+# 1. Workspace — interception/tool-handler resolution (eval-run Step 3a) is
+#    skippable: the null runner never executes, so hooks never fire.
+python3 skills/eval-run/scripts/workspace.py --config eval.yaml --run-id <null-run-id>
+
+# 2. Execute with the null runner. --model is still required by execute.py
+#    (any value works) but ignored by the null runner.
+python3 skills/eval-run/scripts/execute.py --config eval.yaml \
+  --workspace <workspace> --model sonnet --agent null \
+  --output $AGENT_EVAL_RUNS_DIR/<eval-name>/<null-run-id> --run-id <null-run-id>
+
+# 3. Collect (expect the normal "0 artifacts" warnings — nothing ran).
+python3 skills/eval-run/scripts/collect.py --config eval.yaml \
+  --workspace <workspace> --output $AGENT_EVAL_RUNS_DIR/<eval-name>/<null-run-id>
+
+# 4. Score with --samples 3: stochastic (llm/agent) judges are majority-voted,
+#    so a null-pass is not a one-off verdict (this triples judge-token cost;
+#    agent cost is zero).
+python3 skills/eval-run/scripts/score.py judges \
+  --run-id <null-run-id> --config eval.yaml --samples 3
+
+# 5. Audit the null run — merges a null_probe section into dataset_audit.yaml.
+python3 skills/eval-dataset/scripts/audit_dataset.py --config eval.yaml \
+  --null-run $AGENT_EVAL_RUNS_DIR/<eval-name>/<null-run-id> \
+  [--reward-threshold 0.5] [--fail-on-null-pass]
+```
+
+A case **null-passes** when any bool judge passed the empty run, or when the
+composite reward — recomputed from the per-judge records with the same
+`compose_reward` the [reward API](../concepts/reward-api.md) uses — reaches
+`--reward-threshold` (fixed default `0.5`). `if:`-skipped and errored judges never
+count. Passes from unsampled stochastic judges are marked `low_confidence` rather
+than trusted.
+
+!!! tip "Triage: fix the case OR fix the judge"
+    Example: a `consulted_docs` PASS with rationale "No expected_files specified —
+    nothing to verify" on a case without `expected_files` is a
+    judge/case-underspecification signal — add the annotation or condition the
+    judge; the task itself may be fine.
+
+!!! warning "Limitations"
+    Batch-mode datasets are not supported: a null run produces zero artifacts, so
+    batch collection creates no per-case run dirs and scoring exits before
+    `per_case` exists — the audit then exits `2` with guidance. The probe exits `0`
+    by default (findings, not verdicts); use `--fail-on-null-pass` to gate CI.
+    The null runner is CLI-only: `runner.type: "null"` in `eval.yaml` is rejected
+    at config load (see [runners](../concepts/runners.md#null-diagnostic-cli-only)).
+
 ## Next steps
 
 <div class="grid cards" markdown>
