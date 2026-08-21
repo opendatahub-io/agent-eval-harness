@@ -632,6 +632,7 @@ details.case > summary:hover { color: var(--accent); }
 .info-box { background: var(--accent-soft); border: 1px solid var(--border); border-radius: 6px; padding: 0.8em 1em; margin: 0.6em 0; font-size: 0.9em; }
 .feedback-box { background: var(--warning-soft); border: 1px solid var(--warning-border); border-radius: 6px; padding: 0.8em 1em; margin: 0.6em 0; font-size: 0.9em; color: var(--text); }
 .sim-user { color: var(--text-muted); font-size: 0.85em; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0.4em 0 0.6em; }
+.validity-note { color: var(--text-muted); font-size: 0.9em; }
 .file-badge { display: inline-block; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.82em; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 5px; padding: 3px 10px; margin: 1em 0 0.5em 0; color: var(--text-soft); }
 details.file-entry { margin: 1em 0 0.5em 0; }
 details.file-entry > summary { cursor: pointer; list-style: none; user-select: none; }
@@ -1439,7 +1440,13 @@ def _render_scoring_summary(summary, config, baseline_summary=None,
             metric_val = f"{pass_rate:.0%}"
         elif mean is not None:
             metric_name = "mean"
-            metric_val = f"{mean:.2f}"
+            # Displayed-precision restraint (paper Appendix B.5): two
+            # decimals max, annotated — more digits than the measurement
+            # supports would claim precision the sample size cannot back.
+            metric_val = (
+                '<span title="precision limited by measurement reliability '
+                '— see the Validity &amp; Reliability section">'
+                f"{mean:.2f}</span>")
         else:
             metric_name = "—"
             metric_val = "—"
@@ -1699,6 +1706,175 @@ def _render_regressions(summary, config, run_result=None):
         html += (f'<tr><td>{_esc(judge)}</td><td>{metric}</td>'
                  f'<td>{expected}</td><td><span class="fail">{actual}</span></td></tr>\n')
     html += "</table>\n"
+    return html
+
+
+#: Hint rendered (as a title tooltip) on judge rows that carry no IRR data.
+_IRR_ABSENT_HINT = ("no IRR data — run with judges[].samples >= 3 "
+                    "(or score.py judges --samples 3) to compute the "
+                    "self-consistency alpha")
+
+
+def _validity_layer_detail(key, layer):
+    """One-line detail text for a V-layer stanza (plain text, escaped later)."""
+    if key == "v1":
+        parts = [f"generation: {layer.get('generation_strategy') or 'skill'}",
+                 f"dataset audit: {layer.get('dataset_audit') or 'absent'}",
+                 f"manifest: {layer.get('manifest') or 'absent'}"]
+        probe = layer.get("null_probe")
+        if isinstance(probe, dict) and isinstance(
+                probe.get("null_pass_rate"), (int, float)):
+            parts.append(f"null-pass rate: {probe['null_pass_rate']:.1%} "
+                         "(joint task/judge non-discriminativeness)")
+        return " · ".join(parts)
+    if key == "v2":
+        if not layer.get("intercepts_ask_user"):
+            return "no AskUserQuestion interception configured"
+        parts = ["AskUserQuestion intercepted"]
+        if layer.get("hook_model"):
+            parts.append(f"hook model: {layer['hook_model']}")
+        return " · ".join(parts)
+    if key == "v3":
+        rows = layer.get("judges") or []
+        with_irr = sum(1 for r in rows
+                       if isinstance(r, dict) and r.get("irr"))
+        parts = [f"{with_irr}/{len(rows)} judge(s) with self-consistency "
+                 "IRR data"]
+        mga = layer.get("min_gated_alpha")
+        if isinstance(mga, (int, float)) and not isinstance(mga, bool):
+            parts.append(f"min gated alpha: {mga:.3f}")
+        return " · ".join(parts)
+    return ""
+
+
+def _render_validity(summary, config):
+    """Validity & Reliability — the P8 measurement-validity section.
+
+    Renders ``summary['validity']`` (assembled by score.py's
+    ``build_validity_block``): the three V-layer stanzas with unmeasured
+    badges, the conceptual V_total frame as ADVISORY TEXT (this function
+    never formats a numeric V_total — a mechanical invariant), the
+    per-judge P8 table (metric / value + CI / threshold / selection
+    rationale), and the same-family caveat box. Old summaries and
+    non-local execution paths render an honest 'not computed' note.
+    """
+    html = "<h2>Validity &amp; Reliability</h2>\n"
+    block = summary.get("validity") if isinstance(summary, dict) else None
+    if not isinstance(block, dict) or not block:
+        html += ('<p class="validity-note"><span class="skip">not computed'
+                 "</span> validity block not computed for this run (older "
+                 "scoring run or non-local execution path) — re-run "
+                 "score.py judges to generate it.</p>\n")
+        return html
+
+    # --- layer stanzas -------------------------------------------------
+    layers = block.get("layers") or {}
+    html += "<table>\n<tr><th>Layer</th><th>Status</th><th>Detail</th></tr>\n"
+    for key, label in (("v1", "V1 — task generation"),
+                       ("v2", "V2 — simulator"),
+                       ("v3", "V3 — judgment")):
+        layer = layers.get(key) if isinstance(layers.get(key), dict) else {}
+        status = str(layer.get("status") or "unmeasured")
+        cls = ("pass" if status == "measured"
+               else "skip" if status == "not-applicable" else "warn")
+        detail = _validity_layer_detail(key, layer)
+        html += (f"<tr><td>{_esc(label)}</td>"
+                 f'<td><span class="{cls}">{_esc(status)}</span></td>'
+                 f"<td>{_esc(detail)}</td></tr>\n")
+    html += "</table>\n"
+
+    # --- the V_total frame: advisory text, never a metric ---------------
+    vt = block.get("v_total") or {}
+    frame_bits = []
+    if vt.get("frame"):
+        frame_bits.append(f"<em>{_esc(str(vt['frame']))}</em>")
+    unmeasured = vt.get("unmeasured_layers") or []
+    if unmeasured:
+        frame_bits.append("Unmeasured layers: "
+                          + _esc(", ".join(str(u) for u in unmeasured)))
+    if vt.get("note"):
+        frame_bits.append(_esc(str(vt["note"])))
+    if frame_bits:
+        html += ('<p class="validity-note">'
+                 + "<br>\n".join(frame_bits) + "</p>\n")
+
+    # --- per-judge P8 table ----------------------------------------------
+    rows = block.get("judges")
+    if not isinstance(rows, list):
+        v3 = layers.get("v3")
+        rows = (v3.get("judges") if isinstance(v3, dict) else None) or []
+    rows = [r for r in rows if isinstance(r, dict)]
+    if rows:
+        any_human = any(isinstance(r.get("human_agreement"), dict)
+                        for r in rows)
+        html += ('<p class="validity-note">Per-judge reliability — '
+                 "single-judge self-consistency alpha "
+                 "(upper bound on inter-rater reliability)</p>\n")
+        html += ("<table>\n<tr><th>Judge</th><th>IRR metric</th>"
+                 "<th>Value</th><th>Threshold</th>")
+        if any_human:
+            html += "<th>Human agreement</th>"
+        html += "</tr>\n"
+        for row in rows:
+            irr = row.get("irr")
+            if isinstance(irr, dict) and irr:
+                metric = str(irr.get("metric") or "—")
+                rationale = str(irr.get("rationale") or "")
+                metric_cell = (f'<span title="{_esc(rationale)}">'
+                               f"{_esc(metric)}</span>"
+                               if rationale else _esc(metric))
+                value = irr.get("value")
+                if isinstance(value, (int, float)) and not isinstance(
+                        value, bool):
+                    val_txt = f"{value:.3f}"
+                    ci = irr.get("ci")
+                    if isinstance(ci, (list, tuple)) and len(ci) == 2:
+                        val_txt += f" [{ci[0]:.3f}, {ci[1]:.3f}]"
+                    if irr.get("n_units") is not None:
+                        val_txt += f" (n={irr['n_units']})"
+                    val_cell = _esc(val_txt)
+                else:
+                    reason = str(irr.get("reason_code") or "unavailable")
+                    val_cell = (f'<span title="{_esc(reason)}">'
+                                f"— ({_esc(reason)})</span>")
+                thr = irr.get("threshold")
+                thr_cell = (f"&ge; {thr}"
+                            if isinstance(thr, (int, float))
+                            and not isinstance(thr, bool) else "—")
+            else:
+                metric_cell = "—"
+                val_cell = f'<span title="{_esc(_IRR_ABSENT_HINT)}">—</span>'
+                thr_cell = "—"
+            html += (f"<tr><td>{_esc(str(row.get('judge', '')))}</td>"
+                     f"<td>{metric_cell}</td><td>{val_cell}</td>"
+                     f"<td>{thr_cell}</td>")
+            if any_human:
+                ha = row.get("human_agreement")
+                if (isinstance(ha, dict)
+                        and isinstance(ha.get("value"), (int, float))
+                        and not isinstance(ha.get("value"), bool)):
+                    ha_cell = _esc(
+                        f"{ha['value']:.3f} ({ha.get('metric') or '?'}) — "
+                        f"agreement with a single human reviewer "
+                        f"(n={ha.get('n', '?')})")
+                elif isinstance(ha, dict):
+                    ha_cell = _esc(f"no coefficient (n={ha.get('n', '?')})")
+                else:
+                    ha_cell = "—"
+                html += f"<td>{ha_cell}</td>"
+            html += "</tr>\n"
+        html += "</table>\n"
+
+    # --- same-family caveat (report-only, silent on unknown ids) ---------
+    sf = block.get("same_family")
+    if isinstance(sf, dict) and sf.get("family"):
+        models_txt = ", ".join(str(m) for m in sf.get("models") or [])
+        html += ('<p><span class="warn">same-family models</span> '
+                 f"<strong>{_esc(str(sf['family']))}</strong>"
+                 + (f" — {_esc(models_txt)}" if models_txt else "")
+                 + (f"<br>{_esc(str(sf.get('caveat') or ''))}"
+                    if sf.get("caveat") else "")
+                 + "</p>\n")
     return html
 
 
@@ -3238,6 +3414,9 @@ def generate_report(config, summary, run_result, run_dir,
     html += _wrap_section(_render_scoring_summary(summary, config,
                                                   baseline_summary,
                                                   run_result=run_result))
+    # Insertion point: the Simulator Calibration card renders HERE (above
+    # Validity & Reliability) once summary['simulator'] ships.
+    html += _wrap_section(_render_validity(summary, config))
     html += _wrap_section(_render_regressions(summary, config,
                                               run_result=run_result))
     html += _wrap_section(_render_calibration(summary))

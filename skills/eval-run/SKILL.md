@@ -209,7 +209,7 @@ Read the full results:
 python3 ${CLAUDE_SKILL_DIR}/scripts/agent_eval/state.py read $AGENT_EVAL_RUNS_DIR/<eval-name>/<id>/summary.yaml
 ```
 
-`summary.yaml` has three sections: `judges` (per-judge `mean` and `pass_rate`), `per_case` (per-case `{value, rationale}` per judge), and `pairwise` (only if `--baseline` was used: `run_a`, `run_b`, `wins_a`, `wins_b`, `ties`). After `/eval-review` collects calibration verdicts and `score.py calibration --run-id <id> --config <config>` runs, judge entries may additionally carry a `human_agreement` block (judge-vs-human kappa/alpha) and a run-level `human_calibration` section exists.
+`summary.yaml` has four sections: `judges` (per-judge `mean` and `pass_rate`), `per_case` (per-case `{value, rationale}` per judge), `validity` (non-gating measurement-validity block, rebuilt on every scoring run: per-judge IRR triple, V1/V2/V3 layer statuses, same-family caveat), and `pairwise` (only if `--baseline` was used: `run_a`, `run_b`, `wins_a`, `wins_b`, `ties`). After `/eval-review` collects calibration verdicts and `score.py calibration --run-id <id> --config <config>` runs, judge entries may additionally carry a `human_agreement` block (judge-vs-human kappa/alpha) and a run-level `human_calibration` section exists.
 
 ## Step 7: Interpret and Report
 

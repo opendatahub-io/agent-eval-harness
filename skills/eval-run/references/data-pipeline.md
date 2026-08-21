@@ -284,6 +284,7 @@ For each judge across all cases:
 - **Boolean values**: aggregated as `pass_rate` (fraction True)
 - **Numeric values**: aggregated as `mean`
 - Results written to `summary.yaml` with `per_case` and `aggregated` sections
+- Every scoring run also rebuilds a non-gating `validity` section (per-judge IRR triple, V1/V2/V3 layer statuses, same-family caveat) — regression detection never reads it
 
 ## Traces Configuration
 

@@ -316,7 +316,8 @@ _FORBIDDEN_SCORING_IMPORTS = {
     REPO_ROOT / "agent_eval" / "reliability.py",
     REPO_ROOT / "skills" / "eval-run" / "scripts" / "score.py",
     REPO_ROOT / "agent_eval" / "dataset_audit.py",
-], ids=["reliability", "score", "dataset_audit"])
+    REPO_ROOT / "agent_eval" / "model_families.py",
+], ids=["reliability", "score", "dataset_audit", "model_families"])
 def test_scoring_path_purity_static_scan(path):
     """The scoring path stays free of heavyweight stats stacks — ensure_deps
     installs only pyyaml/mlflow/anthropic/jinja2."""

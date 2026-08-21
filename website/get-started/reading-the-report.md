@@ -47,7 +47,8 @@ flowchart TD
     H[Header — skill · run · baseline · date] --> RC[Run Configuration + Model Usage]
     RC --> AN[Analysis — agent's recommendation]
     AN --> SS[Scoring Summary — per-judge pass_rate / mean]
-    SS --> RG[Regressions — only if a threshold is breached]
+    SS --> VR["Validity & Reliability — measurement caveats"]
+    VR --> RG[Regressions — only if a threshold is breached]
     RG --> SO[Shared Outputs — batch_pattern '*' files]
     SO --> RO["Per-Case Reward Overview — reward config only"]
     RO --> PC[Per-Case Details — rationale, artifacts, diffs]
@@ -93,6 +94,37 @@ row shows the `W / L / T` record.
     If you scored with `--samples N`, each row gets a small proportion bar
     (`3/5 · 3×`) showing how many cases gave a stable verdict across samples.
     Per-case rationale for each sample is available in tabs further down.
+
+### Validity & reliability
+
+A non-gating measurement-validity section rendered from `summary.yaml`'s
+`validity` block (rebuilt on every scoring run). It answers "how much can I
+trust these scores?" rather than "did they pass?":
+
+- **Layer table** — the three validity layers with status badges: **V1 (task
+  generation)** (generation strategy, whether a `dataset_audit.yaml` /
+  `manifest.yaml` exist at the dataset root, the null-probe pass rate when one
+  was run), **V2 (simulator)** (whether AskUserQuestion is intercepted and
+  with which hook model — `not-applicable` when no interception is
+  configured), and **V3 (judgment)** (per-judge IRR coverage). Unmeasured
+  layers are badged, never hidden.
+- **The V_total frame** — advisory text only: `V_total <= V1 x V2 x V3` is a
+  conceptual upper bound and the report **never** shows a computed numeric
+  `V_total`; unmeasured layers are named explicitly.
+- **Per-judge reliability table** — IRR metric, value with bootstrap CI,
+  threshold, and the metric-selection rationale (as a tooltip). The
+  coefficient is the *single-judge self-consistency alpha — an upper bound on
+  inter-rater reliability*. A judge without IRR data shows an em dash with a
+  hint to re-score with `judges[].samples >= 3`. A `human_agreement` column
+  appears once `score.py calibration` has run.
+- **Same-family caveat** — a warning box when every classifiable model role
+  (skill, subagent, judge, hook) resolves to one provider family: same-family
+  models can fail in correlated ways, so their agreement overstates
+  reliability. Unclassifiable (gateway-alias) models silence the check.
+
+Because the section reflects measurement quality, the **mean** values in the
+Scoring Summary are capped at two decimals and carry a tooltip pointing here —
+more digits would claim precision the sample size cannot back.
 
 ### Regressions
 

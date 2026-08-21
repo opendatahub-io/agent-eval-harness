@@ -62,6 +62,7 @@ agent_eval/              # Python package (config, runner, state)
   config.py              # EvalConfig from eval.yaml
   state.py               # Shared state persistence (key-value store)
   reliability.py         # Chance-corrected IRR (pure stdlib): Krippendorff alpha, Fleiss/Cohen kappa, Figure-1 metric selection, bootstrap CI
+  model_families.py      # Conservative model-id → provider-family inference (pure stdlib); None = unknown = silent. Feeds the validity block's same-family caveat
   dataset_audit.py       # Deterministic dataset audit (contamination, duplicates, composition, branch coverage) + soft execution-path preflight; dataset_audit.yaml/manifest.yaml live at the dataset root
   agent/
     base.py              # EvalRunner ABC + RunResult

@@ -33,6 +33,8 @@ $AGENT_EVAL_RUNS_DIR/<run-id>/
 ├── report.html         # scored HTML report
 ├── summary.yaml        # judge results: judges (mean, pass_rate, scored_cases,
 │                       #   errored_cases, stability) + per_case + run_metrics
+│                       #   + validity (non-gating P8 block: per-judge IRR,
+│                       #   V1/V2/V3 layer statuses, same-family caveat)
 └── cases/
     └── <case-id>/
         ├── artifacts/          # files collected from outputs[].path

@@ -73,6 +73,64 @@ def _detect_regressions(judges, thresholds, pairwise=None, include_irr=True,
                                   human_calibration=human_calibration)
 
 
+def _validity_mlflow_fields(summary: dict) -> tuple[dict, dict]:
+    """MLflow routing for ``summary['validity']`` (pure — no tracking calls).
+
+    Returns ``(metrics, tags)``: per-judge METRICS ``{judge}/irr_value`` and
+    ``{judge}/human_agreement`` (numeric values only — never fabricated for
+    degenerate/absent coefficients; metrics are the cross-run plottable
+    channel), plus run TAGS ``validity/v1..v3`` (compact layer statuses),
+    ``validity/same_family`` (family name or ``'no'``), and per-judge
+    ``validity/{judge}/irr_metric`` (searchable metric names). No params —
+    params are immutable inputs, validity is a computed outcome. Full
+    fidelity (rationales, CI, frame text) rides the summary.yaml artifact
+    that is already logged verbatim. Pre-validity summaries return
+    ``({}, {})``.
+    """
+    validity = (summary or {}).get("validity")
+    if not isinstance(validity, dict) or not validity:
+        return {}, {}
+
+    def _numeric(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+    metrics: dict = {}
+    tags: dict = {}
+    layers = validity.get("layers") or {}
+
+    rows = validity.get("judges")
+    if not isinstance(rows, list):
+        v3 = layers.get("v3")
+        rows = (v3.get("judges") if isinstance(v3, dict) else None) or []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        judge = row.get("judge")
+        if not judge:
+            continue
+        irr = row.get("irr")
+        if isinstance(irr, dict):
+            if _numeric(irr.get("value")):
+                metrics[f"{judge}/irr_value"] = float(irr["value"])
+            if irr.get("metric"):
+                tags[f"validity/{judge}/irr_metric"] = str(irr["metric"])
+        ha = row.get("human_agreement")
+        if isinstance(ha, dict) and _numeric(ha.get("value")):
+            metrics[f"{judge}/human_agreement"] = float(ha["value"])
+
+    for key in ("v1", "v2", "v3"):
+        layer = layers.get(key)
+        if isinstance(layer, dict) and layer.get("status"):
+            tags[f"validity/{key}"] = str(layer["status"])
+
+    same_family = validity.get("same_family")
+    tags["validity/same_family"] = (
+        str(same_family["family"])
+        if isinstance(same_family, dict) and same_family.get("family")
+        else "no")
+    return metrics, tags
+
+
 def _resolve_skill(config: EvalConfig) -> str | None:
     """Skill name compatible with AEH v1.0.3 and newer EvalConfig APIs."""
     if hasattr(config, "resolve_skill"):
@@ -324,6 +382,20 @@ def main():
                 if agg.get("mean") is not None:
                     mlflow.log_metric(f"{judge_name}/mean", agg["mean"])
                     metric_count += 1
+
+        # ── Validity routing (measurement-validity P8) ───────────
+        # Numeric IRR / human-agreement coefficients as metrics (plottable
+        # cross-run), layer statuses + same-family + per-judge metric names
+        # as tags (searchable). Full block rides the summary.yaml artifact.
+        validity_metrics, validity_tags = _validity_mlflow_fields(summary)
+        for metric_key, metric_val in validity_metrics.items():
+            mlflow.log_metric(metric_key, metric_val)
+            metric_count += 1
+        for tag_key, tag_val in validity_tags.items():
+            mlflow.set_tag(tag_key, tag_val)
+        if validity_metrics or validity_tags:
+            print(f"VALIDITY: {len(validity_metrics)} metrics, "
+                  f"{len(validity_tags)} tags")
 
         # ── Tags ─────────────────────────────────────────────────
         # Ask score.py rather than restating its rules: this had drifted to two

@@ -16,6 +16,7 @@ import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
 
 import argparse
 import ast
+import copy
 import importlib
 import json
 import logging
@@ -37,6 +38,8 @@ import yaml
 from agent_eval.config import (
     EvalConfig, RunnerConfig, _is_valid_eval_name, _validate_path_segment,
 )
+from agent_eval.model_families import infer_model_family
+from agent_eval.tools.interception import extract_tool_patterns
 from agent_eval.reliability import (
     INTERVAL, NOMINAL, ORDINAL,
     REASON_INSUFFICIENT_DATA, REASON_PERFECT_AGREEMENT,
@@ -2893,6 +2896,266 @@ def compute_human_agreement(pairs, scale, floor=CALIBRATION_FLOOR):
 
 
 # ---------------------------------------------------------------------------
+# Validity block (P8) — measurement-validity report data, NON-GATING
+# ---------------------------------------------------------------------------
+
+#: The multiplicative validity frame — a conceptual upper bound only. The
+#: harness NEVER computes a numeric V_total (see build_validity_block).
+VALIDITY_FRAME = (
+    "V_total <= V1 x V2 x V3 (conceptual upper bound — "
+    "arXiv 2608.00794 Sec 10.4)")
+
+VALIDITY_NOTE = (
+    "Advisory guidance only (paper Sec 10.4): the paper reads "
+    "V_total <= 0.50 as results to interpret with caution and "
+    "V_total <= 0.30 as insufficient for high-stakes conclusions. "
+    "No numeric V_total is computed here — one or more layers are "
+    "unmeasured, and a product over unmeasured layers would be a "
+    "fabricated number.")
+
+SAME_FAMILY_CAVEAT = (
+    "All classifiable model roles resolve to one provider family. "
+    "Same-family agents, judges, and simulators share training lineage "
+    "and can fail in correlated ways, so agreement between them "
+    "overstates reliability (paper Appendix B.4).")
+
+#: Layer display names used in v_total.unmeasured_layers and the report.
+_VALIDITY_LAYER_NAMES = {
+    "v1": "V1 (task generation)",
+    "v2": "V2 (simulator)",
+    "v3": "V3 (judgment)",
+}
+
+
+def _judge_irr(agg):
+    """The ONE read point for a judge aggregate's IRR data.
+
+    Reads the NESTED ``stability.irr`` dict — the canonical coefficient
+    block persisted by ``_compute_stability_irr`` (never flat ``irr_*``
+    keys). Returns the irr dict, or ``None`` when the judge carries no
+    sampling-stability IRR data (samples: 1, deterministic judge, or a
+    pre-IRR summary).
+    """
+    if not isinstance(agg, dict):
+        return None
+    stability = agg.get("stability")
+    if not isinstance(stability, dict):
+        return None
+    irr = stability.get("irr")
+    return irr if isinstance(irr, dict) and irr else None
+
+
+def _intercepts_ask_user(config):
+    """True when any ``inputs.tools`` handler would intercept AskUserQuestion.
+
+    Mirrors the runtime matching rule (tools.py ``_find_handler``): an exact
+    tool-name pattern, or a trailing-``*`` prefix pattern — the bare ``*``
+    wildcard handler prefix-matches EVERY tool, AskUserQuestion included.
+    """
+    for tool_cfg in getattr(config.inputs, "tools", None) or []:
+        match_text = getattr(tool_cfg, "match", "") or ""
+        for pattern in extract_tool_patterns(match_text):
+            if pattern == "AskUserQuestion":
+                return True
+            if (pattern.endswith("*")
+                    and "AskUserQuestion".startswith(pattern[:-1])):
+                return True
+    return False
+
+
+def _collect_role_models(config, run_result=None, intercepting=False):
+    """Configured model ids across roles, for the same-family check.
+
+    One entry per configured role slot (skill, subagent, judge default,
+    hook when intercepting) plus per-judge overrides — duplicates kept, so
+    two roles resolving to the same id still count as two same-family
+    occurrences.
+    """
+    models = []
+    skill_model = ((run_result or {}).get("model")
+                   if isinstance(run_result, dict) else None)
+    skill_model = skill_model or config.models.skill
+    for m in (skill_model, config.models.subagent, config.models.judge):
+        if m and isinstance(m, str):
+            models.append(m)
+    if intercepting and config.models.hook:
+        models.append(config.models.hook)
+    for jc in config.judges or []:
+        m = getattr(jc, "model", None)
+        if m and isinstance(m, str):
+            models.append(m)
+    return models
+
+
+def _same_family_block(config, run_result=None, intercepting=False):
+    """Same-family caveat block, or None when no claim can be made.
+
+    The claim fires only when >= 2 role slots carry KNOWN ids that all
+    resolve to ONE family. Any unclassifiable id (opaque gateway alias)
+    silences the check entirely — unknown means silent, never a warning
+    and never a claimed family.
+    """
+    models = _collect_role_models(config, run_result=run_result,
+                                  intercepting=intercepting)
+    if len(models) < 2:
+        return None
+    families = [infer_model_family(m) for m in models]
+    if any(f is None for f in families):
+        return None  # unknown id anywhere -> stay silent (gateway rule)
+    if len(set(families)) != 1:
+        return None
+    return {
+        "family": families[0],
+        "models": sorted(set(models)),
+        "caveat": SAME_FAMILY_CAVEAT,
+    }
+
+
+def build_validity_block(config, aggregated_judges, summary=None,
+                         run_result=None):
+    """Assemble ``summary['validity']`` — the P8 reporting block.
+
+    NON-GATING by design: ``detect_regressions`` never reads it. Derived
+    data, re-assembled by ``cmd_judges`` on every scoring run.
+
+    Contents: per-judge P8 rows (IRR metric + value + threshold + selection
+    rationale, human-agreement passthrough), the three V-layer stanzas with
+    unmeasured layers NAMED, an honest ``v_total`` frame (never a computed
+    number — the numeric-product guard below can only fire once all three
+    layers carry measured numeric values, which no current feature
+    produces), and the same-family caveat (report-only).
+    """
+    summary = summary if isinstance(summary, dict) else {}
+    aggregated_judges = aggregated_judges or {}
+    eff_thresholds = config.effective_thresholds() or {}
+
+    # --- per-judge P8 rows (metric / value / threshold / rationale) --------
+    rows = []
+    for name in sorted(aggregated_judges):
+        agg = aggregated_judges[name]
+        if not isinstance(agg, dict):
+            continue
+        entry = eff_thresholds.get(name)
+        threshold = entry.get("min_alpha") if isinstance(entry, dict) else None
+        irr = _judge_irr(agg)
+        irr_row = None
+        if irr is not None:
+            irr_row = {
+                "metric": irr.get("metric"),
+                "value": irr.get("value"),
+                "threshold": threshold,
+                "rationale": irr.get("rationale"),
+            }
+            if irr.get("n_units") is not None:
+                irr_row["n_units"] = irr["n_units"]
+            if irr.get("ci") is not None:
+                irr_row["ci"] = irr["ci"]
+            if irr.get("value") is None and irr.get("reason_code"):
+                irr_row["reason_code"] = irr["reason_code"]
+        ha = agg.get("human_agreement")
+        ha_row = None
+        if isinstance(ha, dict) and ha:
+            ha_row = {"metric": ha.get("metric"), "value": ha.get("value"),
+                      "n": ha.get("n_units")}
+        rows.append({"judge": name, "irr": irr_row,
+                     "human_agreement": ha_row})
+
+    # --- V1: task generation ------------------------------------------------
+    audit_present = manifest_present = False
+    null_probe = None
+    ds_path = (config.dataset.path or "").strip()
+    if ds_path:
+        dataset_root = config.resolve_path(ds_path)
+        audit_path = dataset_root / "dataset_audit.yaml"
+        audit_present = audit_path.is_file()
+        manifest_present = (dataset_root / "manifest.yaml").is_file()
+        if audit_present:
+            try:
+                audit = yaml.safe_load(audit_path.read_text()) or {}
+            except (OSError, yaml.YAMLError):
+                audit = {}
+            probe = audit.get("null_probe") if isinstance(audit, dict) else None
+            if (isinstance(probe, dict)
+                    and probe.get("null_pass_rate") is not None):
+                null_probe = {"null_pass_rate": probe["null_pass_rate"]}
+    v1 = {
+        "status": "partially-measured" if audit_present else "unmeasured",
+        "generation_strategy": config.generation.strategy or "skill",
+        "dataset_audit": "present" if audit_present else "absent",
+        "manifest": "present" if manifest_present else "absent",
+    }
+    if null_probe:
+        v1["null_probe"] = null_probe
+
+    # --- V2: simulated user -------------------------------------------------
+    intercepting = _intercepts_ask_user(config)
+    if intercepting:
+        # Defensive read: a future summary['simulator'] block (calibration
+        # data) supplies its own status once it ships; until then the
+        # simulator is honestly uncalibrated.
+        sim = summary.get("simulator")
+        status = (str(sim.get("status"))
+                  if isinstance(sim, dict) and sim.get("status")
+                  else "uncalibrated simulator")
+        v2 = {"status": status, "intercepts_ask_user": True,
+              "hook_model": config.models.hook}
+    else:
+        v2 = {"status": "not-applicable", "intercepts_ask_user": False}
+
+    # --- V3: judgment ---------------------------------------------------
+    def _numeric(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+    alpha_by_judge = {r["judge"]: (r["irr"] or {}).get("value") for r in rows}
+    gated = [n for n, e in eff_thresholds.items()
+             if isinstance(e, dict) and "min_alpha" in e]
+    min_gated_alpha = None
+    if gated:
+        gated_alphas = [alpha_by_judge.get(n) for n in gated]
+        if all(_numeric(v) for v in gated_alphas):
+            min_gated_alpha = min(gated_alphas)
+    # Self-consistency alpha is an UPPER BOUND on inter-rater reliability,
+    # so IRR coverage can only ever make V3 partially measured — 'measured'
+    # would need independent raters (judge panels).
+    v3_status = ("partially-measured"
+                 if any(r["irr"] is not None for r in rows) else "unmeasured")
+    v3 = {
+        "status": v3_status,
+        "judges": copy.deepcopy(rows),
+        "min_gated_alpha": min_gated_alpha,
+    }
+
+    layers = {"v1": v1, "v2": v2, "v3": v3}
+
+    # --- v_total: the frame, never a number ---------------------------------
+    unmeasured_layers = [
+        _VALIDITY_LAYER_NAMES[key] for key in ("v1", "v2", "v3")
+        if layers[key].get("status") not in ("measured", "not-applicable")
+    ]
+    # Guard: a numeric product may appear ONLY if all three layers carry a
+    # measured numeric 'value' — impossible with the current feature set
+    # (no layer ever sets one), so this stays None. Never fabricated.
+    layer_values = [layers[key].get("value") for key in ("v1", "v2", "v3")]
+    v_total_value = None
+    if all(_numeric(v) for v in layer_values):
+        v_total_value = layer_values[0] * layer_values[1] * layer_values[2]
+    v_total = {
+        "frame": VALIDITY_FRAME,
+        "value": v_total_value,
+        "unmeasured_layers": unmeasured_layers,
+        "note": VALIDITY_NOTE,
+    }
+
+    return {
+        "judges": rows,
+        "layers": layers,
+        "v_total": v_total,
+        "same_family": _same_family_block(config, run_result=run_result,
+                                          intercepting=intercepting),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Regression detection
 # ---------------------------------------------------------------------------
 
@@ -3297,6 +3560,7 @@ def cmd_judges(args):
 
     # Workload-agnostic run metrics for cross-run / cross-model comparison
     rr_path = runs_dir / args.run_id / "run_result.json"
+    run_result = None
     if rr_path.exists():
         with open(rr_path) as f:
             run_result = json.load(f)
@@ -3310,6 +3574,21 @@ def cmd_judges(args):
                     print(f"  {k}: ${v:.4f}")
                 else:
                     print(f"  {k}: {v:,.1f}")
+
+    # Validity block (P8, non-gating) — derived data, re-assembled on every
+    # scoring run AFTER the judges/per_case merges (reads the merged summary
+    # for defensive simulator/pairwise state) and merged BEFORE the
+    # regression exit so a failing run still carries it.
+    summary_now = {}
+    if summary_path.exists():
+        with open(summary_path) as f:
+            summary_now = yaml.safe_load(f) or {}
+    _merge_summary(args.run_id, "validity",
+                   build_validity_block(config,
+                                        judge_results.get("aggregated", {}),
+                                        summary=summary_now,
+                                        run_result=run_result),
+                   runs_dir)
 
     # Regression detection — thresholds resolved at detection time via
     # effective_thresholds(), so a consequence-tagged judge gets its
