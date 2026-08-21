@@ -108,8 +108,9 @@ runner:
   # Plugin dirs listed above are ALWAYS staged into the case workspace and the
   # staged copy is what --plugin-dir receives: the real project path otherwise
   # lands in session context, where non-path-gated Bash can follow it out of
-  # the sandbox. Plugins already inside the workspace (incl. workspace_mode:
-  # repo) are passed through unchanged.
+  # the sandbox. Plugins already inside the workspace are passed through
+  # unchanged, and workspace_mode: repo skips staging entirely (the workspace
+  # IS the real project there — nothing to isolate).
   # env:                    # Extra env vars for the runner ($VAR resolves from caller)
   #   CUSTOM_AUTH_TOKEN: "$CUSTOM_AUTH_TOKEN"
   # system_prompt: ""       # Appended to harness system prompt

@@ -165,8 +165,9 @@ entry's discoverable content (manifest, skill roots, `commands/`, `agents/`,
 `hooks/`, `scripts/`) into `.staged-plugins/` and passes the staged copy to
 `--plugin-dir` — the configured path would otherwise land verbatim in session
 context, where Bash (not path-gated) can follow it out of the workspace. An entry
-already inside the workspace (including `workspace_mode: repo`) is passed through
-unchanged. Codex copies each plugin's skills into the case workspace's
+already inside the workspace is passed through unchanged, and
+`workspace_mode: repo` skips staging entirely — the workspace is the real
+project there, so there is nothing to isolate. Codex copies each plugin's skills into the case workspace's
 `.agents/skills` directory for the duration of the run. Relative paths are always
 resolved from the project root.
 A lexically external path such as `../shared-skills` is an explicit opt-in like an

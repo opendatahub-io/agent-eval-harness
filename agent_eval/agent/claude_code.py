@@ -170,6 +170,7 @@ class ClaudeCodeRunner(EvalRunner):
         return cls(
             permissions=overrides.get("permissions", config.permissions),
             plugin_dirs=resolved_plugin_dirs,
+            workspace_mode=config.runner.workspace_mode,
             env=config.runner.env,
             system_prompt=config.runner.system_prompt,
             subagent_model=overrides.get("subagent_model"),
@@ -186,6 +187,7 @@ class ClaudeCodeRunner(EvalRunner):
         permissions: Optional[dict] = None,
         subagent_model: Optional[str] = None,
         plugin_dirs: Optional[list] = None,
+        workspace_mode: Optional[str] = None,
         env: Optional[dict] = None,
         system_prompt: Optional[str] = None,
         mlflow_experiment: Optional[str] = None,
@@ -197,6 +199,7 @@ class ClaudeCodeRunner(EvalRunner):
         self._permissions = permissions or {}
         self._subagent_model = subagent_model
         self._plugin_dirs = plugin_dirs or []
+        self._workspace_mode = workspace_mode
         self._env = env or {}
         self._system_prompt = system_prompt
         self._mlflow_experiment = mlflow_experiment
@@ -265,9 +268,10 @@ class ClaudeCodeRunner(EvalRunner):
         if plugin_dirs:
             # Always pass a workspace-local copy so the real plugin path never
             # enters the session context (see stage_plugin_dir). A plugin that
-            # already lives inside the workspace is passed through unchanged —
-            # which also covers workspace_mode: repo, where the workspace IS
-            # the project and staging would write junk into the user's repo.
+            # already lives inside the workspace is passed through unchanged,
+            # and workspace_mode: repo skips staging entirely — the workspace
+            # IS the project there, so there is nothing to isolate and staging
+            # would write junk into the user's repo.
             try:
                 plugin_dirs = self._staged_plugin_dirs(workspace)
             except (OSError, ValueError, FileNotFoundError) as e:
@@ -590,6 +594,13 @@ class ClaudeCodeRunner(EvalRunner):
         different plugins sharing a basename would silently collapse into
         one copy — fail loud instead.
         """
+        # workspace_mode: repo runs in the user's real repository: there is
+        # no isolation boundary for staging to defend (the session already
+        # has the project), and staging an external plugin would write
+        # .staged-plugins/ into the repo — polluting it and reading back as
+        # a spurious repo modification. Pass every configured path through.
+        if self._workspace_mode == "repo":
+            return [str(Path(p).resolve()) for p in self._plugin_dirs]
         staged = []
         seen: dict = {}
         ws = Path(workspace).resolve()
@@ -597,9 +608,7 @@ class ClaudeCodeRunner(EvalRunner):
             plugin = Path(configured).resolve()
             # A plugin already inside the workspace is passed through: its
             # path discloses nothing outside the sandbox, and re-staging it
-            # would be pointless. This also covers workspace_mode: repo,
-            # where the workspace IS the project — staging there would write
-            # .staged-plugins/ into the user's repo.
+            # would be pointless.
             if plugin == ws or plugin.is_relative_to(ws):
                 staged.append(str(plugin))
                 continue

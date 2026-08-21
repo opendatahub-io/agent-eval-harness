@@ -128,7 +128,7 @@ the `result` event.
 - **Plugin staging** — every `runner.plugin_dirs` entry outside the workspace is
   copied into `<workspace>/.staged-plugins/` and `--plugin-dir` receives the copy,
   so the real plugin path never enters session context; in-workspace entries
-  (including `workspace_mode: repo`) pass through unchanged.
+  pass through unchanged and `workspace_mode: repo` skips staging entirely.
 - **Budget** is enforced server-side via `--max-budget-usd`.
 - **Permissions** — simple string patterns become `--allowed-tools` /
   `--disallowed-tools`; path-based rules are compiled into a temporary

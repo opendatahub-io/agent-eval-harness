@@ -269,3 +269,63 @@ class TestClaudeCodeRunnerStaging:
             model="m", timeout_s=60)
         assert result.exit_code == -1
         assert "same directory name" in result.stderr
+
+    def test_repo_mode_skips_staging_entirely(self, tmp_path, monkeypatch):
+        """workspace_mode: repo runs in the user's real repository — there is
+        no isolation boundary for staging to defend, and staging an external
+        plugin there would write .staged-plugins/ into the repo, polluting it
+        and reading back as a spurious repo modification."""
+        self._stub_claude(tmp_path, monkeypatch)
+        plugin = make_plugin(tmp_path / "plugins")
+        ws = tmp_path / "repo"
+        ws.mkdir()
+        runner = ClaudeCodeRunner(
+            plugin_dirs=[str(plugin)], workspace_mode="repo")
+        result = runner.execute(
+            target="epic-decompose", args="", workspace=ws,
+            model="m", timeout_s=60)
+        assert result.exit_code == 0, result.stderr
+        assert self._plugin_dir_args(self._argv(ws)) == [str(plugin.resolve())]
+        assert not (ws / ".staged-plugins").exists(), (
+            "repo mode must never write .staged-plugins/ into the user's repo")
+
+
+class TestCollectIgnoresStagedPlugins:
+    """collect.py diffs the case workspace against its initial commit to find
+    agent-modified files; the staged plugin copy lands after that commit and
+    must not be reported (it would flood judge context with plugin content)."""
+
+    def _load_collect(self):
+        import importlib.util
+        path = (Path(__file__).parent.parent
+                / "skills" / "eval-run" / "scripts" / "collect.py")
+        spec = importlib.util.spec_from_file_location("eval_run_collect", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_staged_plugins_excluded_from_modified_files(self, tmp_path):
+        import subprocess
+        from types import SimpleNamespace
+        collect = self._load_collect()
+        case = tmp_path / "case-001"
+        case.mkdir()
+        (case / "input.yaml").write_text("prompt: x\n")
+        env = {**os.environ,
+               "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        for cmd in (["git", "init", "-q"], ["git", "add", "-A"],
+                    ["git", "commit", "-q", "-m", "initial"]):
+            subprocess.run(cmd, cwd=case, env=env, check=True)
+        staged = case / ".staged-plugins" / "demo" / "skills" / "my-skill"
+        staged.mkdir(parents=True)
+        (staged / "SKILL.md").write_text("---\nname: my-skill\n---\n")
+        (case / "artifacts").mkdir()
+        (case / "artifacts" / "out.md").write_text("real agent output\n")
+
+        modified = collect._collect_modified_files(
+            case, SimpleNamespace(outputs=[]))
+        rels = [rel for rel, _ in modified]
+        assert "artifacts/out.md" in rels
+        assert not any(r.startswith(".staged-plugins") for r in rels), (
+            "staged plugin content must never surface as agent-modified files")
