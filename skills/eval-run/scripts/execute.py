@@ -165,6 +165,11 @@ def _warn_if_unscannable(output_dir):
     ``<cwd>/eval/runs``. An ``--output`` outside both — or a bounded-glob depth
     of more than three below the root — leaves the run silently unguarded. Say
     so once, rather than letting the protection be absent without a trace.
+
+    False-negative: the roots are computed from *this process's* env and cwd,
+    which is exactly what diverges from the hook's view when the two disagree
+    (e.g. ``cd subproj && execute.py``). Nothing better is computable here —
+    execute.py cannot know the session's cwd.
     """
     try:
         target = output_dir.resolve()
