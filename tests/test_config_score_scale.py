@@ -146,6 +146,23 @@ def test_inline_check_without_a_range_is_silent(tmp_path):
                           "check: \"return (7, 'r')\"}\n")
 
 
+def test_the_pairwise_judge_without_a_range_is_silent(tmp_path):
+    """score.py routes the judge named "pairwise" into the A/B/tie verdict
+    flow by name — no numeric scale ever applies, so warning about a missing
+    one steered configs into declaring a range that is never read."""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _config(tmp_path, "  - {name: pairwise, prompt: 'which is better?'}\n")
+
+
+def test_a_numeric_judge_merely_mentioning_pairwise_still_warns(tmp_path):
+    """The exemption is by the exact reserved name, matching score.py."""
+    with pytest.warns(UserWarning, match="no 'score_range'"):
+        _config(tmp_path, "  - {name: pairwise_quality, prompt: 'p'}\n")
+
+
 class TestBuiltinJudgeKind:
     """Resolution has to work without `discover()`, which execs every Python
     judge module — far too much to do to validate a config."""

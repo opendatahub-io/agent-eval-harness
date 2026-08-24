@@ -1349,8 +1349,11 @@ class EvalConfig:
             # treats anything that is not "bool" as numeric — so the judge that
             # most needs this warning is the one that declares neither field,
             # and gating on ("int", "float") alone never reached it.
+            # The judge named "pairwise" is exempt: score.py routes it past
+            # the numeric path by that name into the A/B/tie verdict flow, so
+            # no scale — declared or defaulted — is ever applied to it.
             if (jc.feedback_type in ("int", "float", "") and not jc.score_range
-                    and not jc.builtin
+                    and not jc.builtin and jc.name != "pairwise"
                     and (jc.prompt or jc.prompt_file or jc.llm_rubric)):
                 import warnings
                 warnings.warn(

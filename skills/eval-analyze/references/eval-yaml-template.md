@@ -376,6 +376,8 @@ judges:
   #     threshold: 0.8
 
   # Pairwise comparison (used with score.py pairwise --baseline <id>)
+  # No score_range here: the judge named "pairwise" returns A/B/tie verdicts,
+  # not a numeric score — score.py routes it by this reserved name.
   # - name: pairwise
   #   description: Compare two runs and pick the better output
   #   prompt_file: eval/prompts/comparison-judge.md
