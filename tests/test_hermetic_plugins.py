@@ -81,6 +81,17 @@ def test_installed_plugin_ids_tolerates_format_drift(tmp_path, payload):
     assert installed_plugin_ids(registry) == []
 
 
+def test_registry_wildcard_key_is_rejected(tmp_path):
+    """A registry containing the reserved "*" key must not smuggle the
+    harness-only pseudo-entry into the synthesized denylist — the wildcard
+    strip in _apply_runner_settings covers only the user's own settings."""
+    registry = _write_registry(
+        tmp_path, plugins={**REGISTRY_PLUGINS, "*": {}})
+    assert "*" not in installed_plugin_ids(registry)
+    assert "*" not in hermetic_enabled_plugins(registry)
+    assert set(hermetic_enabled_plugins(registry)) == set(REGISTRY_PLUGINS)
+
+
 def test_installed_plugin_ids_default_path_is_home_registry(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     _write_registry(tmp_path)

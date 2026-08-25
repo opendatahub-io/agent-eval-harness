@@ -51,7 +51,12 @@ def installed_plugin_ids(registry_path: Path | str | None = None) -> list[str]:
     plugins = raw.get("plugins")
     if not isinstance(plugins, dict):
         return []
-    return sorted(str(plugin_id) for plugin_id in plugins)
+    # "*" is the harness-reserved wildcard in runner.settings.enabledPlugins;
+    # a registry corrupt (or crafted) enough to contain it must not smuggle
+    # the pseudo-entry into the synthesized denylist — the wildcard strip in
+    # _apply_runner_settings only covers the user's own settings.
+    return sorted(
+        str(plugin_id) for plugin_id in plugins if str(plugin_id) != "*")
 
 
 def hermetic_enabled_plugins(registry_path: Path | str | None = None) -> dict:
