@@ -59,8 +59,9 @@ Prompt mode provides direct agent invocation with LLM rubric judges and flexible
 
 ```
 agent_eval/              # Python package (config, runner, state)
-  config.py              # EvalConfig from eval.yaml
+  config.py              # EvalConfig from eval.yaml (+ resolve_workspace_source)
   state.py               # Shared state persistence (key-value store)
+  workspace_provisioning.py # Materialize shared {dest,source} workspace.files (local + Harbor + S3 export)
   agent/
     base.py              # EvalRunner ABC + RunResult
     claude_code.py       # Claude Code CLI runner (claude --print)
@@ -122,6 +123,7 @@ skills/eval-dataset/     # Skill: generate test cases
     generate_synthetic.py # Synthetic test case generation (prompt mode)
     list_prompts.py      # List builtin generation prompts (from agent_eval/prompts/)
     harbor.py            # CLI: generate Harbor task packages (thin wrapper → harbor.tasks)
+    export_s3.py         # CLI: materialize shared workspace.files into per-case dirs for S3/EvalHub (→ evalhub.export)
   # Builtin generation prompts live in agent_eval/prompts/ (like builtin judges)
 
 skills/eval-run/         # Skill: execute eval suite
@@ -212,7 +214,7 @@ Projects create an `eval.yaml` config file with:
 - `models` — defaults for `skill`/`subagent`/`judge`/`hook` roles (CLI flags override). `hook` is the model for LLM-based AskUserQuestion answering.
 - `mlflow` — `experiment`, optional `tracking_uri`/`tags`
 - `permissions` — `allow`/`deny` tool patterns for headless execution
-- `dataset` — `path` to test cases directory, `schema` describing case structure in natural language.
+- `dataset` — `path` to test cases directory, `schema` describing case structure in natural language. `workspace.files` whitelists companion files copied into each case workspace: either a per-case string path, or a shared `{dest, source}` mapping (a project/plugin resource resolved against the project root or `runner.plugin_dirs`, symlinks followed, materialized as a real file — never a symlink — so it ports across local, Harbor, and S3/EvalHub via `agent_eval.workspace_provisioning.materialize_shared_files`; the S3 path uses the `export_s3.py` step). Prefer `{dest, source}` over committing a symlink into a case (symlinks are skipped locally, ignored by Harbor, and don't round-trip through object storage).
 - `generation` — optional. `strategy` selects case provenance: `skill` (default — agent authors from skill analysis; needs no block), `synthetic` (LLM generates from seeds), or `from-traces` (extracted from MLflow traces). For `synthetic`: `context` holds repository knowledge injected into every prompt, and `seeds` is a list where each has a `category`, a `count`, and exactly one prompt discriminator (mirroring judges): `builtin` (from `agent_eval/prompts/`, e.g. `docs/navigation`), `prompt_file` (project path), or inline `prompt`. Each seed's `category` is stamped onto cases as `annotations.category` (derived, never declared). `seeds`/`context` apply only to `synthetic`. Whether `/eval-dataset` creates a fresh set or augments is derived from the existing dataset — there is no `--strategy` flag.
 - `inputs.tools` — tool interception: `match` describes what to intercept, `prompt` how to handle it. AskUserQuestion uses 3-tier answering: exact `case_overrides` → LLM call (`models.hook`) with case context (`input.yaml` + `answers.yaml`) → fallback
 - `outputs` — list of artifact dirs (`path`) and/or tool calls (`tool`) with natural language schemas. Optional `batch_pattern` maps output files to cases in batch mode using `{n}` as a 1-based index

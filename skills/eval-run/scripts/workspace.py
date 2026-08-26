@@ -28,6 +28,7 @@ import yaml
 
 from agent_eval.config import EvalConfig
 from agent_eval.tools.interception import extract_tool_patterns
+from agent_eval.workspace_provisioning import materialize_shared_files
 from workspace_files import _copy_input_files
 
 # Resolve git executable to absolute path to prevent PATH hijacking (CWE-426)
@@ -253,6 +254,9 @@ def _create_per_case_workspace(workspace, case_dirs, config, args):
         # agent to work on). Contents are placed at the workspace root,
         # preserving relative paths within the directory.
         _copy_input_files(case_dir, case_ws, config)
+        # Materialize shared {dest, source} workspace.files entries (e.g. a
+        # live SKILL.md in a plugin) as real files in the case workspace.
+        materialize_shared_files(case_ws, config)
 
         # Create output directories
         for output in config.outputs:

@@ -43,7 +43,7 @@ order for a first eval, or invoke individually.
 | --- | --- | --- |
 | `/eval-setup` | Preflight environment: dependencies, MLflow, API keys, run dirs | [Installation](../get-started/installation.md) |
 | `/eval-analyze` | Analyze a skill or docs, generate `eval.yaml` + `eval.md` | [eval-analyze](../guides/eval-analyze.md) |
-| `/eval-dataset` | Generate or expand test cases (and Harbor task packages) | [eval-dataset](../guides/eval-dataset.md) |
+| `/eval-dataset` | Generate or expand test cases (and Harbor task packages / S3 export via `export_s3.py`) | [eval-dataset](../guides/eval-dataset.md) |
 | `/eval-run` | Execute the suite, collect artifacts, score, report | [eval-run](../guides/eval-run.md) |
 | `/eval-compare` | Compare results across models/runs into one HTML report | [eval-compare](../guides/eval-compare.md) |
 | `/eval-review` | Interactive human review of a run; propose config changes | [eval-review](../guides/eval-review.md) |

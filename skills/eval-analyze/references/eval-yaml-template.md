@@ -190,6 +190,19 @@ dataset:
   path: <path to cases directory>
   schema: |
     <natural language description of each case's structure>
+  # Optional — companion files copied into each case workspace (case mode only).
+  # workspace:
+  #   files:
+  #     # per-case path inside the case dir (a file, or a dir copied recursively):
+  #     - src/
+  #     # shared project/plugin resource materialized (copied, never a symlink)
+  #     # into EVERY case at <dest>; <source> resolves against the project root
+  #     # or a runner.plugin_dirs entry, symlinks followed, containment-checked.
+  #     # Prefer this over committing a symlink to a live file into each case —
+  #     # it ports across local /eval-run, Harbor, and S3/EvalHub. See
+  #     # website/reference/config/dataset.md for the full behavior table.
+  #     - dest: triage-skill.md
+  #       source: skills/address-ci-failures/SKILL.md
 
 # Inputs — tool interception for headless execution
 #

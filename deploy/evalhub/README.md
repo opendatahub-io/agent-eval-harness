@@ -70,6 +70,16 @@ The provider expects:
 - Claude Code CLI available in the container (inherited from base image)
 - `ANTHROPIC_API_KEY` or Vertex AI credentials as environment variables
 
+If `eval.yaml` uses shared `{dest, source}` `dataset.workspace.files` entries, the pod
+cannot resolve the project/plugin `source` at run time. Materialize them into
+self-contained per-case dirs **before** uploading to S3, from the project checkout:
+
+```bash
+python3 skills/eval-dataset/scripts/export_s3.py \
+  --config eval.yaml --out dataset-export \
+  [--s3-bucket <bucket> --s3-prefix <prefix>]   # or aws s3 sync the staging dir
+```
+
 ## Tests
 
 Adapter unit tests are in `tests/evalhub/` (run with the main test suite).

@@ -22,6 +22,8 @@ Per case it emits::
       environment/             # auto-uploaded to the agent workspace by Harbor
         input.yaml             # case input
         answers.yaml           # (if present)
+        <dest>                 # shared dataset.workspace.files {dest, source}
+                               #   entries, resolved from the local checkout
         hooks/tools.py         # tool interceptor script (if inputs.tools configured)
         tool_handlers.yaml     # handler config (if inputs.tools configured)
         .claude/settings.json  # PreToolUse hooks + permissions (Claude Code)
@@ -44,6 +46,7 @@ import yaml
 from agent_eval.config import EvalConfig, resolve_arguments
 from agent_eval.judges import BuiltinJudgeRegistry
 from agent_eval.tools.interception import generate_interception
+from agent_eval.workspace_provisioning import materialize_shared_files
 
 _TEMPLATES = Path(__file__).resolve().parent / "templates"
 
@@ -389,6 +392,9 @@ def _write_multi_step_case_package(config, config_path, bundled_cfg, case_dir,
     answers = case_dir / "answers.yaml"
     if answers.is_file():
         shutil.copy2(answers, env_dir / "answers.yaml")
+    # Shared {dest, source} workspace.files, resolved from the local checkout
+    # and copied in so the file travels inside the task package.
+    materialize_shared_files(env_dir, config)
     _generate_tool_interception(env_dir, config, config_path, workdir)
     return task_dir
 
@@ -523,6 +529,9 @@ def generate_tasks(
         answers = case_dir / "answers.yaml"
         if answers.is_file():
             shutil.copy2(answers, env_dir / "answers.yaml")
+        # Shared {dest, source} workspace.files, resolved from the local
+        # checkout and copied in so the file travels inside the task package.
+        materialize_shared_files(env_dir, config)
 
         # Batch mode: create a 1-item batch.yaml so the same --input batch.yaml
         # argument works per-case in Harbor as it does in local batch runs.

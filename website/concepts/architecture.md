@@ -37,7 +37,7 @@ flowchart TD
 | Stage | What happens | Where it lives |
 | --- | --- | --- |
 | **Config** | `eval.yaml` → `EvalConfig`; mutually-exclusive keys, enums, and reward formulas fail at load | `agent_eval/config.py` |
-| **Prepare** | Isolated workspace per case; `input.yaml` staged, `dataset.workspace.files` copied in, `execution.env` injected | `skills/eval-run/scripts/workspace.py` |
+| **Prepare** | Isolated workspace per case; `input.yaml` staged, `dataset.workspace.files` copied in (shared `{dest, source}` entries via `materialize_shared_files`), `execution.env` injected | `skills/eval-run/scripts/workspace.py`, `agent_eval/workspace_provisioning.py` |
 | **Execute** | Runner invokes the skill or prompt headlessly, one call per case (`mode: case`) or one call for all cases (`mode: batch`) | `agent_eval/agent/`, `skills/eval-run/scripts/execute.py` |
 | **Collect** | Gather `outputs[].path` artifacts and `outputs[].tool` calls; map them back to cases (via `batch_pattern` in batch mode) | `skills/eval-run/scripts/collect.py` |
 | **Score** | Run each judge over the per-case `outputs` record; pairwise/regression as configured | `skills/eval-run/scripts/score.py` |

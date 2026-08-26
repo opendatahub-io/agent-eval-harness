@@ -4,7 +4,14 @@ import os
 
 import pytest
 
-from agent_eval.config import DatasetConfig, EvalConfig, RunnerConfig, WorkspaceConfig
+from agent_eval.config import (
+    DatasetConfig,
+    EvalConfig,
+    RunnerConfig,
+    WorkspaceConfig,
+    WorkspaceFile,
+)
+from agent_eval.workspace_provisioning import materialize_shared_files
 from workspace_files import _copy_input_files
 
 
@@ -552,3 +559,372 @@ def test_copy_workspace_files_rejects_lexical_escape(
     err = capsys.readouterr().err
     assert "WARNING" in err
     assert "leaked.md" in err
+
+
+# ── Config parsing: {dest, source} shared entries ───────────────────
+
+
+def test_workspace_files_accepts_dict_entry(tmp_path):
+    cfg = EvalConfig.from_yaml(
+        _write(
+            tmp_path,
+            """
+name: t
+execution:
+  skill: s
+dataset:
+  workspace:
+    files:
+      - triage-skill.md
+      - dest: skill.md
+        source: plugins/p/skills/x/SKILL.md
+""",
+        )
+    )
+    assert cfg.dataset.workspace.files == [
+        "triage-skill.md",
+        WorkspaceFile(dest="skill.md", source="plugins/p/skills/x/SKILL.md"),
+    ]
+
+
+def test_workspace_files_dict_missing_source_rejected(tmp_path):
+    with pytest.raises(ValueError, match=r"missing required key.*source"):
+        EvalConfig.from_yaml(
+            _write(
+                tmp_path,
+                """
+name: t
+execution:
+  skill: s
+dataset:
+  workspace:
+    files:
+      - dest: skill.md
+""",
+            )
+        )
+
+
+def test_workspace_files_dict_unknown_key_rejected(tmp_path):
+    with pytest.raises(ValueError, match="unknown key"):
+        EvalConfig.from_yaml(
+            _write(
+                tmp_path,
+                """
+name: t
+execution:
+  skill: s
+dataset:
+  workspace:
+    files:
+      - dest: skill.md
+        source: x
+        mode: "0644"
+""",
+            )
+        )
+
+
+def test_workspace_files_dict_dest_traversal_rejected(tmp_path):
+    with pytest.raises(ValueError, match=r"must not contain '\.\.'"):
+        EvalConfig.from_yaml(
+            _write(
+                tmp_path,
+                """
+name: t
+execution:
+  skill: s
+dataset:
+  workspace:
+    files:
+      - dest: ../escape.md
+        source: x
+""",
+            )
+        )
+
+
+def test_workspace_files_dict_absolute_dest_rejected(tmp_path):
+    with pytest.raises(ValueError, match="must be a relative path"):
+        EvalConfig.from_yaml(
+            _write(
+                tmp_path,
+                """
+name: t
+execution:
+  skill: s
+dataset:
+  workspace:
+    files:
+      - dest: /etc/passwd
+        source: x
+""",
+            )
+        )
+
+
+def test_workspace_files_dict_dot_dest_rejected(tmp_path):
+    """dest '.' would materialize over the workspace root — must be rejected."""
+    with pytest.raises(ValueError, match=r"cannot be '\.'"):
+        EvalConfig.from_yaml(
+            _write(
+                tmp_path,
+                """
+name: t
+execution:
+  skill: s
+dataset:
+  workspace:
+    files:
+      - dest: .
+        source: x
+""",
+            )
+        )
+
+
+# ── Local materialization of shared {dest, source} entries ──────────
+
+
+def _shared_config(files, plugin_dirs=None):
+    return EvalConfig(
+        name="t",
+        skill="s",
+        runner=RunnerConfig(plugin_dirs=plugin_dirs or []),
+        dataset=DatasetConfig(workspace=WorkspaceConfig(files=files)),
+    )
+
+
+def test_materialize_shared_file_copies_in_project_source(tmp_path, monkeypatch):
+    """A source under the project root is copied to dest as a real file."""
+    project = tmp_path / "project"
+    skill = project / "skills" / "x"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# live skill\n")
+    monkeypatch.chdir(project)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = _shared_config(
+        [WorkspaceFile(dest="triage-skill.md", source="skills/x/SKILL.md")]
+    )
+    materialize_shared_files(workspace, config)
+
+    dest = workspace / "triage-skill.md"
+    assert dest.is_file() and not dest.is_symlink()
+    assert dest.read_text() == "# live skill\n"
+
+
+def test_materialize_shared_file_follows_source_symlink(tmp_path, monkeypatch):
+    """A source that is itself a symlink (inside the project) is materialized."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "real.md").write_text("real")
+    os.symlink(project / "real.md", project / "link.md")
+    monkeypatch.chdir(project)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = _shared_config([WorkspaceFile(dest="skill.md", source="link.md")])
+    materialize_shared_files(workspace, config)
+
+    dest = workspace / "skill.md"
+    assert dest.is_file() and not dest.is_symlink()
+    assert dest.read_text() == "real"
+
+
+def test_materialize_shared_file_via_plugin_dir(tmp_path, monkeypatch):
+    """An absolute source inside a configured plugin_dir is allowed."""
+    consumer = tmp_path / "consumer"
+    plugin = tmp_path / "plugin"
+    consumer.mkdir()
+    skill = plugin / "skills" / "x"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# from plugin\n")
+    monkeypatch.chdir(consumer)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = _shared_config(
+        [WorkspaceFile(dest="skill.md", source=str(skill / "SKILL.md"))],
+        plugin_dirs=[str(plugin)],
+    )
+    materialize_shared_files(workspace, config)
+
+    assert (workspace / "skill.md").read_text() == "# from plugin\n"
+
+
+def test_materialize_shared_file_skips_source_outside_roots(
+    tmp_path, monkeypatch, capsys
+):
+    """A source outside the project/plugin roots is skipped with a warning."""
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret")
+    monkeypatch.chdir(project)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = _shared_config(
+        [WorkspaceFile(dest="leak.txt", source=str(outside / "secret.txt"))]
+    )
+    materialize_shared_files(workspace, config)
+
+    assert not (workspace / "leak.txt").exists()
+    err = capsys.readouterr().err
+    assert "WARNING" in err and "leak.txt" in err
+
+
+def test_materialize_shared_file_skips_missing_source(tmp_path, monkeypatch, capsys):
+    """A missing source is skipped with a warning, not an error."""
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = _shared_config([WorkspaceFile(dest="skill.md", source="nope.md")])
+    materialize_shared_files(workspace, config)
+
+    assert list(workspace.iterdir()) == []
+    assert "WARNING" in capsys.readouterr().err
+
+
+def test_materialize_shared_file_skips_reserved_dest(tmp_path, monkeypatch, capsys):
+    """A dest colliding with a harness-reserved name is skipped with a warning."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "evil.yaml").write_text("gotcha: true")
+    monkeypatch.chdir(project)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "answers.yaml").write_text("gold: 42")
+    config = _shared_config(
+        [WorkspaceFile(dest="answers.yaml", source="evil.yaml")]
+    )
+    materialize_shared_files(workspace, config)
+
+    assert (workspace / "answers.yaml").read_text() == "gold: 42"
+    err = capsys.readouterr().err
+    assert "WARNING" in err and "reserved" in err
+
+
+def test_materialize_shared_directory_drops_nested_symlinks(tmp_path, monkeypatch):
+    """A directory source copies regular files and drops nested symlinks."""
+    project = tmp_path / "project"
+    lib = project / "lib"
+    lib.mkdir(parents=True)
+    (lib / "util.py").write_text("x")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret")
+    os.symlink(outside / "secret.txt", lib / "link.txt")
+    monkeypatch.chdir(project)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = _shared_config([WorkspaceFile(dest="lib", source="lib")])
+    materialize_shared_files(workspace, config)
+
+    assert (workspace / "lib" / "util.py").read_text() == "x"
+    assert not os.path.lexists(workspace / "lib" / "link.txt")
+
+
+def test_copy_input_files_ignores_dict_entries(tmp_path):
+    """_copy_input_files handles string entries and skips WorkspaceFile ones."""
+    case_dir = tmp_path / "cases" / "case-001"
+    case_dir.mkdir(parents=True)
+    (case_dir / "real.txt").write_text("real")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = _shared_config(
+        ["real.txt", WorkspaceFile(dest="skill.md", source="x")]
+    )
+    _copy_input_files(case_dir, workspace, config)
+
+    assert (workspace / "real.txt").read_text() == "real"
+    assert not (workspace / "skill.md").exists()
+
+
+def test_workspace_files_dict_slash_dest_rejected(tmp_path):
+    """dest '/' strips to '' and must not slip past the root guard."""
+    with pytest.raises(ValueError, match=r"cannot be '\.'"):
+        EvalConfig.from_yaml(
+            _write(
+                tmp_path,
+                """
+name: t
+execution:
+  skill: s
+dataset:
+  workspace:
+    files:
+      - dest: /
+        source: x
+""",
+            )
+        )
+
+
+def test_materialize_shared_file_skips_empty_dest(tmp_path, monkeypatch, capsys):
+    """A programmatic WorkspaceFile with an empty dest can't clobber the root."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "evil.txt").write_text("evil")
+    monkeypatch.chdir(project)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "input.yaml").write_text("prompt: keep")
+    # bypasses config-load validation (dest="" would be rejected there)
+    config = _shared_config([WorkspaceFile(dest="", source="evil.txt")])
+    materialize_shared_files(workspace, config)
+
+    assert (workspace / "input.yaml").read_text() == "prompt: keep"
+    assert not (workspace / "evil.txt").exists()
+    assert "WARNING" in capsys.readouterr().err
+
+
+def test_materialize_shared_file_skips_recursive_dest(tmp_path, monkeypatch, capsys):
+    """A dest inside a directory source must not trigger a recursive copytree."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "keep.txt").write_text("keep")
+    monkeypatch.chdir(project)
+
+    # target_dir is UNDER the project root (like an S3 export staging dir), and
+    # source '.' resolves to the project root — dst would be inside the source.
+    target_dir = project / "export" / "case-001"
+    target_dir.mkdir(parents=True)
+    config = _shared_config([WorkspaceFile(dest="sub", source=".")])
+    materialize_shared_files(target_dir, config)
+
+    assert not (target_dir / "sub").exists()
+    err = capsys.readouterr().err
+    assert "WARNING" in err and "recursive" in err
+
+
+def test_materialize_shared_file_tolerates_symlink_loop_plugin_dir(
+    tmp_path, monkeypatch
+):
+    """A symlink-loop plugin_dir is dropped, not fatal; a valid source still copies."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "SKILL.md").write_text("# live\n")
+    loop = project / "loop"
+    os.symlink(loop, loop)  # self-referential symlink -> resolve() may RuntimeError
+    monkeypatch.chdir(project)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = _shared_config(
+        [WorkspaceFile(dest="skill.md", source="SKILL.md")],
+        plugin_dirs=[str(loop)],
+    )
+    materialize_shared_files(workspace, config)  # must not raise
+
+    assert (workspace / "skill.md").read_text() == "# live\n"

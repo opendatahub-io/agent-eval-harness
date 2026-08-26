@@ -41,6 +41,11 @@ def _copy_input_files(case_dir, workspace, config):
     plugin_roots = _plugin_roots(config)
     project = Path(getattr(config, "project_root", Path.cwd())).resolve()
     for entry in files:
+        # Shared {dest, source} entries (WorkspaceFile) are materialized
+        # separately by agent_eval.workspace_provisioning; here we only handle
+        # plain per-case string paths relative to the case directory.
+        if not isinstance(entry, str):
+            continue
         rel = Path(entry)
         if rel.is_absolute() or ".." in rel.parts:
             _warn_skip(str(entry), "escapes the case directory")

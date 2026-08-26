@@ -11,6 +11,12 @@ How data flows from dataset cases through execution, collection, and scoring.
 - Builds `batch.yaml` — a list of one entry per case, each entry being the full parsed content of the input file. No field extraction — the entire input file content is included.
 - Builds `case_order.yaml` — maps position to case ID (`[{case_id: "case-001-name"}, ...]`)
 - Creates output directories from `outputs[].path` in eval.yaml
+- Provisions `dataset.workspace.files` (case mode): per-case string paths are copied from the
+  case dir (a listed file symlink is materialized as a real file); shared `{dest, source}`
+  entries are copied — never symlinked — into the case at `dest`, with `source` resolved
+  against the project root or `runner.plugin_dirs`. The same materialization
+  (`agent_eval/workspace_provisioning.py::materialize_shared_files`) is reused by the Harbor
+  task packager and the S3/EvalHub export step, so shared files behave identically everywhere.
 - Symlinks project resources (`.claude/`, `CLAUDE.md`, `scripts/`, `skills/`, `.context/`)
 - If `inputs.tools` configured, generates `tool_handlers.yaml` and `.claude/settings.json` with hooks
 

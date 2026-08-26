@@ -239,6 +239,21 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/harbor.py \
 
 See `${CLAUDE_SKILL_DIR}/references/case-generation.md` for details.
 
+### Publishing to S3 / EvalHub
+
+If the dataset uses shared `{dest, source}` `workspace.files` entries and will run via
+S3/EvalHub, materialize them into self-contained per-case dirs before uploading (a pod
+loaded from S3 can't resolve project/plugin `source` paths at run time). Run from the
+project root:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/export_s3.py \
+  --config <config> --out <dataset_dir>/../dataset-export \
+  [--s3-bucket <bucket> --s3-prefix <prefix>]
+```
+
+Omit `--s3-bucket` to only stage the directory (then `aws s3 sync` it yourself).
+
 ---
 
 ## Rules

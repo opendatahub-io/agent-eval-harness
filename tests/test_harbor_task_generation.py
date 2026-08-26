@@ -352,3 +352,52 @@ def test_generate_tasks_writes_non_ascii_description_as_utf8(tmp_path):
 
     text = (out / "case-001" / "task.toml").read_text(encoding="utf-8")
     assert tomllib.loads(text)["task"]["description"] == description
+
+
+def test_generate_tasks_materializes_shared_workspace_file(tmp_path, monkeypatch):
+    """A {dest, source} workspace.files entry is materialized into EVERY case's
+    environment/ as a real file, resolved from the local checkout."""
+    from agent_eval.config import WorkspaceFile
+
+    cfg_path, config = _make_eval(tmp_path)
+    skill = tmp_path / "plugins" / "x" / "skills" / "triage"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# live triage skill\n")
+    config.dataset.workspace.files = [
+        WorkspaceFile(dest="triage-skill.md",
+                      source="plugins/x/skills/triage/SKILL.md")
+    ]
+    monkeypatch.chdir(tmp_path)  # project_root == cwd == tmp_path
+
+    out = tmp_path / "harbor-tasks"
+    gen.generate_tasks(
+        config, cfg_path, out, image="img:latest",
+        arguments='"{prompt}"', skill="rfe.speedrun", workdir="/workspace",
+    )
+    for case in ("case-001", "case-002"):
+        dest = out / case / "environment" / "triage-skill.md"
+        assert dest.is_file(), f"{case} missing shared file"
+        assert not dest.is_symlink()
+        assert dest.read_text() == "# live triage skill\n"
+
+
+def test_generate_tasks_shared_file_outside_project_skipped(
+    tmp_path, monkeypatch, capsys
+):
+    """A source resolving outside the project/plugin roots is skipped + warned,
+    never baked into the task package."""
+    from agent_eval.config import WorkspaceFile
+
+    cfg_path, config = _make_eval(tmp_path)
+    config.dataset.workspace.files = [
+        WorkspaceFile(dest="leak.txt", source="/etc/hostname")
+    ]
+    monkeypatch.chdir(tmp_path)
+
+    out = tmp_path / "harbor-tasks"
+    gen.generate_tasks(
+        config, cfg_path, out, image="img:latest",
+        arguments='"{prompt}"', skill="rfe.speedrun", workdir="/workspace",
+    )
+    assert not (out / "case-001" / "environment" / "leak.txt").exists()
+    assert "WARNING" in capsys.readouterr().err

@@ -118,6 +118,10 @@ Notes:
   read-only). See the OpenShift section for Secret / Workload Identity equivalents.
 - Per-case grading writes `reward.json` (boolean judges gate; numeric LLM judges average).
   Pairwise + regression thresholds stay suite-level above Harbor.
+- `dataset.workspace.files` shared `{dest, source}` entries are resolved from the local
+  checkout at task-generation time and copied into each task's `environment/` (which
+  Harbor uploads into the workspace), so the file travels inside the package — no
+  ConfigMap, bind-mount, or project image needed for it.
 
 ## Debugging a run
 

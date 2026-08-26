@@ -103,6 +103,9 @@ dataset:
     files:
       - input.yaml
       - strategy.md
+      # shared: a live SKILL.md copied into every case as triage-skill.md
+      - dest: triage-skill.md
+        source: skills/address-ci-failures/SKILL.md
 ```
 
 !!! note "`schema` is documentation, not a parser"
@@ -113,9 +116,18 @@ dataset:
 
 ### workspace.files
 
-`workspace.files` is a **whitelist** of relative paths inside each case directory to
-copy into the agent's isolated workspace. File entries copy the single file;
-directory entries copy recursively. Anything not listed stays behind.
+`workspace.files` is a **whitelist** of entries copied into the agent's isolated
+workspace. Anything not listed stays behind. Each entry is one of:
+
+- a **per-case path** (a string, relative to the case directory) — a file copied singly,
+  or a directory copied recursively;
+- a **shared `{dest, source}` mapping** — a project/plugin resource whose `source` resolves
+  against the project root or a configured `runner.plugin_dirs` entry (symlinks followed,
+  containment-checked) and is materialized as a **real file** (never a symlink) into *every*
+  case at `dest`. Prefer this over committing a symlink to a live SKILL.md into each case:
+  the copy ports unchanged across local `/eval-run`, Harbor task packages, and S3/EvalHub.
+
+See the [dataset config reference](../reference/config/dataset.md) for the full behavior table.
 
 !!! warning "Keep the answer key out of the workspace"
     Because `annotations.yaml` is the judge's ground truth, do **not** list it in

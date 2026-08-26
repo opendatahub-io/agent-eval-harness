@@ -458,7 +458,12 @@ def _case_input_files(case_dir: Path, config) -> list:
             files.append(cand)
             break
     ws_files = ((config.get("dataset") or {}).get("workspace") or {}).get("files") or []
-    for name in ws_files:
+    for entry in ws_files:
+        # A {dest, source} entry is materialized at its `dest`; a string entry
+        # is a per-case path. Both land under the case dir in the workspace.
+        name = entry.get("dest") if isinstance(entry, dict) else entry
+        if not isinstance(name, str) or not name:
+            continue
         cand = case_dir / name
         if _ok(cand) and cand not in files:
             files.append(cand)

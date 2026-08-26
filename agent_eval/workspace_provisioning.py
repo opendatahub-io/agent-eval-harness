@@ -1,0 +1,116 @@
+"""Materialize shared ``dataset.workspace.files`` entries into a workspace.
+
+A ``WorkspaceFile`` (``{dest, source}``) entry references a project or plugin
+resource that must be *copied* — never symlinked — into every case workspace.
+This is the single implementation of that materialization, shared by the local
+``/eval-run`` path, Harbor task packaging, and the S3/EvalHub export step, so the
+trust boundary and copy semantics stay identical across substrates.
+
+Plain string entries are per-case files handled by the case-directory copy and
+are ignored here.
+"""
+
+import shutil
+import sys
+from pathlib import Path
+
+from agent_eval.config import WorkspaceFile, resolve_workspace_source
+
+# Names the harness owns inside a case workspace (local) or a Harbor
+# ``environment/`` dir; a shared file must never clobber them.
+DEFAULT_RESERVED_NAMES = frozenset(
+    {
+        "input.yaml",
+        "input.yml",
+        "input.json",
+        "answers.yaml",
+        "annotations.yaml",
+        "batch.yaml",
+        ".claude",
+        "hooks",
+        "tool_handlers.yaml",
+    }
+)
+
+
+def _warn_skip(dest, reason):
+    print(
+        f"WARNING: skipping shared workspace.files entry {dest!r}: {reason}",
+        file=sys.stderr,
+    )
+
+
+def _ignore_symlinks(dirpath, names):
+    """copytree ignore callback: drop symlinks so a nested link in a source
+    directory cannot materialize a host file (CWE-59)."""
+    base = Path(dirpath)
+    return {name for name in names if (base / name).is_symlink()}
+
+
+def iter_shared_files(config):
+    """Yield the ``WorkspaceFile`` entries declared on *config*."""
+    ds = getattr(config, "dataset", None)
+    ws = getattr(ds, "workspace", None) if ds is not None else None
+    for entry in getattr(ws, "files", None) or []:
+        if isinstance(entry, WorkspaceFile):
+            yield entry
+
+
+def materialize_shared_files(
+    target_dir, config, *, reserved_names=DEFAULT_RESERVED_NAMES
+):
+    """Copy each ``{dest, source}`` workspace.files entry into *target_dir*.
+
+    For every :class:`~agent_eval.config.WorkspaceFile`, the ``source`` is
+    resolved and containment-checked via ``resolve_workspace_source``; a source
+    that is missing, dangling, or escapes the project/plugin roots is skipped
+    with a warning. A ``dest`` whose leading component collides with a
+    harness-reserved name is also skipped, so a shared file can never overwrite
+    ``input.yaml``, ``answers.yaml``, or the generated ``.claude/`` settings.
+
+    Directory sources are copied recursively with nested symlinks dropped (a
+    single-file ``SKILL.md`` is the common case). The result is always a real
+    file or directory, never a symlink, so it ports to containers and object
+    storage.
+    """
+    target_dir = Path(target_dir)
+    for entry in iter_shared_files(config):
+        dest_rel = Path(entry.dest)
+        # Defense in depth for programmatically built WorkspaceFiles that bypass
+        # config-load validation: an empty/root, absolute, or traversing dest
+        # would resolve to (or outside) the workspace root and clobber it.
+        if (not dest_rel.parts or dest_rel.is_absolute()
+                or ".." in dest_rel.parts):
+            _warn_skip(entry.dest, "dest is not a named relative path")
+            continue
+        if dest_rel.parts[0] in reserved_names:
+            _warn_skip(
+                entry.dest,
+                f"dest collides with a reserved name ({dest_rel.parts[0]})",
+            )
+            continue
+        resolved = resolve_workspace_source(config, entry.source)
+        if resolved is None:
+            _warn_skip(
+                entry.dest,
+                f"source {entry.source!r} is missing or resolves outside "
+                f"the project/plugin roots",
+            )
+            continue
+        dst = target_dir / dest_rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        # Guard against a destination inside the source (e.g. source: "." with an
+        # export dir under the project root): copytree would copy dst into itself,
+        # recursing until disk/path limits are hit (CWE-400).
+        resolved_dst = dst.resolve()
+        if resolved_dst == resolved or (
+            resolved.is_dir() and resolved_dst.is_relative_to(resolved)
+        ):
+            _warn_skip(entry.dest, "destination is inside the source (recursive copy)")
+            continue
+        if resolved.is_dir():
+            shutil.copytree(
+                resolved, dst, ignore=_ignore_symlinks, dirs_exist_ok=True
+            )
+        else:
+            shutil.copy2(resolved, dst)

@@ -60,6 +60,12 @@ mode, the harness copies all case files into the workspace, so the skill will
 find them at their expected relative paths. Generate realistic content for these
 files appropriate to each case's scenario.
 
+For a companion file that is **identical across every case** and lives in the
+project or a plugin (e.g. a live `SKILL.md`), prefer a single shared
+`dataset.workspace.files: [{dest: <name>, source: <path>}]` entry over copying it
+into each case directory — the harness materializes a real copy into every case,
+and it ports to Harbor/EvalHub. See `website/reference/config/dataset.md`.
+
 ## Reference outputs
 
 Only include gold standard reference files if you can confidently produce a

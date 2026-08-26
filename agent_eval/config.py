@@ -174,6 +174,56 @@ def resolve_plugin_dir(config, configured: str) -> Path:
     return resolved
 
 
+def workspace_source_roots(config) -> list:
+    """Directories a ``WorkspaceFile.source`` may resolve into.
+
+    Always the project root; plus each configured ``runner.plugin_dirs`` entry
+    (so a shared file may reference a live SKILL.md in a plugin). A plugin dir
+    that cannot be resolved (misconfigured, escapes the project via symlink) is
+    dropped rather than raised, so one bad plugin entry never blocks materializing
+    a file whose source is valid.
+    """
+    project = Path(config.project_root).resolve()
+    roots = [project]
+    runner = getattr(config, "runner", None)
+    config_dir = getattr(config, "config_dir", None)
+    for configured in getattr(runner, "plugin_dirs", None) or []:
+        try:
+            roots.append(
+                resolve_plugin_path(configured, project, config_dir).resolve()
+            )
+        except (ValueError, OSError, TypeError, RuntimeError):
+            # RuntimeError: Path.resolve() on a symlink loop.
+            continue
+    return roots
+
+
+def resolve_workspace_source(config, source: str) -> Optional[Path]:
+    """Resolve a shared workspace file's ``source`` to a real, in-bounds path.
+
+    Relative sources resolve against the project root, absolute sources as-is.
+    Symlinks ARE followed (unlike per-case string entries, which skip them) —
+    the point is to materialize a live SKILL.md that lives outside the case dir.
+    Returns the resolved path only if it exists and its REAL location stays
+    within the project root or a configured plugin dir; otherwise ``None`` so
+    the caller can warn and skip (a missing, dangling, or escaping source must
+    never pull a host file into the agent-visible workspace — CWE-59).
+    """
+    if not source or not isinstance(source, str):
+        return None
+    roots = workspace_source_roots(config)
+    raw = Path(source).expanduser()
+    project = Path(config.project_root).resolve()
+    candidate = raw if raw.is_absolute() else (project / raw)
+    try:
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if not any(resolved.is_relative_to(root) for root in roots):
+        return None
+    return resolved
+
+
 def resolve_plugin_skill_roots(plugin_dir: str | Path) -> list[Path]:
     """Resolve the skill roots exported by one Claude plugin.
 
@@ -238,12 +288,36 @@ class DiscoveryResult:
 
 
 @dataclass
+class WorkspaceFile:
+    """A shared file provisioned into every case workspace.
+
+    Unlike a plain string entry (a per-case path inside the case directory),
+    a ``{dest, source}`` mapping references a project or plugin resource that
+    is *materialized* — copied, never symlinked — into every case workspace at
+    ``dest``. ``source`` is resolved at packaging time against the project root
+    or a configured ``runner.plugin_dirs`` entry (symlinks in the source are
+    followed, as long as the real path stays within those roots). Because the
+    result is a real file, the same entry ports unchanged to Harbor task
+    packages and S3/EvalHub datasets, where a committed symlink would not.
+    """
+
+    dest: str
+    source: str
+
+
+@dataclass
 class WorkspaceConfig:
     """Workspace file provisioning for evaluation cases.
 
-    ``files`` is a whitelist of relative paths inside each case directory
-    to copy into the agent workspace.  Directory entries copy recursively;
-    file entries copy the single file.  Paths not listed are left behind.
+    ``files`` is a whitelist of entries copied into the agent workspace.
+    Each entry is either:
+
+    - a ``str``: a relative path inside each case directory (per-case).
+      Directory entries copy recursively; file entries copy the single file.
+    - a :class:`WorkspaceFile` (``{dest, source}`` mapping): a shared
+      project/plugin resource materialized into every case workspace.
+
+    Paths not listed are left behind.
     """
 
     files: list = field(default_factory=list)
@@ -1120,13 +1194,48 @@ class EvalConfig:
         ws_files_raw = ws_raw.get("files", []) or []
         ws_files = []
         for i, f in enumerate(ws_files_raw):
-            if not isinstance(f, str):
-                raise ValueError(
-                    f"dataset.workspace.files[{i}] must be a string, got {type(f).__name__}"
+            if isinstance(f, str):
+                ws_files.append(
+                    _validate_relative_path(f.rstrip("/"), "dataset.workspace.files")
                 )
-            ws_files.append(
-                _validate_relative_path(f.rstrip("/"), "dataset.workspace.files")
-            )
+            elif isinstance(f, dict):
+                field_ctx = f"dataset.workspace.files[{i}]"
+                missing = {"dest", "source"} - set(f)
+                if missing:
+                    raise ValueError(
+                        f"{field_ctx} is missing required key(s): "
+                        f"{', '.join(sorted(missing))}"
+                    )
+                extra = set(f) - {"dest", "source"}
+                if extra:
+                    raise ValueError(
+                        f"{field_ctx} has unknown key(s): {', '.join(sorted(extra))} "
+                        f"(only 'dest' and 'source' are allowed)"
+                    )
+                dest, source = f["dest"], f["source"]
+                if not isinstance(dest, str) or not dest:
+                    raise ValueError(f"{field_ctx}.dest must be a non-empty string")
+                if not isinstance(source, str) or not source:
+                    raise ValueError(f"{field_ctx}.source must be a non-empty string")
+                # dest becomes a filesystem path inside the workspace, so reject
+                # traversal/absolute. source is resolved (and containment-checked)
+                # at materialization time, so it may be relative or absolute here.
+                ws_files.append(
+                    WorkspaceFile(
+                        # "/" strips to "" (which _validate_relative_path would
+                        # wave through); normalize to "." so reject_root catches it.
+                        dest=_validate_relative_path(
+                            dest.rstrip("/") or ".", f"{field_ctx}.dest",
+                            reject_root=True,
+                        ),
+                        source=source,
+                    )
+                )
+            else:
+                raise ValueError(
+                    f"dataset.workspace.files[{i}] must be a string or a "
+                    f"{{dest, source}} mapping, got {type(f).__name__}"
+                )
         dataset_config = DatasetConfig(
             path=_validate_relative_path(
                 dataset.get("path", ""), "dataset.path", allow_absolute=True
