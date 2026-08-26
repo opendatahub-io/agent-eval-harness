@@ -102,7 +102,7 @@ Behavior (`workspace_files._copy_input_files`):
 | --- | --- |
 | Directory | Copied recursively, preserving relative structure. Nested symlinks are skipped. |
 | File | Copied as a single file at its relative path. |
-| Listed file symlink | Materialized as a regular file if the resolved target is under the project root or a configured `runner.plugin_dirs` entry; otherwise skipped with a warning (CWE-59). |
+| Listed file symlink | Materialized as a regular file when the resolved target is in the current case, a configured `runner.plugin_dirs` entry, or a project companion path outside the sibling-case dataset directory; otherwise skipped with a warning (CWE-59). |
 | Listed directory symlink | Skipped with a warning (not walked). |
 | Path resolving outside the project/plugin root | Skipped with a warning. |
 | Not listed | Left behind (never reaches the workspace). |

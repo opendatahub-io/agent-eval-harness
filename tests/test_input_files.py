@@ -202,7 +202,7 @@ def test_copy_workspace_files_noop_when_path_missing(tmp_path):
     assert list(workspace.iterdir()) == []
 
 
-def test_copy_workspace_files_skips_nested_symlinks(tmp_path, monkeypatch):
+def test_copy_workspace_files_skips_nested_symlinks(tmp_path, monkeypatch, capsys):
     """Nested (unlisted) symlinks inside a copied directory are skipped."""
     project = tmp_path / "project"
     outside = tmp_path / "outside"
@@ -231,6 +231,42 @@ def test_copy_workspace_files_skips_nested_symlinks(tmp_path, monkeypatch):
     assert (workspace / "src" / "real.py").read_text() == "real"
     assert not os.path.lexists(workspace / "src" / "link.txt")
     assert not os.path.lexists(workspace / "src" / "nested.md")
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert "link.txt" in err
+    assert "nested.md" in err
+
+
+def test_copy_workspace_files_skips_sibling_case_symlink(
+    tmp_path, monkeypatch, capsys,
+):
+    """A listed symlink to another case's answers.yaml is not copied."""
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+
+    case_002 = project / "cases" / "case-002"
+    case_002.mkdir(parents=True)
+    (case_002 / "answers.yaml").write_text("gold: secret\n")
+
+    case_dir = project / "cases" / "case-001"
+    case_dir.mkdir(parents=True)
+    (case_dir / "peek.yaml").symlink_to("../case-002/answers.yaml")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = EvalConfig(
+        name="t",
+        skill="s",
+        dataset=DatasetConfig(workspace=WorkspaceConfig(files=["peek.yaml"])),
+    )
+    _copy_input_files(case_dir, workspace, config)
+
+    assert not os.path.lexists(workspace / "peek.yaml")
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert "peek.yaml" in err
 
 
 def test_copy_workspace_files_skips_listed_dir_symlink(
