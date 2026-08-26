@@ -100,10 +100,11 @@ Behavior (`workspace_files._copy_input_files`):
 
 | Entry kind | Effect |
 | --- | --- |
-| Directory | Copied recursively, preserving relative structure. |
+| Directory | Copied recursively, preserving relative structure. Nested symlinks are skipped. |
 | File | Copied as a single file at its relative path. |
-| Symlink | **Skipped** (prevents escaping the case directory). |
-| Path outside the case dir | Skipped. |
+| Listed file symlink | Materialized as a regular file if the resolved target is under the project root or a configured `runner.plugin_dirs` entry; otherwise skipped with a warning (CWE-59). |
+| Listed directory symlink | Skipped with a warning (not walked). |
+| Path resolving outside the project/plugin root | Skipped with a warning. |
 | Not listed | Left behind (never reaches the workspace). |
 
 Paths are relative to each case directory; a trailing `/` is stripped, and `..` is

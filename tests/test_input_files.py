@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from agent_eval.config import DatasetConfig, EvalConfig, WorkspaceConfig
+from agent_eval.config import DatasetConfig, EvalConfig, RunnerConfig, WorkspaceConfig
 from workspace_files import _copy_input_files
 
 
@@ -202,17 +202,21 @@ def test_copy_workspace_files_noop_when_path_missing(tmp_path):
     assert list(workspace.iterdir()) == []
 
 
-def test_copy_workspace_files_skips_symlinks(tmp_path):
-    """Symlinks in workspace file entries are not followed."""
-    case_dir = tmp_path / "cases" / "case-001"
-    (case_dir / "src").mkdir(parents=True)
-    (case_dir / "src" / "real.py").write_text("real")
-
+def test_copy_workspace_files_skips_nested_symlinks(tmp_path, monkeypatch):
+    """Nested (unlisted) symlinks inside a copied directory are skipped."""
+    project = tmp_path / "project"
     outside = tmp_path / "outside"
+    project.mkdir()
     outside.mkdir()
     (outside / "secret.txt").write_text("secret")
+    monkeypatch.chdir(project)
 
+    case_dir = project / "cases" / "case-001"
+    (case_dir / "src").mkdir(parents=True)
+    (case_dir / "src" / "real.py").write_text("real")
     os.symlink(outside / "secret.txt", case_dir / "src" / "link.txt")
+    (project / "live.md").write_text("live")
+    (case_dir / "src" / "nested.md").symlink_to(project / "live.md")
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -226,17 +230,52 @@ def test_copy_workspace_files_skips_symlinks(tmp_path):
 
     assert (workspace / "src" / "real.py").read_text() == "real"
     assert not os.path.lexists(workspace / "src" / "link.txt")
+    assert not os.path.lexists(workspace / "src" / "nested.md")
 
 
-def test_copy_workspace_files_skips_symlinked_entry(tmp_path):
-    """A top-level symlinked directory entry is skipped entirely."""
-    case_dir = tmp_path / "cases" / "case-001"
+def test_copy_workspace_files_skips_listed_dir_symlink(
+    tmp_path, monkeypatch, capsys,
+):
+    """A listed directory symlink is not walked (would copy the whole repo)."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "secret.env").write_text("noleak")
+    monkeypatch.chdir(project)
+
+    case_dir = project / "cases" / "case-001"
     case_dir.mkdir(parents=True)
+    (case_dir / "peek").symlink_to(project)
 
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = EvalConfig(
+        name="t",
+        skill="s",
+        dataset=DatasetConfig(workspace=WorkspaceConfig(files=["peek"])),
+    )
+    _copy_input_files(case_dir, workspace, config)
+
+    assert not os.path.lexists(workspace / "peek")
+    assert list(workspace.iterdir()) == []
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert "peek" in err
+
+
+def test_copy_workspace_files_skips_external_symlinked_entry(
+    tmp_path, monkeypatch, capsys,
+):
+    """A top-level symlink escaping the project is skipped, with a warning."""
+    project = tmp_path / "project"
     outside = tmp_path / "outside"
+    project.mkdir()
     outside.mkdir()
     (outside / "secret.txt").write_text("secret")
+    monkeypatch.chdir(project)
 
+    case_dir = project / "cases" / "case-001"
+    case_dir.mkdir(parents=True)
     os.symlink(outside, case_dir / "evil")
 
     workspace = tmp_path / "workspace"
@@ -251,3 +290,229 @@ def test_copy_workspace_files_skips_symlinked_entry(tmp_path):
 
     assert not os.path.lexists(workspace / "evil")
     assert list(workspace.iterdir()) == []
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert "evil" in err
+
+
+def test_copy_workspace_files_materializes_internal_symlink(tmp_path, monkeypatch):
+    """A case symlink to a live SKILL.md under the project is copied as a file."""
+    project = tmp_path / "project"
+    skill = project / "skills" / "address-ci-failures"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# live skill\n")
+    monkeypatch.chdir(project)
+
+    case_dir = project / "eval" / "cases" / "case-001"
+    case_dir.mkdir(parents=True)
+    (case_dir / "triage-skill.md").symlink_to(
+        "../../../skills/address-ci-failures/SKILL.md"
+    )
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = EvalConfig(
+        name="t",
+        skill="s",
+        dataset=DatasetConfig(
+            workspace=WorkspaceConfig(files=["triage-skill.md"]),
+        ),
+    )
+    _copy_input_files(case_dir, workspace, config)
+
+    dest = workspace / "triage-skill.md"
+    assert dest.is_file()
+    assert not dest.is_symlink()
+    assert dest.read_text() == "# live skill\n"
+
+
+def test_copy_workspace_files_copies_file_resolved_outside_case(
+    tmp_path, monkeypatch,
+):
+    """A listed file may resolve outside the case if it stays in the project."""
+    project = tmp_path / "project"
+    live = project / "skills" / "foo"
+    live.mkdir(parents=True)
+    (live / "SKILL.md").write_text("live")
+    monkeypatch.chdir(project)
+
+    case_dir = project / "cases" / "case-001"
+    case_dir.mkdir(parents=True)
+    (case_dir / "docs").symlink_to(live)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = EvalConfig(
+        name="t",
+        skill="s",
+        dataset=DatasetConfig(
+            workspace=WorkspaceConfig(files=["docs/SKILL.md"]),
+        ),
+    )
+    _copy_input_files(case_dir, workspace, config)
+
+    dest = workspace / "docs" / "SKILL.md"
+    assert dest.is_file()
+    assert not dest.is_symlink()
+    assert dest.read_text() == "live"
+
+
+def test_copy_workspace_files_materializes_plugin_symlink(
+    tmp_path, monkeypatch,
+):
+    """A symlink into a configured plugin dir is materialized even off-project."""
+    consumer = tmp_path / "consumer"
+    plugin = tmp_path / "plugin"
+    consumer.mkdir()
+    skill = plugin / "skills" / "address-ci-failures"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# from plugin\n")
+    monkeypatch.chdir(consumer)
+
+    case_dir = consumer / "cases" / "case-001"
+    case_dir.mkdir(parents=True)
+    (case_dir / "triage-skill.md").symlink_to(skill / "SKILL.md")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = EvalConfig(
+        name="t",
+        skill="s",
+        runner=RunnerConfig(plugin_dirs=[str(plugin)]),
+        dataset=DatasetConfig(
+            workspace=WorkspaceConfig(files=["triage-skill.md"]),
+        ),
+    )
+    _copy_input_files(case_dir, workspace, config)
+
+    dest = workspace / "triage-skill.md"
+    assert dest.is_file()
+    assert not dest.is_symlink()
+    assert dest.read_text() == "# from plugin\n"
+
+
+def test_copy_workspace_files_plugin_symlink_rejected_without_plugin_dirs(
+    tmp_path, monkeypatch, capsys,
+):
+    """The same plugin symlink is skipped when plugin_dirs is not configured."""
+    consumer = tmp_path / "consumer"
+    plugin = tmp_path / "plugin"
+    consumer.mkdir()
+    skill = plugin / "skills" / "address-ci-failures"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# from plugin\n")
+    monkeypatch.chdir(consumer)
+
+    case_dir = consumer / "cases" / "case-001"
+    case_dir.mkdir(parents=True)
+    (case_dir / "triage-skill.md").symlink_to(skill / "SKILL.md")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = EvalConfig(
+        name="t",
+        skill="s",
+        dataset=DatasetConfig(
+            workspace=WorkspaceConfig(files=["triage-skill.md"]),
+        ),
+    )
+    _copy_input_files(case_dir, workspace, config)
+
+    assert not os.path.lexists(workspace / "triage-skill.md")
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert "triage-skill.md" in err
+
+
+def test_copy_workspace_files_warns_on_dangling_symlink(
+    tmp_path, monkeypatch, capsys,
+):
+    """A dangling symlink is skipped with a warning rather than silently."""
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+
+    case_dir = project / "cases" / "case-001"
+    case_dir.mkdir(parents=True)
+    (case_dir / "gone.md").symlink_to("missing.md")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = EvalConfig(
+        name="t",
+        skill="s",
+        dataset=DatasetConfig(workspace=WorkspaceConfig(files=["gone.md"])),
+    )
+    _copy_input_files(case_dir, workspace, config)
+
+    assert list(workspace.iterdir()) == []
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert "gone.md" in err
+
+
+def test_copy_workspace_files_skips_listed_dir_symlink_inside_project(
+    tmp_path, monkeypatch, capsys,
+):
+    """A contained directory symlink is skipped; only listed file links copy."""
+    project = tmp_path / "project"
+    real = project / "lib"
+    real.mkdir(parents=True)
+    (real / "util.py").write_text("x")
+    monkeypatch.chdir(project)
+
+    case_dir = project / "cases" / "case-001"
+    case_dir.mkdir(parents=True)
+    (case_dir / "lib").symlink_to(real)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = EvalConfig(
+        name="t",
+        skill="s",
+        dataset=DatasetConfig(workspace=WorkspaceConfig(files=["lib"])),
+    )
+    _copy_input_files(case_dir, workspace, config)
+
+    assert not os.path.lexists(workspace / "lib")
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert "lib" in err
+
+
+def test_copy_workspace_files_rejects_lexical_escape(
+    tmp_path, monkeypatch, capsys,
+):
+    """A listed path with .. must not write outside the workspace."""
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    leaked = project / "cases" / "leaked.md"
+    leaked.parent.mkdir(parents=True)
+    leaked.write_text("leaked")
+
+    case_dir = project / "cases" / "case-001"
+    case_dir.mkdir(parents=True)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = EvalConfig(
+        name="t",
+        skill="s",
+        dataset=DatasetConfig(
+            workspace=WorkspaceConfig(files=["../leaked.md"]),
+        ),
+    )
+    _copy_input_files(case_dir, workspace, config)
+
+    assert list(workspace.iterdir()) == []
+    assert not (tmp_path / "leaked.md").exists()
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert "leaked.md" in err
