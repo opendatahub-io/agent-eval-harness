@@ -38,7 +38,7 @@ Not every runner reads every field. The matrix below shows where each field land
 | `type` | `str` | discriminator | discriminator | discriminator | discriminator |
 | `effort` | `str` (enum) | `--effort` flag | `model_reasoning_effort` | `{effort}` placeholder | — |
 | `permission_mode` | `str` (enum) | `--permission-mode` flag | mapped to Codex sandbox mode | — | — |
-| `settings` | `dict` | merged into workspace `.claude/settings.json` | `-c` config overrides for `codex exec` | — | connection settings (see below) |
+| `settings` | `dict` | merged into workspace `.claude/settings.json` (plus a synthesized `enabledPlugins` denylist — see hermeticity below) | `-c` config overrides for `codex exec` | — | connection settings (see below) |
 | `plugin_dirs` | `list[str]` | one `--plugin-dir` per entry (workspace-staged copy for out-of-workspace paths) | skills copied into `.agents/skills` | — | — |
 | `env` | `dict` | injected on the safe allowlist | injected on the safe allowlist | — (uses `execution.env`) | — |
 | `system_prompt` | `str` | `--append-system-prompt` | prepended to the prompt | `{system_prompt}` placeholder | `developer` message |
@@ -125,6 +125,32 @@ A `dict` whose meaning depends on the runner:
           MY_FLAG: "1"
         # any valid .claude/settings.json keys
     ```
+
+    **Plugin hermeticity.** In an isolated workspace the operator's
+    user-installed plugins (from `~/.claude/plugins/installed_plugins.json`)
+    are disabled **by default**: the harness synthesizes
+    `enabledPlugins: {<id>: false}` for every installed plugin and merges it
+    before your `settings`, so an explicit entry re-enables a plugin with one
+    line. `workspace_mode: repo` disables nothing — that session runs in your
+    real environment. Plugins under test are immune: `--plugin-dir` plugins
+    register as `<name>@inline` and never appear in the registry.
+
+    The `enabledPlugins` pseudo-entry `"*"` steers the policy explicitly:
+
+    ```yaml
+    runner:
+      settings:
+        enabledPlugins:
+          "*": false                        # force hermeticity (also in repo mode)
+          "memsearch@my-marketplace": true  # explicit entries win
+    ```
+
+    `"*"` is **harness-interpreted** — upstream Claude Code has no
+    `enabledPlugins` wildcard — and is stripped before `settings.json` is
+    written, so the CLI never sees it. `"*": true` opts out of hermeticity
+    entirely. Configs that relied on an installed plugin silently loading
+    into case sessions fail loudly (`Unknown command`) after upgrading; the
+    fix is one explicit entry or a `plugin_dirs` entry.
 
 === "responses-api"
 

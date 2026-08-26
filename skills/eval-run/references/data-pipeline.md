@@ -44,7 +44,9 @@ When `execution.mode` is `case` (default), workspace.py creates a separate works
       strategy.md         # Copied from dataset (companion files)
       answers.yaml        # Copied from dataset (if present)
       {output_dirs}/      # Empty dirs for skill outputs
-      .claude/settings.json  # Generated (hooks + permissions)
+      .claude/settings.json  # Generated (hooks + permissions + the synthesized
+                             # enabledPlugins denylist: installed plugins are
+                             # disabled by default in isolated workspaces)
       subagents/           # SubagentStop hook target
       .staged-plugins/     # Staged copies of out-of-workspace runner.plugin_dirs
       scripts/ → symlink

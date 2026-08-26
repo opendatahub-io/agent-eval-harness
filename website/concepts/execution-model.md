@@ -42,7 +42,9 @@ and gives each its own throwaway workspace under
 - the case's `input.yaml` (and `answers.yaml`, plus any `dataset.workspace.files`),
 - symlinks to project resources (`scripts`, `skills`, `.context`, `CLAUDE.md`, …),
 - freshly-generated output directories from the `outputs` block,
-- a per-workspace `.claude/settings.json` (permissions, hooks, injected env),
+- a per-workspace `.claude/settings.json` (permissions, hooks, injected env,
+  and the synthesized `enabledPlugins` denylist that keeps the operator's
+  installed plugins out of case sessions — see [Runners](runners.md)),
 - staged copies of out-of-workspace `runner.plugin_dirs` under
   `.staged-plugins/` (claude-code runner — see [Runners](runners.md)),
 - an initialized git repo so [lifecycle hooks](lifecycle-hooks.md) and `collect`

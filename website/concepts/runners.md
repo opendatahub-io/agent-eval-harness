@@ -134,6 +134,12 @@ the cost the CLI printed.
   copied into `<workspace>/.staged-plugins/` and `--plugin-dir` receives the copy,
   so the real plugin path never enters session context; in-workspace entries
   pass through unchanged and `workspace_mode: repo` skips staging entirely.
+- **Plugin hermeticity** — isolated workspaces disable all of the operator's
+  user-installed plugins by default (a synthesized `enabledPlugins` denylist in
+  the workspace settings; explicit `runner.settings.enabledPlugins` entries win,
+  and the harness-interpreted `"*"` pseudo-entry forces or opts out of the
+  policy). Plugins under test are immune — `--plugin-dir` registers them outside
+  the installed registry. See [runner settings](../reference/config/runner.md).
 - **Background-task truth** — the CLI waits up to `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`
   (default 600 s) for background tasks that outlive the final turn, then kills
   them but still exits 0. The runner detects the kill and fails the case:
