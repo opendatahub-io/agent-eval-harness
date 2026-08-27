@@ -26,8 +26,8 @@ _print_lock = threading.Lock()
 # ${CLAUDE_PLUGIN_ROOT}/scripts/... or ${CLAUDE_SKILL_DIR}/../../scripts/...
 # at runtime; a staged copy without it would break those plugins.
 _PLUGIN_OPTIONAL_DIRS = ("commands", "agents", "hooks", "scripts")
-# Plugin-root MCP config (Claude Code loads this from the plugin directory).
-# Staging omitted it, so isolated evals never saw plugin MCP servers.
+# Optional plugin-root files Claude Code loads besides the manifest and
+# conventional directories. Copied only when present.
 _PLUGIN_OPTIONAL_FILES = (".mcp.json",)
 
 # Bulk plugin discovery never reads — keeps the staged copy small.
