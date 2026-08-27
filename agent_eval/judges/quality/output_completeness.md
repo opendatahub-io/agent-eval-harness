@@ -34,7 +34,7 @@ Evaluate whether the output is complete. Consider:
 - Reasonable completeness is expected
 {% endif %}
 
-Respond with a JSON object:
-{"passed": true, "rationale": "Output is complete: <explanation>"}
+Respond with a JSON object, writing the rationale before the verdict:
+{"rationale": "Output is complete: <explanation>", "passed": true}
 or
-{"passed": false, "rationale": "Output is incomplete: <what is missing>"}
+{"rationale": "Output is incomplete: <what is missing>", "passed": false}

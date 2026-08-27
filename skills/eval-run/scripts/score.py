@@ -848,7 +848,8 @@ def _extract_images(outputs):
 
 _BOOL_SYSTEM_PROMPT = (
     "You are a judge evaluating agent outputs. Call the submit_evaluation "
-    "tool once with your pass/fail judgment and a thorough rationale.")
+    "tool once: write the rationale first — a thorough assessment of the "
+    "evidence — then commit to the pass/fail judgment.")
 
 # Scale assumed for a numeric judge that declares no `score_range`. Matches
 # JudgeConfig.score_range's documented default for LLM judges.
@@ -901,8 +902,8 @@ def _score_system_prompt(bounds):
     span = (f"from {_fmt_bound(lo)} to {_fmt_bound(hi)}" if lo < 0
             else f"{_fmt_bound(lo)}-{_fmt_bound(hi)}")
     return ("You are a judge evaluating skill outputs. Call the submit_score "
-            f"tool once with {kind} score {span} "
-            "and a thorough rationale.")
+            "tool once: write the rationale first — a thorough assessment of "
+            f"the evidence — then commit to {kind} score {span}.")
 
 
 def _score_judge_tool(bounds):
@@ -911,23 +912,30 @@ def _score_judge_tool(bounds):
     `minimum`/`maximum` are advisory on a non-strict input_schema — the model
     is not constrained by them — so the scale is also stated in the system
     prompt and the returned value is range-checked in `_enforce_bounds`.
+
+    `rationale` is deliberately listed before `score`: property order survives
+    into the serialized request, and an autoregressive judge that writes its
+    analysis before the verdict token produces better-calibrated scores than
+    one that commits to a number up front.
     """
     lo, hi, is_int = bounds
     return {
         "name": "submit_score",
-        "description": "Submit the evaluation score and rationale.",
+        "description": "Submit the evaluation rationale and score.",
         "input_schema": {
             "type": "object",
             "properties": {
+                "rationale": {"type": "string",
+                              "description": "Write this first: thorough "
+                                             "justification citing specific content "
+                                             "from the outputs, before deciding "
+                                             "the score."},
                 "score": {"type": "integer" if is_int else "number",
                           "minimum": lo, "maximum": hi,
                           "description": f"Overall score, {_fmt_bound(lo)} "
                                          f"(worst) to {_fmt_bound(hi)} (best)."},
-                "rationale": {"type": "string",
-                              "description": "Thorough justification citing "
-                                             "specific content from the outputs."},
             },
-            "required": ["score", "rationale"],
+            "required": ["rationale", "score"],
         },
     }
 
@@ -976,19 +984,22 @@ def _log_judge_error(case_id, exc):
         print(f"  WARNING: {case_id}: {exc}", file=sys.stderr, flush=True)
 
 
+# `rationale` before `passed` for the same reason as `_score_judge_tool`: the
+# judge must articulate its assessment before committing to a verdict token.
 _BOOL_JUDGE_TOOL = {
     "name": "submit_evaluation",
-    "description": "Submit the pass/fail judgment and rationale.",
+    "description": "Submit the evaluation rationale and pass/fail judgment.",
     "input_schema": {
         "type": "object",
         "properties": {
+            "rationale": {"type": "string",
+                          "description": "Write this first: thorough justification "
+                                         "citing specific content from the outputs, "
+                                         "before deciding the verdict."},
             "passed": {"type": "boolean",
                        "description": "Whether the output passes the criterion."},
-            "rationale": {"type": "string",
-                          "description": "Thorough justification citing specific "
-                                         "content from the outputs."},
         },
-        "required": ["passed", "rationale"],
+        "required": ["rationale", "passed"],
     },
 }
 
@@ -1745,7 +1756,8 @@ When finished, write your verdict to ./output/score.json as a single JSON object
 
     {verdict_spec}
 
-Write that file exactly once. Keep "rationale" to a short, specific justification.
+Write that file exactly once. Compose "rationale" first — a short, specific
+justification grounded in what you inspected — then commit to the verdict field.
 """
 
 
@@ -1967,13 +1979,15 @@ def _load_agent_judge(jc, config, project_root=None):
     # drifted: a judge with no declared range was told nothing at all
     # ('{"score": <number>}'), while `_numeric_bounds` scores it on [1, 5].
     bounds = _numeric_bounds(jc)
+    # Rationale first, mirroring the LLM tool schemas: the judge articulates
+    # its assessment before committing to a verdict.
     if is_bool or bounds is None:
-        verdict_spec = ('{"passed": <true|false>, '
-                        '"rationale": "<short justification>"}')
+        verdict_spec = ('{"rationale": "<short justification>", '
+                        '"passed": <true|false>}')
     else:
         lo, hi, is_int = bounds
-        verdict_spec = ('{"score": <%s in [%s, %s]>, '
-                        '"rationale": "<short justification>"}'
+        verdict_spec = ('{"rationale": "<short justification>", '
+                        '"score": <%s in [%s, %s]>}'
                         % ("integer" if is_int else "number",
                            _fmt_bound(lo), _fmt_bound(hi)))
     contract = _AGENT_JUDGE_CONTRACT.format(verdict_spec=verdict_spec)
@@ -2159,7 +2173,8 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
     if not comparison_prompt and BUILTIN_COMPARISON_PROMPT.exists():
         comparison_prompt = BUILTIN_COMPARISON_PROMPT.read_text()
     if not comparison_prompt:
-        comparison_prompt = ("Compare outputs A and B. Return JSON: "
+        comparison_prompt = ("Compare outputs A and B. Write the reasoning "
+                             "first, then the verdict. Return JSON: "
                              "{\"reasoning\": \"...\", \"preferred\": \"A\" or \"B\" or \"tie\"}")
 
     try:
@@ -2353,22 +2368,26 @@ def _get_anthropic_client():
 # the comparison prompt wants the judge to weigh (criteria, dimensions, ...) is
 # the prompt's concern and the judge folds it into `reasoning`; the harness
 # stays generic and prompt-agnostic.
+# `reasoning` before `preferred` for the same reason as `_score_judge_tool`:
+# the judge must work through both outputs before committing to a verdict.
 _PAIRWISE_TOOL = {
     "name": "submit_comparison",
     "description": ("Submit the blind pairwise comparison of outputs A and B: "
-                    "the overall verdict and the reasoning behind it."),
+                    "the reasoning, then the overall verdict it supports."),
     "input_schema": {
         "type": "object",
         "properties": {
-            "preferred": {"type": "string", "enum": ["A", "B", "tie"],
-                          "description": "Which output is stronger overall."},
             "reasoning": {"type": "string",
-                          "description": ("Thorough, self-contained reasoning citing "
+                          "description": ("Write this first: thorough, "
+                                          "self-contained reasoning citing "
                                           "specific content from both outputs and "
                                           "addressing every criterion the comparison "
-                                          "instructions specify.")},
+                                          "instructions specify, before deciding "
+                                          "the verdict.")},
+            "preferred": {"type": "string", "enum": ["A", "B", "tie"],
+                          "description": "Which output is stronger overall."},
         },
-        "required": ["preferred", "reasoning"],
+        "required": ["reasoning", "preferred"],
     },
 }
 
@@ -2378,9 +2397,10 @@ def _call_judge(client, system_prompt, user_message, model, max_tokens=16384):
         response = client.messages.create(
             model=model, max_tokens=max_tokens,
             system=("You are a blind judge comparing two outputs, A and B. "
-                    "Call the submit_comparison tool exactly once with your verdict "
-                    "and reasoning. Put ALL of your reasoning inside the tool input — "
-                    "do not write any text outside the tool call."),
+                    "Call the submit_comparison tool exactly once: write the "
+                    "reasoning first, then commit to the verdict. Put ALL of your "
+                    "reasoning inside the tool input — do not write any text "
+                    "outside the tool call."),
             tools=[_PAIRWISE_TOOL],
             tool_choice={"type": "tool", "name": "submit_comparison"},
             messages=[

@@ -650,3 +650,26 @@ class TestVerdictContractScale:
     def test_a_fractional_range_asks_for_a_number(self):
         args = self._args(score_range=[0, 2.5])
         assert "number in [0, 2.5]" in args and "integer in" not in args
+
+
+class TestVerdictContractOrdering:
+    """The contract's verdict spec must ask for the rationale before the
+    verdict, mirroring the LLM tool schemas: a judge that articulates its
+    assessment first commits to a better-calibrated verdict."""
+
+    def _args(self, **judge_kwargs):
+        cap = {}
+        judge = _agent_judge(**judge_kwargs)
+        verdict = ({"passed": True, "rationale": "x"}
+                   if judge_kwargs.get("feedback_type") == "bool"
+                   else {"score": 1, "rationale": "x"})
+        TestRunnerIsolation()._load_and_run(judge, verdict, cap)
+        return cap["execute_calls"][0]["args"]
+
+    def test_numeric_spec_puts_rationale_before_score(self):
+        args = self._args()
+        assert args.index('"rationale"') < args.index('"score"')
+
+    def test_bool_spec_puts_rationale_before_passed(self):
+        args = self._args(feedback_type="bool")
+        assert args.index('"rationale"') < args.index('"passed"')

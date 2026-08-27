@@ -962,6 +962,36 @@ class TestJudgeRequestPayload:
         assert (schema["minimum"], schema["maximum"]) == (1, 5)
 
 
+class TestRationaleBeforeVerdict:
+    """Judge schemas must elicit the rationale before the verdict field.
+
+    dict insertion order is serialized into the request as-is, and an
+    autoregressive judge that writes its analysis first produces
+    better-calibrated verdicts than one that commits to a verdict token
+    up front.
+    """
+
+    def test_score_tool_lists_rationale_first(self):
+        import score
+        schema = score._score_judge_tool((0, 2, True))["input_schema"]
+        assert list(schema["properties"]) == ["rationale", "score"]
+
+    def test_bool_tool_lists_rationale_first(self):
+        import score
+        schema = score._BOOL_JUDGE_TOOL["input_schema"]
+        assert list(schema["properties"]) == ["rationale", "passed"]
+
+    def test_pairwise_tool_lists_reasoning_first(self):
+        import score
+        schema = score._PAIRWISE_TOOL["input_schema"]
+        assert list(schema["properties"]) == ["reasoning", "preferred"]
+
+    def test_system_prompts_ask_for_the_rationale_first(self):
+        import score
+        assert "rationale first" in score._BOOL_SYSTEM_PROMPT
+        assert "rationale first" in score._score_system_prompt((1, 5, True))
+
+
 class TestParseScoreResponseBounds:
 
     def test_prose_fraction_uses_the_declared_top(self):

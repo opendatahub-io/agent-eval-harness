@@ -211,6 +211,14 @@ The prompt is rendered with these variables:
     `{{ tool_trace }}`, `{{ evidence }}`, and `{{ reasoning }}` need `traces.events: true`;
     `{{ conversation }}` falls back to `stdout.log` when no events were captured.
 
+!!! note "The rationale is elicited before the verdict"
+    The harness's judge tool schemas and system prompts deliberately ask for the
+    `rationale` first and the verdict (`score`/`passed`/`preferred`) second: an
+    autoregressive model that writes its analysis before committing to a verdict token
+    produces better-calibrated judgments. Prompt authors should not fight that ordering —
+    don't ask the judge to "state the verdict up front" or lead with the score in a
+    requested output format.
+
 !!! tip "Grading on a scale other than 1–5"
     Declare it: `score_range: [0, 2]`. The range is stated in the judge's system prompt,
     set as `minimum`/`maximum` on the `submit_score` tool schema, and used to normalize the
@@ -286,12 +294,12 @@ The agent ends by writing its verdict to `./output/score.json` — numeric here 
 `feedback_type: int`:
 
 ```json title="output/score.json"
-{"score": 1, "rationale": "TrainingRuntime CRD and the Kueue integration verified against arch-context; the referenced ModelMeshRouter component does not exist."}
+{"rationale": "TrainingRuntime CRD and the Kueue integration verified against arch-context; the referenced ModelMeshRouter component does not exist.", "score": 1}
 ```
 
 !!! tip "Output contract, and the stdout fallback"
-    Write `{"score": <number>, "rationale": "…"}` for numeric judges or
-    `{"passed": <bool>, "rationale": "…"}` when `feedback_type: bool`. If `score.json` is
+    Write `{"rationale": "…", "score": <number>}` for numeric judges or
+    `{"rationale": "…", "passed": <bool>}` when `feedback_type: bool`. If `score.json` is
     missing, the harness parses the last such JSON object from the run's stdout; if
     neither yields a value the case records an **error** sample — an agent judge never
     silently passes.

@@ -13,13 +13,13 @@ Be aware that outputs are presented in arbitrary order. Do not let presentation 
 
 ## Output
 
-Return your judgment with two fields:
+Return your judgment with two fields, writing the reasoning before the verdict:
 
-- **preferred**: `A`, `B`, or `tie` — the overall winner.
 - **reasoning**: your full analysis. Structure it as one short labeled paragraph per dimension (Completeness, Quality, Accuracy, Relevance), each naming the stronger output and citing specific content from both A and B, followed by a closing sentence that states the overall verdict and why.
+- **preferred**: `A`, `B`, or `tie` — the overall winner.
 
 Provide exactly these two fields as a single JSON object, e.g.:
 
 ```json
-{"preferred": "A", "reasoning": "Completeness: ... Quality: ... Accuracy: ... Relevance: ... Overall: A is stronger because ..."}
+{"reasoning": "Completeness: ... Quality: ... Accuracy: ... Relevance: ... Overall: A is stronger because ...", "preferred": "A"}
 ```
