@@ -17,6 +17,24 @@ For each case with human feedback:
 - Did the user flag issues judges missed? (gap — need new judges or better prompts)
 - Did judges fail but the user said it's fine? (false positive — judge may be too strict)
 
+On any judge-human disagreement, triage in this order — most disagreements
+are not judge bugs:
+
+1. **Underspecified skill prompt/spec** — is the skill's prompt (or spec)
+   silent about the thing being disputed? If the expectation was never
+   written down, fix the prompt first and keep the judge only as a
+   regression guard for the now-explicit rule. Rewriting the judge to
+   encode an unwritten expectation hides the real gap.
+2. **Bad case** — is the test case ambiguous, self-contradictory, or testing
+   something the skill was never asked to do? Fix or drop the case.
+3. **Miscalibrated judge** — only after prompt and case are sound: tighten
+   the judge's PASS/FAIL definitions and add the disputed case as a labeled
+   borderline example in the judge prompt.
+
+Downgrade a judge's model for cost only after alignment is confirmed on the
+current model — a cheaper judge that was never aligned just disagrees more
+quietly.
+
 ### 2. Pattern Detection
 
 Across all feedback:

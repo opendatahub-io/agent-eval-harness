@@ -105,21 +105,42 @@ quality_criteria:
   deterministic:
     - "<things that can be checked with code — file existence, field validation, value ranges>"
   llm_judgment:
-    - "<things that need LLM assessment — quality, completeness, accuracy>"
+    - "<things that genuinely need LLM assessment — one criterion per entry,
+       each phrased as a single failure mode (it becomes its own judge)>"
 
 suggested_judges:
-  # Prefer builtin judges for common patterns — they're tested, versioned,
-  # and require no inline code. Each is a .py or .md file in agent_eval/judges/{category}/.
-  # List available: python3 ${CLAUDE_SKILL_DIR}/scripts/list_builtins.py
+  # Selection ladder — work down it and stop at the first rung that fits:
+  #   1. builtin      — tested, versioned, no inline code. Each is a .py or .md
+  #                     file in agent_eval/judges/{category}/.
+  #                     List available: python3 ${CLAUDE_SKILL_DIR}/scripts/list_builtins.py
+  #   2. inline check — anything code can verify deterministically
+  #                     (file exists, field present, count in range, pattern matches)
+  #   3. LLM, bool    — one pass/fail question about ONE failure mode,
+  #                     with explicit PASS/FAIL definitions (feedback_type: bool)
+  #   4. LLM, numeric — only when the criterion is genuinely graded (degree,
+  #                     not boundary); the exception, never the default
+  # Rules for every LLM judge you suggest:
+  # - Its description must state why a code check cannot verify the criterion.
+  #   If you can't articulate that, move up the ladder.
+  # - ONE failure mode per judge. "Completeness, clarity, accuracy" is three
+  #   judges, not one — thresholds gate per judge, reward composition weights
+  #   per judge, and eval-anova compares per judge, so a blended score can't
+  #   be gated, weighted, or compared without unblending it.
+  # - Decompose severity into tiered boolean judges (e.g. factually_wrong +
+  #   dangerously_wrong) rather than one ordinal scale. Ordinal scales are hard
+  #   to calibrate — raters disagree about a 3 vs a 4 and the judge inherits
+  #   that noise — while a binary boundary keeps every failure actionable.
+  # Prompt structure for LLM judges: see judge-prompt-template.md.
   - name: "<judge name>"
     type: "<builtin|check|llm>"
     description: |
-      <what this judge evaluates and how>
+      <what this judge evaluates and how; for llm type, why a code
+       check cannot verify this criterion>
     # For builtin type, reference a builtin judge by name:
     builtin: "<builtin name>"
     arguments:              # optional parameterization
       <key>: <value>
-    score_range: [lo, hi]   # REQUIRED on a numeric LLM/agent judge — include it
+    score_range: [lo, hi]   # Numeric judges only (rung 4) — REQUIRED there,
                             # even for a plain 1-5 rubric. A DECLARED range is
                             # stated in the judge's prompt and tool schema and the
                             # returned value is checked against it (off-scale =
@@ -147,6 +168,10 @@ suggested_judges:
     #     under budget — grade by facts, not the agent's self-report
     #                                       → {{ evidence }}
     #   agent behavior (navigation, tool usage)  → {{ tool_trace }}
+    # Minimal context: include only the variable(s) the rubric actually
+    # grades — never {{ outputs }} + {{ conversation }} by default. Extra
+    # context dilutes the criterion and invites the judge to grade things
+    # the rubric never asked about.
     # See eval-yaml-template.md for worked examples of each.
     prompt: |
       <what to evaluate and how to score>

@@ -62,17 +62,26 @@ than one could apply, the harness resolves in this priority order (see
 
     ```yaml
     judges:
-      - name: output_quality
-        score_range: [1, 5]   # declare the scale — omitting it warns at config load
+      - name: covers_all_inputs
+        feedback_type: bool
         prompt: |
-          Compare the generated output against the reference. Consider
-          completeness, clarity, accuracy. Score 1-5 where 5 is excellent.
+          ## Request
+          {{ inputs }}
+
+          ## Output
+          {{ outputs }}
+
+          PASS if every requirement in the request is addressed in the
+          output; FAIL if any is missing — name it in your rationale.
     ```
 
     `prompt` is a full Jinja2 template; `prompt_file` loads one from disk;
     `llm_rubric` is sugar for a one-line criterion (it auto-appends
     `{{ conversation }}` if you don't). Priority when several are set:
-    `llm_rubric` > `prompt` > `prompt_file`.
+    `llm_rubric` > `prompt` > `prompt_file`. Give each judge exactly one
+    criterion — "completeness, clarity, accuracy" is three judges, not one
+    blended score — and prefer boolean PASS/FAIL verdicts, reserving numeric
+    scales (with `score_range`) for genuinely graded criteria.
 
 === "external code"
 
@@ -246,10 +255,10 @@ failures.
 
 ```yaml
 judges:
-  - name: output_quality
-    if: "not annotations.get('skip_quality', False)"
-    score_range: [1, 5]
-    prompt: "Score the output 1-5 for completeness, clarity, and accuracy."
+  - name: covers_all_inputs
+    if: "not annotations.get('skip_coverage', False)"
+    feedback_type: bool
+    prompt: "PASS if the output addresses every requirement in {{ inputs }}; FAIL otherwise."
 ```
 
 !!! note "Annotations come from the dataset"
