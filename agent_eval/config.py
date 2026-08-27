@@ -1622,12 +1622,17 @@ def discover_configs(project_root: Path) -> list[DiscoveryResult]:
     eval_dir = project_root / "eval"
     if eval_dir.is_dir():
         for subdir in sorted(eval_dir.iterdir()):
-            if subdir.is_dir():
+            if subdir.is_dir() and not subdir.name.startswith("."):
                 candidate = subdir / "eval.yaml"
                 if candidate.is_file():
                     _try_add(candidate, is_root=False)
+        # pathlib's glob matches dotfiles (unlike the glob module), so hidden
+        # working files — .entity-map.yaml, editor droppings — would surface
+        # as eval configs, and one extra "config" turns auto-selection into a
+        # which-config prompt on every run.
         for candidate in sorted(eval_dir.glob("*.yaml")):
-            if candidate.is_file() and candidate.name != "eval.yaml":
+            if (candidate.is_file() and candidate.name != "eval.yaml"
+                    and not candidate.name.startswith(".")):
                 _try_add(candidate, is_root=False)
 
     root_config = project_root / "eval.yaml"

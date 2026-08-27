@@ -619,3 +619,20 @@ name: t
 execution: {skill: s}
 runner: {type: codex, workspace_mode: repo}
 """))
+
+
+def test_discovery_skips_hidden_files_and_dirs(tmp_path):
+    """Hidden entries under eval/ are working files, never configs — a
+    git-ignored .entity-map.yaml surfacing as an eval config turns
+    single-config auto-selection into a which-config prompt."""
+    from agent_eval.config import discover_configs
+    eval_dir = tmp_path / "eval"
+    eval_dir.mkdir()
+    (eval_dir / "my-skill.yaml").write_text("name: t\nexecution:\n  skill: s\n")
+    (eval_dir / ".entity-map.yaml").write_text("SomeCorp: OtherCorp\n")
+    hidden_dir = eval_dir / ".raw"
+    hidden_dir.mkdir()
+    (hidden_dir / "eval.yaml").write_text("name: h\nexecution:\n  skill: x\n")
+
+    found = discover_configs(tmp_path)
+    assert [c.path.name for c in found] == ["my-skill.yaml"]
