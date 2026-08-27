@@ -35,6 +35,7 @@ STANDARD_TEMPLATE_VARS = {
     "arguments",        # judge arguments from eval.yaml
     "reasoning",        # conversation including extended thinking
     "evidence",         # lazily extracted verifiable evidence
+    "examples",         # human-labeled examples block (judges[].examples)
 }
 
 
@@ -214,6 +215,7 @@ def _test_render_judge_templates(judges, outputs, errors, warnings):
         "reasoning": "Mock reasoning",
         "evidence": "Mock evidence",
         "tool_trace": "",
+        "examples": "",
     }
     # Add all declared outputs
     for name in output_names:
@@ -598,7 +600,7 @@ def validate_config(path="eval.yaml"):
     valid_judge_fields = {
         "name", "description", "builtin", "check", "prompt", "prompt_file",
         "module", "function", "arguments", "context", "model", "if", "llm_rubric",
-        "feedback_type", "samples", "score_range", "step", "agent",
+        "feedback_type", "samples", "score_range", "step", "agent", "examples",
     }
 
     for j in judges:
