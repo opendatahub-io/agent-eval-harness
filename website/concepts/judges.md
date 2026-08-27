@@ -258,7 +258,10 @@ judges:
   - name: covers_all_inputs
     if: "not annotations.get('skip_coverage', False)"
     feedback_type: bool
-    prompt: "PASS if the output addresses every requirement in {{ inputs }}; FAIL otherwise."
+    prompt: |
+      Request: {{ inputs }}
+      Output: {{ outputs }}
+      PASS if the output addresses every requirement in the request; FAIL otherwise.
 ```
 
 !!! note "Annotations come from the dataset"
