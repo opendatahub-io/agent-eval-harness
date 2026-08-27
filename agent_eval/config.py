@@ -1539,6 +1539,15 @@ class EvalConfig:
                     f"Judge '{jc.name}': 'examples' only applies to LLM and "
                     "agent judges (prompt/prompt_file/llm_rubric/agent) — on "
                     f"a {kind} judge it would be silently ignored")
+            # The reserved pairwise judge never goes through the per-judge
+            # prompt renderer (score.py routes it into the A/B comparison
+            # flow), so an `examples` block there would be silently ignored
+            # too.
+            if jc.examples and jc.name == "pairwise":
+                raise ValueError(
+                    "Judge 'pairwise': 'examples' does not apply to the "
+                    "pairwise comparison judge — its prompt is rendered by "
+                    "the comparison flow, which never injects exemplars")
             # `feedback_type` is optional, and score.py's `_numeric_bounds`
             # treats anything that is not "bool" as numeric — so the judge that
             # most needs this warning is the one that declares neither field,
