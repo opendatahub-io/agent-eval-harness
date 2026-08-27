@@ -207,18 +207,20 @@ Per case, the harness:
 The judge writes `./output/score.json`:
 
 ```json
-{"score": 2, "rationale": "All three components exist in the arch docs."}
+{"rationale": "All three components exist in the arch docs.", "score": 2}
 ```
 
 or, for a boolean judge:
 
 ```json
-{"passed": true, "rationale": "Touched tests pass."}
+{"rationale": "Touched tests pass.", "passed": true}
 ```
 
-`feedback_type` selects `score` vs `passed`; `score_range` states the scale **inside the
-contract handed to the agent** (`{"score": <integer in [0, 2]>, …}`, or `<number …>` on
-fractional bounds), bands the score in the report, and is enforced — a verdict off the
+The rationale comes first: the contract tells the judge to compose its justification
+before committing to the verdict field. `feedback_type` selects `score` vs `passed`;
+`score_range` states the scale **inside the
+contract handed to the agent** (`{"rationale": …, "score": <integer in [0, 2]>}`, or
+`<number …>` on fractional bounds), bands the score in the report, and is enforced — a verdict off the
 scale is recorded as an error sample, never clamped. With no `score_range` a numeric
 agent judge is told `[1, 5]` and its verdict is not checked. The
 harness appends this output contract (plus an untrusted-data guard) to the prompt

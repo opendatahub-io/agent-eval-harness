@@ -105,7 +105,7 @@ judges:
 
       Score 1-5 (1=no meaningful attempt, 3=addresses it with gaps,
       5=comparable to the oracle). Respond with JSON:
-      {"score": <int 1-5>, "rationale": "<one sentence>"}
+      {"rationale": "<one sentence>", "score": <int 1-5>}
 
 thresholds:
   tests_pass:
