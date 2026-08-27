@@ -75,6 +75,17 @@ def _truncate(text, cap=EXCERPT_CAP):
     return text[:cap] + "[truncated]"
 
 
+def _read_capped(path, cap=EXCERPT_CAP):
+    """Read at most the excerpt-relevant prefix of a file.
+
+    Artifacts can be arbitrarily large; only the first ``cap`` characters can
+    ever survive :func:`_truncate`, so never pull more than that into memory
+    (+1 so the truncation marker still triggers).
+    """
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.read(cap + 1)
+
+
 def _classify_verdict(value, score_range):
     """Classify a per-judge human verdict as a clear anchor.
 
@@ -113,8 +124,7 @@ def _case_excerpts(run_dir, case_id, output_dirs):
     input_path = case_dir / "input.yaml"
     if input_path.is_file() and not input_path.is_symlink():
         try:
-            input_excerpt = _truncate(
-                input_path.read_text(encoding="utf-8", errors="replace"))
+            input_excerpt = _truncate(_read_capped(input_path))
         except OSError:
             pass
     output_excerpt = ""
@@ -126,8 +136,7 @@ def _case_excerpts(run_dir, case_id, output_dirs):
             if not f.is_file() or f.is_symlink():
                 continue
             try:
-                output_excerpt = _truncate(
-                    f.read_text(encoding="utf-8", errors="replace"))
+                output_excerpt = _truncate(_read_capped(f))
             except OSError:
                 continue
             break

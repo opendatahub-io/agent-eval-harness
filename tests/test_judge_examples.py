@@ -81,6 +81,11 @@ def test_examples_rejected_on_code_judge(tmp_path):
                           "examples: {}}\n")
 
 
+def test_examples_rejected_on_pairwise_judge(tmp_path):
+    with pytest.raises(ValueError, match="does not apply to the pairwise"):
+        _config(tmp_path, "  - {name: pairwise, prompt: 'p', examples: {}}\n")
+
+
 def test_examples_unknown_source_rejected(tmp_path):
     with pytest.raises(ValueError, match="examples.source must be one of"):
         _config(tmp_path, "  - {name: j, feedback_type: bool, prompt: 'p', "
