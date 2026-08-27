@@ -79,6 +79,10 @@ def stage_plugin_dir(plugin_dir: Path, workspace: Path) -> Path:
     manifest (via ``resolve_plugin_skill_roots``, which validates
     containment), the conventional ``_PLUGIN_OPTIONAL_DIRS`` when they
     exist at the plugin root, and ``_PLUGIN_OPTIONAL_FILES`` (``.mcp.json``).
+    Isolated MCP coverage is that conventional config file plus servers
+    already reachable without extra trees (HTTP/npx/uvx, or code under
+    ``scripts/``). Local stdio trees (``servers/``, …) and a custom
+    ``mcpServers`` path in the manifest are not staged.
     Symlinks are not reproduced — in-plugin targets are copied as content,
     dangling ones are skipped, and links escaping the plugin are refused —
     so the staged tree cannot point back outside the workspace. Idempotent
