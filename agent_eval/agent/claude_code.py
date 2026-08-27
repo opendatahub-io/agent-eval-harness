@@ -26,6 +26,9 @@ _print_lock = threading.Lock()
 # ${CLAUDE_PLUGIN_ROOT}/scripts/... or ${CLAUDE_SKILL_DIR}/../../scripts/...
 # at runtime; a staged copy without it would break those plugins.
 _PLUGIN_OPTIONAL_DIRS = ("commands", "agents", "hooks", "scripts")
+# Plugin-root MCP config (Claude Code loads this from the plugin directory).
+# Staging omitted it, so isolated evals never saw plugin MCP servers.
+_PLUGIN_OPTIONAL_FILES = (".mcp.json",)
 
 # Bulk plugin discovery never reads — keeps the staged copy small.
 _PLUGIN_IGNORE = shutil.ignore_patterns(".git", "node_modules", "__pycache__")
@@ -74,13 +77,13 @@ def stage_plugin_dir(plugin_dir: Path, workspace: Path) -> Path:
     Copies only what plugin discovery and execution need: the
     ``.claude-plugin/`` manifest, every skill root declared by the
     manifest (via ``resolve_plugin_skill_roots``, which validates
-    containment), and the conventional ``_PLUGIN_OPTIONAL_DIRS`` when they
-    exist at the plugin root. Symlinks are not reproduced — in-plugin
-    targets are copied as content, dangling ones are skipped, and links
-    escaping the plugin are refused — so the staged tree cannot point back
-    outside the workspace. Idempotent per workspace: an existing
-    destination is reused; a partial copy never becomes the destination
-    (copy into a temp sibling, then rename).
+    containment), the conventional ``_PLUGIN_OPTIONAL_DIRS`` when they
+    exist at the plugin root, and ``_PLUGIN_OPTIONAL_FILES`` (``.mcp.json``).
+    Symlinks are not reproduced — in-plugin targets are copied as content,
+    dangling ones are skipped, and links escaping the plugin are refused —
+    so the staged tree cannot point back outside the workspace. Idempotent
+    per workspace: an existing destination is reused; a partial copy never
+    becomes the destination (copy into a temp sibling, then rename).
     """
     plugin = Path(plugin_dir).resolve()
     dest = workspace / ".staged-plugins" / plugin.name
@@ -137,6 +140,17 @@ def stage_plugin_dir(plugin_dir: Path, workspace: Path) -> Path:
                 resolved, staging / source.relative_to(plugin),
                 symlinks=False, ignore=_plugin_ignore(plugin),
                 ignore_dangling_symlinks=True, dirs_exist_ok=True)
+        for name in _PLUGIN_OPTIONAL_FILES:
+            source = plugin / name
+            if not source.is_file():
+                continue
+            try:
+                resolved = source.resolve(strict=True)
+            except (OSError, RuntimeError):
+                continue
+            if not resolved.is_file() or not resolved.is_relative_to(plugin):
+                continue
+            shutil.copy2(resolved, staging / name)
         try:
             staging.replace(dest)
         except OSError:

@@ -64,6 +64,25 @@ class TestStagePluginDir:
         assert (staged / "agents" / "helper.md").is_file()
         assert (staged / "hooks" / "hooks.json").is_file()
 
+    def test_copies_plugin_mcp_json(self, tmp_path):
+        plugin = make_plugin(tmp_path / "plugins")
+        (plugin / ".mcp.json").write_text('{"mcpServers": {"ship-status": {}}}')
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        staged = stage_plugin_dir(plugin, ws)
+        assert (staged / ".mcp.json").is_file()
+        assert "ship-status" in (staged / ".mcp.json").read_text()
+
+    def test_escaping_mcp_json_symlink_is_refused(self, tmp_path):
+        plugin = make_plugin(tmp_path / "plugins")
+        secret = tmp_path / "outside-mcp.json"
+        secret.write_text('{"secret": true}')
+        (plugin / ".mcp.json").symlink_to(secret)
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        staged = stage_plugin_dir(plugin, ws)
+        assert not (staged / ".mcp.json").exists()
+
     def test_skips_git_node_modules_and_unlisted_files(self, tmp_path):
         plugin = make_plugin(tmp_path / "plugins")
         # Bulk inside a copied tree is pruned by ignore patterns...
@@ -332,6 +351,23 @@ class TestClaudeCodeRunnerStaging:
         assert result.exit_code == 0, result.stderr
         [staged] = self._plugin_dir_args(self._argv(ws))
         assert (Path(staged) / "scripts" / "helper.py").is_file()
+
+    def test_plugin_mcp_json_is_staged(self, tmp_path, monkeypatch):
+        """Claude Code loads plugin MCP servers from .mcp.json at the plugin
+        root. Isolated evals must stage that file or the skill never sees
+        those tools."""
+        self._stub_claude(tmp_path, monkeypatch)
+        plugin = make_plugin(tmp_path / "plugins")
+        (plugin / ".mcp.json").write_text('{"mcpServers": {"ship-status": {}}}')
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        runner = ClaudeCodeRunner(plugin_dirs=[str(plugin)])
+        result = runner.execute(
+            target="epic-decompose", args="", workspace=ws,
+            model="m", timeout_s=60)
+        assert result.exit_code == 0, result.stderr
+        [staged] = self._plugin_dir_args(self._argv(ws))
+        assert (Path(staged) / ".mcp.json").is_file()
 
     def test_duplicate_plugin_basenames_fail_loud(self, tmp_path, monkeypatch):
         self._stub_claude(tmp_path, monkeypatch)
