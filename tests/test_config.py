@@ -636,3 +636,14 @@ def test_discovery_skips_hidden_files_and_dirs(tmp_path):
 
     found = discover_configs(tmp_path)
     assert [c.path.name for c in found] == ["my-skill.yaml"]
+
+def test_cursor_repo_mode_is_allowed(tmp_path):
+    cfg = EvalConfig.from_yaml(_write(tmp_path, """
+name: t
+execution:
+  prompt: "{{ input.prompt }}"
+runner: {type: cursor, workspace_mode: repo}
+"""))
+
+    assert cfg.runner.type == "cursor"
+    assert cfg.runner.workspace_mode == "repo"

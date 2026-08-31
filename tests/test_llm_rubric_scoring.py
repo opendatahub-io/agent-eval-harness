@@ -2,6 +2,7 @@
 
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -258,6 +259,62 @@ class TestLLMRubricJudgeLoading:
         assert message_content.count("Test response") == 1
         # Should not have "Agent Response to Evaluate" heading (not auto-appended)
         assert "Agent Response to Evaluate" not in message_content
+
+    def test_non_anthropic_judge_model_uses_runner_backend(self, config_with_llm_rubric):
+        """Anthropic creds should not force GPT-family judge models through Anthropic."""
+        import score
+
+        config_with_llm_rubric.models.judge = "gpt-5.4-medium"
+        judge_config = config_with_llm_rubric.judges[0]
+
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+            with patch("score._call_structured_judge") as direct_call, \
+                    patch("score._call_structured_judge_via_runner",
+                          return_value=(3, "ok")) as runner_call:
+                scorer = score._load_llm_judge(judge_config, config_with_llm_rubric)
+                result = scorer(outputs={"files": {"output.txt": "test"}})
+
+        assert result == (3, "ok")
+        direct_call.assert_not_called()
+        runner_call.assert_called_once()
+
+    def test_runner_judge_uses_stdout_only_json_contract(self,
+                                                         config_with_llm_rubric,
+                                                         tmp_path):
+        """Runner-backed judges must not be told to write an inaccessible file."""
+        import score
+
+        judge_config = config_with_llm_rubric.judges[0]
+        judge_config.feedback_type = "int"
+        judge_config.score_range = [1, 5]
+        workspace = tmp_path / "runner-workspace"
+        workspace.mkdir()
+        captured = {}
+
+        def fake_runner(config, prompt, model, **kwargs):
+            captured["prompt"] = prompt
+            captured["kwargs"] = kwargs
+            stdout = '{"score": 4, "rationale": "The response is accurate."}'
+            return (SimpleNamespace(exit_code=0, stdout=stdout, stderr=""),
+                    stdout, workspace)
+
+        with patch("score.run_prompt_via_runner", side_effect=fake_runner):
+            result = score._call_structured_judge_via_runner(
+                "Evaluate the response.",
+                "gpt-5.4-medium",
+                "int",
+                config_with_llm_rubric,
+                judge_config,
+                bounds=(1, 5, True),
+            )
+
+        assert result == (4, "The response is accurate.")
+        assert "Return exactly one JSON object and nothing else." in captured["prompt"]
+        assert "output/score.json" not in captured["prompt"]
+        assert "write your verdict" not in captured["prompt"].lower()
+        assert captured["kwargs"]["permissions"] == {
+            "allow": ["Read", "Grep", "Glob"]
+        }
 
 
 class TestLLMRubricErrorHandling:

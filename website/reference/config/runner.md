@@ -2,21 +2,22 @@
 
 The `runner` block selects **which agent runtime executes your skill or prompt** and
 carries runtime-specific knobs. Its `type` is a discriminator; the remaining fields are
-read selectively — a field a runner doesn't understand is simply ignored, so the same
-block is safe to share across runs.
+read selectively. Fields a runner doesn't understand are ignored, and runners may warn
+when an unsupported setting would otherwise be easy to miss.
 
 !!! tip "Runtime, not backend"
-    `runner.type` picks the *agent* (Claude Code, Codex, an opaque CLI, or the OpenAI
+    `runner.type` picks the *agent* (Claude Code, Cursor, Codex, an opaque CLI, or the OpenAI
     Responses API). The **execution backend** (Local, Harbor, EvalHub) is a separate `--runner`
     CLI flag, never a config key. See [backends](../../concepts/backends.md) and the
     [runners concept](../../concepts/runners.md) for the distinction.
 
-## The four runner types
+## The five runner types
 
 ```mermaid
 flowchart TD
     T{runner.type}
     T -->|claude-code<br/>default| CC[ClaudeCodeRunner<br/>claude --print]
+    T -->|cursor| CU[CursorAgentRunner<br/>cursor-agent --print]
     T -->|codex| CX[CodexRunner<br/>codex exec]
     T -->|cli| CLI[CliRunner<br/>arbitrary command template]
     T -->|responses-api| RA[ResponsesAPIRunner<br/>OpenAI Responses + Skills API]
@@ -25,6 +26,7 @@ flowchart TD
 | `type` | Runtime | Use it for |
 | --- | --- | --- |
 | `claude-code` *(default)* | Claude Code CLI in headless mode (`claude --print --output-format …`) | The primary path — full tracing, tool interception, permission enforcement, subagent capture |
+| `cursor` | Cursor Agent CLI in headless mode (`cursor-agent --print --output-format …`) | Local Cursor-account execution with Cursor-managed model access and plugin loading; not available in EvalHub |
 | `codex` | Codex CLI in non-interactive mode (`codex exec --json`) | Native Codex execution, skill staging, JSONL usage parsing, and sandbox-mode mapping |
 | `cli` | Any command you provide, via a placeholder template | Wrapping OpenCode, a custom agent, or a shell script. See the [opaque CLI runner contract](https://github.com/opendatahub-io/agent-eval-harness/blob/main/docs/opaque-cli-runner-contract.md) |
 | `responses-api` | OpenAI Responses API with the Shell tool + Skills API | Apples-to-apples comparison of the *same* skill on an OpenAI model |
@@ -33,29 +35,30 @@ flowchart TD
 
 Not every runner reads every field. The matrix below shows where each field lands.
 
-| Field | Type | `claude-code` | `codex` | `cli` | `responses-api` |
-| --- | --- | :---: | :---: | :---: | :---: |
-| `type` | `str` | discriminator | discriminator | discriminator | discriminator |
-| `effort` | `str` (enum) | `--effort` flag | `model_reasoning_effort` | `{effort}` placeholder | — |
-| `permission_mode` | `str` (enum) | `--permission-mode` flag | mapped to Codex sandbox mode | — | — |
-| `settings` | `dict` | merged into workspace `.claude/settings.json` (plus a synthesized `enabledPlugins` denylist — see hermeticity below) | `-c` config overrides for `codex exec` | — | connection settings (see below) |
-| `plugin_dirs` | `list[str]` | one `--plugin-dir` per entry (workspace-staged copy for out-of-workspace paths) | skills copied into `.agents/skills` | — | — |
-| `env` | `dict` | injected on the safe allowlist | injected on the safe allowlist | — (uses `execution.env`) | — |
-| `system_prompt` | `str` | `--append-system-prompt` | prepended to the prompt | `{system_prompt}` placeholder | `developer` message |
-| `command` | `str` \| `list[str]` | — | — | **required** — command template | — |
-| `workspace_mode` | `None` \| `"repo"` | harness-level (all runners) | harness-level | harness-level | harness-level |
+| Field | Type | `claude-code` | `cursor` | `codex` | `cli` | `responses-api` |
+| --- | --- | :---: | :---: | :---: | :---: | :---: |
+| `type` | `str` | discriminator | discriminator | discriminator | discriminator | discriminator |
+| `effort` | `str` (enum) | `--effort` flag | appended to a base `--model` as `[effort=…]`; existing Cursor effort variants pass through | `model_reasoning_effort` | `{effort}` placeholder | — |
+| `permission_mode` | `str` (enum) | `--permission-mode` flag | `plan` → `--mode plan`; `bypassPermissions` → `--force` | mapped to Codex sandbox mode | — | — |
+| `settings` | `dict` | merged into workspace `.claude/settings.json` | `binary` only; other keys warn and are ignored | `-c` config overrides for `codex exec` | — | connection settings (see below) |
+| `plugin_dirs` | `list[str]` | one `--plugin-dir` per entry (workspace-staged copy for out-of-workspace paths) | one `--plugin-dir` per entry (workspace-staged copy for out-of-workspace paths) | skills copied into `.agents/skills` | — | — |
+| `env` | `dict` | injected on the safe allowlist | injected into the subprocess env | injected on the safe allowlist | — (uses `execution.env`) | — |
+| `system_prompt` | `str` | `--append-system-prompt` | prepended to the prompt | prepended to the prompt | `{system_prompt}` placeholder | `developer` message |
+| `command` | `str` \| `list[str]` | — | — | — | **required** — command template | — |
+| `workspace_mode` | `None` \| `"repo"` | harness-level (all runners) | harness-level | rejected | harness-level | harness-level |
 
 !!! warning "Unset ≠ empty behavior"
     A field ignored by the active runner is harmless — it just does nothing. But two
     fields are easy to misplace: `runner.env` has **no effect** on the `cli` runner
     (which inherits the full caller environment and reads `execution.env` for
     additions), and `runner.settings` means **completely different things** to
-    `claude-code` versus `responses-api` (see below).
+    each runtime (see below). Cursor recognizes only `binary` in that mapping and
+    warns for other keys.
 
 ### `type`
 
-Selects the runner implementation. One of `claude-code` (default), `codex`, `cli`, or
-`responses-api`. Any other value fails to resolve at run time.
+Selects the runner implementation. One of `claude-code` (default), `cursor`,
+`codex`, `cli`, or `responses-api`. Any other value fails to resolve at run time.
 
 ### `effort`
 
@@ -65,10 +68,17 @@ Reasoning-effort level for the agent. The accepted values are runner-specific:
 | --- | --- |
 | `claude-code` | `low`, `medium`, `high`, `xhigh`, `max` |
 | `codex` | `minimal`, `low`, `medium`, `high`, `xhigh` |
+| `cursor` | Passed as the Cursor model's `effort` parameter; accepted values depend on the selected model |
 
-An invalid value raises at construction time for `claude-code` and `codex`. The CLI `--effort` flag
-overrides this field. For the `cli` runner it is exposed as the `{effort}` placeholder
-(empty string if unset); `responses-api` ignores it.
+An invalid value raises at construction time for `claude-code` and `codex`. Cursor
+does not have a standalone `--effort` flag; it appends the value to the model ID,
+for example `gpt-5.4[effort=high]`. If the model is already a Cursor catalog
+variant such as `gpt-5.4-medium`, the runner passes that ID through unchanged
+instead of producing an invalid compound ID such as
+`gpt-5.4-medium[effort=medium]`. The selected Cursor model validates whether
+the parameter is accepted. The CLI `--effort` flag overrides this field.
+For the `cli` runner it is exposed as the `{effort}` placeholder (empty string if
+unset); `responses-api` ignores it.
 
 ```yaml
 runner:
@@ -99,6 +109,12 @@ Codex preserves the same intent using its available sandbox modes: `plan` maps t
 remaining modes map to `workspace-write`. Codex cannot translate Claude Code's
 fine-grained tool allow/deny rules exactly, so the runner emits a warning when such
 rules are configured.
+
+Cursor maps `plan` to `cursor-agent --mode plan` and
+`bypassPermissions` to `cursor-agent --force`. The other common modes have no
+exact Cursor equivalent and produce an explicit warning before Cursor's default
+approval behavior is used. Prompt-only Cursor invocations clear `permission_mode`
+so judges and synthetic generation are not launched in plan mode.
 
 ```yaml
 runner:
@@ -152,6 +168,21 @@ A `dict` whose meaning depends on the runner:
     into case sessions fail loudly (`Unknown command`) after upgrading; the
     fix is one explicit entry or a `plugin_dirs` entry.
 
+=== "cursor"
+
+    Cursor recognizes `binary` to select a specific `cursor-agent` executable.
+    Other Cursor-specific connection, trust, header, MCP, and filesystem flags
+    are intentionally not part of the harness runner contract; configuring one
+    produces a warning and the key is ignored. Use `runner.env` for provider
+    environment variables such as `CURSOR_API_KEY` or `CURSOR_API_ENDPOINT`.
+
+    ```yaml
+    runner:
+      type: cursor
+      settings:
+        binary: /opt/cursor-agent
+    ```
+
 === "responses-api"
 
     Connection and container settings for the OpenAI Responses API. Recognized keys:
@@ -185,16 +216,21 @@ The `cli` runner ignores `settings`.
 
 ### `plugin_dirs`
 
-`claude-code` and `codex`. Both runners copy plugin content into the case workspace
+`claude-code`, `cursor`, and `codex`. These runners copy plugin content into the case workspace
 rather than exposing the configured path to the session. Claude Code stages each
 entry's discoverable content (manifest, skill roots, `commands/`, `agents/`,
 `hooks/`, `scripts/`) into `.staged-plugins/` and passes the staged copy to
 `--plugin-dir` — the configured path would otherwise land verbatim in session
 context, where Bash (not path-gated) can follow it out of the workspace. An entry
 already inside the workspace is passed through unchanged, and
-`workspace_mode: repo` skips staging entirely — the workspace is the real
-project there, so there is nothing to isolate. Codex copies each plugin's skills into the case workspace's
-`.agents/skills` directory for the duration of the run. Relative paths are always
+`workspace_mode: repo` skips staging for Claude Code and Cursor — the workspace is
+the real project there, so there is nothing to isolate. Cursor applies common
+permissions through a temporary project-local `.cursor/cli.json` and restores the
+original file after the run; in isolated mode it follows the same `--plugin-dir`
+staging path and embeds the selected `SKILL.md` in its prompt because Cursor does
+not consume the harness's slash-command target directly. Codex copies
+each plugin's skills into the case workspace's `.agents/skills` directory for the
+duration of the run. Relative paths are always
 resolved from the project root.
 A lexically external path such as `../shared-skills` is an explicit opt-in like an
 absolute path; a path declared inside the project may not escape through a symlink.
@@ -234,7 +270,7 @@ runner:
 Extra system-prompt text prepended to the agent's context.
 
 - `claude-code` — passed via `--append-system-prompt`, composed with the harness prompt.
-- `codex` — prepended to the user prompt.
+- `cursor` / `codex` — prepended to the user prompt.
 - `cli` — exposed as the `{system_prompt}` placeholder in the command template.
 - `responses-api` — sent as a `developer` role message.
 
@@ -280,16 +316,19 @@ runner:
 
 ### `workspace_mode`
 
-Execution context, honored by all runners. Validated at load time — only `None` or
-`"repo"` are accepted (a typo raises rather than silently changing behavior).
+Execution context. Validated at load time — only `None` or `"repo"` are accepted (a
+typo raises rather than silently changing behavior). Claude Code, Cursor, and the
+opaque runner honor `repo`; Codex rejects it because the harness cannot enforce
+repository protections there.
 
 | Value | Meaning |
 | --- | --- |
 | *unset* (`None`) | **Isolated workspace** (default) — each case runs in its own temp workspace with symlinked project resources |
 | `repo` | **In-repo** — the agent runs against the real repository checkout |
 
-`workspace_mode: repo` is meaningful for **prompt mode** evals that need the agent to
-navigate the actual repository (e.g. agentic-docs testing). Pair it with
+`workspace_mode: repo` is meaningful for **prompt mode** evals using Claude Code or
+Cursor that need the agent to navigate the actual repository (e.g. agentic-docs
+testing). Pair it with
 [`permissions`](permissions.md) to keep the agent from writing to the repo.
 
 ```yaml
@@ -297,6 +336,7 @@ execution:
   prompt: "{{ input.prompt }}"
 
 runner:
+  type: claude-code
   workspace_mode: repo    # navigate the real repository
 ```
 

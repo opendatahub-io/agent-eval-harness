@@ -35,7 +35,7 @@ flowchart TD
 | 1 Dataset | — | Read `dataset.path`; verify at least one case directory exists |
 | 2 Preflight | `preflight.py` | Check for stale artifacts and run-id / baseline collisions |
 | 3 Workspace | `workspace.py` | Build an isolated per-case (or batch) workspace with symlinked project resources |
-| 3a Interception | `workspace.py` | If `inputs.tools` is set, resolve `tool_handlers.yaml` into concrete runtime checks |
+| 3a Interception | `workspace.py` | If `inputs.tools` is set, resolve `tool_handlers.yaml` into concrete runtime checks; this feature is supported by Claude Code only |
 | 4 Execute | `execute.py` | Invoke the agent headlessly, capture stdout/stderr, write `run_result.json` |
 | 5 Collect | `collect.py` | Distribute workspace outputs into per-case dirs; detect in-place edits via git diff |
 | 6 Score | `score.py` | Run judges (and pairwise, if `--baseline`); write `summary.yaml` |
@@ -111,7 +111,7 @@ Parsed from `$ARGUMENTS` at Step 0. CLI flags override the corresponding `eval.y
 | `--baseline <run-id>` | — | Add a pairwise A/B comparison against a prior run under the same eval-name |
 | `--no-llm-judges` | false | Skip every judge that calls a model — `llm` (`prompt`, `prompt_file`, `llm_rubric`), `agent`, and LLM builtins; run only deterministic judges |
 | `--gold` | false | After scoring, save collected artifacts back to the dataset cases as gold references |
-| `--effort <level>` | `runner.effort` | Reasoning effort. Applied by `claude-code` (`low`…`max`) and `codex` (`minimal`…`xhigh`); ignored by runners without an effort control |
+| `--effort <level>` | `runner.effort` | Reasoning effort. Applied by `claude-code` (`low`…`max`), `codex` (`minimal`…`xhigh`), and Cursor model parameter syntax; Cursor leaves IDs that already encode an effort variant unchanged; ignored by runners without an effort control |
 | `--runner <type>` | `local` | `local` (default pipeline), `harbor` (containerized), or `evalhub` (platform) |
 | `--env <name>` | `kubernetes` | Harbor execution environment: `podman`, `kubernetes`, `openshift` (only with `--runner harbor`) |
 
@@ -167,7 +167,9 @@ When a run is `DIRTY`, the three resolutions are:
 
 ## Tool interception
 
-If `eval.yaml` has `inputs.tools` entries, Step 3a is **mandatory**. `workspace.py` emits a
+If `eval.yaml` has `inputs.tools` entries, Step 3a is **mandatory** for Claude Code.
+Codex and Cursor reject `inputs.tools` explicitly because neither runner can consume
+the harness interception handlers. `workspace.py` emits a
 skeleton `tool_handlers.yaml`; you must resolve each handler's natural-language `prompt`
 into concrete runtime checks (`input_filters` for Bash, `env_checks` for services,
 `case_overrides` for deterministic answers) before execution. The workspace is rebuilt

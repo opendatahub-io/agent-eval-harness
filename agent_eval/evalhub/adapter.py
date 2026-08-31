@@ -4,9 +4,10 @@ Orchestrates the full evaluation loop inside the EvalHub Job pod:
 download dataset → run agent per case → score with judges → map to JobResults.
 
 The adapter runs IN-PROCESS (matching EvalHub's architecture where adapter pods
-are execution-only). It uses the runner registry (ClaudeCodeRunner, CliRunner,
-ResponsesAPIRunner) based on ``runner.type`` in eval.yaml — no Harbor, no
-sub-pods.
+are execution-only). It uses the runner registry (ClaudeCodeRunner, CodexRunner,
+CliRunner, ResponsesAPIRunner) based on ``runner.type`` in eval.yaml — no Harbor,
+no sub-pods. Cursor is local-only and is rejected explicitly because the base
+EvalHub image does not ship its CLI.
 
 Resources (eval.yaml, dataset, project) can come from:
 - The container filesystem (baked into the image or mounted)
@@ -195,6 +196,11 @@ class AgentEvalAdapter(FrameworkAdapter):
         log.info("Eval config loaded: skill=%s, dataset=%s, %d judges",
                  eval_config.resolve_skill() or "(prompt mode)", eval_config.dataset.path,
                  len(eval_config.judges))
+
+        if eval_config.runner.type == "cursor":
+            raise ValueError(
+                "EvalHub does not support runner.type: cursor; use "
+                "claude-code or codex")
 
         # Mount project resources from ConfigMap if specified
         if params.get("project_configmap"):

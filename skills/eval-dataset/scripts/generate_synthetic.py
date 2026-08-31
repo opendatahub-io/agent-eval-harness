@@ -2,8 +2,9 @@
 """Generate synthetic test cases from generation prompts using an LLM.
 
 This script reads the ``generation`` block from eval.yaml, resolves each seed's
-generation prompt (builtin / prompt_file / inline), and uses the Claude API to
-generate test cases following the prompt instructions.
+generation prompt (builtin / prompt_file / inline), then generates test cases
+through either the direct Anthropic client (for Claude models) or the eval
+runner abstraction (for runner-managed model ids).
 """
 
 import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
@@ -11,6 +12,7 @@ import agent_eval._bootstrap  # noqa: F401 — auto-activate venv
 import json
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Optional
@@ -18,6 +20,7 @@ from typing import Optional
 import yaml
 
 from agent_eval.config import EvalConfig, GenerationSeed
+from agent_eval.prompt_backends import is_anthropic_model, run_prompt_via_runner
 from agent_eval.prompts import resolve_seed_prompt
 
 
@@ -37,44 +40,53 @@ def generate_synthetic(
     Args:
         config: EvalConfig with a ``generation`` block (seeds + context)
         output_dir: Where to write generated test cases
-        model: Claude model to use for generation
-        api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY or uses ANTHROPIC_VERTEX_PROJECT_ID)
+        model: Model to use for generation
+        api_key: Optional Anthropic API key override for Claude-family models
 
     Returns:
         List of generated case metadata
 
     Raises:
         ValueError: If no generation seeds defined
-        ImportError: If anthropic package not installed
+        ImportError: If Anthropic support is required but not installed
     """
     if not config.generation.seeds:
         raise ValueError(
             "No generation seeds defined in config. "
             "Synthetic generation requires generation.seeds.")
 
-    try:
-        import anthropic
-    except ImportError:
-        raise ImportError(
-            "anthropic package required for synthetic generation. "
-            "Install with: pip install anthropic")
+    client = None
+    use_anthropic = is_anthropic_model(model)
+    if use_anthropic:
+        try:
+            import anthropic
+        except ImportError:
+            raise ImportError(
+                "anthropic package required for Claude synthetic generation. "
+                "Install with: pip install anthropic")
 
-    # Support both direct API and Vertex AI authentication
-    api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-    vertex_project = os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID")
+        # Support direct API, bearer-token gateway, and Vertex AI
+        # authentication.  ``ANTHROPIC_AUTH_TOKEN`` is a bearer token, not an
+        # API key; passing it as ``api_key`` makes the SDK send the wrong auth
+        # scheme to gateways that distinguish the two.
+        api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN")
+        vertex_project = os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID")
 
-    if api_key:
-        client = anthropic.Anthropic(api_key=api_key)
-    elif vertex_project:
-        # Use Vertex AI authentication
-        client = anthropic.AnthropicVertex(
-            project_id=vertex_project,
-            region=os.environ.get("ANTHROPIC_VERTEX_REGION", "us-east5"),
-        )
-    else:
-        raise ValueError(
-            "Authentication required: set either ANTHROPIC_API_KEY or "
-            "ANTHROPIC_VERTEX_PROJECT_ID environment variable.")
+        if api_key:
+            client = anthropic.Anthropic(api_key=api_key)
+        elif auth_token:
+            client = anthropic.Anthropic(auth_token=auth_token)
+        elif vertex_project:
+            client = anthropic.AnthropicVertex(
+                project_id=vertex_project,
+                region=os.environ.get("ANTHROPIC_VERTEX_REGION", "us-east5"),
+            )
+        else:
+            raise ValueError(
+                "Claude synthetic generation requires ANTHROPIC_API_KEY, "
+                "ANTHROPIC_AUTH_TOKEN, or ANTHROPIC_VERTEX_PROJECT_ID. Use a "
+                "runner-backed model to avoid Anthropic credentials.")
     all_cases = []
     failed_categories = []
     case_counter = 1
@@ -96,6 +108,7 @@ def generate_synthetic(
         # Generate cases for this category
         try:
             cases = _generate_category_cases(
+                config=config,
                 client=client,
                 generation_prompt=generation_prompt,
                 seed=seed,
@@ -189,6 +202,7 @@ def generate_synthetic(
 
 
 def _generate_category_cases(
+    config: EvalConfig,
     client,
     generation_prompt: str,
     seed: GenerationSeed,
@@ -199,12 +213,13 @@ def _generate_category_cases(
     """Use an LLM to generate cases from a resolved generation prompt.
 
     Args:
-        client: Anthropic client
+        config: EvalConfig for runner-backed fallbacks
+        client: Anthropic client, or None for runner-backed generation
         generation_prompt: Resolved generation-prompt markdown content
         seed: GenerationSeed config
         context: Repository knowledge (dict or str) injected into the prompt
         count: Number of cases to generate
-        model: Claude model to use
+        model: Model to use
 
     Returns:
         List of test case dicts with 'input' and optional 'annotations' keys
@@ -273,24 +288,41 @@ Generate realistic, varied test cases that:
 
 Return the JSON array now:"""
 
-    # Call Claude API
-    response = client.messages.create(
-        model=model,
-        max_tokens=4096,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=1.0,  # Higher temperature for variety
-    )
+    if client is not None:
+        response = client.messages.create(
+            model=model,
+            max_tokens=4096,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=1.0,
+        )
 
-    # Parse response (validate content exists and has text attribute - CWE-20)
-    if not response.content:
-        raise ValueError("Anthropic API returned empty content")
+        # Parse response (validate content exists and has text attribute - CWE-20)
+        if not response.content:
+            raise ValueError("Anthropic API returned empty content")
 
-    first_block = response.content[0]
-    if not hasattr(first_block, 'text'):
-        raise ValueError(
-            f"Expected text content from Anthropic API, got type: {type(first_block).__name__}")
-
-    response_text = first_block.text.strip()
+        first_block = response.content[0]
+        if not hasattr(first_block, 'text'):
+            raise ValueError(
+                f"Expected text content from Anthropic API, got type: {type(first_block).__name__}")
+        response_text = first_block.text.strip()
+    else:
+        result, response_text, workspace = run_prompt_via_runner(
+            config,
+            prompt,
+            model,
+            timeout_s=int(config.execution.timeout
+                          if config.execution.timeout is not None else 600),
+            max_budget_usd=5.0,
+            permissions={"allow": ["Read", "Grep", "Glob"]},
+        )
+        try:
+            if result.exit_code != 0:
+                raise ValueError(
+                    f"Runner-backed generation failed with exit code {result.exit_code}: "
+                    f"{(result.stderr or result.stdout).strip()[:400]}"
+                )
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
 
     # Extract JSON from response (may be wrapped in markdown)
     cases = _extract_json_from_response(response_text)

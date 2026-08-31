@@ -15,6 +15,13 @@ permissions:
     - { path: "artifacts/", tools: ["Write"] }
 ```
 
+!!! note "Cursor deny-only configurations"
+    When `runner.type: cursor` has only `permissions.deny`, the harness writes a
+    broad Cursor `permissions.allow` list alongside those denies. Cursor's
+    project-local `.cursor/cli.json` schema requires `allow`; omitting it makes
+    the generated file invalid. If neither list is configured, the harness
+    writes no project permission file and Cursor's normal defaults apply.
+
 ## Two forms
 
 | Form | Shape | Use for |

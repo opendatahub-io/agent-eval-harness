@@ -264,6 +264,7 @@ See [the execution model](../concepts/execution-model.md) for the difference.
       prompt: "{{ input.prompt }}"
 
     runner:
+      type: claude-code
       workspace_mode: repo   # navigate the real repository
 
     dataset:
@@ -293,7 +294,7 @@ execution:
   arguments: "{prompt}"   # resolved per case from input.yaml fields
 
 runner:
-  type: claude-code       # claude-code | cli | responses-api
+  type: claude-code       # claude-code | cursor | codex | cli | responses-api
   # effort: high          # low | medium | high | xhigh | max
 
 models:

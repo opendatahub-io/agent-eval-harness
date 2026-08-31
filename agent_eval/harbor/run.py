@@ -68,6 +68,7 @@ def _load_dotenv() -> None:
 _RUNNER_TO_HARBOR_AGENT = {
     "claude-code": "claude-code",
     "codex": "codex",
+    "cursor": None,         # no Harbor equivalent
     "cli": None,            # CLI runner is generic — user must pass --agent explicitly
     "responses-api": None,  # no Harbor equivalent
 }

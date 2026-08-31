@@ -160,7 +160,7 @@ execution:
 
 # Runner — agent harness + runner-specific knobs
 runner:
-  type: claude-code          # claude-code | codex | cli | responses-api
+  type: claude-code          # claude-code | cursor | codex | cli | responses-api
   # effort: high              # Claude: low..max; Codex: minimal..xhigh
   # settings: {}              # Arbitrary Claude Code settings merged into workspace
   # plugin_dirs: []           # Directories to load plugins from
@@ -354,7 +354,7 @@ thresholds:
         max_budget_usd: 2.0
   ```
 - **`permissions`** — tool access patterns (`allow`/`deny`) for headless execution. Claude Code enforces these exactly. Codex maps `runner.permission_mode` to its filesystem sandbox and warns because it cannot translate Claude's tool-level patterns.
-- **`runner`** — `type` selects `claude-code`, `codex`, `cli`, or `responses-api`; remaining fields are runner-specific. Codex accepts `minimal`, `low`, `medium`, `high`, and `xhigh`; its CLI does not enforce `max_budget_usd`. Local Codex defaults to `workspace-write`; `permission_mode: plan` maps to `read-only`, while `bypassPermissions` maps to Codex's unrestricted bypass and should be used only inside a container or VM.
+- **`runner`** — `type` selects `claude-code`, `cursor`, `codex`, `cli`, or `responses-api`; remaining fields are runner-specific. Cursor appends `runner.effort` to base model IDs, preserves IDs that already encode an effort variant, supports isolated and `workspace_mode: repo` execution, and enforces common file permissions through its project-local CLI config; it still rejects `inputs.tools`. Codex accepts `minimal`, `low`, `medium`, `high`, and `xhigh`; its CLI does not enforce `max_budget_usd`. Local Codex defaults to `workspace-write`; `permission_mode: plan` maps to `read-only`, while `bypassPermissions` maps to Codex's unrestricted bypass and should be used only inside a container or VM.
 - **`models`** — `skill`/`subagent`/`judge`/`hook` defaults, overridable per-judge or via CLI flags. `hook` is the model used for LLM-based AskUserQuestion answering.
 - **`mlflow`** — `experiment` (and optional `tracking_uri`/`tags`) for result logging.
 - **`thresholds`** — per-judge regression detection. Valid keys: `min_mean` (minimum average score), `min_pass_rate` (minimum fraction of cases passing, 0.0–1.0), `min_win_rate` (minimum pairwise win rate), `max_error_rate` (**maximum** fraction of cases the judge may error on, 0.0–1.0 — an opt-in coverage gate; the other three are computed over the cases that produced a value).

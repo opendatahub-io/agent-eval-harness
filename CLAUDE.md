@@ -210,7 +210,7 @@ activate the venv itself (`orchestrate.py::_child_env`).
 
 Projects create an `eval.yaml` config file with:
 - `execution` — `mode` (`case` or `batch`), `skill` or `prompt` (mutually exclusive; skill mode vs prompt mode), `arguments` template with `{field}` placeholders, optional `timeout`/`max_budget_usd`/`parallelism` (concurrent case execution), and `env` for injecting environment variables into workspaces (`$VAR` syntax resolves from caller's env). A top-level `skill:` is still accepted (auto-normalized to `execution.skill`) but deprecated.
-- `runner` — `type` discriminator (`claude-code`, etc.) plus runner-specific `effort`/`settings`/`plugin_dirs`/`env`/`system_prompt`
+- `runner` — `type` discriminator (`claude-code`, `cursor`, `codex`, etc.) plus runner-specific `effort`/`settings`/`plugin_dirs`/`env`/`system_prompt`
 - `models` — defaults for `skill`/`subagent`/`judge`/`hook` roles (CLI flags override). `hook` is the model for LLM-based AskUserQuestion answering.
 - `mlflow` — `experiment`, optional `tracking_uri`/`tags`
 - `permissions` — `allow`/`deny` tool patterns for headless execution

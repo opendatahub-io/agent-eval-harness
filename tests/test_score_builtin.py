@@ -139,6 +139,25 @@ class TestLoadJudgesBuiltin:
             # builtin judges are pass/fail
             assert mock_call.call_args[0][2] == "bool"
 
+    def test_builtin_llm_judge_uses_runner_for_non_anthropic_model(self):
+        config = EvalConfig(name="test", skill="test")
+        config.models = ModelsConfig(judge="gpt-5.4-medium")
+        config.judges = [
+            JudgeConfig(name="safety", builtin="no_harmful_content"),
+        ]
+        judges = load_judges(config)
+        _, scorer, _, _, _samples = judges[0]
+
+        with patch("score._call_structured_judge") as direct_call, \
+                patch("score._call_structured_judge_via_runner",
+                      return_value=(True, "ok")) as runner_call:
+            result = scorer(outputs={"conversation": "test", "files": {}})
+
+        assert result == (True, "ok")
+        direct_call.assert_not_called()
+        runner_call.assert_called_once()
+        assert runner_call.call_args.args[1:3] == ("gpt-5.4-medium", "bool")
+
 
 class TestParsers:
 

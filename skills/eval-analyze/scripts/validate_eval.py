@@ -761,12 +761,12 @@ def validate_config(path="eval.yaml"):
 
     runner = config.get("runner") or {}
     runner_type = runner.get("type", "claude-code")
-    if runner_type == "codex" and (config.get("inputs", {}).get("tools") or []):
+    if runner_type in {"codex", "cursor"} and (config.get("inputs", {}).get("tools") or []):
         errors.append(
-            "runner.type 'codex' does not support inputs.tools interception")
+            f"runner.type '{runner_type}' does not support inputs.tools interception")
     if runner_type == "codex" and runner.get("workspace_mode") == "repo":
         errors.append(
-            "runner.type 'codex' does not support workspace_mode: repo because "
+            f"runner.type '{runner_type}' does not support workspace_mode: repo because "
             "repository answer-key protections cannot be enforced")
     settings = runner.get("settings")
     if isinstance(settings, str) and settings:
@@ -786,7 +786,7 @@ def validate_config(path="eval.yaml"):
         if not isinstance(pd, str) or not pd:
             errors.append(f"runner.plugin_dirs[{i}] must be a non-empty string")
             continue
-        if runner_type not in {"claude-code", "codex"}:
+        if runner_type not in {"claude-code", "codex", "cursor"}:
             continue
         try:
             pp = _resolve_plugin_dir(pd, Path.cwd())

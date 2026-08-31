@@ -265,6 +265,48 @@ class TestExtractReadCalls:
         assert len(read_calls) == 1
         assert read_calls[0]["file_path"] == "/valid/path.md"
 
+    def test_read_call_accepts_cursor_path_field(self):
+        events = [
+            {
+                "type": "assistant",
+                "timestamp": "2026-05-21T10:00:00Z",
+                "tools": [
+                    {
+                        "name": "Read",
+                        "id": "tool_1",
+                        "input": {"path": "/repo/AGENTS.md"},
+                    }
+                ],
+            }
+        ]
+        read_calls = extract_read_calls(events)
+        assert [r["file_path"] for r in read_calls] == ["/repo/AGENTS.md"]
+
+    def test_grep_read_paths_count_as_consulted_files(self):
+        events = [
+            {
+                "type": "assistant",
+                "timestamp": "2026-05-21T10:00:00Z",
+                "tools": [
+                    {
+                        "name": "Grep",
+                        "id": "tool_1",
+                        "input": {
+                            "path": "/repo",
+                            "pattern": "cache",
+                            "read_paths": ["ai-docs/ARCHITECTURE.md", "REVIEW.md"],
+                        },
+                    }
+                ],
+            }
+        ]
+        read_calls = extract_read_calls(events)
+        paths = [r["file_path"] for r in read_calls]
+        assert "/repo" in paths
+        assert "ai-docs/ARCHITECTURE.md" in paths
+        assert "REVIEW.md" in paths
+        assert extract_read_calls(events, include_grep=False) == []
+
     def test_empty_events_list(self):
         """Test that empty events list returns empty read_calls."""
         read_calls = extract_read_calls([])

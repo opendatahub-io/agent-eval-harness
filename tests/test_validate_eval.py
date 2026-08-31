@@ -184,6 +184,38 @@ class TestPluginDirResolution:
         assert validate_eval._resolve_plugin_dir("plugin", repo) == (repo / "plugin").resolve()
 
 
+class TestRunnerCapabilities:
+    def test_cursor_repo_mode_is_accepted(self, tmp_path, monkeypatch, capsys):
+        repo = tmp_path / "repo"
+        (repo / "cases" / "case-001").mkdir(parents=True)
+        (repo / "cases" / "case-001" / "input.yaml").write_text(
+            "prompt: inspect the repository\n")
+        config = repo / "eval.yaml"
+        config.write_text("""\
+name: cursor-docs
+execution:
+  mode: case
+  prompt: "{{ input.prompt }}"
+runner:
+  type: cursor
+  workspace_mode: repo
+models:
+  skill: gpt-5.4-medium
+dataset:
+  path: cases
+  schema: input.yaml contains prompt
+outputs: []
+judges: []
+""")
+
+        monkeypatch.chdir(repo)
+        validate_eval.validate_config(str(config))
+        output = capsys.readouterr().out
+
+        assert "INCOMPLETE: cursor-docs" in output
+        assert "does not support workspace_mode" not in output
+
+
 def _check(prompt):
     """Run the variable check over a single LLM judge; return (errors, warnings)."""
     errors, warnings = [], []

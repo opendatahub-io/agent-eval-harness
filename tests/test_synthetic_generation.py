@@ -243,6 +243,37 @@ class TestSyntheticGeneration:
             assert annotations1["category"] == "navigation"
             assert annotations1["difficulty"] == "easy"
 
+    def test_generate_synthetic_non_anthropic_model_uses_runner(self, sample_config):
+        """Non-Claude models should route through the runner abstraction."""
+        response_text = json.dumps([
+            {
+                "input": {"prompt": "Where are the workflow docs?"},
+                "annotations": {"difficulty": "easy"},
+            },
+            {
+                "input": {"prompt": "How do I find process documentation?"},
+                "annotations": {"difficulty": "medium"},
+            },
+        ])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir) / "dataset"
+            with patch("generate_synthetic.run_prompt_via_runner") as mock_runner:
+                mock_runner.return_value = (
+                    Mock(exit_code=0, stdout="", stderr=""),
+                    response_text,
+                    Path(tmpdir) / "runner-workspace",
+                )
+                cases = generate_synthetic(
+                    config=sample_config,
+                    output_dir=output_dir,
+                    model="gpt-5.4-medium",
+                )
+
+                assert len(cases) == 2
+                assert mock_runner.call_count == 1
+                assert (output_dir / "case-001" / "annotations.yaml").exists()
+
     def test_no_seeds_raises_error(self, monkeypatch):
         """Test that config without generation seeds raises error."""
         from agent_eval.config import EvalConfig

@@ -1,4 +1,4 @@
-"""Structured event parser for Claude Code and Codex JSONL output.
+"""Structured event parser for Claude Code, Codex, and Cursor JSONL output.
 
 Parses JSONL stdout into a flat list of typed event dicts suitable for
 judge consumption via ``outputs["events"]``.
@@ -47,11 +47,16 @@ def extract_read_calls(events, include_subagents=True, include_grep=True):
         timestamp = event.get("timestamp")
 
         for tool in event.get("tools", []):
+            if not isinstance(tool, dict):
+                continue
             name = tool.get("name", "")
             tool_input = tool.get("input", {})
+            if not isinstance(tool_input, dict):
+                continue
 
             if name == "Read":
-                file_path = tool_input.get("file_path", "")
+                # Claude Code uses file_path; Cursor readToolCall uses path.
+                file_path = tool_input.get("file_path") or tool_input.get("path") or ""
                 if not file_path:
                     continue
                 read_calls.append({
@@ -64,23 +69,24 @@ def extract_read_calls(events, include_subagents=True, include_grep=True):
 
             elif name == "Grep" and include_grep:
                 path = tool_input.get("path", "")
-                if not path or path == ".":
-                    continue
-                read_calls.append({
-                    "file_path": path,
-                    "timestamp": timestamp,
-                })
+                if path and path != ".":
+                    read_calls.append({
+                        "file_path": path,
+                        "timestamp": timestamp,
+                    })
 
-            elif name == "Bash":
-                paths = tool_input.get("read_paths", [])
-                if not isinstance(paths, list):
-                    continue
-                for path in paths:
-                    if isinstance(path, str) and path:
-                        read_calls.append({
-                            "file_path": path,
-                            "timestamp": timestamp,
-                        })
+            # Codex annotates explicit file-reader Bash. Cursor Grep results
+            # may also stash matched files here; Glob only lists names and does
+            # not prove that their contents were read.
+            if name == "Bash" or (include_grep and name == "Grep"):
+                extra_paths = tool_input.get("read_paths")
+                if isinstance(extra_paths, list):
+                    for path in extra_paths:
+                        if isinstance(path, str) and path:
+                            read_calls.append({
+                                "file_path": path,
+                                "timestamp": timestamp,
+                            })
 
     return read_calls
 
@@ -88,9 +94,10 @@ def extract_read_calls(events, include_subagents=True, include_grep=True):
 def parse_stream_events(stdout_text, result_cap=DEFAULT_RESULT_CAP):
     """Parse JSONL text into structured event dicts.
 
-    Understands both Claude Code stream-json (``assistant``/``user``/
-    ``result``/``system``) and Codex ``exec --json`` (``item.completed``/
-    ``turn.completed``) lines; both are translated into the same flat schema.
+    Understands Claude Code stream-json (``assistant``/``user``/
+    ``result``/``system``), Codex ``exec --json`` (``item.completed``/
+    ``turn.completed``), and Cursor Agent ``tool_call`` lines; all are
+    translated into the same flat schema.
 
     Args:
         stdout_text: Raw JSONL text from the agent CLI's stdout.
@@ -102,11 +109,12 @@ def parse_stream_events(stdout_text, result_cap=DEFAULT_RESULT_CAP):
     if not stdout_text:
         return []
 
-    events = []
-    tool_id_to_name = {}
-    codex_turns = 0
-    codex_turn_timestamp = None
-
+    # Cursor and Claude both include ``session_id`` on assistant events.  Do
+    # not use that field alone to select Cursor's delta/result handling: doing
+    # so moves ordinary Claude turns to the end of the conversation and can
+    # replace the conversation with a terminal result.  Cursor's stream has
+    # either a tool_call event or the lean assistant/result shapes below.
+    objects = []
     for line in stdout_text.splitlines():
         line = line.strip()
         if not line:
@@ -115,11 +123,22 @@ def parse_stream_events(stdout_text, result_cap=DEFAULT_RESULT_CAP):
             obj = json.loads(line)
         except (json.JSONDecodeError, ValueError):
             continue
+        if isinstance(obj, dict):
+            objects.append(obj)
 
+    cursor_stream = any(_looks_like_cursor_object(obj) for obj in objects)
+    events = []
+    tool_id_to_name = {}
+    codex_turns = 0
+    codex_turn_timestamp = None
+
+    for obj in objects:
         event_type = obj.get("type")
         if event_type == "assistant":
             event = _parse_assistant_event(obj, result_cap)
             if event:
+                if cursor_stream and obj.get("session_id") is not None:
+                    event["_cursor_delta"] = True
                 for tool in event.get("tools", []):
                     tool_id_to_name[tool["id"]] = tool["name"]
                 events.append(event)
@@ -130,7 +149,7 @@ def parse_stream_events(stdout_text, result_cap=DEFAULT_RESULT_CAP):
             events.extend(tool_results)
 
         elif event_type == "result":
-            event = _parse_result_event(obj)
+            event = _parse_result_event(obj, cursor_stream=cursor_stream)
             if event:
                 events.append(event)
 
@@ -138,6 +157,14 @@ def parse_stream_events(stdout_text, result_cap=DEFAULT_RESULT_CAP):
             event = _parse_system_event(obj)
             if event:
                 events.append(event)
+
+        elif event_type == "tool_call":
+            cursor_events = _parse_cursor_tool_call(obj, result_cap)
+            for event in cursor_events:
+                if event.get("type") == "assistant":
+                    for tool in event.get("tools", []):
+                        tool_id_to_name[tool["id"]] = tool["name"]
+            events.extend(cursor_events)
 
         elif event_type == "item.completed":
             events.extend(_parse_codex_event(obj, result_cap))
@@ -157,6 +184,263 @@ def parse_stream_events(stdout_text, result_cap=DEFAULT_RESULT_CAP):
             "timestamp": codex_turn_timestamp,
         })
     return events
+
+
+def _looks_like_cursor_object(obj):
+    """Return whether a raw stream object has Cursor-specific structure."""
+    event_type = obj.get("type")
+    if event_type == "tool_call":
+        return True
+    if obj.get("session_id") is None:
+        return False
+    if event_type == "assistant":
+        message = obj.get("message")
+        # Claude assistant messages carry message id/model/usage fields;
+        # Cursor's documented stream assistant message is intentionally lean.
+        return isinstance(message, dict) and not any(
+            key in message for key in ("id", "model", "usage"))
+    if event_type == "result":
+        # Cursor result events have duration/request metadata rather than the
+        # Claude usage/cost fields.  request_id is optional, duration_ms is not
+        # on the documented successful result shape.
+        return (isinstance(obj.get("result"), str)
+                and ("request_id" in obj or "duration_ms" in obj)
+                and "total_cost_usd" not in obj)
+    return False
+
+
+_CURSOR_TOOL_NAMES = {
+    "readToolCall": "Read",
+    "grepToolCall": "Grep",
+    "globToolCall": "Glob",
+    "writeToolCall": "Write",
+    "editToolCall": "Edit",
+    "bashToolCall": "Bash",
+    "shellToolCall": "Shell",
+    "taskToolCall": "Task",
+    "createPlanToolCall": "CreatePlan",
+    "askQuestionToolCall": "AskQuestion",
+    "unknownToolCall": "Unknown",
+}
+
+_CURSOR_FUNCTION_TOOL_KINDS = {
+    "read": "readToolCall",
+    "readtoolcall": "readToolCall",
+    "grep": "grepToolCall",
+    "greptoolcall": "grepToolCall",
+    "glob": "globToolCall",
+    "globtoolcall": "globToolCall",
+    "write": "writeToolCall",
+    "writetoolcall": "writeToolCall",
+    "edit": "editToolCall",
+    "edittoolcall": "editToolCall",
+    "bash": "bashToolCall",
+    "bashtoolcall": "bashToolCall",
+    "shell": "shellToolCall",
+    "shelltoolcall": "shellToolCall",
+    "task": "taskToolCall",
+    "tasktoolcall": "taskToolCall",
+}
+
+
+def _event_timestamp(obj):
+    """Prefer ISO ``timestamp``; Cursor uses numeric ``timestamp_ms``."""
+    ts = obj.get("timestamp")
+    if ts is not None:
+        return ts
+    return obj.get("timestamp_ms")
+
+
+def _normalize_cursor_path(path):
+    if not isinstance(path, str):
+        return ""
+    path = path.strip()
+    if path.startswith("./"):
+        path = path[2:]
+    return path
+
+
+def _cursor_tool_body(tool_call):
+    """Return ``(kind, body)`` for a Cursor tool payload.
+
+    Cursor has emitted both native ``readToolCall`` payloads and a generic
+    ``function`` payload in different CLI versions. Keep the latter visible
+    instead of silently losing the completed call.
+    """
+    if not isinstance(tool_call, dict):
+        return None, None
+    for key, body in tool_call.items():
+        if isinstance(key, str) and key.endswith("ToolCall") and isinstance(body, dict):
+            return key, body
+    function = tool_call.get("function")
+    if isinstance(function, dict):
+        function_name = function.get("name")
+        if not isinstance(function_name, str) or not function_name.strip():
+            kind = "unknownToolCall"
+        else:
+            normalized_name = function_name.strip()
+            kind = _CURSOR_FUNCTION_TOOL_KINDS.get(
+                normalized_name.lower(),
+                (normalized_name if normalized_name.endswith("ToolCall")
+                 else f"{normalized_name}ToolCall"),
+            )
+        raw_args = function.get("arguments", function.get("args"))
+        if isinstance(raw_args, dict):
+            args = raw_args
+        elif isinstance(raw_args, str):
+            try:
+                parsed = json.loads(raw_args)
+            except (json.JSONDecodeError, ValueError):
+                parsed = None
+            args = parsed if isinstance(parsed, dict) else {"arguments": raw_args}
+        elif raw_args is None:
+            args = {}
+        else:
+            args = {"arguments": raw_args}
+        return kind, {
+            "args": args,
+            "result": function.get("result", tool_call.get("result")),
+        }
+    return None, None
+
+
+def _cursor_grep_hit_paths(result):
+    """Collect matched file paths from a Cursor grepToolCall result."""
+    paths = []
+    if not isinstance(result, dict):
+        return paths
+    success = result.get("success")
+    if not isinstance(success, dict):
+        success = result
+
+    workspace_results = success.get("workspaceResults")
+    if isinstance(workspace_results, dict):
+        for ws_data in workspace_results.values():
+            if not isinstance(ws_data, dict):
+                continue
+            files = ws_data.get("files")
+            file_list = []
+            if isinstance(files, dict):
+                file_list = files.get("files") or []
+            elif isinstance(files, list):
+                file_list = files
+            for item in file_list:
+                if isinstance(item, str):
+                    normalized = _normalize_cursor_path(item)
+                    if normalized:
+                        paths.append(normalized)
+            content = ws_data.get("content")
+            if isinstance(content, dict):
+                for match in content.get("matches") or []:
+                    if not isinstance(match, dict):
+                        continue
+                    normalized = _normalize_cursor_path(match.get("file"))
+                    if normalized:
+                        paths.append(normalized)
+
+    for item in success.get("files") or []:
+        if isinstance(item, str):
+            normalized = _normalize_cursor_path(item)
+            if normalized:
+                paths.append(normalized)
+
+    seen = set()
+    unique = []
+    for path in paths:
+        if path not in seen:
+            seen.add(path)
+            unique.append(path)
+    return unique
+
+
+def _parse_cursor_tool_call(obj, result_cap):
+    """Translate one Cursor ``tool_call`` line into the flat event schema.
+
+    Cursor emits ``type: tool_call`` with ``readToolCall`` / ``grepToolCall`` /
+    etc. payloads, separate from ``assistant`` text turns. Only ``completed``
+    events are kept so ``started`` + ``completed`` pairs are not double-counted.
+    """
+    if obj.get("subtype") != "completed":
+        return []
+
+    tool_call = obj.get("tool_call")
+    kind, body = _cursor_tool_body(tool_call)
+    if not kind:
+        return []
+
+    tool_name = _CURSOR_TOOL_NAMES.get(kind)
+    if not tool_name:
+        stem = kind[:-8] if kind.endswith("ToolCall") else kind
+        tool_name = stem[:1].upper() + stem[1:] if stem else kind
+
+    args = body.get("args") if isinstance(body.get("args"), dict) else {}
+    result = body.get("result")
+    function = tool_call.get("function") if isinstance(tool_call, dict) else {}
+    tool_id = str(
+        obj.get("call_id")
+        or (tool_call.get("toolCallId") if isinstance(tool_call, dict) else None)
+        or (function.get("call_id") if isinstance(function, dict) else None)
+        or ""
+    )
+    timestamp = _event_timestamp(obj)
+
+    tool_input = dict(args)
+    if tool_name in {"Read", "Write", "Edit"}:
+        path = (args.get("path") or args.get("file_path")
+                or args.get("filePath"))
+        if not path and isinstance(result, dict):
+            success = result.get("success")
+            if isinstance(success, dict):
+                path = success.get("path") or success.get("file_path")
+        if path:
+            tool_input.setdefault("file_path", path)
+            if tool_name == "Read":
+                tool_input.setdefault("path", path)
+        if tool_name == "Read" and isinstance(result, dict):
+            success = result.get("success")
+            if isinstance(success, dict):
+                read_range = success.get("readRange") or {}
+                if isinstance(read_range, dict) and "startLine" in read_range:
+                    tool_input.setdefault("offset", read_range.get("startLine"))
+    elif tool_name == "Grep":
+        hits = _cursor_grep_hit_paths(result)
+        if hits:
+            tool_input["read_paths"] = hits
+    elif tool_name == "Glob":
+        files = []
+        if isinstance(result, dict):
+            success = result.get("success")
+            if isinstance(success, dict):
+                files = [
+                    _normalize_cursor_path(item)
+                    for item in (success.get("files") or [])
+                    if isinstance(item, str)
+                ]
+                files = [item for item in files if item]
+        if files:
+            tool_input["files"] = files
+
+    tool_input = _cap_values(tool_input, result_cap)
+    if isinstance(result, dict):
+        tool_output = json.dumps(result, ensure_ascii=False, default=str)
+        is_error = bool(result.get("error") or result.get("failure"))
+    else:
+        tool_output = "" if result is None else str(result)
+        is_error = False
+    truncated = _truncate_string(_sanitize_text(tool_output), result_cap)
+    assistant = {
+        "type": "assistant", "text": "", "timestamp": timestamp,
+        "tools": [{"name": tool_name, "id": tool_id, "input": tool_input}],
+    }
+    result_event = {
+        "type": "tool_result", "tool_use_id": tool_id,
+        "tool_name": tool_name, "content": truncated["value"],
+        "is_error": is_error, "timestamp": timestamp,
+    }
+    if truncated.get("truncated"):
+        result_event["truncated"] = True
+        result_event["original_length"] = truncated["original_length"]
+    return [assistant, result_event]
 
 
 def _parse_codex_event(obj, result_cap):
@@ -416,8 +700,14 @@ def _extract_content_blocks(content_blocks, result_cap):
 
 def _parse_assistant_event(obj, result_cap):
     message = obj.get("message", {})
+    if not isinstance(message, dict):
+        return None
     content_blocks = message.get("content", [])
-    timestamp = obj.get("timestamp")
+    if isinstance(content_blocks, str):
+        content_blocks = [{"type": "text", "text": content_blocks}]
+    elif not isinstance(content_blocks, list):
+        content_blocks = []
+    timestamp = _event_timestamp(obj)
 
     text, thinking, tools = _extract_content_blocks(content_blocks, result_cap)
 
@@ -447,6 +737,8 @@ def _parse_assistant_event(obj, result_cap):
 def _parse_user_tool_results(obj, tool_id_to_name, result_cap):
     """Extract tool_result events from a user message."""
     message = obj.get("message", {})
+    if not isinstance(message, dict):
+        return []
     content = message.get("content", [])
     timestamp = obj.get("timestamp")
     results = []
@@ -500,13 +792,19 @@ def _parse_user_tool_results(obj, tool_id_to_name, result_cap):
     return results
 
 
-def _parse_result_event(obj):
-    return {
+def _parse_result_event(obj, *, cursor_stream=False):
+    event = {
         "type": "result",
         "cost_usd": obj.get("total_cost_usd"),
         "num_turns": obj.get("num_turns"),
-        "timestamp": None,
+        "timestamp": _event_timestamp(obj),
     }
+    # Cursor's result event is the authoritative complete assistant response;
+    # retaining it avoids reconstructing JSON/text from many deltas.
+    if (cursor_stream and obj.get("session_id") is not None
+            and isinstance(obj.get("result"), str)):
+        event["_cursor_result_text"] = obj["result"]
+    return event
 
 
 def _parse_system_event(obj):
@@ -793,7 +1091,14 @@ def extract_conversation_text(events, include_thinking=False):
     with a truncation marker.
     """
     parts = []
+    cursor_deltas = []
+    cursor_result = None
+    saw_cursor = False
     for event in events:
+        if event.get("type") == "result" and "_cursor_result_text" in event:
+            saw_cursor = True
+            cursor_result = event.get("_cursor_result_text")
+            continue
         if event.get("type") != "assistant":
             continue
         if event.get("parent_tool_use_id"):
@@ -804,7 +1109,15 @@ def extract_conversation_text(events, include_thinking=False):
                 parts.append(f"[thinking]\n{thinking}")
         text = event.get("text", "")
         if text:
-            parts.append(text)
+            if event.get("_cursor_delta"):
+                saw_cursor = True
+                cursor_deltas.append(text)
+            else:
+                parts.append(text)
+    if saw_cursor:
+        cursor_text = cursor_result if cursor_result is not None else "".join(cursor_deltas)
+        if cursor_text:
+            parts.append(cursor_text)
     rendered = "\n\n".join(parts)
     if include_thinking and len(rendered) > CONVERSATION_THINKING_CAP:
         rendered = (rendered[:CONVERSATION_THINKING_CAP]

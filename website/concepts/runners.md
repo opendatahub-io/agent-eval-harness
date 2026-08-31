@@ -26,10 +26,12 @@ runtime-agnostic.
 flowchart TD
     C["eval.yaml → runner.type"] --> R{RUNNERS registry}
     R -->|claude-code| CC["ClaudeCodeRunner<br/>claude --print"]
+    R -->|cursor| CU["CursorAgentRunner<br/>cursor-agent --print"]
     R -->|codex| CX["CodexRunner<br/>codex exec"]
     R -->|cli| CLI["CliRunner<br/>arbitrary command"]
     R -->|responses-api| RA["ResponsesAPIRunner<br/>OpenAI Responses API"]
     CC --> RR["RunResult"]
+    CU --> RR
     CX --> RR
     CLI --> RR
     RA --> RR
@@ -44,6 +46,7 @@ flowchart TD
 | `runner.type` | Class | Runtime | Notes |
 | --- | --- | --- | --- |
 | `claude-code` | `ClaudeCodeRunner` | Claude Code CLI (`claude --print`) | **Default.** Full-fidelity: stream-json traces, budget cap, tool interception, subagent capture, permission-denial detection |
+| `cursor` | `CursorAgentRunner` | Cursor Agent CLI (`cursor-agent --print`) | Uses the local Cursor login/account, embeds `SKILL.md` prompts, supports isolated and repo-mode execution with project-local permission rules; rejects `inputs.tools`; unsupported native settings warn explicitly; local backend only |
 | `codex` | `CodexRunner` | Codex CLI (`codex exec --json`) | Native Codex execution with copied skill staging, sandbox-mode mapping, and JSONL usage parsing |
 | `cli` | `CliRunner` | Any command you provide | Opaque: harness only sees exit code, stdout/stderr, and an optional `metrics.json` |
 | `responses-api` | `ResponsesAPIRunner` | OpenAI Responses API (Shell tool + Skills API) | Apples-to-apples cross-runtime comparison; needs `pip install agent-eval-harness[openai]` |
@@ -59,7 +62,7 @@ and implements three members:
 | Member | Purpose |
 | --- | --- |
 | `from_config(config, *, log_prefix=None, **overrides)` | Classmethod factory; each subclass pulls the config fields it needs. CLI overrides (resolved models, effort, permissions) take precedence. |
-| `name` | Short identifier (`"claude-code"`, `"codex"`, `"cli"`, `"responses-api"`). |
+| `name` | Short identifier (`"claude-code"`, `"cursor"`, `"codex"`, `"cli"`, `"responses-api"`). |
 | `execute(target, args, workspace, model, ...)` | Run one case in a pre-staged workspace and return a `RunResult`. |
 
 `execute()` takes a uniform signature. The two most important arguments encode
@@ -133,7 +136,10 @@ the cost the CLI printed.
 - **Plugin staging** — every `runner.plugin_dirs` entry outside the workspace is
   copied into `<workspace>/.staged-plugins/` and `--plugin-dir` receives the copy,
   so the real plugin path never enters session context; in-workspace entries
-  pass through unchanged and `workspace_mode: repo` skips staging entirely.
+  pass through unchanged. Claude Code can skip staging in `workspace_mode: repo`;
+  Codex rejects that mode. Cursor uses a temporary project-local `.cursor/cli.json`
+  permission file while the agent runs and restores the repository's original file
+  afterward.
 - **Plugin hermeticity** — isolated workspaces disable all of the operator's
   user-installed plugins by default (a synthesized `enabledPlugins` denylist in
   the workspace settings; explicit `runner.settings.enabledPlugins` entries win,

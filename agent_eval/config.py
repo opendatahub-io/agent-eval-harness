@@ -1629,14 +1629,17 @@ class EvalConfig:
             step.runner for step in config.execution.steps if step.runner)
         codex_runners = [runner for runner in codex_runners
                          if runner.type == "codex"]
-        if codex_runners and config.inputs.tools:
-            raise ValueError(
-                "runner.type 'codex' does not support inputs.tools interception; "
-                "use claude-code or remove the tool interceptors")
-        if any(runner.workspace_mode == "repo" for runner in codex_runners):
-            raise ValueError(
-                "runner.type 'codex' does not support workspace_mode: repo "
-                "because repository answer-key protections cannot be enforced")
+        for runner in codex_runners:
+            if config.inputs.tools:
+                raise ValueError(
+                    f"runner.type '{runner.type}' does not support "
+                    "inputs.tools interception; use claude-code or remove "
+                    "the tool interceptors")
+            if runner.workspace_mode == "repo":
+                raise ValueError(
+                    f"runner.type '{runner.type}' does not support "
+                    "workspace_mode: repo because repository answer-key "
+                    "protections cannot be enforced")
 
         return config
 

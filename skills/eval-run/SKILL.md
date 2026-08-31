@@ -24,7 +24,7 @@ Parse `$ARGUMENTS`:
 | `--baseline <run-id>` | no | — | Previous run to compare against |
 | `--no-llm-judges` | no | false | Skip LLM judges (prompt, prompt_file, LLM builtins, agent). Run deterministic judges (check, Python builtins, external code). |
 | `--gold` | no | false | Save outputs as gold references after run |
-| `--effort <level>` | no | `runner.effort` from config | Agent reasoning effort (`claude-code` or `codex`) |
+| `--effort <level>` | no | `runner.effort` from config | Agent reasoning effort (`claude-code`, `cursor`, or `codex`) |
 | `--runner <type>` | no | local | `local` (default Steps 1–8) or `harbor` (containerized — skips to Harbor runner section) |
 | `--env <name>` | no | `kubernetes` | Harbor execution environment: `podman`, `kubernetes`, `openshift` (only with `--runner harbor`) |
 | `--mount <source:target[:ro or rw]>` | no | — | Repeatable Podman bind mount; defaults to read-only (only with `--runner harbor`) |
@@ -118,7 +118,12 @@ If the case count is 0, stop — the filter matched nothing.
 
 ## Step 3a: Resolve Tool Interception (if `inputs.tools` configured)
 
-If eval.yaml has `inputs.tools` entries, this step is **mandatory**. `workspace.py` emits a skeleton in `tool_handlers.yaml`; you must resolve each handler's `prompt` into concrete runtime checks (`input_filters`, `env_checks`, `case_overrides`). Do not skip this even when the eval.yaml is unchanged — the workspace is created fresh each time.
+If eval.yaml has `inputs.tools` entries, this step is **mandatory for Claude Code**.
+Codex and Cursor reject `inputs.tools` because their runtimes cannot consume the
+harness interception handlers. `workspace.py` emits a skeleton in
+`tool_handlers.yaml`; you must resolve each handler's `prompt` into concrete runtime
+checks (`input_filters`, `env_checks`, `case_overrides`). Do not skip this even when
+the eval.yaml is unchanged — the workspace is created fresh each time.
 
 Read `${CLAUDE_SKILL_DIR}/references/tool-interception.md` for the full format, field reference, and resolution examples. Then read `<workspace>/tool_handlers.yaml` and for each handler:
 

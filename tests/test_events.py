@@ -943,3 +943,201 @@ class TestEdgeCases:
         result = parse_stream_events(stdout)
         assert len(result) == 1
         assert result[0]["type"] == "system"
+
+
+class TestCursorStreamEvents:
+    """Cursor Agent emits type=tool_call with *ToolCall payloads."""
+
+    def test_started_tool_calls_are_ignored(self):
+        stdout = json.dumps({
+            "type": "tool_call",
+            "subtype": "started",
+            "call_id": "call_1",
+            "tool_call": {
+                "readToolCall": {
+                    "args": {"path": "/repo/AGENTS.md"},
+                },
+            },
+        })
+        assert parse_stream_events(stdout) == []
+
+    def test_session_id_does_not_reclassify_claude_events_as_cursor(self):
+        first = make_assistant("m1", text="first")
+        second = make_assistant("m2", text="second")
+        first["session_id"] = second["session_id"] = "claude-session"
+        result = {
+            "type": "result",
+            "session_id": "claude-session",
+            "result": "final",
+            "total_cost_usd": 0.1,
+            "num_turns": 2,
+        }
+
+        parsed = parse_stream_events(_to_stdout([first, second, result]))
+
+        assert extract_conversation_text(parsed) == "first\n\nsecond"
+
+    def test_read_tool_call_maps_path_to_file_path(self):
+        stdout = json.dumps({
+            "type": "tool_call",
+            "subtype": "completed",
+            "call_id": "call_read",
+            "timestamp_ms": 1787797579959,
+            "tool_call": {
+                "readToolCall": {
+                    "args": {"path": "/repo/ai-docs/ARCHITECTURE.md"},
+                    "result": {"success": {"path": "/repo/ai-docs/ARCHITECTURE.md"}},
+                },
+                "toolCallId": "call_read",
+            },
+        })
+        events = parse_stream_events(stdout)
+        assert [e["type"] for e in events] == ["assistant", "tool_result"]
+        tool = events[0]["tools"][0]
+        assert tool["name"] == "Read"
+        assert tool["id"] == "call_read"
+        assert tool["input"]["file_path"] == "/repo/ai-docs/ARCHITECTURE.md"
+        assert events[0]["timestamp"] == 1787797579959
+        reads = extract_read_calls(events)
+        assert [r["file_path"] for r in reads] == ["/repo/ai-docs/ARCHITECTURE.md"]
+
+    def test_grep_completed_counts_matched_files(self):
+        stdout = json.dumps({
+            "type": "tool_call",
+            "subtype": "completed",
+            "call_id": "call_grep",
+            "tool_call": {
+                "grepToolCall": {
+                    "args": {
+                        "pattern": "cache",
+                        "path": "/repo",
+                    },
+                    "result": {
+                        "success": {
+                            "path": "/repo",
+                            "outputMode": "files_with_matches",
+                            "workspaceResults": {
+                                "/repo": {
+                                    "files": {
+                                        "files": [
+                                            "./ai-docs/ARCHITECTURE.md",
+                                            "./REVIEW.md",
+                                        ],
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        })
+        events = parse_stream_events(stdout)
+        tool = events[0]["tools"][0]
+        assert tool["name"] == "Grep"
+        assert tool["input"]["read_paths"] == [
+            "ai-docs/ARCHITECTURE.md",
+            "REVIEW.md",
+        ]
+        reads = extract_read_calls(events)
+        assert "ai-docs/ARCHITECTURE.md" in [r["file_path"] for r in reads]
+        assert "REVIEW.md" in [r["file_path"] for r in reads]
+
+    def test_grep_content_mode_uses_match_file_field(self):
+        stdout = json.dumps({
+            "type": "tool_call",
+            "subtype": "completed",
+            "call_id": "call_grep_content",
+            "tool_call": {
+                "grepToolCall": {
+                    "args": {"pattern": "label", "path": "/repo/ai-docs"},
+                    "result": {
+                        "success": {
+                            "workspaceResults": {
+                                "/repo": {
+                                    "content": {
+                                        "matches": [
+                                            {"file": "ai-docs/DEVELOPMENT.md",
+                                             "matches": [{"lineNumber": 3}]},
+                                        ],
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        })
+        events = parse_stream_events(stdout)
+        reads = extract_read_calls(events)
+        assert [r["file_path"] for r in reads] == [
+            "/repo/ai-docs",
+            "ai-docs/DEVELOPMENT.md",
+        ]
+
+    def test_glob_completed_counts_matched_files(self):
+        stdout = json.dumps({
+            "type": "tool_call",
+            "subtype": "completed",
+            "call_id": "call_glob",
+            "tool_call": {
+                "globToolCall": {
+                    "args": {"globPattern": "**/*_types.go", "targetDirectory": "/repo"},
+                    "result": {
+                        "success": {
+                            "files": ["api/operator/v1alpha1/certmanager_types.go"],
+                        },
+                    },
+                },
+            },
+        })
+        events = parse_stream_events(stdout)
+        tool = events[0]["tools"][0]
+        assert tool["name"] == "Glob"
+        assert tool["input"]["files"] == [
+            "api/operator/v1alpha1/certmanager_types.go",
+        ]
+        reads = extract_read_calls(events)
+        assert reads == []
+
+    def test_task_tool_call_maps_without_counting_as_read(self):
+        stdout = json.dumps({
+            "type": "tool_call",
+            "subtype": "completed",
+            "call_id": "call_task",
+            "tool_call": {
+                "taskToolCall": {
+                    "args": {"description": "Inspect docs", "prompt": "Read AGENTS.md"},
+                    "result": {"success": {"conversationSteps": []}},
+                },
+            },
+        })
+        events = parse_stream_events(stdout)
+        assert events[0]["tools"][0]["name"] == "Task"
+        assert extract_read_calls(events) == []
+
+    def test_function_tool_call_shape_is_normalized(self):
+        stdout = json.dumps({
+            "type": "tool_call",
+            "subtype": "completed",
+            "call_id": "call_function_read",
+            "timestamp_ms": 1787797579959,
+            "tool_call": {
+                "function": {
+                    "name": "read",
+                    "arguments": json.dumps({"path": "./README.md"}),
+                },
+                "result": {"success": {"path": "./README.md"}},
+            },
+        })
+
+        events = parse_stream_events(stdout)
+
+        assert events[0]["tools"] == [{
+            "name": "Read",
+            "id": "call_function_read",
+            "input": {
+                "path": "./README.md",
+                "file_path": "./README.md",
+            },
+        }]
+        assert extract_read_calls(events)[0]["file_path"] == "./README.md"

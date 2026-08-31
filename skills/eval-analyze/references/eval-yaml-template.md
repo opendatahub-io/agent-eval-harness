@@ -101,7 +101,7 @@ execution:
 #   NO  (skill testing, isolated capabilities) → omit workspace_mode (use default)
 #
 runner:
-  type: claude-code         # claude-code | codex | cli | responses-api
+  type: claude-code         # claude-code | cursor | codex | cli | responses-api
   # workspace_mode: repo    # Set ONLY when testing requires full repo access (see above)
   # settings: {}            # Runner-specific settings overrides
   # plugin_dirs: []         # Plugin dirs the evaluated skill needs
@@ -110,8 +110,8 @@ runner:
   # path otherwise
   # lands in session context, where non-path-gated Bash can follow it out of
   # the sandbox. Plugins already inside the workspace are passed through
-  # unchanged, and workspace_mode: repo skips staging entirely (the workspace
-  # IS the real project there — nothing to isolate).
+  # unchanged. Claude Code and Cursor skip staging in workspace_mode: repo (the
+  # workspace IS the real project there — nothing to isolate); Codex rejects it.
   # Plugin hermeticity: isolated workspaces disable ALL of the operator's
   # user-installed plugins by DEFAULT (the harness enumerates the installed
   # registry and merges enabledPlugins: {id: false}; repo mode disables
@@ -125,7 +125,7 @@ runner:
   # env:                    # Extra env vars for the runner ($VAR resolves from caller)
   #   CUSTOM_AUTH_TOKEN: "$CUSTOM_AUTH_TOKEN"
   # system_prompt: ""       # Appended to harness system prompt
-  # effort: high            # Claude: low..max; Codex: minimal..xhigh
+  # effort: high            # Claude: low..max; Cursor: model-specific; Codex: minimal..xhigh
 
 # Models — defaults for each role (CLI flags override)
 models:
