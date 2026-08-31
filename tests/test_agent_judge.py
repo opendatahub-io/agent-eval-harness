@@ -666,10 +666,13 @@ class TestVerdictContractOrdering:
         TestRunnerIsolation()._load_and_run(judge, verdict, cap)
         return cap["execute_calls"][0]["args"]
 
+    # Match the spec's JSON object literally rather than comparing first-
+    # occurrence indexes: the contract's prose also quotes "rationale", so an
+    # index comparison would go soft if that prose ever moved above the spec.
     def test_numeric_spec_puts_rationale_before_score(self):
         args = self._args()
-        assert args.index('"rationale"') < args.index('"score"')
+        assert '{"rationale": "<short justification>", "score":' in args
 
     def test_bool_spec_puts_rationale_before_passed(self):
         args = self._args(feedback_type="bool")
-        assert args.index('"rationale"') < args.index('"passed"')
+        assert '{"rationale": "<short justification>", "passed":' in args

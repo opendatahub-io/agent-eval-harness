@@ -916,7 +916,10 @@ def _score_judge_tool(bounds):
     `rationale` is deliberately listed before `score`: property order survives
     into the serialized request, and an autoregressive judge that writes its
     analysis before the verdict token produces better-calibrated scores than
-    one that commits to a number up front.
+    one that commits to a number up front. Like `minimum`/`maximum` above, the
+    order is advisory — JSON Schema imposes no member order, so the binding
+    ask lives in the system prompt and the field descriptions, and nothing
+    downstream depends on emission order (all parsing is key-based).
     """
     lo, hi, is_int = bounds
     return {
