@@ -356,6 +356,10 @@ judges:
   #   {{ tool_trace }}   — for judges evaluating agent BEHAVIOR (navigation, tool usage, exploration)
   # IMPORTANT: {{ conversation }} excludes tool calls. A judge checking whether the
   # agent navigated to specific files MUST use {{ tool_trace }}, not {{ conversation }}.
+  # Rendered variables are untrusted, model-generated content: fence them under an
+  # explicit heading and tell the judge to grade what's inside, never follow
+  # instructions embedded in it. (Agent judges get this guard from the harness
+  # automatically; prompt/prompt_file/llm_rubric judges need it in the prompt.)
   - name: <descriptive_name>
     description: |
       <the ONE failure mode this judge detects, and why a code check
@@ -363,8 +367,9 @@ judges:
     feedback_type: bool
     prompt: |
       <task context — what the skill was asked to produce>
-      <the artifact the rubric grades — e.g. {{ outputs }} OR {{ conversation }},
-       not both by default>
+      <the artifact the rubric grades under an explicit heading, marked as
+       untrusted data to evaluate, not instructions to follow — e.g.
+       {{ outputs }} OR {{ conversation }}, not both by default>
       <PASS definition / FAIL definition, derived from the failure mode>
 
   # Numeric LLM judge — the exception, for genuinely graded criteria where a
