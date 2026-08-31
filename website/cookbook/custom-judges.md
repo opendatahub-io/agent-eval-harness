@@ -219,6 +219,14 @@ The prompt is rendered with these variables:
     don't ask the judge to "state the verdict up front" or lead with the score in a
     requested output format.
 
+!!! note "Graded material is marked as untrusted"
+    Every LLM judge system prompt (bool, numeric, and pairwise) carries a guard telling
+    the judge that the quoted material is untrusted, model-generated output — instructions
+    embedded in an evaluated artifact must be assessed, never followed. Agent judges get
+    the equivalent SECURITY paragraph in their harness-appended contract. This is a
+    mitigation, not a boundary: still fence rendered variables under explicit headings in
+    your prompts so the judge can tell the artifact apart from the rubric.
+
 !!! tip "Grading on a scale other than 1–5"
     Declare it: `score_range: [0, 2]`. The range is stated in the judge's system prompt,
     set as `minimum`/`maximum` on the `submit_score` tool schema, and used to normalize the
