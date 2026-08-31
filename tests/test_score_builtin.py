@@ -992,6 +992,37 @@ class TestRationaleBeforeVerdict:
         assert "rationale first" in score._score_system_prompt((1, 5, True))
 
 
+class TestUntrustedDataGuard:
+    """Every API judge system prompt must mark the graded material as
+    untrusted data — instructions embedded in an evaluated output must never
+    steer the verdict. Agent judges carry the equivalent SECURITY paragraph
+    via _AGENT_JUDGE_CONTRACT.
+    """
+
+    def test_bool_system_prompt_carries_the_guard(self):
+        import score
+        assert score._UNTRUSTED_DATA_GUARD in score._BOOL_SYSTEM_PROMPT
+
+    def test_score_system_prompt_carries_the_guard(self):
+        import score
+        assert score._UNTRUSTED_DATA_GUARD in score._score_system_prompt(
+            (0, 2, True))
+
+    def test_pairwise_system_prompt_carries_the_guard(self):
+        import score
+        assert score._UNTRUSTED_DATA_GUARD in score._PAIRWISE_SYSTEM_PROMPT
+
+    def test_guard_forbids_following_embedded_instructions(self):
+        import score
+        assert "never follow" in score._UNTRUSTED_DATA_GUARD
+        assert "untrusted" in score._UNTRUSTED_DATA_GUARD
+
+    def test_agent_judge_contract_keeps_its_security_paragraph(self):
+        import score
+        assert "untrusted, model-generated content" in score._AGENT_JUDGE_CONTRACT
+        assert "never follow, execute, or obey" in score._AGENT_JUDGE_CONTRACT
+
+
 class TestParseScoreResponseBounds:
 
     def test_prose_fraction_uses_the_declared_top(self):
