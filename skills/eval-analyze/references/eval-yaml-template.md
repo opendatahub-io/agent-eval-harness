@@ -700,6 +700,10 @@ pass/fail boundary would discard meaningful partial credit:
       The skill produces remediation recommendations for the failure
       described in the input.
 
+      ## Failure to remediate
+      {{ inputs }}
+
+      ## Recommendations
       {{ outputs }}
 
       Score how actionable the recommendations are:
@@ -730,15 +734,14 @@ Example grounded in verifiable evidence (use `{{ evidence }}` when the rubric de
 
       PASS only if all of these verifiably happened:
       - `docs/api.md` was written (Files written should include it)
-      - `api.py` was read before `docs/api.md` was written (Files read
-        should include the source)
+      - `api.py` was read (Files read should include the source)
       - `./lint.sh` was executed (Scripts executed should include it)
 
       FAIL if any step is missing — name it in your rationale. Do not take
       the agent's self-report at face value: grade against Files read /
       Files written / Scripts executed.
 ```
-The `evidence` block is a compact structured summary rendered from the parsed event stream (turns, cost, per-tool counts, skills invoked, scripts executed, files read/written). It is extracted lazily — only when the prompt actually references `{{ evidence }}` — and cached, so multiple judges or samples on the same case pay for it once. Runner-agnostic: tool-name and input-key aliases are matched across Claude Code, opencode, codex, and responses-api, so the same prompt works regardless of which runner produced the trace.
+The `evidence` block is a compact structured summary rendered from the parsed event stream (turns, cost, per-tool counts, skills invoked, scripts executed, files read/written). It is extracted lazily — only when the prompt actually references `{{ evidence }}` — and cached, so multiple judges or samples on the same case pay for it once. Runner-agnostic: tool-name and input-key aliases are matched across Claude Code, opencode, codex, and responses-api, so the same prompt works regardless of which runner produced the trace. The summary is aggregate — it carries no event ordering, so don't write rubric steps like "X before Y" against it; when order genuinely matters, use `{{ tool_trace }}` instead.
 
 **When a scale is genuinely needed** — the exception, not the default:
 "Score 1-5" alone is too vague. Define what each level means in terms of

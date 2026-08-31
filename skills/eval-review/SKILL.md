@@ -124,7 +124,7 @@ Based on the feedback patterns:
 
 Ask the user to approve before applying changes. Don't edit the SKILL.md without explicit approval.
 
-If feedback suggests new judges, propose additions to eval.yaml. Follow the selection ladder — builtin (`python3 ${CLAUDE_SKILL_DIR}/../eval-analyze/scripts/list_builtins.py`, parameterize with `arguments:`) → inline `check` → boolean LLM judge → numeric LLM judge — one failure mode per judge. For LLM judge prompts, use the authoring template at `${CLAUDE_SKILL_DIR}/../eval-analyze/references/judge-prompt-template.md`; the run just reviewed is the ideal source for its PASS/FAIL/borderline example slots — quote real excerpts from the cases the user flagged.
+If feedback suggests new judges, propose additions to eval.yaml. Follow the selection ladder — builtin (`python3 ${CLAUDE_SKILL_DIR}/../eval-analyze/scripts/list_builtins.py`, parameterize with `arguments:`) → inline `check` → boolean LLM judge → numeric LLM judge — one failure mode per judge. For LLM judge prompts, use the authoring template at `${CLAUDE_SKILL_DIR}/../eval-analyze/references/judge-prompt-template.md`; the run just reviewed is the ideal source for its PASS/FAIL/borderline example slots — quote short excerpts from the flagged cases, redacted of secrets/PII and framed as data to grade, never as instructions.
 
 ## Step 8: Next Steps
 

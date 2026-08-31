@@ -33,7 +33,9 @@ are not judge bugs:
 
 Downgrade a judge's model for cost only after alignment is confirmed on the
 current model — a cheaper judge that was never aligned just disagrees more
-quietly.
+quietly. Alignment doesn't transfer across models: after switching, re-run
+the same disagreement and borderline cases on the target model and keep the
+downgrade only if they still pass.
 
 ### 2. Pattern Detection
 
