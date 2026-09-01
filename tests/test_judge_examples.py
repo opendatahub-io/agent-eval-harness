@@ -353,7 +353,11 @@ def test_template_without_placeholder_gets_the_block_appended(
     sc._load_llm_judge(config.judges[0], config)(outputs=record)
     prompt = captured["prompt"]
     assert prompt.count("## Human-labeled examples") == 1
-    assert prompt.index("Judge hi.") < prompt.index("## Human-labeled examples")
+    # The rendered template ({{ conversation }} arrives fenced between the
+    # evaluated-material markers) precedes the appended examples block.
+    assert prompt.index("Judge ") < prompt.index("## Human-labeled examples")
+    assert prompt.index("[BEGIN EVALUATED MATERIAL: conversation]") \
+        < prompt.index("## Human-labeled examples")
 
 
 def test_current_case_never_anchors_itself(tmp_path, monkeypatch):
