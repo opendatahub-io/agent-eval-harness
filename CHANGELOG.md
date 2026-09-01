@@ -1,3 +1,16 @@
+# [1.46.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.45.0...v1.46.0) (2026-09-01)
+
+
+### Bug Fixes
+
+* **judges:** guard injected exemplars as untrusted and defer excerpt I/O ([ffa8e0a](https://github.com/opendatahub-io/agent-eval-harness/commit/ffa8e0ae91e3da76398e07f232424a64b225b8bc))
+* **judges:** reject examples on the reserved pairwise judge and cap excerpt reads ([828b4ca](https://github.com/opendatahub-io/agent-eval-harness/commit/828b4cac08f4244d3f75d44052ebd996ad8d0ac6))
+
+
+### Features
+
+* **judges:** few-shot examples harvested from human review labels ([c0219fa](https://github.com/opendatahub-io/agent-eval-harness/commit/c0219fa4fa07b471d2dc372137c5863a7689972c))
+
 # [1.45.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.44.0...v1.45.0) (2026-08-31)
 
 
