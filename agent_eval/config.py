@@ -713,6 +713,29 @@ class GenerationConfig:
     seeds: list = field(default_factory=list)  # List of GenerationSeed
 
 
+#: Valid ``judges[].examples.source`` values — where exemplars are harvested
+#: from. Only prior runs' review.yaml today; a future source (a curated file,
+#: MLflow feedback) extends this tuple and the harvester dispatch.
+JUDGE_EXAMPLE_SOURCES = ("reviews",)
+
+
+@dataclass
+class JudgeExamplesConfig:
+    """Few-shot exemplars injected into an LLM/agent judge prompt.
+
+    ``source`` selects the harvest source (``reviews``: human labels from
+    prior runs' review.yaml, both the flat ``feedback`` map and the
+    per-judge ``verdicts`` map written by /eval-review). ``count`` caps how
+    many exemplars are injected per case; ``mix`` lists which verdict
+    classes are eligible (default both, so the judge sees a clear pass AND
+    a clear fail whenever the pool has them).
+    """
+
+    source: str = "reviews"
+    count: int = 3
+    mix: list = field(default_factory=lambda: ["pass", "fail"])
+
+
 @dataclass
 class JudgeConfig:
     """Configuration for a single judge.
@@ -790,6 +813,11 @@ class JudgeConfig:
     # Sampling — run this judge N times per case and reduce (median/majority).
     # Only meaningful for stochastic (LLM and agent) judges; ignored otherwise.
     samples: int = 1
+    # Few-shot examples harvested from prior runs' human review labels and
+    # injected into the rendered prompt ({{ examples }}, or an appended
+    # delimited section). LLM and agent judges only — rejected at load on
+    # check/builtin/code judges, where no prompt would carry them.
+    examples: Optional[JudgeExamplesConfig] = None
     # Agent judge — presence of this block upgrades an (otherwise LLM) judge to
     # a tool-using agent run through the runner abstraction, with read-only file
     # tools and a staged, isolated workspace. Permissive mapping (mirrors
@@ -1398,6 +1426,39 @@ class EvalConfig:
                         f"Judge '{jname}': 'score_range' must be finite and "
                         "increasing [min, max]")
                 score_range_val = [lo, hi]
+            examples_val = j.get("examples")
+            if examples_val is not None:
+                jname = j.get("name", "")
+                if not isinstance(examples_val, dict):
+                    raise ValueError(
+                        f"Judge '{jname}': 'examples' must be a mapping")
+                unknown = set(examples_val) - {"source", "count", "mix"}
+                if unknown:
+                    raise ValueError(
+                        f"Judge '{jname}': 'examples' has unknown key(s): "
+                        f"{', '.join(sorted(unknown))} (only 'source', "
+                        "'count' and 'mix' are allowed)")
+                ex_source = examples_val.get("source", "reviews")
+                if ex_source not in JUDGE_EXAMPLE_SOURCES:
+                    raise ValueError(
+                        f"Judge '{jname}': examples.source must be one of "
+                        f"{', '.join(JUDGE_EXAMPLE_SOURCES)}, got: {ex_source!r}")
+                ex_count = examples_val.get("count", 3)
+                if (not isinstance(ex_count, int) or isinstance(ex_count, bool)
+                        or ex_count < 1):
+                    raise ValueError(
+                        f"Judge '{jname}': examples.count must be an integer "
+                        f">= 1, got: {ex_count!r}")
+                ex_mix = examples_val.get("mix", ["pass", "fail"])
+                if (not isinstance(ex_mix, list) or not ex_mix
+                        or any(m not in ("pass", "fail") for m in ex_mix)
+                        or len(set(ex_mix)) != len(ex_mix)):
+                    raise ValueError(
+                        f"Judge '{jname}': examples.mix must be a non-empty "
+                        "list of unique values from 'pass'/'fail', got: "
+                        f"{ex_mix!r}")
+                examples_val = JudgeExamplesConfig(
+                    source=ex_source, count=ex_count, mix=list(ex_mix))
             config.judges.append(
                 JudgeConfig(
                     name=j.get("name", ""),
@@ -1417,6 +1478,7 @@ class EvalConfig:
                     arguments=args_val,
                     step=j.get("step", "") or "",
                     samples=int(j.get("samples", 1)),
+                    examples=examples_val,
                     agent=agent_val,
                 )
             )
@@ -1465,6 +1527,27 @@ class EvalConfig:
                     f"Judge '{jc.name}': builtin LLM judge '{jc.builtin}' is "
                     "always scored as pass/fail, so 'feedback_type'/"
                     "'score_range' would be silently ignored")
+            # `examples` only exists where the harness renders the judge's
+            # own prompt — LLM and agent judges. On any other type the block
+            # would be silently ignored, so reject it at load like the
+            # score_range declarations above.
+            if jc.examples and (jc.builtin or jc.check
+                                or jc.module or jc.function):
+                kind = ("builtin" if jc.builtin
+                        else "check" if jc.check else "code")
+                raise ValueError(
+                    f"Judge '{jc.name}': 'examples' only applies to LLM and "
+                    "agent judges (prompt/prompt_file/llm_rubric/agent) — on "
+                    f"a {kind} judge it would be silently ignored")
+            # The reserved pairwise judge never goes through the per-judge
+            # prompt renderer (score.py routes it into the A/B comparison
+            # flow), so an `examples` block there would be silently ignored
+            # too.
+            if jc.examples and jc.name == "pairwise":
+                raise ValueError(
+                    "Judge 'pairwise': 'examples' does not apply to the "
+                    "pairwise comparison judge — its prompt is rendered by "
+                    "the comparison flow, which never injects exemplars")
             # `feedback_type` is optional, and score.py's `_numeric_bounds`
             # treats anything that is not "bool" as numeric — so the judge that
             # most needs this warning is the one that declares neither field,

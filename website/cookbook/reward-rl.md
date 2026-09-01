@@ -36,8 +36,11 @@ flowchart LR
 
 ## Recipe 1 — Weighted blend
 
-Blend two judges into one reward: an LLM `quality` judge scored `1-5`, and an
-`efficiency` judge that already emits `[0, 1]`.
+Blend two judges into one reward: an LLM `completeness` judge scored `1-5`,
+and an `efficiency` judge that already emits `[0, 1]`. Note the LLM judge
+grades a single criterion — split "completeness, clarity, accuracy" into
+separate judges and weight them individually rather than blending them
+inside one prompt.
 
 ```yaml title="eval.yaml (excerpt)"
 judges:
@@ -45,10 +48,13 @@ judges:
     check: |
       return ("artifacts/out.md" in outputs["files"]), "presence check"
 
-  - name: quality              # LLM judge, scored 1-5
+  - name: completeness         # LLM judge, scored 1-5, ONE criterion
     feedback_type: int
     score_range: [1, 5]        # the judge's own scale — the reward normalizes over it
-    prompt: "Score the output 1-5 for completeness, clarity, and accuracy."
+    prompt: |
+      {{ inputs }}
+      {{ outputs }}
+      Score 1-5 how completely the output covers every requirement in the input.
 
   - name: efficiency           # already normalized to [0, 1]
     builtin: cost_budget
@@ -56,7 +62,7 @@ judges:
 reward:
   formula: weighted            # weighted sum of the judges in `weights`
   weights:
-    quality: 0.7
+    completeness: 0.7
     efficiency: 0.3
   raw: [efficiency]            # judges already in [0, 1] — skip normalization
   gate: true                   # any boolean judge returning false zeros the reward
@@ -90,13 +96,16 @@ judges:
     check: |
       return outputs["exit_code"] == 0, "ran cleanly"
 
-  - name: quality              # LLM judge, 1-5
+  - name: completeness         # LLM judge, 1-5, ONE criterion
     feedback_type: int
     score_range: [1, 5]        # the judge's own scale — the reward normalizes over it
-    prompt: "Score the output 1-5 for overall quality."
+    prompt: |
+      {{ inputs }}
+      {{ outputs }}
+      Score 1-5 how completely the output covers every requirement in the input.
 
 reward:
-  formula: "passed * quality"  # boolean (0/1) multiplies the normalized quality
+  formula: "passed * completeness"  # boolean (0/1) multiplies the normalized score
   gate: false                  # do NOT double-gate: the formula already uses `passed`
 ```
 
@@ -106,7 +115,7 @@ clamped to `[0, 1]`.
 
 !!! danger "Set `gate: false` when a boolean is its own gate"
     `gate` defaults to gating on every boolean judge. If your formula *already*
-    uses a boolean as a multiplier (`passed * quality`), leaving `gate: true`
+    uses a boolean as a multiplier (`passed * completeness`), leaving `gate: true`
     would gate **twice** — the formula multiplies by `passed`, and then the
     global gate zeros anything where `passed` is `false` anyway. Harmless for
     strict `0/1` gating, but it prevents partial-credit designs and hides the
@@ -118,7 +127,7 @@ Allowed calls inside an expression: `min`, `max`, `abs`, `round`, `sum`, `len`,
 ```yaml
 reward:
   formula: |
-    base = 0.6 * quality + 0.4 * efficiency
+    base = 0.6 * completeness + 0.4 * efficiency
     max(0.0, base - 0.1 * (1 - passed))
   gate: false
 ```
@@ -160,7 +169,7 @@ It emits three files under the output dir (default `/logs/verifier`):
 {
   "reward": 0.875,
   "files_exist": 1.0,
-  "quality": 4.0,
+  "completeness": 4.0,
   "efficiency": 0.9
 }
 ```

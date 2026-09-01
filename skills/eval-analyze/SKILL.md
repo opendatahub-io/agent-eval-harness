@@ -164,7 +164,7 @@ Combine the skill analysis (Step 4) and dataset exploration (Step 5) into a comp
 - **Schemas**: `dataset.schema` and `outputs[*].schema` drive the whole pipeline — be specific, use the real file/field names you observed. Mark inputs that reference external systems with `[EXTERNAL: System]` so `/eval-dataset` won't fabricate them.
 - **Permissions**: if the skill's `allowed-tools` includes `Skill`, add `"Skill"` to `permissions.allow` — nested skill calls fail silently in headless without it.
 - **Tool interception**: if the skill uses AskUserQuestion or calls external services (MCP tools/scripts), add `inputs.tools` entries (`match` = natural-language description, `prompt` = how to handle). AskUserQuestion answering uses `models.hook` + per-case `answers.yaml`.
-- **Judges**: prefer `builtin:` for common patterns (discover: `python3 ${CLAUDE_SKILL_DIR}/scripts/list_builtins.py`); parameterize with `arguments:` instead of hardcoding. Aim for 1-2 builtin + 2-3 inline `check` + 1-2 LLM `prompt`; start lean. Judges receive `outputs["annotations"]` for outcome-aware scoring.
+- **Judges**: work down the selection ladder — builtin (discover: `python3 ${CLAUDE_SKILL_DIR}/scripts/list_builtins.py`; parameterize via `arguments:`) → inline `check` → boolean LLM `prompt` → numeric LLM `prompt` — one failure mode per judge. Aim for 1-2 builtin + 2-3 `check` + 1-2 LLM; start lean. LLM prompts follow `references/judge-prompt-template.md`. Judges receive `outputs["annotations"]` for outcome-aware scoring.
 - **Reward (optional)**: if the analyzer suggested one and there are multiple judges, add a `reward:` section so the report and Harbor's `reward.json` match your intent — otherwise a default resolution applies that can silently disagree. Schema in the template.
 - **Portability**: keep `dataset.path` / `outputs[*].path` project-relative (absolute paths break under Harbor / EvalHub).
 - **`--update`**: preserve the existing file; only add missing top-level keys. Check LLM judge prompts for literal `{{ }}` that isn't a template variable.
@@ -209,7 +209,7 @@ If validation produced warnings, list them so the user knows what's incomplete.
 
 - **Read before you write** — every field name and file pattern in eval.yaml must come from reading actual files, not from templates or assumptions
 - **Schema descriptions must be specific** — "input.yaml with a 'prompt' field" is good. "Input files" is useless. If you can't be specific, you didn't read the files.
-- **Generate working judges** — inline check scripts must be valid Python. LLM prompts must define what each score level means.
+- **Generate working judges** — inline check scripts must be valid Python. LLM prompts must define PASS/FAIL explicitly (or, for the numeric exception, what each score level means).
 - **Preserve user work** — when updating, diff carefully. User-modified judges, schema descriptions, and thresholds should be kept.
 - **Fail loudly** — if the skill analysis is incomplete or the dataset can't be found, say so. Don't generate a config full of placeholders.
 

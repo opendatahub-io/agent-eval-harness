@@ -83,6 +83,7 @@ flowchart TD
 | `feedback_type` | string | LLM, agent (validated on every judge) | `bool` selects a `passed` verdict; anything else — **including omitting it** — selects a numeric `score` on `score_range`. **Never inferred** from the rubric text. `int`/`float` force integer/continuous scoring; when omitted, integer-ness follows the bounds: whole bounds score as an integer, fractional bounds (e.g. `[0, 2.5]`) as a number. `bool` + `score_range`, and `int` + fractional bounds, are rejected at load on any judge type. |
 | `model` | string | LLM, agent | Per-judge model override (highest precedence). |
 | `samples` | int | LLM, agent | Run N times per case and reduce (median/majority). Default `1`. |
+| `examples` | mapping | LLM, agent | Few-shot exemplars harvested from prior runs' human review labels and injected into the prompt; see [Few-shot examples from human reviews](#few-shot-examples-from-human-reviews-examples). Rejected at load on `check`/`builtin`/`code` judges. |
 | `score_range` | `[min, max]` | all numeric judges | The judge's scale. **Declared:** stated in the LLM judge's system prompt and `submit_score` schema (and in the agent judge's `score.json` contract), colors per-case report cells, normalizes the judge in every [reward](reward.md#precedence) composition that normalizes it — a `reward.score_range` only covers judges that declare none, and a judge the reward clamps as-is (`reward.raw`, or a single `reward.judge` without `normalize`) consults no range — and is **enforced for every judge type** — including `check`, `module`/`function` and Python `builtin` judges: an off-scale (or non-finite) value becomes an error sample, not a clamped one (see [Validation](#validation-at-load-time)). **Omitted:** LLM/agent judges are told `[1, 5]` but nothing is checked, and the cell renders neutral (uncolored). Bounds may be negative (`[-1, 1]`) or fractional (`[0, 2.5]`); fractional bounds also select a non-rounded `number` verdict. |
 
 !!! note "Boolean vs numeric aggregation"
@@ -145,6 +146,7 @@ LLM prompts (and `context` files) are rendered with these variables:
 | `{{ evidence }}` | Summary of tool activity (turns, cost, tools, files read/written). Lazily derived and cached. |
 | `{{ annotations }}` | Dataset annotations. Renders as text, or `{{ annotations.get('category') }}`. |
 | `{{ arguments }}` | This judge's `arguments` dict. |
+| `{{ examples }}` | The human-labeled examples block for judges that declare [`examples`](#few-shot-examples-from-human-reviews-examples); empty for the rest. |
 
 !!! warning "Use the bare variable names"
     Write `{{ conversation }}`, not `{{ outputs.conversation }}` or `{{ outputs.response }}` —
@@ -330,6 +332,55 @@ judges. The report records the spread and flags unstable cases. See
   samples: 5
 ```
 
+## Few-shot examples from human reviews (`examples`)
+
+An `examples` block injects **human-labeled exemplars** from prior runs'
+`review.yaml` (written by `/eval-review`) into the judge prompt as few-shot
+calibration anchors — the judge sees what a human actually accepted and rejected
+on this eval instead of inferring the bar from the rubric text alone. LLM and
+agent judges only; declaring it on a `check`, `builtin`, or `code` judge fails
+at load.
+
+```yaml
+- name: output_quality
+  prompt: "Score 1-5 for accuracy.\n\n{{ outputs }}"
+  score_range: [1, 5]
+  examples:
+    source: reviews     # only source today (default)
+    count: 3            # max exemplars injected per case (default 3)
+    mix: [pass, fail]   # verdict classes, drawn round-robin (default both)
+```
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `source` | `reviews` | Where exemplars come from. Only `reviews` exists today: prior runs' `review.yaml` under `$AGENT_EVAL_RUNS_DIR/<eval-name>/`. |
+| `count` | `3` | Maximum exemplars injected per case (integer >= 1). |
+| `mix` | `[pass, fail]` | Which verdict classes are eligible, drawn round-robin in list order — the default pairs a clear pass with a clear fail whenever the pool has both. |
+
+Per case, the harness:
+
+- **Harvests** every prior run's `review.yaml` (once per judge, cached). Both
+  review shapes are read: the flat `feedback:` map (a non-empty comment means
+  the reviewer flagged the case; empty means acceptable) and the structured
+  `verdicts:` map (the human's own per-judge verdict on the judge's scale,
+  which wins over the flat label when both exist). Numeric verdicts anchor
+  only when **clear** — the top quarter of the scale is a pass exemplar, the
+  bottom quarter a fail; mid-scale and off-scale verdicts are never used.
+- **Selects** deterministically (sorted, no randomness): entries with the most
+  substantive human comment first, then the newest run. The **case currently
+  being judged is always excluded**, as is the run being scored — an exemplar
+  must never leak a human verdict on its own case.
+- **Injects** the block as `{{ examples }}` when the template references it;
+  otherwise it is appended as a delimited `## Human-labeled examples` section.
+  The injected text tells the judge these are human-labeled reference judgments
+  from prior runs to **calibrate against, not copy**. Each exemplar carries the
+  case id, source run id, input/output excerpts (truncated), the human verdict,
+  and the human comment.
+
+With no `review.yaml`, or no labels matching the judge and `mix`, the judge
+runs without examples and a warning prints once per judge — never an error at
+scoring time.
+
 ## The reserved `pairwise` judge
 
 A judge named `pairwise` is not scored per case — it configures the A/B comparison
@@ -358,7 +409,10 @@ The config fails fast rather than mid-run when:
 - a **builtin LLM** judge declares a `feedback_type` other than `bool`, or any
   `score_range` — those prompts state their own pass/fail contract, so the
   declaration would be dropped. Builtin *Python* judges are unaffected: they
-  may be numeric.
+  may be numeric;
+- `examples` is declared on a `check`, `builtin`, or `code` judge — no prompt
+  is rendered from the config there, so the exemplars would be silently
+  ignored — or its `source`/`count`/`mix` values are invalid.
 
 A numeric LLM or agent judge that declares no `score_range` **warns** rather
 than failing: it is scored on the unenforced `[1, 5]` default — the model is

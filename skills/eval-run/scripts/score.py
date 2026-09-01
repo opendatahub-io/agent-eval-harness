@@ -629,7 +629,7 @@ class _AnnotationsProxy(dict):
         return self._text
 
 
-def _render_jinja2_template(template_text, arguments, outputs):
+def _render_jinja2_template(template_text, arguments, outputs, examples=""):
     """Render a Jinja2 template with arguments and outputs as variables.
 
     Template variables available:
@@ -644,6 +644,8 @@ def _render_jinja2_template(template_text, arguments, outputs):
       (chain-of-thought), for reasoning-quality judges
     - {{ inputs }} - the case's input.yaml rendered as text
     - {{ tool_trace }} - chronological trace of tool calls (Read, Bash, etc.)
+    - {{ examples }} - human-labeled examples block for judges that declare
+      `examples:` (empty for the rest)
     """
     from jinja2 import Environment, Undefined, make_logging_undefined
     env = Environment(
@@ -715,6 +717,7 @@ def _render_jinja2_template(template_text, arguments, outputs):
         inputs=inputs_text,
         evidence=evidence_text,
         tool_trace=tool_trace,
+        examples=examples,
     )
 
 
@@ -1747,6 +1750,88 @@ def _resolve_judge_model(jc, config):
 
 
 # ---------------------------------------------------------------------------
+# Few-shot examples from human review labels (judges[].examples)
+# ---------------------------------------------------------------------------
+
+# A template's own {{ examples }} placeholder (any spacing, filters included).
+# When the template never references it, the block is appended instead.
+_EXAMPLES_PLACEHOLDER_RE = re.compile(r"\{\{\s*examples")
+
+# Harvested pools cached per (runs root, judge, run): every case of a scoring
+# pass shares one harvest, and the run being scored is never its own source.
+_examples_lock = threading.Lock()
+_examples_pools = {}
+_examples_warned = set()
+
+
+def _examples_for_case(jc, config, record):
+    """The formatted human-labeled examples block for one judge + case.
+
+    Harvests prior runs' review.yaml once per judge (cached), then selects
+    per case so the case under judgment never appears among its own anchors
+    (leakage guard, same spirit as the answer-key guard). Returns "" — never
+    raises — when no usable labels exist, warning once per judge: a missing
+    review history must not fail scoring.
+    """
+    from agent_eval.examples import (
+        format_examples, harvest_review_examples, load_excerpts,
+        select_examples)
+    case_dir = Path(record.get("case_dir") or "")
+    case_id = case_dir.name
+    # <runs>/<eval>/<run-id>/cases/<case-id> — exclude the run being scored
+    # from harvesting (exemplars come from PRIOR runs' reviews).
+    run_id = (case_dir.parent.parent.name
+              if case_dir.parent.name == "cases" else "")
+    try:
+        runs_root = _get_runs_dir(config.eval_name())
+    except ValueError:
+        return ""
+    key = (str(runs_root), jc.name, run_id)
+    with _examples_lock:
+        if key not in _examples_pools:
+            # Cheap under the lock: harvesting reads only review.yaml files.
+            # Artifact excerpts load after selection, outside the lock, so
+            # the I/O is per injected exemplar, not per reviewed case.
+            _examples_pools[key] = harvest_review_examples(
+                runs_root, jc.name,
+                score_range=jc.score_range,
+                exclude_run_id=run_id or None)
+        pool = _examples_pools[key]
+    selected = select_examples(pool, count=jc.examples.count,
+                               mix=jc.examples.mix, exclude_case_id=case_id)
+    if not selected:
+        with _examples_lock:
+            first = jc.name not in _examples_warned
+            _examples_warned.add(jc.name)
+        if first:
+            print(f"  Warning: judge '{jc.name}' declares 'examples' but no "
+                  f"usable human review labels were found under {runs_root} "
+                  "— running without examples", file=sys.stderr)
+        return ""
+    selected = load_excerpts(selected, runs_root,
+                             output_dirs=[o.path for o in config.outputs
+                                          if o.path])
+    return format_examples(selected)
+
+
+def _render_judge_prompt(prompt, jc, config, arguments, record):
+    """Render an LLM/agent judge prompt, injecting human-labeled examples.
+
+    When the judge declares ``examples``, the harvested block is exposed as
+    ``{{ examples }}``; a template that never references the placeholder gets
+    the block appended after rendering, clearly delimited. Judges without an
+    ``examples`` block render exactly as before.
+    """
+    examples_text = (_examples_for_case(jc, config, record)
+                     if jc.examples else "")
+    rendered = _render_jinja2_template(prompt, arguments, record,
+                                       examples=examples_text)
+    if examples_text and not _EXAMPLES_PLACEHOLDER_RE.search(prompt):
+        rendered += "\n\n" + examples_text
+    return rendered
+
+
+# ---------------------------------------------------------------------------
 # Agent judge — a tool-using judge run through the runner abstraction
 # ---------------------------------------------------------------------------
 
@@ -2019,7 +2104,8 @@ def _load_agent_judge(jc, config, project_root=None):
             _stage_agent_workspace(workspace, record, stage_inputs,
                                    context_dirs, root,
                                    writable=context_writable)
-            rendered = _render_jinja2_template(prompt, arguments, record)
+            rendered = _render_judge_prompt(prompt, jc, config, arguments,
+                                            record)
             full_prompt = rendered + "\n" + contract
 
             # Give the JUDGE its own runner + read-only tool policy, independent
@@ -2095,7 +2181,7 @@ def _load_llm_judge(jc, config, project_root=None):
 
         def scorer(outputs=None, **kwargs):
             out = outputs or {}
-            rendered = _render_jinja2_template(prompt, arguments, out)
+            rendered = _render_judge_prompt(prompt, jc, config, arguments, out)
             images = _extract_images(out)
             return _call_structured_judge(rendered, judge_model, feedback_type,
                                           images=images, bounds=bounds)
@@ -2105,6 +2191,12 @@ def _load_llm_judge(jc, config, project_root=None):
     # MLflow make_judge fallback (requires OpenAI-compatible API key)
     try:
         from mlflow.genai.judges import make_judge
+        # make_judge takes static instructions, so per-case example
+        # injection has nowhere to go on this path. Loud, not silent.
+        if jc.examples:
+            print(f"  Warning: judge '{jc.name}': 'examples' is not supported "
+                  "on the MLflow make_judge fallback path — running without "
+                  "examples", file=sys.stderr)
         # make_judge takes no scale argument, but `_enforce_bounds` applies to
         # every judge by name regardless of which scorer produced the value.
         # Left unstated, this path would be the one place a judge is failed

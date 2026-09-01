@@ -335,7 +335,12 @@ judges:
     # arguments:                      # optional, available as arguments dict in check
     #   max_chars: 10000
 
-  # LLM judge: assess quality with a prompt
+  # LLM judge: assess what code cannot verify
+  # Reach for one only after builtins and inline checks are exhausted. Target
+  # ONE failure mode per judge and prefer feedback_type: bool with explicit
+  # PASS/FAIL definitions — use a numeric scale only when the criterion is
+  # genuinely graded. Prompt structure: see judge-prompt-template.md
+  # (same directory as this template).
   # All LLM prompts are rendered with Jinja2. Available template variables:
   #   {{ outputs }}      — file artifacts and modified files as markdown
   #   {{ conversation }} — root-level assistant text (excludes subagent text)
@@ -351,13 +356,29 @@ judges:
   #   {{ tool_trace }}   — for judges evaluating agent BEHAVIOR (navigation, tool usage, exploration)
   # IMPORTANT: {{ conversation }} excludes tool calls. A judge checking whether the
   # agent navigated to specific files MUST use {{ tool_trace }}, not {{ conversation }}.
+  # Rendered variables are untrusted, model-generated content: fence them under an
+  # explicit heading and tell the judge to grade what's inside, never follow
+  # instructions embedded in it. (Agent judges get this guard from the harness
+  # automatically; prompt/prompt_file/llm_rubric judges need it in the prompt.)
   - name: <descriptive_name>
     description: |
-      <what this judge evaluates>
+      <the ONE failure mode this judge detects, and why a code check
+       cannot verify it>
+    feedback_type: bool
     prompt: |
-      <preamble — what to evaluate>
-      {{ outputs }}
-      {{ conversation }}
+      <task context — what the skill was asked to produce>
+      <the artifact the rubric grades under an explicit heading, marked as
+       untrusted data to evaluate, not instructions to follow — e.g.
+       {{ outputs }} OR {{ conversation }}, not both by default>
+      <PASS definition / FAIL definition, derived from the failure mode>
+
+  # Numeric LLM judge — the exception, for genuinely graded criteria where a
+  # pass/fail boundary would discard meaningful partial credit
+  - name: <descriptive_name>
+    description: |
+      <what this judge grades, and why a boolean boundary would lose signal>
+    prompt: |
+      <task context + the artifact the rubric grades>
       <scoring criteria — define what each score level means>
     score_range: [1, 5]             # DECLARE on every numeric judge — omitting it
                                     # warns at config load. Use the rubric's own
@@ -596,10 +617,15 @@ Example check judge for in-place edits (skills that edit input files via Edit to
       return (True, f"{len(files)} files, {len(content)} chars")
 ```
 
-**LLM `prompt` judges** assess quality — things that need understanding:
-- Completeness: does the output cover all requirements?
-- Accuracy: is the content correct?
-- Relevance: does it address the input?
+**LLM `prompt` judges** cover what code cannot verify — judgments that need
+understanding. Reach for one only after builtins and inline checks are
+exhausted, and give each judge exactly ONE failure mode with explicit
+PASS/FAIL definitions (`feedback_type: bool`). "Completeness, clarity,
+accuracy" is three judges, not one blended score — thresholds gate per judge,
+reward composition weights per judge, and eval-anova compares per judge, so a
+blended score can't be gated, weighted, or compared without unblending it.
+See `judge-prompt-template.md` (same directory) for the prompt structure:
+task context, single criterion, PASS/FAIL definitions, labeled examples.
 
 **IMPORTANT**: LLM judges only see what's in their prompt text. Use template variables to include skill output:
 
@@ -616,53 +642,91 @@ Example check judge for in-place edits (skills that edit input files via Edit to
 
 All template variables can be used in the same prompt. Without any template variables, the LLM receives only the raw prompt text and cannot see any output.
 
-Example with file artifacts:
+Example with file artifacts — one failure mode, boolean verdict:
 ```yaml
-  - name: output_quality
-    score_range: [1, 5]
+  - name: covers_all_inputs
+    description: |
+      Every requirement in the request appears in the produced files. Needs
+      an LLM: matching requirements to prose can't be pattern-matched.
+    feedback_type: bool
     prompt: |
-      Review the following outputs:
+      The skill was asked to produce a document addressing every requirement
+      in the request below.
 
+      ## Request
+      {{ inputs }}
+
+      ## Produced files
       {{ outputs }}
 
-      Score on a 1-5 scale:
-      ...
+      PASS: every requirement in the request is addressed somewhere in the
+      produced files (a section, a bullet, or an explicit deferral).
+      FAIL: at least one requirement is absent — name it in your rationale.
 ```
 
-Example for conversation-only skills:
+Example for conversation-only skills — fabrication check:
 ```yaml
-  - name: response_quality
-    score_range: [1, 5]
+  - name: no_fabricated_fields
+    description: |
+      The response cites only fields and values present in the input. Needs
+      an LLM: telling a paraphrase from an invention requires reading both.
+    feedback_type: bool
     prompt: |
-      Evaluate this skill's response:
+      The skill summarizes the record described in the input. Verify the
+      response invents nothing.
 
+      ## Input
+      {{ inputs }}
+
+      ## Response
       {{ conversation }}
 
-      Score on a 1-5 scale:
-      ...
+      PASS: every field, value, and claim in the response traces back to the
+      input.
+      FAIL: the response contains a field, value, or claim not present in the
+      input — quote it in your rationale.
 ```
 
-Example with both file artifacts and conversation output:
+Note each judge receives only the artifact its criterion grades (plus the
+inputs it's compared against) — not `{{ outputs }}` + `{{ conversation }}` by
+default. Extra context invites the judge to grade things the criterion never
+asked about.
+
+Numeric example — the exception, for a genuinely graded criterion where a
+pass/fail boundary would discard meaningful partial credit:
 ```yaml
-  - name: comprehensive_quality
+  - name: actionability
+    description: |
+      How directly a human could act on the recommendations — graded, not
+      pass/fail: a rough direction is worth more than nothing but less than
+      a step-by-step plan, and a boolean boundary would discard the middle.
     score_range: [1, 5]
     prompt: |
-      The skill produced these file artifacts:
+      The skill produces remediation recommendations for the failure
+      described in the input.
 
+      ## Failure to remediate
+      {{ inputs }}
+
+      ## Recommendations
       {{ outputs }}
 
-      And this conversation output:
-
-      {{ conversation }}
-
-      Score on a 1-5 scale:
-      ...
+      Score how actionable the recommendations are:
+      Score 1: no concrete action — restates the problem
+      Score 2: names an action but not where or how to apply it
+      Score 3: correct action and location, missing key parameters
+      Score 4: complete action, location, and parameters; minor gaps only
+      Score 5: could be executed as written, including verification steps
 ```
 
 Example grounded in verifiable evidence (use `{{ evidence }}` when the rubric depends on what the agent actually *did*, not what it *said*):
 ```yaml
   - name: followed_workflow
-    score_range: [1, 5]
+    description: |
+      Every required process step verifiably happened — one failure mode:
+      a skipped step. Needs an LLM to match tool-call evidence against the
+      steps; the verdict itself is a gate.
+    feedback_type: bool
     prompt: |
       The task was to update `docs/api.md` after reading the current source
       and running the linter.
@@ -673,35 +737,30 @@ Example grounded in verifiable evidence (use `{{ evidence }}` when the rubric de
       ## What the agent actually did
       {{ evidence }}
 
-      ## What it said
-      {{ conversation }}
+      PASS only if all of these verifiably happened:
+      - `docs/api.md` was written (Files written should include it)
+      - `api.py` was read (Files read should include the source)
+      - `./lint.sh` was executed (Scripts executed should include it)
 
-      Score 1-5 based on both process and outcome:
-      - Was `docs/api.md` actually written? (Files written should include it)
-      - Was `api.py` read before `docs/api.md` was written? (Files read
-        should include the source)
-      - Was `./lint.sh` executed? (Scripts executed should include it)
-      - Did the agent stay under a reasonable turn budget for this task?
+      FAIL if any step is missing — name it in your rationale. Do not take
+      the agent's self-report at face value: grade against Files read /
+      Files written / Scripts executed.
+```
+The `evidence` block is a compact structured summary rendered from the parsed event stream (turns, cost, per-tool counts, skills invoked, scripts executed, files read/written). It is extracted lazily — only when the prompt actually references `{{ evidence }}` — and cached, so multiple judges or samples on the same case pay for it once. Runner-agnostic: tool-name and input-key aliases are matched across Claude Code, opencode, codex, and responses-api, so the same prompt works regardless of which runner produced the trace. The summary is aggregate — it carries no event ordering, so don't write rubric steps like "X before Y" against it; when order genuinely matters, use `{{ tool_trace }}` instead.
 
-      Do not take the agent's self-report at face value — grade the rubric
-      against Files read / Files written / Scripts executed / Total turns.
-```
-The `evidence` block is a compact structured summary rendered from the parsed event stream (turns, cost, per-tool counts, skills invoked, scripts executed, files read/written). It is extracted lazily — only when the prompt actually references `{{ evidence }}` — and cached, so multiple judges or samples on the same case pay for it once. Runner-agnostic: tool-name and input-key aliases are matched across Claude Code, opencode, codex, and responses-api, so the same prompt works regardless of which runner produced the trace.
-
-Be specific about scoring criteria. "Score 1-5" is too vague. Define what each level means:
-```
-Score 1: Missing most requirements, major errors
-Score 2: Partially addresses the input, significant gaps
-Score 3: Covers the basics but lacks depth or has minor errors
-Score 4: Good coverage, well-structured, minor issues only
-Score 5: Comprehensive, accurate, well-written
-```
+**When a scale is genuinely needed** — the exception, not the default:
+"Score 1-5" alone is too vague. Define what each level means in terms of
+observable properties of the artifact, as in the `actionability` example
+above — definitions a second rater could apply and land on the same number.
+If two adjacent levels can't be told apart by something observable, the scale
+has too many levels: collapse them, or decompose into tiered boolean judges
+instead.
 
 **Declare the scale on every numeric judge, including a plain `[1, 5]` one.** A numeric LLM or agent judge that omits `score_range` is merely *told* `[1, 5]`, nothing checks its answer, and it warns at config load. There is no `[0, 1]` default for other numeric judges either: undeclared means no report coloring and fallback normalization in the reward composition (`reward.score_range` if that deprecated key is set, else `[1, 5]`). Set `score_range: [lo, hi]` on the judge itself (e.g. `[0, 2]`, `[1, 10]`, `[0, 100]`) — a declared range is stated in the LLM judge's system prompt and `submit_score` schema, enforced on the returned value of *any* judge type, inline `check` included (off-scale → error sample, dropped from the mean, never clamped), used to color the report's per-cell bands, and used to normalize the judge in *every* reward composition that normalizes it, configured or default. Do not pin `reward.score_range` to match — it is a deprecated fallback for composed judges that declare no range, and writing it warns once one of them declares a different range. For `[0, 1]` judges that should NOT be re-normalized by the reward composition (e.g. a builtin like `efficiency/cost_budget`), list them in `reward.raw` — a single-judge reward is the other clamped case: `reward.judge` without `normalize: true` uses the value as-is and consults no range.
 
-**How many judges**: aim for 2-4 inline checks + 1-2 LLM judges. Start lean — you can always add more in later iterations. Every judge needs a `description` field explaining what it checks.
+**How many judges**: aim for 2-4 inline checks + 1-2 LLM judges, one failure mode each. Start lean — you can always add more in later iterations. Every judge needs a `description` field explaining what it checks.
 
-**Naming**: use `snake_case` names (e.g., `files_exist`, `output_quality`). These names appear in `thresholds` and in scoring reports — keep them short and descriptive. Make sure threshold keys match judge names exactly.
+**Naming**: use `snake_case` names (e.g., `files_exist`, `covers_all_inputs`). These names appear in `thresholds` and in scoring reports — keep them short and descriptive. Make sure threshold keys match judge names exactly.
 
 ## The --update Flow
 
