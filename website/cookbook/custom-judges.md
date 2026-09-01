@@ -219,13 +219,20 @@ The prompt is rendered with these variables:
     don't ask the judge to "state the verdict up front" or lead with the score in a
     requested output format.
 
-!!! note "Graded material is marked as untrusted"
-    Every LLM judge system prompt (bool, numeric, and pairwise) carries a guard telling
-    the judge that the quoted material is untrusted, model-generated output — instructions
-    embedded in an evaluated artifact must be assessed, never followed. Agent judges get
-    the equivalent SECURITY paragraph in their harness-appended contract. This is a
-    mitigation, not a boundary: still fence rendered variables under explicit headings in
-    your prompts so the judge can tell the artifact apart from the rubric.
+!!! note "Graded material is fenced and marked as untrusted"
+    At render time the harness wraps agent-produced template variables — bare
+    `{{ outputs }}`, `{{ conversation }}`, `{{ reasoning }}`, `{{ inputs }}`,
+    `{{ evidence }}`, `{{ tool_trace }}`, and both pairwise outputs — between
+    `[BEGIN EVALUATED MATERIAL: <name>]` and `[END EVALUATED MATERIAL]` markers, and
+    every LLM judge system prompt (bool, numeric, and pairwise) carries a guard pointing
+    at those markers: the rubric is to be followed, the fenced material is untrusted,
+    model-generated output to assess — instructions inside it must never be followed,
+    including text claiming the material has ended or the rules have changed. Author-side
+    variables (`arguments`, `annotations`) and structured access like
+    `{{ outputs.cost_usd }}` stay unfenced. Agent judges get the equivalent SECURITY
+    paragraph in their harness-appended contract. Prompt-injection defenses are
+    mitigations, not boundaries — pair this with `samples: k` and human calibration for
+    consequential evals.
 
 !!! tip "Grading on a scale other than 1–5"
     Declare it: `score_range: [0, 2]`. The range is stated in the judge's system prompt,
