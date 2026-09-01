@@ -7,7 +7,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agent_eval.config import DiscoveryResult, discover_configs
+from agent_eval.config import (
+    DiscoveryResult,
+    analysis_cache_path,
+    discover_configs,
+)
 
 
 def _write_eval(path: Path, skill: str = "test-skill"):
@@ -131,3 +135,19 @@ def test_dot_eval_name_rejected(tmp_path):
     cfg.write_text("skill: .\n")
     results = discover_configs(tmp_path)
     assert results == []
+
+
+def test_analysis_cache_path_root_and_nested_use_eval_md(tmp_path):
+    # eval.yaml (root and nested eval/<name>/eval.yaml) -> eval.md (unchanged).
+    assert analysis_cache_path(tmp_path / "eval.yaml") == tmp_path / "eval.md"
+    nested = tmp_path / "eval" / "alpha" / "eval.yaml"
+    assert analysis_cache_path(nested) == tmp_path / "eval" / "alpha" / "eval.md"
+
+
+def test_analysis_cache_path_flat_is_stem_derived_and_distinct(tmp_path):
+    # Flat configs must get distinct caches, not a shared eval/eval.md.
+    a = analysis_cache_path(tmp_path / "eval" / "alpha.yaml")
+    b = analysis_cache_path(tmp_path / "eval" / "beta.yaml")
+    assert a == tmp_path / "eval" / "alpha.md"
+    assert b == tmp_path / "eval" / "beta.md"
+    assert a != b

@@ -1834,6 +1834,21 @@ def discover_configs(project_root: Path) -> list[DiscoveryResult]:
     return sorted(results, key=lambda r: r.path)
 
 
+def analysis_cache_path(config_path) -> Path:
+    """Return the eval-analyze cache (``eval.md``) path for a config.
+
+    The cache lives next to the config, named by swapping the config's
+    extension to ``.md``: ``eval.yaml`` -> ``eval.md`` (root and nested
+    ``eval/<name>/eval.yaml`` layouts, unchanged), and flat
+    ``eval/<name>.yaml`` -> ``eval/<name>.md``. Deriving the name from the
+    config filename keeps flat-layout configs from silently colliding on a
+    single ``eval/eval.md``: flat configs are uniquely named (and warned on
+    name collision in ``discover_configs``), so their analysis caches must be
+    uniquely named too.
+    """
+    return Path(config_path).with_suffix(".md")
+
+
 def infer_layout(configs: list[DiscoveryResult]) -> str:
     """Infer the project's eval layout from discovery results.
 

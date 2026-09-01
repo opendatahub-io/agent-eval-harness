@@ -38,9 +38,8 @@ If `--config` provided, use that path. Otherwise run `python3 ${CLAUDE_SKILL_DIR
 - **No configs**: Create `eval.yaml` at project root
 - **One root config** and `--skill` targets a different eval than the existing one: offer to reorganize into `eval/` layout. If the user accepts, run `python3 ${CLAUDE_SKILL_DIR}/scripts/reorganize.py --eval-name <name>` (add `--project-root <path>` if not the cwd). If declined, ask where to put the new config.
 - **Nested/flat layout already exists**: place the new config at `eval/<skill-name>/eval.yaml` (nested) or alongside existing flat configs
-- **`--config` provided**: use the explicit path, bypass layout logic
 
-Set the resolved config path as `<config>` for all subsequent steps. Set `<eval_md_path>` to the same directory as `<config>`, with filename `eval.md`.
+Set the resolved config path as `<config>` for all subsequent steps. Set `<eval_md_path>` to `<config>` with `.yaml`→`.md` (so flat `eval/<name>.yaml` → `eval/<name>.md`, not a shared `eval/eval.md`).
 
 ## Batch Assessment
 
@@ -185,20 +184,20 @@ This checks dataset path exists (resolved relative to the config file's director
 
 ## Step 7: Generate eval.md
 
-The eval.md caches the skill analysis so it doesn't need to be repeated. Write it to `<eval_md_path>` (same directory as the config file). The hash tracks only the top-level SKILL.md — if sub-skills change, the user should run `/eval-analyze --update` to refresh. Compute the skill hash:
+The eval.md caches the skill analysis so it doesn't need to be repeated. Write it to `<eval_md_path>` (defined in Config Location Discovery). The hash tracks only the top-level SKILL.md — if sub-skills change, the user should run `/eval-analyze --update` to refresh. Compute the skill hash:
 
 ```bash
 python3 -c "import hashlib; from pathlib import Path; print(hashlib.sha256(Path('<skill-path>/SKILL.md').read_bytes()).hexdigest()[:12])"
 ```
 
-Read the template at `${CLAUDE_SKILL_DIR}/prompts/generate-eval-md.md`. Write eval.md with YAML frontmatter (skill, analyzed_at, skill_hash) and a markdown narrative of the analysis.
+Read the template at `${CLAUDE_SKILL_DIR}/prompts/generate-eval-md.md`. Write `<eval_md_path>` with YAML frontmatter (skill, analyzed_at, skill_hash) and a markdown narrative of the analysis.
 
 ## Step 8: Report
 
 Tell the user what was generated:
 
 - **eval.yaml**: created/updated — N judges configured, dataset at `<path>` (M cases found)
-- **eval.md**: skill analysis cached (hash: `<hash>`)
+- **`<eval_md_path>`**: skill analysis cached (hash: `<hash>`)
 - **Next steps**:
   - If no test cases found: `/eval-dataset` to generate test cases (required before eval-run)
   - If test cases exist: `/eval-run --model <model>` to execute the evaluation
