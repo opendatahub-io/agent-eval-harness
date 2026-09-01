@@ -107,6 +107,20 @@ judges:
 export EVAL_JUDGE_MODEL=claude-opus-4-6   # last-resort default across runs
 ```
 
+!!! tip "Judge provider is independent of the runner"
+    The judge backend is chosen by the **judge model**, not by `runner.type`, so
+    you can grade a Cursor/Codex run with a Claude judge, or a claude-code run
+    with an OpenAI judge. Write the model as `provider:/model`:
+
+    - `anthropic:/claude-sonnet-4-5` (or a bare `sonnet`) → Anthropic SDK.
+    - `openai:/gpt-4o` (or a bare `gpt-4o`) → OpenAI SDK; set `OPENAI_BASE_URL`
+      to reach an OpenAI-compatible gateway (LiteLLM proxy, Azure, local models).
+    - `runner:/<model>` → grade through the configured runner (opt-in for models
+      only the runner CLI can serve, e.g. Cursor's internal ids).
+
+    An explicit unsupported provider (`gemini:/…`) is rejected at config load.
+    See [judges → Model providers](../../reference/config/judges.md#model-providers-judge-backend).
+
 ## hook
 
 The model used to auto-answer `AskUserQuestion` prompts during headless

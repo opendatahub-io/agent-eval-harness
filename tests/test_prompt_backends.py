@@ -10,8 +10,12 @@ from agent_eval.config import EvalConfig
 from agent_eval.prompt_backends import (
     RUNNERS,
     extract_runner_text,
+    is_anthropic_model,
+    resolve_judge_backend,
     run_prompt_via_runner,
+    split_model_uri,
 )
+import pytest
 
 
 def _write_config(tmp_path, body: str) -> Path:
@@ -100,3 +104,69 @@ def test_extract_runner_text_prefers_cursor_terminal_result():
     ])
     result = RunResult(exit_code=0, stdout=stdout, stderr="", duration_s=0)
     assert extract_runner_text(result) == '{"score": 2}'
+
+
+# ---------------------------------------------------------------------------
+# Provider routing (judge backend decoupled from the runner)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("model,expected", [
+    ("openai:/gpt-4o", ("openai", "gpt-4o")),
+    ("openai://gpt-4o", ("openai", "gpt-4o")),
+    ("anthropic:/claude-sonnet-4-5", ("anthropic", "claude-sonnet-4-5")),
+    ("runner:/gpt-5.4-medium", ("runner", "gpt-5.4-medium")),
+    ("sonnet", (None, "sonnet")),
+    ("gpt-4o", (None, "gpt-4o")),
+    ("  Sonnet  ", (None, "Sonnet")),
+])
+def test_split_model_uri(model, expected):
+    assert split_model_uri(model) == expected
+
+
+@pytest.mark.parametrize("model,expected", [
+    ("sonnet", True),
+    ("sonnet-4-5", True),          # versioned alias (regression: was misclassified)
+    ("opus[1m]", True),            # bracketed alias
+    ("haiku-4-5", True),
+    ("claude-3-5-sonnet", True),
+    ("anthropic:/some-model", True),
+    ("anthropic/claude", True),    # LiteLLM single-slash form
+    ("openai:/gpt-4o", False),
+    ("gpt-4o", False),
+    ("gemini-2.5-flash", False),
+    ("", False),
+    (None, False),
+])
+def test_is_anthropic_model(model, expected):
+    assert is_anthropic_model(model) is expected
+
+
+@pytest.mark.parametrize("model,expected", [
+    # Anthropic: bare alias, full id, explicit URI (prefix stripped).
+    ("sonnet", ("anthropic", "sonnet")),
+    ("claude-sonnet-4-5", ("anthropic", "claude-sonnet-4-5")),
+    ("sonnet-4-5", ("anthropic", "sonnet-4-5")),
+    ("anthropic:/claude-x", ("anthropic", "claude-x")),
+    # OpenAI: bare family id, o-series, explicit URI, gateway-served id.
+    ("gpt-4o", ("openai", "gpt-4o")),
+    ("o3-mini", ("openai", "o3-mini")),
+    ("openai:/gpt-4o", ("openai", "gpt-4o")),
+    ("openai:/gemini-2.5-flash", ("openai", "gemini-2.5-flash")),
+    # Runner: explicit opt-in for runner-managed ids.
+    ("runner:/gpt-5.4-medium", ("runner", "gpt-5.4-medium")),
+    # A bare custom/gateway id defaults to OpenAI (served via OPENAI_BASE_URL).
+    ("mistral-large", ("openai", "mistral-large")),
+    ("gpt-5.4-medium", ("openai", "gpt-5.4-medium")),
+])
+def test_resolve_judge_backend(model, expected):
+    assert resolve_judge_backend(model) == expected
+
+
+@pytest.mark.parametrize("model", [
+    "gemini:/gemini-2.5-flash",   # unsupported explicit provider
+    "mistral:/mistral-large",     # unsupported explicit provider
+    "runner:/",                   # runner opt-in with no model name
+])
+def test_resolve_judge_backend_rejects(model):
+    with pytest.raises(ValueError):
+        resolve_judge_backend(model)

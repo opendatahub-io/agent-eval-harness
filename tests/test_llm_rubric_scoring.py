@@ -260,15 +260,39 @@ class TestLLMRubricJudgeLoading:
         # Should not have "Agent Response to Evaluate" heading (not auto-appended)
         assert "Agent Response to Evaluate" not in message_content
 
-    def test_non_anthropic_judge_model_uses_runner_backend(self, config_with_llm_rubric):
-        """Anthropic creds should not force GPT-family judge models through Anthropic."""
+    def test_openai_judge_model_not_forced_through_anthropic(self, config_with_llm_rubric):
+        """Anthropic creds must not force a GPT-family judge through Anthropic; it
+        grades via the OpenAI backend regardless of the runner."""
         import score
 
-        config_with_llm_rubric.models.judge = "gpt-5.4-medium"
+        config_with_llm_rubric.models.judge = "openai:/gpt-4o"
         judge_config = config_with_llm_rubric.judges[0]
 
         with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
             with patch("score._call_structured_judge") as direct_call, \
+                    patch("score._call_structured_judge_via_runner") as runner_call, \
+                    patch("score._call_structured_judge_openai",
+                          return_value=(3, "ok")) as openai_call:
+                scorer = score._load_llm_judge(judge_config, config_with_llm_rubric)
+                result = scorer(outputs={"files": {"output.txt": "test"}})
+
+        assert result == (3, "ok")
+        direct_call.assert_not_called()
+        runner_call.assert_not_called()
+        openai_call.assert_called_once()
+        assert openai_call.call_args.args[1] == "gpt-4o"
+
+    def test_runner_prefixed_judge_model_uses_runner_backend(self, config_with_llm_rubric):
+        """A runner:/ model grades through the configured runner (opt-in), even
+        when Anthropic creds are present."""
+        import score
+
+        config_with_llm_rubric.models.judge = "runner:/gpt-5.4-medium"
+        judge_config = config_with_llm_rubric.judges[0]
+
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+            with patch("score._call_structured_judge") as direct_call, \
+                    patch("score._call_structured_judge_openai") as openai_call, \
                     patch("score._call_structured_judge_via_runner",
                           return_value=(3, "ok")) as runner_call:
                 scorer = score._load_llm_judge(judge_config, config_with_llm_rubric)
@@ -276,7 +300,9 @@ class TestLLMRubricJudgeLoading:
 
         assert result == (3, "ok")
         direct_call.assert_not_called()
+        openai_call.assert_not_called()
         runner_call.assert_called_once()
+        assert runner_call.call_args.args[1] == "gpt-5.4-medium"
 
     def test_runner_judge_uses_stdout_only_json_contract(self,
                                                          config_with_llm_rubric,

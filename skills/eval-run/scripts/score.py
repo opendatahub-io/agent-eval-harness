@@ -38,7 +38,7 @@ from agent_eval.config import (
 )
 from agent_eval.prompt_backends import (
     extract_runner_text,
-    is_anthropic_model,
+    resolve_judge_backend,
     run_prompt_via_runner,
 )
 
@@ -812,6 +812,9 @@ def _make_builtin_scorer(entry, jc, config):
         prompt_text = entry.prompt_path.read_text()
         arguments = jc.arguments
         judge_model = _resolve_judge_model(jc, config)
+        # Route on the judge model's provider, never on the runner type. Resolved
+        # once (fail fast on an ambiguous/unsupported id) and dispatched per case.
+        backend, model_arg = resolve_judge_backend(judge_model)
 
         def scorer(outputs=None, **kwargs):
             out = outputs or {}
@@ -821,11 +824,14 @@ def _make_builtin_scorer(entry, jc, config):
             # is theirs, not the judge config's. A config that declares
             # `feedback_type`/`score_range` on one of these is rejected at load
             # rather than having the declaration silently dropped here.
-            if is_anthropic_model(judge_model):
-                return _call_structured_judge(rendered, judge_model, "bool",
+            if backend == "anthropic":
+                return _call_structured_judge(rendered, model_arg, "bool",
                                               images=images)
+            if backend == "openai":
+                return _call_structured_judge_openai(rendered, model_arg, "bool",
+                                                     images=images)
             return _call_structured_judge_via_runner(
-                rendered, judge_model, "bool", config, jc, images=images)
+                rendered, model_arg, "bool", config, jc, images=images)
 
         return scorer
 
@@ -1117,6 +1123,115 @@ def _call_structured_judge(prompt, model, feedback_type, images=None,
     text = "".join(getattr(b, "text", "") for b in response.content
                    if getattr(b, "type", None) == "text").strip()
     return parser(text)
+
+
+def _get_openai_client():
+    """OpenAI (or OpenAI-compatible) client for non-Anthropic LLM judges.
+
+    Honors ``OPENAI_BASE_URL`` so a LiteLLM/MLflow gateway or a local
+    OpenAI-compatible endpoint can serve the judge. Lazy import: the ``openai``
+    package is an optional dependency only pulled in for non-Anthropic judges.
+    """
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise RuntimeError(
+            "Non-Anthropic LLM judges require the 'openai' package. Install it "
+            "into .eval-venv (pip install openai) or use an Anthropic judge "
+            "model.") from exc
+    api_key = os.environ.get("OPENAI_API_KEY")
+    base_url = os.environ.get("OPENAI_BASE_URL")
+    if not api_key and not base_url:
+        raise RuntimeError(
+            "OpenAI judge requires OPENAI_API_KEY (and optionally OPENAI_BASE_URL "
+            "for an OpenAI-compatible gateway).")
+    kwargs = {}
+    if api_key:
+        kwargs["api_key"] = api_key
+    if base_url:
+        kwargs["base_url"] = base_url
+    return OpenAI(**kwargs)
+
+
+def _to_openai_tool(tool):
+    """Convert an Anthropic-style judge tool to OpenAI function-tool format.
+
+    The judge tool schemas (`_BOOL_JUDGE_TOOL`, `_score_judge_tool`) are the
+    single source of truth; this adapts their `input_schema` to the
+    `{"type": "function", "function": {..., "parameters": ...}}` shape the OpenAI
+    chat-completions API expects, so both provider paths grade with identical
+    fields, ordering, and descriptions.
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": tool["name"],
+            "description": tool["description"],
+            "parameters": tool["input_schema"],
+        },
+    }
+
+
+def _openai_user_message(prompt, images=None):
+    """User-message content for an OpenAI judge call, inlining any images."""
+    if not images:
+        return prompt
+    parts = [{"type": "text", "text": prompt}]
+    for img in images:
+        parts.append({"type": "text", "text": f"\n**Image: {img['label']}**"})
+        parts.append({"type": "image_url", "image_url": {
+            "url": f"data:{img['media_type']};base64,{img['data']}"}})
+    return parts
+
+
+def _call_structured_judge_openai(prompt, model, feedback_type, images=None,
+                                  max_tokens=4096, bounds=None):
+    """Call an OpenAI (or OpenAI-compatible) judge with forced tool output.
+
+    Mirrors `_call_structured_judge` so a GPT/o-series judge — or any model
+    behind an OpenAI-compatible gateway (`OPENAI_BASE_URL`) — grades with the same
+    tool schema, rationale-first ordering, scale, and text-parse fallback,
+    regardless of which runner executed the skill under test.
+    """
+    is_bool = (feedback_type == "bool")
+    if bounds is None:
+        bounds = (_DEFAULT_SCORE_RANGE[0], _DEFAULT_SCORE_RANGE[1], True)
+    judge_tool = _BOOL_JUDGE_TOOL if is_bool else _score_judge_tool(bounds)
+    tool = _to_openai_tool(judge_tool)
+    system_prompt = _BOOL_SYSTEM_PROMPT if is_bool else _score_system_prompt(bounds)
+    parser = (_parse_bool_response if is_bool
+              else lambda text: _parse_score_response(text, bounds))
+    client = _get_openai_client()
+    response = client.chat.completions.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": _openai_user_message(prompt, images)},
+        ],
+        tools=[tool],
+        tool_choice={"type": "function", "function": {"name": judge_tool["name"]}},
+    )
+    message = response.choices[0].message
+    for call in (getattr(message, "tool_calls", None) or []):
+        if call.function.name != judge_tool["name"]:
+            continue
+        try:
+            data = json.loads(call.function.arguments)
+        except (TypeError, ValueError):
+            continue
+        rationale = str(data.get("rationale") or "").strip()
+        if is_bool:
+            if isinstance(data.get("passed"), bool):
+                return (data["passed"], rationale or "(no rationale provided)")
+        else:
+            try:
+                return (_coerce_number(data["score"], bounds[2]),
+                        rationale or "(no rationale provided)")
+            except (KeyError, TypeError, ValueError):
+                pass
+    # Fallback: model emitted text instead of a tool call.
+    return parser((message.content or "").strip())
 
 
 def _call_structured_judge_via_runner(prompt, model, feedback_type, config, jc,
@@ -2219,59 +2334,31 @@ def _load_llm_judge(jc, config, project_root=None):
     feedback_type = "bool" if jc.feedback_type == "bool" else "score"
     bounds = _numeric_bounds(jc)
     arguments = jc.arguments
-    anthropic_auth = (
-        os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID")
-        or os.environ.get("ANTHROPIC_API_KEY")
-        or os.environ.get("ANTHROPIC_AUTH_TOKEN")
-    )
-    use_anthropic = bool(anthropic_auth and is_anthropic_model(judge_model))
-
-    # Preserve the existing MLflow/OpenAI-compatible fallback for Claude
-    # models when direct Anthropic credentials are absent. Non-Anthropic model
-    # ids are runner-managed and must use the model-agnostic path below.
-    if not use_anthropic and is_anthropic_model(judge_model):
-        try:
-            from mlflow.genai.judges import make_judge
-        except ImportError:
-            pass
-        else:
-            instructions = prompt
-            if bounds:
-                lo, hi, is_int = bounds
-                instructions += (
-                    f"\n\nReturn {'an integer' if is_int else 'a numeric'} score "
-                    f"between {_fmt_bound(lo)} and {_fmt_bound(hi)} inclusive. "
-                    "A score outside that range is rejected, not clamped.")
-            judge_kwargs = {"name": jc.name, "instructions": instructions}
-            if jc.feedback_type:
-                judge_kwargs["feedback_value_type"] = _parse_feedback_type(
-                    jc.feedback_type)
-            return make_judge(**judge_kwargs)
+    # Route on the judge model's provider, independent of config.runner.type and
+    # of which credentials are exported. Resolved once (an ambiguous/unsupported
+    # id fails here, at load) and dispatched per case: Anthropic and OpenAI (or
+    # OpenAI-compatible via OPENAI_BASE_URL) grade through their own SDK; a
+    # runner-managed id (runner:/…) grades through the configured runner. The
+    # numeric scale is stated only via `_numeric_bounds`/`_score_judge_tool` and
+    # enforced only when a `score_range` is declared (see `judge_bounds`), so the
+    # stated scale always matches the enforced one.
+    backend, model_arg = resolve_judge_backend(judge_model)
 
     def scorer(outputs=None, **kwargs):
         out = outputs or {}
         rendered = _render_jinja2_template(prompt, arguments, out)
         images = _extract_images(out)
-        if use_anthropic:
-            return _call_structured_judge(rendered, judge_model, feedback_type,
+        if backend == "anthropic":
+            return _call_structured_judge(rendered, model_arg, feedback_type,
                                           images=images, bounds=bounds)
+        if backend == "openai":
+            return _call_structured_judge_openai(
+                rendered, model_arg, feedback_type, images=images, bounds=bounds)
         return _call_structured_judge_via_runner(
-            rendered, judge_model, feedback_type, config, jc, bounds=bounds,
+            rendered, model_arg, feedback_type, config, jc, bounds=bounds,
             images=images)
 
     return scorer
-
-
-def _parse_feedback_type(type_str):
-    mapping = {"int": int, "float": float, "bool": bool, "str": str}
-    if type_str in mapping:
-        return mapping[type_str]
-    if type_str.startswith("Literal"):
-        from typing import Literal
-        inner = type_str[len("Literal["):-1]
-        values = tuple(v.strip().strip("'\"") for v in inner.split(","))
-        return Literal[values]
-    return str
 
 
 # ---------------------------------------------------------------------------

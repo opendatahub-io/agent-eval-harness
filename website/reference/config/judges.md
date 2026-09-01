@@ -34,7 +34,7 @@ A judge's type is inferred from which field is populated. There is no `type:` ke
 | **builtin** | `builtin:` | bool or score | reusable judge from the harness library |
 | **check** | `check:` | `(bool\|number, str)` | inline Python, in-process |
 | **agent** | `agent:` (+ `prompt`/`prompt_file`/`llm_rubric`) | bool or score | tool-using judge run through the runner abstraction against a staged workspace |
-| **LLM** | `prompt:` / `prompt_file:` / `llm_rubric:` | bool or score | Anthropic API call, or the configured runner for non-Anthropic models |
+| **LLM** | `prompt:` / `prompt_file:` / `llm_rubric:` | bool or score | Anthropic or OpenAI API call (chosen by the judge model), or the configured runner for `runner:/` models |
 | **code** | `module:` + `function:` | judge's return | your Python module |
 
 !!! info "Type precedence"
@@ -162,17 +162,35 @@ per-judge model:  >  models.judge  >  EVAL_JUDGE_MODEL env var
 
 If none resolves to a non-empty value, the judge raises at run time.
 
+### Model providers (judge backend)
+
+The judge backend is chosen by the **judge model**, independent of which runner
+executed the skill — so an Anthropic judge works with a Cursor/Codex runner, and
+an OpenAI judge works with a claude-code runner. Write the model as a
+`provider:/model` id (or a bare id):
+
+| Judge model | Backend | Notes |
+| --- | --- | --- |
+| `sonnet`, `claude-sonnet-4-5`, `anthropic:/…` | Anthropic SDK | Direct forced-tool structured output; image evidence and Vertex supported. |
+| `openai:/gpt-4o`, `gpt-4o`, or any other bare id | OpenAI SDK | Function-calling structured output. Point `OPENAI_BASE_URL` at an OpenAI-compatible gateway (LiteLLM proxy, Azure, local, …) to reach other providers or self-hosted models. Needs the `openai` package and `OPENAI_API_KEY`. |
+| `runner:/gpt-5.4-medium` | Configured runner | Explicit opt-in for a model only the runner CLI can serve (e.g. Cursor's internal models). |
+
+An explicit unsupported provider (e.g. `gemini:/…`) is rejected at config load —
+reach it via an OpenAI-compatible gateway (`openai:/…` + `OPENAI_BASE_URL`) or
+`runner:/…`.
+
 ### Verdict output
 
-Plain LLM judges use a structured API response when the selected model is served
-directly by Anthropic. For non-Anthropic models, such as runner-managed Cursor
-models, the harness runs the prompt through the configured runner and requires
-stdout to contain exactly one JSON verdict object — with no preamble, Markdown,
-or trailing text — in the same `score`/`passed` shape shown above. These judges
-do not write `output/score.json`; that file contract is reserved for `agent:`
-judges, which have a writable staged output directory. If a runner still emits
-an accidental preamble, the harness retains its last-JSON fallback for
-compatibility, but the prompt contract asks the model to emit only the verdict.
+Anthropic and OpenAI judges grade with the same forced-tool contract: the
+rationale first, then the `score`/`passed` field on the declared scale.
+Runner-backed (`runner:/…`) judges instead run the prompt through the configured
+runner against a read-only workspace and require stdout to contain exactly one
+JSON verdict object — no preamble, Markdown, or trailing text — in the same
+`score`/`passed` shape shown above. These judges do not write
+`output/score.json`; that file contract is reserved for `agent:` judges, which
+have a writable staged output directory. If a runner still emits an accidental
+preamble, the harness retains its last-JSON fallback for compatibility, but the
+prompt contract asks the model to emit only the verdict.
 
 ## Agent judges
 

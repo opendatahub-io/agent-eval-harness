@@ -1641,6 +1641,24 @@ class EvalConfig:
                     "workspace_mode: repo because repository answer-key "
                     "protections cannot be enforced")
 
+        # Fail fast on a judge model that cannot be routed to a provider backend.
+        # Only statically-known models are checked (`models.judge` and per-judge
+        # `model:`); a model supplied solely via EVAL_JUDGE_MODEL is validated
+        # when the judge is built. Local import avoids an import cycle
+        # (prompt_backends -> agent_eval.agent -> config).
+        from agent_eval.prompt_backends import resolve_judge_backend
+        judge_models = []
+        if config.models.judge:
+            judge_models.append(("models.judge", config.models.judge))
+        for jc in config.judges:
+            if jc.model:
+                judge_models.append((f"judge '{jc.name}' model", jc.model))
+        for label, model in judge_models:
+            try:
+                resolve_judge_backend(model)
+            except ValueError as e:
+                raise ValueError(f"{label}: {e}") from e
+
         return config
 
     @property

@@ -162,6 +162,33 @@ def test_judge_model_resolution_precedence(tmp_path, monkeypatch):
         _resolve_judge_model(jc, cfg)
 
 
+def test_judge_model_backend_validated_at_load(tmp_path):
+    """An unroutable judge model fails at config load, naming the source."""
+    body = ("name: t\nexecution:\n  skill: s\n"
+            "models:\n  judge: gemini:/gemini-2.5-flash\n"
+            "judges:\n  - {name: j, prompt: rate it}\n")
+    with pytest.raises(ValueError, match=r"models\.judge:.*Unsupported"):
+        EvalConfig.from_yaml(_write(tmp_path, body))
+
+
+def test_unsupported_per_judge_provider_rejected_at_load(tmp_path):
+    body = ("name: t\nexecution:\n  skill: s\n"
+            "judges:\n  - {name: j, prompt: rate it, model: 'mistral:/mistral-large'}\n")
+    with pytest.raises(ValueError, match=r"judge 'j' model:.*Unsupported"):
+        EvalConfig.from_yaml(_write(tmp_path, body))
+
+
+def test_provider_and_runner_prefixed_judge_models_load(tmp_path):
+    """openai:/, anthropic:/, runner:/, bare aliases and gateway ids all route."""
+    for model in ("openai:/gpt-4o", "anthropic:/claude-sonnet-4-5",
+                  "runner:/gpt-5.4-medium", "sonnet", "my-gateway-model"):
+        body = (f"name: t\nexecution:\n  skill: s\n"
+                f"models:\n  judge: {model}\n"
+                f"judges:\n  - {{name: j, prompt: rate it}}\n")
+        cfg = EvalConfig.from_yaml(_write(tmp_path, body))
+        assert cfg.models.judge == model
+
+
 # --- Path resolution tests (T009) ---
 
 def test_config_dir_set_from_yaml(tmp_path):

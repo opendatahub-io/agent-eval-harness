@@ -155,6 +155,16 @@ models:
   returning a `tool_calls` arguments payload, and the text fallback.
 - `generate_synthetic`: URI stripping + backend selection.
 
+## Known limitations
+
+- `_call_structured_judge_openai` sends `max_tokens` (accepted by gpt-4o-class
+  models and OpenAI-compatible gateways). OpenAI reasoning models (o1/o3) on the
+  chat-completions endpoint expect `max_completion_tokens` and may reject the
+  call; use a gpt-class judge or a gateway that normalizes the parameter.
+- Image evidence reaches OpenAI judges as vision `image_url` blocks (works on
+  vision models) and runner judges as staged files; make_judge-style non-vision
+  providers do not see images.
+
 ## Out of scope (future)
 
 - Native Gemini/Bedrock judge SDKs (today: via OpenAI-compatible gateway).

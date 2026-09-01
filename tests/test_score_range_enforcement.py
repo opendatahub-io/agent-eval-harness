@@ -6,6 +6,7 @@ error sample and drops out of the aggregate — clamping it would turn a 4 from 
 inline check returning a raw count must not be forced into the default [1, 5].
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -103,32 +104,36 @@ def test_a_deterministic_judge_keeps_its_own_fractional_value(tmp_path):
     assert entry.get("error") is None
 
 
-def test_the_mlflow_fallback_judge_is_told_its_scale(monkeypatch):
+def test_the_openai_backend_judge_is_told_its_scale(monkeypatch):
     """`_enforce_bounds` applies by judge name whatever produced the value, so
-    a judge on this path would be failed against a scale it never received."""
-    import sys
-    import types
+    every backend must state the declared scale it will be enforced against —
+    here the OpenAI (non-Anthropic) path."""
+    from types import SimpleNamespace
 
     captured = {}
 
-    def fake_make_judge(**kwargs):
+    def fake_create(**kwargs):
         captured.update(kwargs)
-        return lambda **_: (1, "r")
+        call = SimpleNamespace(function=SimpleNamespace(
+            name="submit_score",
+            arguments=json.dumps({"rationale": "r", "score": 1})))
+        message = SimpleNamespace(tool_calls=[call], content=None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
-    mod = types.ModuleType("mlflow.genai.judges")
-    mod.make_judge = fake_make_judge
-    monkeypatch.setitem(sys.modules, "mlflow.genai.judges", mod)
-    for var in ("ANTHROPIC_VERTEX_PROJECT_ID", "ANTHROPIC_API_KEY",
-                "ANTHROPIC_AUTH_TOKEN"):
-        monkeypatch.delenv(var, raising=False)
+    fake_client = SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=fake_create)))
+    monkeypatch.setattr(sc, "_get_openai_client", lambda: fake_client)
 
     from agent_eval.config import EvalConfig, JudgeConfig, ModelsConfig
     config = EvalConfig(name="t", skill="t")
-    config.models = ModelsConfig(judge="claude-sonnet-4-6")
+    config.models = ModelsConfig(judge="openai:/gpt-4o")
     jc = JudgeConfig(name="j", prompt="rate it", feedback_type="int",
                      score_range=[0, 2])
-    sc._load_llm_judge(jc, config)
-    assert "between 0 and 2" in captured["instructions"]
+    scorer = sc._load_llm_judge(jc, config)
+    value, _ = scorer(outputs={"conversation": "x"})
+    assert value == 1
+    system_message = captured["messages"][0]["content"]
+    assert "0-2" in system_message
 
 
 def test_a_non_finite_value_is_rejected(tmp_path):

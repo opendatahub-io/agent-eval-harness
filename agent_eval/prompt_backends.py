@@ -19,21 +19,85 @@ from agent_eval.agent import RUNNERS
 from agent_eval.events import extract_conversation_text, parse_stream_events
 
 
-_ANTHROPIC_MODEL_ALIASES = {"opus", "sonnet", "haiku"}
+_ANTHROPIC_ALIAS_PREFIXES = ("opus", "sonnet", "haiku")
+
+
+def split_model_uri(model: Optional[str]) -> tuple[Optional[str], str]:
+    """Split a ``"<provider>:/<model>"`` id into ``(provider, bare_model)``.
+
+    A bare id (no ``":/"``) returns ``(None, id)``.  The provider is lowercased;
+    leading slashes on the model part are stripped so ``"openai:/gpt-4o"`` and
+    ``"openai://gpt-4o"`` both yield ``("openai", "gpt-4o")``.
+    """
+    value = (model or "").strip()
+    if ":/" in value:
+        provider, _, rest = value.partition(":/")
+        return (provider.strip().lower() or None), rest.lstrip("/").strip()
+    return None, value
 
 
 def is_anthropic_model(model: Optional[str]) -> bool:
     """Best-effort classifier for Anthropic/Claude model ids.
 
     The direct Anthropic client can only serve Claude-family models.  Other model
-    ids (for example Cursor's ``gpt-5.4-medium``) need to go through a runner.
+    ids (for example Cursor's ``gpt-5.4-medium``) need a different backend.
+
+    URI-aware (``anthropic:/…`` → True) and prefix-aware so versioned aliases such
+    as ``sonnet-4-5`` and bracketed ids such as ``opus[1m]`` classify correctly.
     """
-    value = (model or "").strip().lower()
+    provider, bare = split_model_uri(model)
+    if provider is not None:
+        return provider == "anthropic"
+    value = bare.lower()
     if not value:
         return False
-    if value in _ANTHROPIC_MODEL_ALIASES:
+    if value.startswith("anthropic/"):  # LiteLLM single-slash form
         return True
-    return "claude" in value or value.startswith("anthropic/")
+    if "claude" in value:
+        return True
+    return value.startswith(_ANTHROPIC_ALIAS_PREFIXES)
+
+
+def resolve_judge_backend(model: Optional[str]) -> tuple[str, str]:
+    """Route a judge model id to a backend, independent of the eval runner.
+
+    Returns ``(backend, model_arg)`` where ``backend`` is one of:
+
+    - ``"anthropic"`` — direct Anthropic SDK; ``model_arg`` is the bare id.
+    - ``"openai"`` — OpenAI SDK (honors ``OPENAI_BASE_URL`` for OpenAI-compatible
+      gateways); ``model_arg`` is the bare id.
+    - ``"runner"`` — the configured eval runner CLI (explicit opt-in for
+      runner-managed ids such as Cursor's ``gpt-5.4-medium``); ``model_arg`` is
+      the bare id.
+
+    Raises ``ValueError`` only for an unsupported *explicit* provider (or an
+    empty ``runner:/``); a bare id never fails to route.
+    """
+    provider, bare = split_model_uri(model)
+    if provider == "runner":
+        if not bare:
+            raise ValueError(
+                "runner-backed judge model needs a name, e.g. 'runner:/gpt-5.4-medium'")
+        return ("runner", bare)
+    if provider == "anthropic":
+        return ("anthropic", bare)
+    if provider == "openai":
+        return ("openai", bare)
+    if provider is not None:
+        raise ValueError(
+            f"Unsupported judge model provider {provider!r} in {model!r}. Use "
+            f"'anthropic:/…', 'openai:/…' (point OPENAI_BASE_URL at an "
+            f"OpenAI-compatible gateway to reach other providers), or "
+            f"'runner:/{bare}' to grade through the configured runner.")
+    # Bare id (no provider prefix).
+    if is_anthropic_model(bare):
+        return ("anthropic", bare)
+    # Any other bare id — a GPT/o-series id or a custom/gateway model name —
+    # grades via the OpenAI SDK, which also serves OpenAI-compatible gateways
+    # through OPENAI_BASE_URL. A runner-managed id (e.g. Cursor's
+    # ``gpt-5.4-medium``) must be written ``runner:/<model>`` to grade through
+    # the configured runner instead.
+    return ("openai", bare)
 
 
 def extract_runner_text(result) -> str:

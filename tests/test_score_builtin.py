@@ -139,9 +139,9 @@ class TestLoadJudgesBuiltin:
             # builtin judges are pass/fail
             assert mock_call.call_args[0][2] == "bool"
 
-    def test_builtin_llm_judge_uses_runner_for_non_anthropic_model(self):
+    def test_builtin_llm_judge_uses_runner_for_runner_prefixed_model(self):
         config = EvalConfig(name="test", skill="test")
-        config.models = ModelsConfig(judge="gpt-5.4-medium")
+        config.models = ModelsConfig(judge="runner:/gpt-5.4-medium")
         config.judges = [
             JudgeConfig(name="safety", builtin="no_harmful_content"),
         ]
@@ -149,14 +149,38 @@ class TestLoadJudgesBuiltin:
         _, scorer, _, _, _samples = judges[0]
 
         with patch("score._call_structured_judge") as direct_call, \
+                patch("score._call_structured_judge_openai") as openai_call, \
                 patch("score._call_structured_judge_via_runner",
                       return_value=(True, "ok")) as runner_call:
             result = scorer(outputs={"conversation": "test", "files": {}})
 
         assert result == (True, "ok")
         direct_call.assert_not_called()
+        openai_call.assert_not_called()
         runner_call.assert_called_once()
+        # The runner:/ prefix is stripped to the bare id the runner CLI expects.
         assert runner_call.call_args.args[1:3] == ("gpt-5.4-medium", "bool")
+
+    def test_builtin_llm_judge_uses_openai_for_openai_model(self):
+        config = EvalConfig(name="test", skill="test")
+        config.models = ModelsConfig(judge="openai:/gpt-4o")
+        config.judges = [
+            JudgeConfig(name="safety", builtin="no_harmful_content"),
+        ]
+        judges = load_judges(config)
+        _, scorer, _, _, _samples = judges[0]
+
+        with patch("score._call_structured_judge") as direct_call, \
+                patch("score._call_structured_judge_via_runner") as runner_call, \
+                patch("score._call_structured_judge_openai",
+                      return_value=(True, "ok")) as openai_call:
+            result = scorer(outputs={"conversation": "test", "files": {}})
+
+        assert result == (True, "ok")
+        direct_call.assert_not_called()
+        runner_call.assert_not_called()
+        openai_call.assert_called_once()
+        assert openai_call.call_args.args[1:3] == ("gpt-4o", "bool")
 
 
 class TestParsers:
@@ -1159,3 +1183,61 @@ class TestSignedScale:
     def test_the_prompt_spells_out_a_signed_range(self):
         from score import _score_system_prompt
         assert "from -1 to 1" in _score_system_prompt(self.BOUNDS)
+
+
+class TestOpenAIStructuredJudge:
+    """The OpenAI (and OpenAI-compatible) judge path mirrors the Anthropic one."""
+
+    def _client(self, *, tool_name=None, arguments=None, content=None):
+        import json as _json
+
+        def create(**kwargs):
+            self.captured = kwargs
+            tool_calls = None
+            if tool_name is not None:
+                call = SimpleNamespace(function=SimpleNamespace(
+                    name=tool_name, arguments=_json.dumps(arguments)))
+                tool_calls = [call]
+            message = SimpleNamespace(tool_calls=tool_calls, content=content)
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+        return SimpleNamespace(chat=SimpleNamespace(
+            completions=SimpleNamespace(create=create)))
+
+    def test_bool_tool_call(self):
+        from score import _call_structured_judge_openai
+        client = self._client(tool_name="submit_evaluation",
+                              arguments={"passed": True, "rationale": "solid"})
+        with patch("score._get_openai_client", return_value=client):
+            result = _call_structured_judge_openai("grade", "gpt-4o", "bool")
+        assert result == (True, "solid")
+        # Forced tool + system message carry over unchanged.
+        assert self.captured["tool_choice"]["function"]["name"] == "submit_evaluation"
+
+    def test_numeric_tool_call_coerces_to_int(self):
+        from score import _call_structured_judge_openai
+        client = self._client(tool_name="submit_score",
+                              arguments={"score": 3.7, "rationale": "ok"})
+        with patch("score._get_openai_client", return_value=client):
+            value, rationale = _call_structured_judge_openai(
+                "grade", "openai:/gpt-4o", "score", bounds=(0, 5, True))
+        assert value == 4 and rationale == "ok"
+
+    def test_text_fallback_when_no_tool_call(self):
+        from score import _call_structured_judge_openai
+        client = self._client(content='{"passed": false, "rationale": "nope"}')
+        with patch("score._get_openai_client", return_value=client):
+            result = _call_structured_judge_openai("grade", "gpt-4o", "bool")
+        assert result == (False, "nope")
+
+    def test_images_inline_as_data_uri(self):
+        from score import _call_structured_judge_openai
+        client = self._client(tool_name="submit_evaluation",
+                              arguments={"passed": True, "rationale": "r"})
+        images = [{"label": "shot", "media_type": "image/png", "data": "QUJD"}]
+        with patch("score._get_openai_client", return_value=client):
+            _call_structured_judge_openai("grade", "gpt-4o", "bool", images=images)
+        user_content = self.captured["messages"][1]["content"]
+        urls = [p["image_url"]["url"] for p in user_content
+                if p.get("type") == "image_url"]
+        assert urls == ["data:image/png;base64,QUJD"]

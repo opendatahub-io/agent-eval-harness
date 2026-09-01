@@ -274,6 +274,35 @@ class TestSyntheticGeneration:
                 assert mock_runner.call_count == 1
                 assert (output_dir / "case-001" / "annotations.yaml").exists()
 
+    def test_generate_synthetic_strips_runner_prefix(self, sample_config):
+        """A runner:/ model is stripped to the bare id the runner CLI expects."""
+        response_text = json.dumps([
+            {"input": {"prompt": "q"}, "annotations": {"difficulty": "easy"}},
+        ])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("generate_synthetic.run_prompt_via_runner") as mock_runner:
+                mock_runner.return_value = (
+                    Mock(exit_code=0, stdout="", stderr=""),
+                    response_text,
+                    Path(tmpdir) / "runner-workspace",
+                )
+                generate_synthetic(
+                    config=sample_config,
+                    output_dir=Path(tmpdir) / "dataset",
+                    model="runner:/gpt-5.4-medium",
+                )
+                assert mock_runner.call_args.args[2] == "gpt-5.4-medium"
+
+    def test_generate_synthetic_rejects_openai_native(self, sample_config):
+        """OpenAI-native generation is unsupported; guide the user explicitly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with pytest.raises(ValueError, match="OpenAI-native synthetic"):
+                generate_synthetic(
+                    config=sample_config,
+                    output_dir=Path(tmpdir) / "dataset",
+                    model="openai:/gpt-4o",
+                )
+
     def test_no_seeds_raises_error(self, monkeypatch):
         """Test that config without generation seeds raises error."""
         from agent_eval.config import EvalConfig
