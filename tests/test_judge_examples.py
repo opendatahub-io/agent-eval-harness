@@ -20,7 +20,7 @@ import score as sc  # noqa: E402
 from agent_eval.config import EvalConfig, JudgeExamplesConfig  # noqa: E402
 from agent_eval.examples import (  # noqa: E402
     EXCERPT_CAP, Exemplar, format_examples, harvest_review_examples,
-    select_examples,
+    load_excerpts, select_examples,
 )
 
 
@@ -87,21 +87,21 @@ def test_examples_rejected_on_pairwise_judge(tmp_path):
 
 
 def test_examples_unknown_source_rejected(tmp_path):
-    with pytest.raises(ValueError, match="examples.source must be one of"):
+    with pytest.raises(ValueError, match=r"examples\.source must be one of"):
         _config(tmp_path, "  - {name: j, feedback_type: bool, prompt: 'p', "
                           "examples: {source: mlflow}}\n")
 
 
 def test_examples_count_must_be_a_positive_integer(tmp_path):
     for bad in ("0", "-1", "1.5", "true", "'3'"):
-        with pytest.raises(ValueError, match="examples.count"):
+        with pytest.raises(ValueError, match=r"examples\.count"):
             _config(tmp_path, "  - {name: j, feedback_type: bool, prompt: 'p', "
                               f"examples: {{count: {bad}}}}}\n")
 
 
 def test_examples_mix_values_validated(tmp_path):
     for bad in ("[maybe]", "[]", "[pass, pass]", "pass"):
-        with pytest.raises(ValueError, match="examples.mix"):
+        with pytest.raises(ValueError, match=r"examples\.mix"):
             _config(tmp_path, "  - {name: j, feedback_type: bool, prompt: 'p', "
                               f"examples: {{mix: {bad}}}}}\n")
 
@@ -205,20 +205,27 @@ def test_excluded_run_is_never_harvested(tmp_path):
     assert [e.run_id for e in pool] == ["run-a"]
 
 
-def test_excerpts_read_from_run_case_dirs(tmp_path):
+def test_harvest_reads_no_artifacts_and_load_excerpts_fills_them(tmp_path):
+    """Harvesting touches only review.yaml; excerpts load after selection,
+    and only for the exemplars handed to load_excerpts (never mutating the
+    cached pool entries)."""
     _mk_run(tmp_path, "run-a", {"feedback": {"case-1": "bad"}},
             cases={"case-1": {"input": "prompt: fix the bug",
                               "output": "the fix"}})
-    pool = harvest_review_examples(tmp_path, "quality", output_dirs=["output"])
-    assert pool[0].input_excerpt == "prompt: fix the bug"
-    assert pool[0].output_excerpt == "the fix"
+    pool = harvest_review_examples(tmp_path, "quality")
+    assert pool[0].input_excerpt == "" and pool[0].output_excerpt == ""
+    loaded = load_excerpts(pool, tmp_path, output_dirs=["output"])
+    assert loaded[0].input_excerpt == "prompt: fix the bug"
+    assert loaded[0].output_excerpt == "the fix"
+    assert pool[0].input_excerpt == ""  # originals untouched
 
 
 def test_long_excerpts_are_truncated(tmp_path):
     _mk_run(tmp_path, "run-a", {"feedback": {"case-1": "bad"}},
             cases={"case-1": {"output": "x" * (EXCERPT_CAP * 2)}})
-    pool = harvest_review_examples(tmp_path, "quality", output_dirs=["output"])
-    excerpt = pool[0].output_excerpt
+    pool = harvest_review_examples(tmp_path, "quality")
+    loaded = load_excerpts(pool, tmp_path, output_dirs=["output"])
+    excerpt = loaded[0].output_excerpt
     assert excerpt.endswith("[truncated]")
     assert len(excerpt) == EXCERPT_CAP + len("[truncated]")
 

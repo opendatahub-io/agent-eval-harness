@@ -1762,7 +1762,8 @@ def _examples_for_case(jc, config, record):
     review history must not fail scoring.
     """
     from agent_eval.examples import (
-        format_examples, harvest_review_examples, select_examples)
+        format_examples, harvest_review_examples, load_excerpts,
+        select_examples)
     case_dir = Path(record.get("case_dir") or "")
     case_id = case_dir.name
     # <runs>/<eval>/<run-id>/cases/<case-id> — exclude the run being scored
@@ -1776,10 +1777,12 @@ def _examples_for_case(jc, config, record):
     key = (str(runs_root), jc.name, run_id)
     with _examples_lock:
         if key not in _examples_pools:
+            # Cheap under the lock: harvesting reads only review.yaml files.
+            # Artifact excerpts load after selection, outside the lock, so
+            # the I/O is per injected exemplar, not per reviewed case.
             _examples_pools[key] = harvest_review_examples(
                 runs_root, jc.name,
                 score_range=jc.score_range,
-                output_dirs=[o.path for o in config.outputs if o.path],
                 exclude_run_id=run_id or None)
         pool = _examples_pools[key]
     selected = select_examples(pool, count=jc.examples.count,
@@ -1793,6 +1796,9 @@ def _examples_for_case(jc, config, record):
                   f"usable human review labels were found under {runs_root} "
                   "— running without examples", file=sys.stderr)
         return ""
+    selected = load_excerpts(selected, runs_root,
+                             output_dirs=[o.path for o in config.outputs
+                                          if o.path])
     return format_examples(selected)
 
 
