@@ -126,7 +126,7 @@ frontmatter so the HTML report can attribute it:
 ```markdown
 ---
 agent: Claude Code
-model: <your-model-id>
+model: <your own model id — the model YOU are running as>
 date: <UTC ISO 8601>
 ---
 
@@ -138,3 +138,8 @@ date: <UTC ISO 8601>
 
 The frontmatter is consumed by the report renderer (not displayed verbatim).
 The file is rendered as a prominent callout near the top of the HTML report.
+
+`model` is **your own** model — the one you're running as (from your own
+context, any provider), not the model under test (`--model` / the eval subject),
+which the report already shows in its Model row. Omit it only if you can't
+determine your own.
