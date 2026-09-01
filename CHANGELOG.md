@@ -1,3 +1,11 @@
+# [1.47.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.46.0...v1.47.0) (2026-09-01)
+
+
+### Features
+
+* **scoring:** fence evaluated material and target the guard at the boundary ([a4938dc](https://github.com/opendatahub-io/agent-eval-harness/commit/a4938dc343799f616afbcee22536cb9866ce7772))
+* **scoring:** mark graded material as untrusted in LLM judge system prompts ([a637e18](https://github.com/opendatahub-io/agent-eval-harness/commit/a637e18a8f05987e652057fc32cc260b6582e83c))
+
 # [1.46.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.45.0...v1.46.0) (2026-09-01)
 
 
