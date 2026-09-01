@@ -189,6 +189,25 @@ def test_provider_and_runner_prefixed_judge_models_load(tmp_path):
         assert cfg.models.judge == model
 
 
+def test_agent_judge_unsupported_provider_not_rejected_at_load(tmp_path):
+    """Agent judges route through the runner (prefix stripped), so an explicit
+    non-SDK provider on them must not be rejected at config load."""
+    body = ("name: t\nexecution:\n  skill: s\n"
+            "judges:\n  - {name: j, prompt: rate it, model: 'gemini:/x', "
+            "agent: {allowed_tools: [Read]}}\n")
+    cfg = EvalConfig.from_yaml(_write(tmp_path, body))
+    assert cfg.judges[0].model == "gemini:/x"
+
+
+def test_unsupported_feedback_type_rejected_at_load(tmp_path):
+    """Categorical feedback_type is unsupported after the make_judge path was
+    removed; it must fail at load rather than be silently graded as numeric."""
+    body = ("name: t\nexecution:\n  skill: s\n"
+            "judges:\n  - {name: j, prompt: rate it, feedback_type: str}\n")
+    with pytest.raises(ValueError, match=r"unsupported feedback_type"):
+        EvalConfig.from_yaml(_write(tmp_path, body))
+
+
 # --- Path resolution tests (T009) ---
 
 def test_config_dir_set_from_yaml(tmp_path):

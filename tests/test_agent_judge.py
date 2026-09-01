@@ -676,3 +676,27 @@ class TestVerdictContractOrdering:
     def test_bool_spec_puts_rationale_before_passed(self):
         args = self._args(feedback_type="bool")
         assert '{"rationale": "<short justification>", "passed":' in args
+
+
+class TestAgentJudgeModelPrefix:
+    """An agent judge is runner-executed, so a provider prefix on its model is
+    stripped to the bare id the runner CLI expects (cross-provider fix)."""
+
+    def _model_seen(self, judge_model):
+        judge = _agent_judge(feedback_type="int", score_range=[0, 2])
+        _, scorer, _, _, _ = load_judges(
+            _config(judge, judge_model=judge_model))[0]
+        capture = {}
+        fake = _make_fake_runner({"score": 1, "rationale": "r"}, capture=capture)
+        with _patched_runners(fake):
+            scorer(outputs={"files": {}})
+        return capture["execute_calls"][0]["model"]
+
+    def test_anthropic_prefix_stripped(self):
+        assert self._model_seen("anthropic:/claude-sonnet-4-5") == "claude-sonnet-4-5"
+
+    def test_runner_prefix_stripped(self):
+        assert self._model_seen("runner:/gpt-5.4-medium") == "gpt-5.4-medium"
+
+    def test_bare_alias_unchanged(self):
+        assert self._model_seen("sonnet") == "sonnet"

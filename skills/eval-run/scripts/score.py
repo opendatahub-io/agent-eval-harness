@@ -40,6 +40,7 @@ from agent_eval.prompt_backends import (
     extract_runner_text,
     resolve_judge_backend,
     run_prompt_via_runner,
+    split_model_uri,
 )
 
 # Log (don't silently blank) any undefined variable a judge template references.
@@ -2210,7 +2211,10 @@ def _load_agent_judge(jc, config, project_root=None):
     timeout_s = int(timeout_value if timeout_value is not None else 600)
     agent_budget = agent.get("max_budget_usd")
     max_budget = float(agent_budget if agent_budget is not None else 2.0)
-    judge_model = _resolve_judge_model(jc, config)
+    # An agent judge is inherently runner-executed (it needs Read/Grep/Glob), so
+    # its model always goes to the runner CLI. Strip any provider prefix
+    # (`anthropic:/…`, `runner:/…`) to the bare id the runner expects.
+    _, judge_model = split_model_uri(_resolve_judge_model(jc, config))
     judge_runner = copy.copy(agent.get("runner") or RunnerConfig())
     judge_runner.settings = dict(judge_runner.settings or {})
     # Agent judges run against a temporary staged workspace. Never let a
@@ -2413,8 +2417,21 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
                              "first, then the verdict. Return JSON: "
                              "{\"reasoning\": \"...\", \"preferred\": \"A\" or \"B\" or \"tie\"}")
 
+    # Route the pairwise judge on its model's provider, independent of the
+    # runner — same contract as scoring judges.
+    if not model:
+        return {"error": "no pairwise judge model configured"}
     try:
-        client = _get_anthropic_client()
+        backend, model_arg = resolve_judge_backend(model)
+    except ValueError as e:
+        return {"error": str(e)}
+    if backend == "runner":
+        return {"error": (f"pairwise judging does not support runner-backed "
+                          f"models ({model!r}); use an 'anthropic:/' or "
+                          f"'openai:/' model")}
+    try:
+        client = (_get_openai_client() if backend == "openai"
+                  else _get_anthropic_client())
     except Exception as e:
         return {"error": str(e)}
 
@@ -2435,7 +2452,7 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
         result = PairwiseResult(case_id=case_id)
 
         msg_ab = f"## Output A\n\n{output_a}\n\n## Output B\n\n{output_b}"
-        pref_ab, err = _call_judge(client, comparison_prompt, msg_ab, model)
+        pref_ab, err = _call_judge(backend, client, comparison_prompt, msg_ab, model_arg)
         if pref_ab:
             result.pref_ab = pref_ab.get("preferred")
             result.reasoning_ab = pref_ab
@@ -2444,7 +2461,7 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
             return result
 
         msg_ba = f"## Output A\n\n{output_b}\n\n## Output B\n\n{output_a}"
-        pref_ba, err = _call_judge(client, comparison_prompt, msg_ba, model)
+        pref_ba, err = _call_judge(backend, client, comparison_prompt, msg_ba, model_arg)
         if pref_ba:
             result.pref_ba = pref_ba.get("preferred")
             result.reasoning_ba = pref_ba
@@ -2634,15 +2651,23 @@ _PAIRWISE_TOOL = {
 }
 
 
-def _call_judge(client, system_prompt, user_message, model, max_tokens=16384):
+_PAIRWISE_SYSTEM = (
+    "You are a blind judge comparing two outputs, A and B. Call the "
+    "submit_comparison tool exactly once: write the reasoning first, then commit "
+    "to the verdict. Put ALL of your reasoning inside the tool input — do not "
+    "write any text outside the tool call.")
+
+
+def _call_judge(backend, client, system_prompt, user_message, model, max_tokens=16384):
+    """Run one pairwise comparison, dispatching on the resolved judge backend so
+    an OpenAI (or OpenAI-compatible) model can judge alongside Anthropic."""
+    if backend == "openai":
+        return _call_pairwise_openai(client, system_prompt, user_message, model,
+                                     max_tokens=max_tokens)
     try:
         response = client.messages.create(
             model=model, max_tokens=max_tokens,
-            system=("You are a blind judge comparing two outputs, A and B. "
-                    "Call the submit_comparison tool exactly once: write the "
-                    "reasoning first, then commit to the verdict. Put ALL of your "
-                    "reasoning inside the tool input — do not write any text "
-                    "outside the tool call."),
+            system=_PAIRWISE_SYSTEM,
             tools=[_PAIRWISE_TOOL],
             tool_choice={"type": "tool", "name": "submit_comparison"},
             messages=[
@@ -2662,10 +2687,45 @@ def _call_judge(client, system_prompt, user_message, model, max_tokens=16384):
             return parsed, None
         # Retry once with a larger budget if the response was truncated.
         if response.stop_reason == "max_tokens" and max_tokens < 32768:
-            return _call_judge(client, system_prompt, user_message, model,
+            return _call_judge(backend, client, system_prompt, user_message, model,
                                max_tokens=max_tokens * 2)
         return None, (f"No submit_comparison tool_use in response "
                       f"(stop_reason={response.stop_reason})")
+    except Exception as e:
+        return None, str(e)
+
+
+def _call_pairwise_openai(client, system_prompt, user_message, model, max_tokens=16384):
+    """OpenAI (or OpenAI-compatible) pairwise comparison, mirroring _call_judge."""
+    tool = _to_openai_tool(_PAIRWISE_TOOL)
+    try:
+        response = client.chat.completions.create(
+            model=model, max_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": _PAIRWISE_SYSTEM},
+                {"role": "user", "content": f"{system_prompt}\n\n{user_message}"},
+            ],
+            tools=[tool],
+            tool_choice={"type": "function",
+                         "function": {"name": "submit_comparison"}},
+        )
+        message = response.choices[0].message
+        for call in (getattr(message, "tool_calls", None) or []):
+            if call.function.name == "submit_comparison":
+                try:
+                    return json.loads(call.function.arguments), None
+                except (TypeError, ValueError):
+                    pass
+        text = message.content or ""
+        parsed = _extract_judge_json(text) if text else None
+        if parsed is not None:
+            return parsed, None
+        finish = response.choices[0].finish_reason
+        if finish == "length" and max_tokens < 32768:
+            return _call_pairwise_openai(client, system_prompt, user_message,
+                                         model, max_tokens=max_tokens * 2)
+        return None, (f"No submit_comparison tool call in response "
+                      f"(finish_reason={finish})")
     except Exception as e:
         return None, str(e)
 

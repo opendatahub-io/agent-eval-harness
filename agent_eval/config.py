@@ -762,8 +762,10 @@ class JudgeConfig:
     )  # File paths loaded as supplementary context
     # Optional verdict shape: "bool" (pass/fail) vs "int"/"float" (numeric
     # score). Never inferred — an omitted value means numeric, and int-vs-float
-    # is then read off `score_range` (whole bounds => integer). "str" and
-    # "Literal[...]" apply only on the MLflow make_judge fallback path.
+    # is then read off `score_range` (whole bounds => integer). Only "", "bool",
+    # "int", and "float" are supported; LLM/agent judges emit a bool or numeric
+    # verdict (see the judge paths in score.py). Rejected at config load
+    # otherwise.
     feedback_type: str = ""
     # Numeric scale [lo, hi] for this judge's value. When declared it is stated
     # in the LLM judge's system prompt and tool schema, enforced on the returned
@@ -1448,6 +1450,12 @@ class EvalConfig:
                 raise ValueError(
                     f"Judge '{jc.name}': unknown builtin judge '{jc.builtin}' "
                     f"(available: {', '.join(builtin_judge_names())})")
+            if jc.feedback_type not in ("", "bool", "int", "float"):
+                raise ValueError(
+                    f"Judge '{jc.name}': unsupported feedback_type "
+                    f"'{jc.feedback_type}' — use 'bool', 'int', or 'float'. "
+                    "Categorical ('str'/'Literal[...]') verdicts are not "
+                    "supported by the LLM/agent judge paths.")
             if jc.feedback_type == "bool" and jc.score_range:
                 raise ValueError(
                     f"Judge '{jc.name}': 'score_range' has no meaning with "
@@ -1647,10 +1655,15 @@ class EvalConfig:
         # when the judge is built. Local import avoids an import cycle
         # (prompt_backends -> agent_eval.agent -> config).
         from agent_eval.prompt_backends import resolve_judge_backend
+        # Agent judges route their model through the runner (any provider prefix
+        # is stripped to the bare id), not an SDK, so an explicit non-SDK provider
+        # is valid for them — validate only judges that resolve to an SDK backend.
+        # models.judge is checked only when a non-agent judge could consume it.
+        non_agent_judges = [jc for jc in config.judges if not jc.agent]
         judge_models = []
-        if config.models.judge:
+        if config.models.judge and non_agent_judges:
             judge_models.append(("models.judge", config.models.judge))
-        for jc in config.judges:
+        for jc in non_agent_judges:
             if jc.model:
                 judge_models.append((f"judge '{jc.name}' model", jc.model))
         for label, model in judge_models:
