@@ -20,7 +20,11 @@ from typing import Optional
 import yaml
 
 from agent_eval.config import EvalConfig, GenerationSeed
-from agent_eval.prompt_backends import is_anthropic_model, run_prompt_via_runner
+from agent_eval.prompt_backends import (
+    is_anthropic_model,
+    run_prompt_via_runner,
+    split_model_uri,
+)
 from agent_eval.prompts import resolve_seed_prompt
 
 
@@ -54,6 +58,16 @@ def generate_synthetic(
         raise ValueError(
             "No generation seeds defined in config. "
             "Synthetic generation requires generation.seeds.")
+
+    # Route on the model's provider, independent of the runner. A provider prefix
+    # (`anthropic:/…`, `runner:/…`) is stripped to the bare id the SDK/runner
+    # expects; a bare Claude id uses the Anthropic SDK, anything else the runner.
+    provider, gen_model = split_model_uri(model)
+    if provider == "openai":
+        raise ValueError(
+            "OpenAI-native synthetic generation is not supported. Use a Claude "
+            "model, or a runner-managed model ('runner:/<model>') so the "
+            "configured runner generates the cases.")
 
     client = None
     use_anthropic = is_anthropic_model(model)
@@ -114,7 +128,7 @@ def generate_synthetic(
                 seed=seed,
                 context=config.generation.context,
                 count=seed.count,
-                model=model,
+                model=gen_model,
             )
         except ValueError as e:
             print(

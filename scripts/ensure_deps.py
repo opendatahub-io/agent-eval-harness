@@ -103,7 +103,38 @@ def _deps_for_config(eval_yaml):
         deps.append(("anthropic[vertex]>=0.40", "anthropic"))
         deps.append(("jinja2>=3.0", "jinja2"))
 
+    # Non-Anthropic judge models grade through the OpenAI SDK (which also serves
+    # OpenAI-compatible gateways via OPENAI_BASE_URL). Pull it in when a judge
+    # model looks non-Anthropic. Best-effort: a miss surfaces as an actionable
+    # runtime error in score._get_openai_client.
+    models = config.get("models")
+    judge_models = []
+    if isinstance(models, dict) and models.get("judge"):
+        judge_models.append(models["judge"])
+    if isinstance(judges, list):
+        judge_models += [j["model"] for j in judges
+                         if isinstance(j, dict) and j.get("model")]
+    if any(_needs_openai_backend(m) for m in judge_models):
+        deps.append(("openai>=1.70", "openai"))
+
     return deps
+
+
+def _needs_openai_backend(model):
+    """Whether a judge model id routes to the OpenAI SDK (see resolve_judge_backend).
+
+    Stdlib-only mirror of the routing classifier — ensure_deps runs before the
+    venv exists, so it cannot import agent_eval.prompt_backends.
+    """
+    value = (str(model) if model else "").strip().lower()
+    if not value:
+        return False
+    if ":/" in value:
+        provider = value.split(":/", 1)[0].strip()
+        return provider not in ("anthropic", "runner")
+    if "claude" in value or value.startswith(("opus", "sonnet", "haiku", "anthropic")):
+        return False
+    return value.startswith(("gpt", "o1", "o3", "o4", "chatgpt"))
 
 
 def _parse_yaml_minimal(text):
