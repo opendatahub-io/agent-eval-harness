@@ -94,8 +94,8 @@ models:
   judge: claude-opus-4-6
 
 judges:
-  - name: output_quality
-    prompt: "Score the output 1-5 for completeness and accuracy."
+  - name: completeness
+    prompt: "Score 1-5 how completely the output covers the request (1 = most requirements missing, 3 = basics with gaps, 5 = complete).\n\n{{ outputs }}"
     score_range: [1, 5]      # declare the scale — omitting it warns at config load
   - name: strict_rubric
     model: claude-opus-4-6   # per-judge override wins over models.judge

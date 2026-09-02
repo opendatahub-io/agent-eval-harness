@@ -51,15 +51,20 @@ judges:
           return False, f"Output too short ({len(content.strip())} chars)"
       return True, "OK"
 
-  - name: output_quality
+  - name: completeness
     feedback_type: int
     score_range: [1, 5]     # declare the scale — omitting it warns at config load
     prompt: |
-      Score the output 1-5 for completeness, clarity, and accuracy.
+      How completely does the output cover the request?
+
+      {{ outputs }}
+
+      Score 1-5: 1 = most requirements missing, 3 = covers the basics with
+      gaps, 5 = every requirement addressed.
 
 thresholds:
   has_content: { min_pass_rate: 1.0 }
-  output_quality: { min_mean: 3.5 }
+  completeness: { min_mean: 3.5 }
 ```
 
 !!! tip "Reference"

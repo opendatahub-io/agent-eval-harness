@@ -48,14 +48,14 @@ judges:
       content = outputs.get("main_content", "")
       return (len(content.strip()) >= 100,
               f"{len(content.strip())} chars")
-  - name: output_quality       # numeric judge (1–5) → mean
+  - name: completeness       # numeric judge (1–5) → mean
     feedback_type: int
     score_range: [1, 5]        # declare the scale — omitting it warns at config load
-    prompt: "Score the output 1-5 for completeness, clarity, and accuracy."
+    prompt: "Score 1-5 how completely the output covers the request (1 = most requirements missing, 3 = basics with gaps, 5 = complete).\n\n{{ outputs }}"
 
 thresholds:
   has_content:    { min_pass_rate: 1.0 }   # every case must pass
-  output_quality: { min_mean: 3.5 }        # average score must stay >= 3.5
+  completeness: { min_mean: 3.5 }        # average score must stay >= 3.5
 ```
 
 !!! warning "An unavailable metric counts as a regression"

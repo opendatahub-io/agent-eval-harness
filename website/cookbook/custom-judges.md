@@ -161,17 +161,19 @@ all compile to the same Jinja2 template, then render against the case record:
 
     ```yaml
     judges:
-      - name: output_quality
-        description: Compare the output to the reference.
+      - name: completeness
+        description: How completely the output covers the reference.
         score_range: [1, 5]     # declare the scale — omitting it warns at config load
         prompt: |
-          Compare the generated output against the reference for
-          completeness, clarity, and accuracy.
+          How completely does the generated output cover the reference?
 
           {{ inputs }}
 
           # Output
           {{ outputs }}
+
+          Score 1-5: 1 = most requirements missing, 3 = covers the basics
+          with gaps, 5 = every requirement addressed.
     ```
 
 === "prompt_file"
@@ -351,11 +353,11 @@ judges:
     feedback_type: bool
     prompt: "Did the agent correctly flag the input as a duplicate?"
 
-  - name: output_quality
+  - name: completeness
     if: "not annotations.get('skip_quality', False)"
     feedback_type: int
     score_range: [1, 5]
-    prompt: "Score the output 1-5 for completeness, clarity, and accuracy."
+    prompt: "Score 1-5 how completely the output covers the request (1 = most requirements missing, 3 = basics with gaps, 5 = complete).\n\n{{ outputs }}"
 ```
 
 !!! warning "`if` runs in a restricted sandbox"

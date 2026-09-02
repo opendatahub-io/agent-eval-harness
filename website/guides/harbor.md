@@ -325,7 +325,7 @@ violated, the command **exits non-zero** (useful in [CI](ci.md)):
 
 ```text
 REGRESSIONS: 1 detected
-  [output_quality] min_mean: 3.5 -> 3.1
+  [completeness] min_mean: 3.5 -> 3.1
 ```
 
 Harbor infra errors (transient pod/exec failures with no reward) and trial errors (pods

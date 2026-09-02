@@ -8,7 +8,7 @@ landing in a report.
 ```yaml title="eval.yaml"
 thresholds:
   has_content:    { min_pass_rate: 1.0 }   # boolean judge
-  output_quality: { min_mean: 3.5 }        # numeric (1–5) judge
+  completeness: { min_mean: 3.5 }        # numeric (1–5) judge
   pairwise:       { min_win_rate: 0.6 }     # pairwise comparison
 ```
 
@@ -53,7 +53,7 @@ that is *not* silently ignored.
 
     ```text
     REGRESSIONS: 1 detected
-      [output_quality] pass_rate: >= 0.9 -> n/a
+      [completeness] pass_rate: >= 0.9 -> n/a
     ```
 
     The detail names the cause: *"pass_rate unavailable — judge errored on 12 cases; see
@@ -70,7 +70,7 @@ that is *not* silently ignored.
 
     ```yaml
     thresholds:
-      output_quality:
+      completeness:
         min_mean: 3.5
         max_error_rate: 0.2    # ...over at least 80% of the dataset
     ```
@@ -119,7 +119,7 @@ Thresholds are enforced in two places, both of which `exit(1)` on any regression
 
     ```text
       REGRESSIONS: 1 detected
-        [output_quality] mean: >= 3.5 -> 3.1
+        [completeness] mean: >= 3.5 -> 3.1
     ```
 
     A non-zero exit fails the surrounding CI step. See the [CI guide](../guides/ci.md).
@@ -151,7 +151,7 @@ the baseline's. A drop of **more than 0.5** (absolute) is reported as a
 `<metric>_vs_baseline` regression:
 
 ```text
-  [output_quality] mean_vs_baseline: 4.2 -> 3.4   Degraded vs baseline
+  [completeness] mean_vs_baseline: 4.2 -> 3.4   Degraded vs baseline
 ```
 
 !!! note "0.5 is a fixed absolute delta"

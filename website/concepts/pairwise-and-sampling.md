@@ -125,8 +125,8 @@ recording the spread so you can tell signal from noise.
 
 ```yaml title="eval.yaml"
 judges:
-  - name: output_quality
-    prompt: "Score the output 1-5 for completeness and accuracy."
+  - name: completeness
+    prompt: "Score 1-5 how completely the output covers the request (1 = most requirements missing, 3 = basics with gaps, 5 = complete).\n\n{{ outputs }}"
     feedback_type: int
     score_range: [1, 5] # declare the scale — omitting it warns at config load
     samples: 5          # run 5×/case, reduce to a stable score
@@ -158,7 +158,7 @@ sample agreed *and* none errored**:
 ```yaml
 per_case:
   case-001:
-    output_quality:
+    completeness:
       value: 4
       rationale: "..."
       stability:
@@ -176,12 +176,12 @@ many cases were stable:
 
 ```yaml
 judges:
-  output_quality:
+  completeness:
     mean: 3.9
     stability: { samples: 5, stable_cases: 8, total_cases: 12 }
 ```
 
-The console echoes the same, e.g. `output_quality: mean=3.90  [8/12 stable over 5 samples]`.
+The console echoes the same, e.g. `completeness: mean=3.90  [8/12 stable over 5 samples]`.
 
 ### The `--samples` override
 

@@ -284,7 +284,6 @@ The `brainstorm/` directory contains exploratory ideas and design thinking. Thes
 ## Remaining Work
 
 - CI integration patterns and examples
-- `traces.events` implementation — parse stream-json into structured `outputs["events"]` for judges
 
 ## Execution Paths
 

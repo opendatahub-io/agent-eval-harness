@@ -6,7 +6,7 @@ them, scoring exits non-zero — the hook you want for CI.
 
 ```yaml
 thresholds:
-  output_quality:
+  completeness:
     min_mean: 3.5            # numeric judge — average score across cases
   has_content:
     min_pass_rate: 1.0       # boolean judge — fraction of cases passing (0.0–1.0)
@@ -96,7 +96,7 @@ flowchart TD
 
     ```text
     REGRESSIONS: 2 detected
-      [output_quality] mean: >= 3.5 -> 3.1
+      [completeness] mean: >= 3.5 -> 3.1
       [has_content] pass_rate: >= 1.0 -> 0.8
     ```
 
@@ -126,7 +126,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/score.py regression \
 
 ```text
 REGRESSIONS: 1 detected
-  [output_quality] mean_vs_baseline: 4.2 -> 3.5
+  [completeness] mean_vs_baseline: 4.2 -> 3.5
 ```
 
 Baseline degradation is only checked for metrics present in both runs; the

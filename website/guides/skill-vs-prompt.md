@@ -40,10 +40,10 @@ Both minimal configs below differ in exactly one key.
       schema: "Each case has an input.yaml with a 'prompt' field."
 
     judges:
-      - name: output_quality
+      - name: completeness
         feedback_type: int
         score_range: [1, 5]    # declare the scale — omitting it warns at load
-        prompt: "Score the output 1-5 for completeness and accuracy."
+        prompt: "Score 1-5 how completely the output covers the request (1 = most requirements missing, 3 = basics with gaps, 5 = complete).\n\n{{ outputs }}"
     ```
 
 === "Prompt mode"

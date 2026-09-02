@@ -50,11 +50,11 @@ flowchart TD
 
     ```yaml
     judges:
-      - name: output_quality
+      - name: completeness
         score_range: [1, 5]     # the scale the value is mapped from
 
     reward:
-      judge: output_quality
+      judge: completeness
       normalize: true
     ```
 
