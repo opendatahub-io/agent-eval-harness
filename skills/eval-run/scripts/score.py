@@ -1146,12 +1146,27 @@ def _get_openai_client():
         raise RuntimeError(
             "OpenAI judge requires OPENAI_API_KEY (and optionally OPENAI_BASE_URL "
             "for an OpenAI-compatible gateway).")
-    kwargs = {}
-    if api_key:
-        kwargs["api_key"] = api_key
+    # The OpenAI SDK constructor requires a non-empty api_key even when talking
+    # to an unauthenticated OpenAI-compatible gateway (base_url only), so supply
+    # a harmless placeholder in that case — such gateways ignore it.
+    kwargs = {"api_key": api_key or "no-key-required"}
     if base_url:
         kwargs["base_url"] = base_url
     return OpenAI(**kwargs)
+
+
+# OpenAI reasoning models (o-series, gpt-5) reject `max_tokens` on the Chat
+# Completions API and require `max_completion_tokens`; other models use
+# `max_tokens`. Matched on the resolved bare id (resolve_judge_backend routes
+# `o1`/`o3`/`o4` and `gpt-5…` to the OpenAI backend).
+_OPENAI_REASONING_PREFIXES = ("o1", "o3", "o4", "o5", "gpt-5")
+
+
+def _openai_token_limit_kwargs(model, max_tokens):
+    key = (model or "").strip().lower()
+    param = ("max_completion_tokens"
+             if key.startswith(_OPENAI_REASONING_PREFIXES) else "max_tokens")
+    return {param: max_tokens}
 
 
 def _to_openai_tool(tool):
@@ -1205,7 +1220,7 @@ def _call_structured_judge_openai(prompt, model, feedback_type, images=None,
     client = _get_openai_client()
     response = client.chat.completions.create(
         model=model,
-        max_tokens=max_tokens,
+        **_openai_token_limit_kwargs(model, max_tokens),
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": _openai_user_message(prompt, images)},
@@ -2700,7 +2715,8 @@ def _call_pairwise_openai(client, system_prompt, user_message, model, max_tokens
     tool = _to_openai_tool(_PAIRWISE_TOOL)
     try:
         response = client.chat.completions.create(
-            model=model, max_tokens=max_tokens,
+            model=model,
+            **_openai_token_limit_kwargs(model, max_tokens),
             messages=[
                 {"role": "system", "content": _PAIRWISE_SYSTEM},
                 {"role": "user", "content": f"{system_prompt}\n\n{user_message}"},

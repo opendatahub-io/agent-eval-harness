@@ -1241,3 +1241,41 @@ class TestOpenAIStructuredJudge:
         urls = [p["image_url"]["url"] for p in user_content
                 if p.get("type") == "image_url"]
         assert urls == ["data:image/png;base64,QUJD"]
+
+    def test_reasoning_model_uses_max_completion_tokens(self):
+        from score import _call_structured_judge_openai
+        client = self._client(tool_name="submit_evaluation",
+                              arguments={"passed": True, "rationale": "r"})
+        with patch("score._get_openai_client", return_value=client):
+            _call_structured_judge_openai("grade", "o3-mini", "bool")
+        assert "max_completion_tokens" in self.captured
+        assert "max_tokens" not in self.captured
+
+    def test_standard_model_uses_max_tokens(self):
+        from score import _call_structured_judge_openai
+        client = self._client(tool_name="submit_evaluation",
+                              arguments={"passed": True, "rationale": "r"})
+        with patch("score._get_openai_client", return_value=client):
+            _call_structured_judge_openai("grade", "gpt-4o", "bool")
+        assert "max_tokens" in self.captured
+        assert "max_completion_tokens" not in self.captured
+
+    def test_base_url_only_gets_placeholder_key(self, monkeypatch):
+        """An unauthenticated OpenAI-compatible gateway (base_url, no key) still
+        constructs the client — the SDK rejects a None api_key."""
+        import types
+        captured = {}
+
+        class _FakeOpenAI:
+            def __init__(self, **kw):
+                captured.update(kw)
+
+        fake = types.ModuleType("openai")
+        fake.OpenAI = _FakeOpenAI
+        monkeypatch.setitem(sys.modules, "openai", fake)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:8000/v1")
+        from score import _get_openai_client
+        _get_openai_client()
+        assert captured["base_url"] == "http://localhost:8000/v1"
+        assert captured["api_key"]  # non-empty placeholder
