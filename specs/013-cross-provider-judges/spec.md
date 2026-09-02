@@ -132,7 +132,8 @@ The judge model string carries the provider, LiteLLM/mlflow-style
   (previously #213 forced it through the runner). A runner-managed id such as
   Cursor's `gpt-5.4-medium` must therefore be written `runner:/gpt-5.4-medium` to
   grade through the configured runner.
-- Non-Anthropic judges require the `openai` package in `.eval-venv`.
+- OpenAI-backed judges (an `openai:/…` id or a bare non-Claude id) require the
+  `openai` package in `.eval-venv`. `runner:/…` judges do not.
 
 ## Config examples
 
@@ -157,13 +158,13 @@ models:
 
 ## Known limitations
 
-- `_call_structured_judge_openai` sends `max_tokens` (accepted by gpt-4o-class
-  models and OpenAI-compatible gateways). OpenAI reasoning models (o1/o3) on the
-  chat-completions endpoint expect `max_completion_tokens` and may reject the
-  call; use a gpt-class judge or a gateway that normalizes the parameter.
+- OpenAI reasoning models (o-series, gpt-5) require `max_completion_tokens` on
+  the chat-completions endpoint; `_openai_token_limit_kwargs` selects it for
+  those ids (and `max_tokens` otherwise). A gateway that serves a reasoning model
+  under a non-matching id would still need to normalize the parameter itself.
 - Image evidence reaches OpenAI judges as vision `image_url` blocks (works on
-  vision models) and runner judges as staged files; make_judge-style non-vision
-  providers do not see images.
+  vision models) and runner judges as staged files; non-vision providers do not
+  see images.
 
 ## Out of scope (future)
 
