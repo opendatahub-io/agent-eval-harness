@@ -77,25 +77,25 @@ judges:
           return False, f"Output too short ({len(content.strip())} chars)"
       return True, f"Output has {len(content.strip())} chars"
 
-  - name: output_quality
-    description: Quality of the output versus the reference.
+  - name: completeness
+    description: How completely the output covers the reference.
     feedback_type: int
     score_range: [1, 5]     # declare the scale — omitting it warns at config load
     prompt: |
-      Compare the generated output against the reference.
+      How completely does the generated output cover the reference?
+      Grade completeness only — clarity and accuracy belong to other judges.
 
       {{ outputs }}
 
-      Consider completeness, clarity, accuracy, and relevance.
       Score 1-5 where:
-      - 1: missing most requirements, major errors
-      - 3: covers the basics but lacks depth or has minor errors
-      - 5: comprehensive, accurate, well-written
+      - 1: most of the reference's requirements are missing
+      - 3: covers the basics but leaves real gaps
+      - 5: every requirement addressed
 
 thresholds:
   has_content:
     min_pass_rate: 1.0    # every case must pass this boolean judge
-  output_quality:
+  completeness:
     min_mean: 3.5         # mean LLM score must stay at or above 3.5
 ```
 
@@ -164,7 +164,7 @@ This recipe uses two of the [five judge types](../reference/config/judges.md):
 | Judge | Type | What it verifies |
 | --- | --- | --- |
 | `has_content` | inline `check` (Python) | An artifact exists and is at least 100 chars — deterministic structure |
-| `output_quality` | LLM `prompt` | Completeness/clarity/accuracy versus the reference — needs understanding |
+| `completeness` | LLM `prompt` | How completely the output covers the reference — needs understanding |
 
 !!! warning "Inside `check`, access data through `outputs`"
     Check judges run in the project root, not the per-case output directory. Read

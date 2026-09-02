@@ -20,8 +20,8 @@ judges:
           return False, f"Output too short ({len(content.strip())} chars)"
       return True, "OK"
 
-  - name: output_quality
-    prompt: "Score 1-5 for completeness, clarity, and accuracy.\n\n{{ outputs }}"
+  - name: completeness
+    prompt: "Score 1-5 how completely the output covers the request (1 = most requirements missing, 3 = basics with gaps, 5 = complete).\n\n{{ outputs }}"
     score_range: [1, 5]      # declare the scale — omitting it warns at config load
 ```
 
@@ -111,13 +111,15 @@ Jinja2 with the case record. Priority when more than one is set: **`llm_rubric` 
 === "prompt (full template)"
 
     ```yaml
-    - name: output_quality
-      description: Completeness and accuracy versus the reference.
+    - name: completeness
+      description: How completely the output covers the reference.
       prompt: |
-        Score 1-5 for completeness, clarity, and accuracy.
+        How completely does the output cover the reference?
 
         {{ outputs }}
-        {{ conversation }}
+
+        Score 1-5: 1 = most requirements missing, 3 = covers the basics
+        with gaps, 5 = every requirement addressed.
       score_range: [1, 5]
     ```
 
@@ -327,8 +329,8 @@ judges. The report records the spread and flags unstable cases. See
 [pairwise & sampling](../../concepts/pairwise-and-sampling.md).
 
 ```yaml
-- name: output_quality
-  prompt: "Score 1-5 for accuracy.\n\n{{ outputs }}"
+- name: completeness
+  prompt: "Score 1-5 how complete the output is.\n\n{{ outputs }}"
   samples: 5
 ```
 
@@ -342,8 +344,8 @@ agent judges only; declaring it on a `check`, `builtin`, or `code` judge fails
 at load.
 
 ```yaml
-- name: output_quality
-  prompt: "Score 1-5 for accuracy.\n\n{{ outputs }}"
+- name: completeness
+  prompt: "Score 1-5 how complete the output is.\n\n{{ outputs }}"
   score_range: [1, 5]
   examples:
     source: reviews     # only source today (default)
@@ -421,7 +423,7 @@ warning exempts inline `check:` judges — they compute
 their own value, so there is no model to bound.
 
 ```text
-UserWarning: Judge 'output_quality': numeric judge has no 'score_range', so it is
+UserWarning: Judge 'completeness': numeric judge has no 'score_range', so it is
 scored on the unenforced [1, 5] default — declare one to have the returned value
 checked
 ```

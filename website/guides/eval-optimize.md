@@ -44,7 +44,7 @@ Both consume eval results, but the control loop is different.
 
 ```bash
 # Optimize the auto-discovered eval, up to 5 cycles, focused on one judge
-/eval-optimize --model opus --max-iterations 5 --target-judge output_quality
+/eval-optimize --model opus --max-iterations 5 --target-judge completeness
 ```
 
 ## The loop

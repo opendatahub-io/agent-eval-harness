@@ -249,8 +249,8 @@ See [the execution model](../concepts/execution-model.md) for the difference.
       schema: "Each case has an input.yaml with a 'prompt' field."
 
     judges:
-      - name: output_quality
-        prompt: "Score the output 1-5 for completeness and accuracy."
+      - name: completeness
+        prompt: "Score 1-5 how completely the output covers the request (1 = most requirements missing, 3 = basics with gaps, 5 = complete).\n\n{{ outputs }}"
         score_range: [1, 5]   # declare the scale — omitting it warns at config load
     ```
 
@@ -330,13 +330,13 @@ judges:
           return False, f"Output too short ({len(content.strip())} chars)"
       return True, f"Output has {len(content.strip())} chars"
 
-  - name: output_quality
-    prompt: "Score 1-5 vs the reference for completeness, clarity, accuracy."
+  - name: completeness
+    prompt: "Score 1-5 how completely the output covers the reference (1 = most requirements missing, 3 = basics with gaps, 5 = complete).\n\n{{ outputs }}"
     score_range: [1, 5]     # declare the scale — omitting it warns at config load
 
 thresholds:
   has_content: { min_pass_rate: 1.0 }
-  output_quality: { min_mean: 3.5 }
+  completeness: { min_mean: 3.5 }
 ```
 
 ## Conventions
