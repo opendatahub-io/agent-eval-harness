@@ -1,3 +1,10 @@
+## [1.47.1](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.47.0...v1.47.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* **eval-analyze:** derive eval.md name from the config so flat layouts don't collide ([fa9fa6e](https://github.com/opendatahub-io/agent-eval-harness/commit/fa9fa6e8384396d4e28dec5a6b095532857e98fa))
+
 # [1.47.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.46.0...v1.47.0) (2026-09-01)
 
 
