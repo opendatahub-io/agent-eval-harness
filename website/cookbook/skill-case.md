@@ -85,6 +85,10 @@ judges:
       How completely does the generated output cover the reference?
       Grade completeness only — clarity and accuracy belong to other judges.
 
+      ## Reference
+      {{ outputs.annotation_reference_content }}
+
+      ## Output
       {{ outputs }}
 
       Score 1-5 where:
@@ -126,11 +130,12 @@ starter set with [`/eval-dataset`](../guides/eval-dataset.md).
 eval/dataset/cases/
 ├── case-001-simple/
 │   ├── input.yaml
-│   └── reference.md
+│   ├── reference.md
+│   └── annotations.yaml    # points judges at reference.md
 └── case-002-edge/
     ├── input.yaml
     ├── reference.md
-    └── annotations.yaml    # optional metadata judges can read
+    └── annotations.yaml
 ```
 
 === "case-001-simple/input.yaml"
@@ -145,10 +150,19 @@ eval/dataset/cases/
     prompt: "Summarize an empty document and note that it has no content."
     ```
 
+=== "case-001-simple/annotations.yaml"
+
+    ```yaml
+    # A filename value is loaded at scoring time and exposed to judges as
+    # {{ outputs.annotation_reference_content }} (and inside {{ annotations }}).
+    reference: reference.md
+    ```
+
 === "case-002-edge/annotations.yaml"
 
     ```yaml
     category: edge-case
+    reference: reference.md
     ```
 
 !!! note "Schema fields are natural language"

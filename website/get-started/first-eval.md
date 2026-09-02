@@ -57,6 +57,10 @@ judges:
     prompt: |
       How completely does the output cover the request?
 
+      Request:
+      {{ inputs }}
+
+      Output:
       {{ outputs }}
 
       Score 1-5: 1 = most requirements missing, 3 = covers the basics with
