@@ -1,3 +1,10 @@
+## [1.47.2](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.47.1...v1.47.2) (2026-09-02)
+
+
+### Bug Fixes
+
+* **report:** clarify the analysis author model is the orchestrator's own, not the subject ([03806f4](https://github.com/opendatahub-io/agent-eval-harness/commit/03806f463643156d4470b018d5f0f5c34c4b7e2f))
+
 ## [1.47.1](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.47.0...v1.47.1) (2026-09-02)
 
 
