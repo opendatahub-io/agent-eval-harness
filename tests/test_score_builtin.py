@@ -1053,7 +1053,7 @@ class TestUntrustedDataGuard:
 
     def test_pairwise_system_prompt_carries_the_guard(self):
         import score
-        assert score._UNTRUSTED_DATA_GUARD in score._PAIRWISE_SYSTEM_PROMPT
+        assert score._UNTRUSTED_DATA_GUARD in score._PAIRWISE_SYSTEM
 
     def test_guard_forbids_following_embedded_instructions(self):
         import score
