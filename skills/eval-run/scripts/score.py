@@ -617,18 +617,70 @@ class _OutputsProxy(dict):
         return "".join(parts)
 
 
-class _FencedOutputs(_OutputsProxy):
-    """Render-time view whose bare ``{{ outputs }}`` rendering is fenced.
+class _FencedStr(str):
+    """A file's text content that renders fenced as untrusted evaluated material
+    when a template stringifies it, while otherwise behaving as an ordinary
+    ``str``.
 
-    Only the formatted file listing gets the evaluated-material markers;
-    structured access (``{{ outputs.files }}``, ``{{ outputs.cost_usd }}``)
-    passes through unfenced — those reads are field lookups the template
-    author placed deliberately, and wrapping them would break comparisons
-    and loops.
+    Subclassing ``str`` keeps comparisons, ``in`` tests, slicing, and
+    ``{% if %}`` logic working on the raw value; only ``str(value)`` — what Jinja
+    calls to emit ``{{ value }}`` — returns the fenced form.
+    """
+
+    def __new__(cls, value, label):
+        obj = super().__new__(cls, value)
+        obj._fence_label = label
+        return obj
+
+    def __str__(self):
+        return _fence_untrusted(str.__str__(self), self._fence_label)
+
+
+class _FencedFiles(dict):
+    """``outputs.files`` view whose text values render fenced (see _FencedStr).
+
+    Binary placeholders (``{"_binary": ...}``) and any non-string metadata pass
+    through unchanged, and mapping semantics (iteration, ``in``, ``len``,
+    ``.get``) are preserved so judge templates that loop over or branch on files
+    still work — only the emitted text content is fenced.
+    """
+
+    @staticmethod
+    def _wrap(key, value):
+        if isinstance(value, str):
+            return _FencedStr(value, f"outputs.files[{key!r}]")
+        return value
+
+    def __getitem__(self, key):
+        return self._wrap(key, super().__getitem__(key))
+
+    def get(self, key, default=None):
+        return self._wrap(key, super().__getitem__(key)) if key in self else default
+
+    def values(self):
+        return [self._wrap(k, v) for k, v in super().items()]
+
+    def items(self):
+        return [(k, self._wrap(k, v)) for k, v in super().items()]
+
+
+class _FencedOutputs(_OutputsProxy):
+    """Render-time view whose agent-produced content is fenced.
+
+    Bare ``{{ outputs }}`` fences the whole formatted file listing; structured
+    file access (``{{ outputs.files['x'] }}`` and ``outputs.files.items()``
+    loops) fences each text value via `_FencedFiles`/`_FencedStr`. Non-file
+    field reads (``{{ outputs.cost_usd }}``) pass through unfenced.
     """
 
     def __str__(self):
         return _fence_untrusted(super().__str__(), "outputs")
+
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        if key == "files" and isinstance(value, dict):
+            return _FencedFiles(value)
+        return value
 
 
 class _AnnotationsProxy(dict):
