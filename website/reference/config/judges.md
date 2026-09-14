@@ -176,12 +176,15 @@ an OpenAI judge works with a claude-code runner. Write the model as a
 | Judge model | Backend | Notes |
 | --- | --- | --- |
 | `sonnet`, `claude-sonnet-4-5`, `anthropic:/…` | Anthropic SDK | Direct forced-tool structured output; image evidence and Vertex supported. |
-| `openai:/gpt-4o`, `gpt-4o`, or any other bare id | OpenAI SDK | Function-calling structured output. Point `OPENAI_BASE_URL` at an OpenAI-compatible gateway (LiteLLM proxy, Azure, local, …) to reach other providers or self-hosted models. Needs the `openai` package and `OPENAI_API_KEY`. |
+| `openai:/gpt-4o`, `gpt-4o`, or any other bare id | OpenAI SDK | Function-calling structured output. Point `OPENAI_BASE_URL` at an OpenAI-compatible gateway (LiteLLM proxy, Azure, local, …) to reach other providers or self-hosted models. Needs the `openai` package and either `OPENAI_API_KEY` or `OPENAI_BASE_URL` (a gateway without auth works — a placeholder key is supplied). |
 | `runner:/gpt-5.4-medium` | Configured runner | Explicit opt-in for a model only the runner CLI can serve (e.g. Cursor's internal models). |
 
-An explicit unsupported provider (e.g. `gemini:/…`) is rejected at config load —
-reach it via an OpenAI-compatible gateway (`openai:/…` + `OPENAI_BASE_URL`) or
-`runner:/…`.
+An explicit unsupported provider (e.g. `gemini:/…`) is rejected at config load
+when the judge model is set statically (`models.judge` or a per-judge `model:`);
+a value coming only from `EVAL_JUDGE_MODEL` is validated when the judge is built,
+and `agent:` judges route their model through the runner rather than an SDK.
+Reach an unsupported provider via an OpenAI-compatible gateway (`openai:/…` +
+`OPENAI_BASE_URL`) or `runner:/…`.
 
 ### Verdict output
 

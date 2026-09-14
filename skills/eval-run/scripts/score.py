@@ -1330,10 +1330,14 @@ def _call_structured_judge_via_runner(prompt, model, feedback_type, config, jc,
                            _fmt_bound(lo), _fmt_bound(hi)))
     staged_images, image_references = _stage_images_for_runner(images)
     if image_references:
+        # Filenames come from agent output (untrusted); fence them so an
+        # attacker-chosen name can't act as instructions in the judge prompt
+        # (CWE-74). The runner contract's SECURITY clause covers fenced material.
         prompt += (
             "\n\nThe following image artifacts are part of the material to "
             "evaluate. Use the read tool to inspect them; do not infer their "
-            "contents from their filenames:\n" + image_references)
+            "contents from their filenames:\n"
+            + _fence_untrusted(image_references, "image artifact filenames"))
     full_prompt = prompt + "\n" + _RUNNER_LLM_JUDGE_CONTRACT.format(
         verdict_spec=verdict_spec)
 

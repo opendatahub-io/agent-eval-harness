@@ -118,7 +118,9 @@ export EVAL_JUDGE_MODEL=claude-opus-4-6   # last-resort default across runs
     - `runner:/<model>` → grade through the configured runner (opt-in for models
       only the runner CLI can serve, e.g. Cursor's internal ids).
 
-    An explicit unsupported provider (`gemini:/…`) is rejected at config load.
+    An explicit unsupported provider (`gemini:/…`) is rejected at config load
+    for a statically-set judge model; an env-only `EVAL_JUDGE_MODEL` is checked
+    when the judge is built, and `agent:` judge models route through the runner.
     See [judges → Model providers](../../reference/config/judges.md#model-providers-judge-backend).
 
 ## hook
