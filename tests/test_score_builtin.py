@@ -407,6 +407,37 @@ class TestOutputsProxy:
         assert "img.png" in result
         assert "[BEGIN EVALUATED MATERIAL" not in result
 
+    def test_jinja2_tojson_fences_untrusted_files(self):
+        """`| tojson` serializes a _FencedStr as a plain string, so it must
+        re-fence when the value carries untrusted file content."""
+        from score import _render_jinja2_template
+        out = {"files": {"a.md": "EVIL INSTRUCTIONS"}}
+        for tmpl in ('{{ outputs.files["a.md"] | tojson }}',
+                     '{{ outputs.files | tojson }}'):
+            rendered = _render_jinja2_template(tmpl, {}, out)
+            assert "[BEGIN EVALUATED MATERIAL" in rendered
+            assert "EVIL INSTRUCTIONS" in rendered
+
+    def test_jinja2_tojson_leaves_trusted_metadata_unfenced(self):
+        """`| tojson` on non-file (trusted) fields is not over-fenced."""
+        from score import _render_jinja2_template
+        result = _render_jinja2_template('{{ outputs.cost_usd | tojson }}', {},
+                                         {"cost_usd": 0.42})
+        assert "0.42" in result
+        assert "[BEGIN EVALUATED MATERIAL" not in result
+
+    def test_jinja2_string_filters_strip_fence_known_limitation(self):
+        """Documented limitation: Jinja string filters return a plain str and
+        drop the marker (value tainting can't follow arbitrary transforms). The
+        guarantee is that *unfiltered* file content is fenced; templates must not
+        pipe untrusted file content through string filters."""
+        from score import _render_jinja2_template
+        out = {"files": {"a.md": "evil"}}
+        for tmpl in ('{{ outputs.files["a.md"] | upper }}',
+                     '{{ outputs.files["a.md"] | replace("e", "3") }}'):
+            rendered = _render_jinja2_template(tmpl, {}, out)
+            assert "[BEGIN EVALUATED MATERIAL" not in rendered
+
 
 class TestLoadJudgesDuplicateValidation:
 

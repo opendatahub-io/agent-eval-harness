@@ -618,13 +618,20 @@ class _OutputsProxy(dict):
 
 
 class _FencedStr(str):
-    """A file's text content that renders fenced as untrusted evaluated material
-    when a template stringifies it, while otherwise behaving as an ordinary
-    ``str``.
+    """A file's text content tagged as untrusted evaluated material.
 
     Subclassing ``str`` keeps comparisons, ``in`` tests, slicing, and
-    ``{% if %}`` logic working on the raw value; only ``str(value)`` — what Jinja
-    calls to emit ``{{ value }}`` — returns the fenced form.
+    ``{% if %}`` logic working on the raw value. Fencing is applied by the
+    template's ``finalize`` hook (`_finalize`) at output time — NOT via
+    ``__str__`` — so Jinja string filters never see the markers and cannot
+    corrupt them (e.g. ``| replace`` rewriting ``[END EVALUATED MATERIAL]``).
+
+    Limitation: a string filter (``| upper``, ``| replace``, …) returns a plain
+    ``str``, dropping the tag, so `_finalize` no longer fences it — value
+    tainting cannot follow arbitrary transformations. The harness's own
+    ``| tojson`` filter is special-cased to re-fence (see `_tojson_filter`); the
+    guarantee is "unfiltered file content is fenced." Templates must not pipe
+    untrusted file content through other string filters.
     """
 
     def __new__(cls, value, label):
@@ -632,8 +639,18 @@ class _FencedStr(str):
         obj._fence_label = label
         return obj
 
-    def __str__(self):
-        return _fence_untrusted(str.__str__(self), self._fence_label)
+
+def _finalize(value):
+    """Jinja ``finalize`` hook: fence a tagged file value at output time.
+
+    Runs on each ``{{ ... }}`` result. A `_FencedStr` that reached output
+    unfiltered is wrapped in evaluated-material markers; everything else
+    (including `_FencedOutputs`, whose own ``__str__`` fences the bare listing)
+    passes through untouched.
+    """
+    if isinstance(value, _FencedStr):
+        return _fence_untrusted(str.__str__(value), value._fence_label)
+    return value
 
 
 class _FencedFiles(dict):
@@ -700,6 +717,29 @@ class _AnnotationsProxy(dict):
         return self._text
 
 
+def _contains_fenced(value):
+    """Whether a value carries untrusted file content (a `_FencedStr`/
+    `_FencedFiles`), directly or nested, so a serializer's output can be marked
+    as evaluated material."""
+    if isinstance(value, (_FencedStr, _FencedFiles)):
+        return True
+    if isinstance(value, dict):
+        return any(_contains_fenced(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_fenced(v) for v in value)
+    return False
+
+
+def _tojson_filter(value):
+    """`tojson` that re-fences when the serialized value carries untrusted file
+    content — `json.dumps` sees a `_FencedStr` as a plain str and would emit it
+    unmarked, letting `{{ outputs.files[...] | tojson }}` bypass the fence."""
+    rendered = json.dumps(value, indent=2, default=str)
+    if _contains_fenced(value):
+        return _fence_untrusted(rendered, "outputs.files (json)")
+    return rendered
+
+
 def _render_jinja2_template(template_text, arguments, outputs, examples=""):
     """Render a Jinja2 template with arguments and outputs as variables.
 
@@ -720,8 +760,9 @@ def _render_jinja2_template(template_text, arguments, outputs, examples=""):
     """
     from jinja2 import Environment, Undefined, make_logging_undefined
     env = Environment(
-        undefined=make_logging_undefined(logger=_TEMPLATE_LOGGER, base=Undefined))
-    env.filters["tojson"] = lambda v: json.dumps(v, indent=2, default=str)
+        undefined=make_logging_undefined(logger=_TEMPLATE_LOGGER, base=Undefined),
+        finalize=_finalize)
+    env.filters["tojson"] = _tojson_filter
 
     out = _OutputsProxy(outputs or {})
 
