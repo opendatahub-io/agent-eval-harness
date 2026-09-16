@@ -1,0 +1,348 @@
+{
+  "generated_at": "2026-09-16T14:35:44.681250+00:00",
+  "model": "z-ai/glm-5.3-flash",
+  "providers": [
+    "z-ai",
+    "novita"
+  ],
+  "key_present": true,
+  "probes": [
+    {
+      "id": 17,
+      "status": "pass",
+      "evidence": {
+        "status": 200,
+        "tls_ok": true
+      }
+    },
+    {
+      "id": 18,
+      "status": "pass",
+      "evidence": {
+        "status": 200,
+        "endpoints": 26,
+        "status_values": [
+          -2,
+          0
+        ],
+        "per_provider": [
+          {
+            "provider": "DeepInfra",
+            "quant": "fp4",
+            "status": 0,
+            "uptime_30m": 97.90587066089303,
+            "max_out": 131072
+          },
+          {
+            "provider": "Relace",
+            "quant": "unknown",
+            "status": 0,
+            "uptime_30m": 99.57196160037904,
+            "max_out": 131072
+          },
+          {
+            "provider": "Morph",
+            "quant": "fp8",
+            "status": 0,
+            "uptime_30m": 96.48522550544324,
+            "max_out": 943718
+          },
+          {
+            "provider": "Wafer",
+            "quant": "unknown",
+            "status": 0,
+            "uptime_30m": 99.66777408637874,
+            "max_out": 943718
+          },
+          {
+            "provider": "StreamLake",
+            "quant": "fp8",
+            "status": 0,
+            "uptime_30m": 98.75612570623585,
+            "max_out": 128000
+          },
+          {
+            "provider": "GMICloud",
+            "quant": "fp8",
+            "status": 0,
+            "uptime_30m": 99.61774608833433,
+            "max_out": 943718
+          },
+          {
+            "provider": "Novita",
+            "quant": "fp8",
+            "status": 0,
+            "uptime_30m": 95.36714930424972,
+            "max_out": 131072
+          },
+          {
+            "provider": "Crusoe",
+            "quant": "fp4",
+            "status": -2,
+            "uptime_30m": 94.77877365201309,
+            "max_out": 943718
+          },
+          {
+            "provider": "CoreWeave",
+            "quant": "nvfp4",
+            "status": 0,
+            "uptime_30m": 97.28260869565217,
+            "max_out": 943718
+          },
+          {
+            "provider": "Sail Research",
+            "quant": "fp8",
+            "status": 0,
+            "uptime_30m": 98.4401067734401,
+            "max_out": 131072
+          },
+          {
+            "provider": "AtlasCloud",
+            "quant": "fp8",
+            "status": 0,
+            "uptime_30m": 99.12087912087912,
+            "max_out": 131072
+          },
+          {
+            "provider": "Fireworks",
+            "quant": "unknown",
+            "status": 0,
+            "uptime_30m": 99.62067330488384,
+            "max_out": 943718
+          }
+        ]
+      }
+    },
+    {
+      "id": 13,
+      "status": "pass",
+      "evidence": {
+        "status": 200,
+        "works_via_x_api_key": true,
+        "error": null
+      },
+      "note": "200 = x-api-key accepted (blank ANTHROPIC_API_KEY is then hygiene, not correctness); 401 = must be blank."
+    },
+    {
+      "id": 3,
+      "status": "pass",
+      "evidence": {
+        "status": 200,
+        "event_sequence": [
+          "message_start",
+          "content_block_start",
+          "content_block_delta",
+          "content_block_delta",
+          "content_block_delta",
+          "content_block_delta",
+          "content_block_delta",
+          "content_block_delta",
+          "content_block_delta",
+          "content_block_delta",
+          "content_block_stop",
+          "message_delta"
+        ],
+        "field_placement": {
+          "message_start": [
+            "message.id",
+            "message.model",
+            "message.provider",
+            "message.usage"
+          ],
+          "message_delta": [
+            "usage(cost)"
+          ],
+          "message_stop": [
+            "openrouter_metadata"
+          ]
+        },
+        "metadata_header_honoured": false,
+        "endpoints_selected": null,
+        "generation_id_header": "gen-1789569064-x4U6AC0qmu8wfpfIiCQ2",
+        "keepalive_comments": 0
+      }
+    },
+    {
+      "id": 6,
+      "status": "pass",
+      "evidence": {
+        "requests": 10,
+        "mismatches": 0,
+        "cost_event": [
+          "message_delta"
+        ],
+        "generation_latency_s": {
+          "min": 7.62,
+          "max": 12.68
+        },
+        "generation_unavailable_within_30s": 0,
+        "sample": [
+          {
+            "gen_id_prefix": "gen-",
+            "usage_cost": 6.55e-06,
+            "cost_event": "message_delta",
+            "generation_total_cost": 6.55e-06,
+            "generation_status": 200,
+            "generation_latency_s": 10.15,
+            "equal": true,
+            "provider_name": "Z.AI"
+          },
+          {
+            "gen_id_prefix": "gen-",
+            "usage_cost": 6.55e-06,
+            "cost_event": "message_delta",
+            "generation_total_cost": 6.55e-06,
+            "generation_status": 200,
+            "generation_latency_s": 9.29,
+            "equal": true,
+            "provider_name": "Z.AI"
+          },
+          {
+            "gen_id_prefix": "gen-",
+            "usage_cost": 6.55e-06,
+            "cost_event": "message_delta",
+            "generation_total_cost": 6.55e-06,
+            "generation_status": 200,
+            "generation_latency_s": 9.07,
+            "equal": true,
+            "provider_name": "Z.AI"
+          }
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "status": "pass",
+      "evidence": {
+        "slug_form": "z-ai",
+        "display_form": "Z.AI",
+        "results": {
+          "z-ai": {
+            "status": 200,
+            "provider": "Z.AI",
+            "endpoints_selected": null,
+            "error": null
+          },
+          "Z.AI": {
+            "status": 200,
+            "provider": "Z.AI",
+            "endpoints_selected": null,
+            "error": null
+          }
+        },
+        "matching_rule": "both accepted"
+      }
+    },
+    {
+      "id": 5,
+      "status": "inconclusive",
+      "evidence": {
+        "requests": 20,
+        "errors": 20,
+        "served_by": {},
+        "allowed": [
+          "novita",
+          "z-ai"
+        ],
+        "outside_order_list": {}
+      }
+    },
+    {
+      "id": 19,
+      "status": "pass",
+      "evidence": {
+        "results": {
+          "z-ai/glm-5.3-flash": {
+            "status": 200,
+            "echoed_model": "z-ai/glm-5.3-flash",
+            "provider": "Z.AI",
+            "error": null
+          },
+          "z-ai/glm-5.3-flash:exacto": {
+            "status": 200,
+            "echoed_model": "z-ai/glm-5.3-flash",
+            "provider": "Z.AI",
+            "error": null
+          },
+          "z-ai/glm-5.3-flash[1m]": {
+            "status": 200,
+            "echoed_model": "z-ai/glm-5.3-flash",
+            "provider": "Z.AI",
+            "error": null
+          }
+        }
+      },
+      "note": "API-side half (no gateway): what OpenRouter echoes per form; the gateway/CLI half needs PR-5."
+    },
+    {
+      "id": 20,
+      "status": "pass",
+      "evidence": {
+        "status": 200,
+        "error": null
+      }
+    },
+    {
+      "id": 16,
+      "status": "pass",
+      "evidence": {
+        "status": 200,
+        "elapsed_s": 5.0,
+        "keepalive_comments": 0,
+        "comment_samples": [],
+        "events": 702
+      },
+      "note": "KEY half of probe 16 (keep-alives); the fake-upstream half needs the PR-5 gateway."
+    },
+    {
+      "id": 7,
+      "status": "pass",
+      "evidence": {
+        "key_endpoint_status": 200,
+        "usage_before": 4.248846865,
+        "usage_after": 4.249244515,
+        "seconds_until_last_change": 20.3,
+        "window_s": 120,
+        "note": "None = no change observed in the window (usage granularity or delay > window)"
+      }
+    },
+    {
+      "id": 8,
+      "status": "pass",
+      "evidence": {
+        "results": {
+          "openai/gpt-5.2": {
+            "status": 200,
+            "arguments_type": "str",
+            "arguments_is_json_string": true,
+            "usage_cost": 0.000854,
+            "error": null
+          }
+        }
+      }
+    },
+    {
+      "id": 12,
+      "status": "pass",
+      "evidence": {
+        "exit_code": 0,
+        "elapsed_s": 11.3,
+        "result_subtype": "success",
+        "message_id_prefixes": [
+          "gen"
+        ],
+        "gen_ids_seen": 2,
+        "generation_lookup_200": false,
+        "assistant_message_model": [
+          "z-ai/glm-5.3-flash"
+        ],
+        "modelUsage_keys": [
+          "z-ai/glm-5.3-flash"
+        ],
+        "claude_total_cost_usd_estimate": 0.10167,
+        "stderr_tail": "[claude-code:unrecognized_model] {\"model\":\"z-ai/glm-5.3-flash\",\"query_source\":\"generate_session_title\"}\n"
+      },
+      "note": "Also exercises probe 1 (settings env beats user Vertex) and probe 20 (beta headers) end-to-end."
+    }
+  ]
+}

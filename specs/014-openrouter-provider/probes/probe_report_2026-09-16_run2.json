@@ -1,0 +1,264 @@
+{
+  "generated_at": "2026-09-16T15:02:35.108166+00:00",
+  "model": "z-ai/glm-5.3-flash",
+  "providers": [
+    "z-ai",
+    "novita"
+  ],
+  "key_present": true,
+  "probes": [
+    {
+      "id": 3,
+      "status": "pass",
+      "evidence": {
+        "status": 200,
+        "event_sequence": [
+          "message_start",
+          "content_block_start",
+          "content_block_delta",
+          "content_block_delta",
+          "content_block_delta",
+          "content_block_delta",
+          "content_block_delta",
+          "content_block_delta",
+          "content_block_delta",
+          "content_block_stop",
+          "message_delta",
+          "message_stop",
+          "data"
+        ],
+        "field_placement": {
+          "message_start": [
+            "message.id",
+            "message.model",
+            "message.provider",
+            "message.usage"
+          ],
+          "message_delta": [
+            "usage(cost)"
+          ],
+          "message_stop": [
+            "openrouter_metadata"
+          ]
+        },
+        "metadata_header_honoured": true,
+        "endpoints_selected": null,
+        "openrouter_metadata_raw": {
+          "requested": "z-ai/glm-5.3-flash",
+          "strategy": "direct",
+          "region": "CDG",
+          "summary": "available=26, selected=Z.AI",
+          "attempt": 1,
+          "is_byok": false,
+          "endpoints": {
+            "total": 26,
+            "available": [
+              {
+                "provider": "Z.AI",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": true
+              },
+              {
+                "provider": "Novita",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "DeepInfra",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "Relace",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "Morph",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "Wafer",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "StreamLake",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "GMICloud",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "CoreWeave",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "Sail Research",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "AtlasCloud",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "Fireworks",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "Phala",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "Friendli",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "SiliconFlow",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "DigitalOcean",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "Together",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "BaseTen",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "Venice",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "Io Net",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "Cloudflare",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "Reka",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "NextBit",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "Modal",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "Crusoe",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              },
+              {
+                "provider": "Parasail",
+                "model": "z-ai/glm-5.3-flash-20260826",
+                "selected": false
+              }
+            ]
+          },
+          "generation_time": 2302
+        },
+        "generation_id_header": "gen-1789570837-49usnW3heylxvN6BvAMm",
+        "keepalive_comments": 0
+      }
+    },
+    {
+      "id": 5,
+      "status": "pass",
+      "evidence": {
+        "isolation": {
+          "order+no_fallbacks+require_parameters+forced_tool": {
+            "status": 404,
+            "provider": null,
+            "stop_reason": null,
+            "error": "{\"type\": \"not_found_error\", \"message\": \"No endpoints found for z-ai/glm-5.3-flash.\", \"error_type\": \"not_found\"}"
+          },
+          "order+no_fallbacks+forced_tool": {
+            "status": 404,
+            "provider": null,
+            "stop_reason": null,
+            "error": "{\"type\": \"not_found_error\", \"message\": \"No endpoints found for z-ai/glm-5.3-flash.\", \"error_type\": \"not_found\"}"
+          },
+          "order+no_fallbacks+auto_tool": {
+            "status": 200,
+            "provider": "Z.AI",
+            "stop_reason": "tool_use",
+            "error": null
+          },
+          "no_pins+forced_tool": {
+            "status": 200,
+            "provider": "NextBit",
+            "stop_reason": "tool_use",
+            "error": null
+          }
+        },
+        "config_used_for_tally": "order+no_fallbacks+auto_tool",
+        "requests": 20,
+        "errors": 0,
+        "first_error": null,
+        "served_by": {
+          "z-ai": 20
+        },
+        "allowed": [
+          "novita",
+          "z-ai"
+        ],
+        "outside_order_list": {}
+      }
+    },
+    {
+      "id": 12,
+      "status": "pass",
+      "evidence": {
+        "exit_code": 0,
+        "elapsed_s": 16.9,
+        "result_subtype": "success",
+        "message_id_prefixes": [
+          "gen"
+        ],
+        "gen_ids_seen": 2,
+        "generation_lookup_200": true,
+        "generation_lookup_latency_s": 9.4,
+        "generation_total_cost_last_turn": 0.00165633,
+        "assistant_message_model": [
+          "z-ai/glm-5.3-flash"
+        ],
+        "modelUsage_keys": [
+          "z-ai/glm-5.3-flash"
+        ],
+        "claude_total_cost_usd_estimate": 0.10051500000000002,
+        "stderr_tail": "[claude-code:unrecognized_model] {\"model\":\"z-ai/glm-5.3-flash\",\"query_source\":\"generate_session_title\"}\n"
+      },
+      "note": "Also exercises probe 1 (settings env beats user Vertex) and probe 20 (beta headers) end-to-end."
+    }
+  ]
+}
