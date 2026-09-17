@@ -159,6 +159,19 @@ def fields_of(ev):
     return out
 
 
+def selected_endpoint(metadata):
+    """OpenRouter's openrouter_metadata (VERIFIED shape, probe #3 2026-09-16) lists endpoints
+    under endpoints.available[] with a boolean `selected`; there is NO endpoints.selected field.
+    Returns the selected entry ({provider, model(permaslug), selected}) or None."""
+    if not isinstance(metadata, dict):
+        return None
+    eps = metadata.get("endpoints")
+    avail = eps.get("available") if isinstance(eps, dict) else None
+    if not isinstance(avail, list):
+        return None
+    return next((e for e in avail if isinstance(e, dict) and e.get("selected")), None)
+
+
 def norm_provider(name, catalog):
     """Map a display name or slug to a slug using the public /providers catalog."""
     if not name:
@@ -198,9 +211,10 @@ def probe_3(a, R):
         md = (ev.get("data") or {}).get("openrouter_metadata")
         if md is not None:
             raw_md = md
-            if isinstance(md, dict) and isinstance(md.get("endpoints"), dict):
-                selected = md["endpoints"].get("selected")
-    R.add(3, "pass" if st == 200 else "fail",
+            selected = selected_endpoint(md) or selected
+    # pass requires the routing metadata AND a selected endpoint (the metadata header was
+    # sent), not merely HTTP 200 (CodeRabbit #220).
+    R.add(3, "pass" if (st == 200 and raw_md is not None and selected is not None) else ("inconclusive" if st == 200 else "fail"),
           {"status": st, "event_sequence": [e["event"] for e in evs][:14], "field_placement": placement,
            "metadata_header_honoured": raw_md is not None, "endpoints_selected": selected,
            "openrouter_metadata_raw": raw_md,
@@ -254,7 +268,7 @@ def probe_4(a, R, catalog):
         st, hd, js = post_json("/messages", msg_body(a.model, "Say ready.", 8,
                                                      provider={"order": [form], "allow_fallbacks": False}),
                                headers={"X-OpenRouter-Metadata": "enabled"})
-        sel = ((js.get("openrouter_metadata") or {}).get("endpoints") or {}).get("selected") if st == 200 else None
+        sel = selected_endpoint(js.get("openrouter_metadata")) if st == 200 else None
         out[form] = {"status": st, "provider": js.get("provider") if st == 200 else None, "endpoints_selected": sel,
                      "error": red(json.dumps(js.get("error"))[:200]) if st != 200 else None}
     both = all(v["status"] == 200 for v in out.values())
@@ -470,6 +484,25 @@ def probe_17(a, R):
         R.add(17, "fail", {"tls_ok": False, "error": red(e)})
 
 
+def producer_stamp(script_path):
+    """Identify the exact script revision that produced a report (git sha of the script's
+    last commit if available, else None) plus a report schema version. Reports produced by
+    an older revision are historical evidence; see specs/014-openrouter-provider/probes/README.md."""
+    import subprocess as _sp
+    stamp = {"script": os.path.basename(script_path), "schema": 2, "git_sha": None, "dirty": None}
+    try:
+        script_path = os.path.abspath(script_path)
+        d = os.path.dirname(script_path)
+        sha = _sp.run(["git", "-C", d, "log", "-n", "1", "--format=%h", "--", script_path],
+                      capture_output=True, text=True, timeout=10).stdout.strip()
+        status = _sp.run(["git", "-C", d, "status", "--porcelain", "--", script_path],
+                         capture_output=True, text=True, timeout=10).stdout.strip()
+        stamp["git_sha"], stamp["dirty"] = (sha or None), bool(status)
+    except Exception:
+        pass
+    return stamp
+
+
 # ---------------------------------------------------------------- report
 
 class Report:
@@ -534,7 +567,8 @@ def main():
             except Exception as e:
                 R.add(12, "error", {"error": red(repr(e))[:300]})
 
-    report = {"generated_at": datetime.now(timezone.utc).isoformat(), "model": a.model, "providers": a.providers,
+    report = {"generated_at": datetime.now(timezone.utc).isoformat(), "producer": producer_stamp(__file__),
+              "model": a.model, "providers": a.providers,
               "key_present": bool(KEY), "probes": R.probes}
     with open(a.out, "w") as f:
         json.dump(json.loads(red(json.dumps(report))), f, indent=2)

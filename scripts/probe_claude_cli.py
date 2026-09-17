@@ -142,6 +142,23 @@ class Fake(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload))); self.end_headers(); self.wfile.write(payload)
 
 
+def producer_stamp(script_path):
+    """Identify the exact script revision that produced a report (git sha of the script's
+    last commit if available, else 'uncommitted') plus a report schema version."""
+    stamp = {"script": os.path.basename(script_path), "schema": 2, "git_sha": None, "dirty": None}
+    try:
+        script_path = os.path.abspath(script_path)
+        d = os.path.dirname(script_path)
+        sha = subprocess.run(["git", "-C", d, "log", "-n", "1", "--format=%h", "--", script_path],
+                             capture_output=True, text=True, timeout=10).stdout.strip()
+        status = subprocess.run(["git", "-C", d, "status", "--porcelain", "--", script_path],
+                                capture_output=True, text=True, timeout=10).stdout.strip()
+        stamp["git_sha"], stamp["dirty"] = (sha or None), bool(status)
+    except Exception:
+        pass
+    return stamp
+
+
 def free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
 
@@ -157,7 +174,11 @@ def run_cli(claude, workdir, settings, prompt, extra_args, timeout=180):
         p = subprocess.run(cmd, cwd=workdir, env=env, capture_output=True, text=True, timeout=timeout, input=prompt)
         rc, out, err = p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired as e:
-        rc, out, err = "timeout", (e.stdout or ""), (e.stderr or "")
+        # TimeoutExpired.stdout/.stderr may be bytes even with text=True — decode before
+        # they reach json.dump, or the whole report is lost (CodeRabbit #220).
+        def _s(v):
+            return v.decode(errors="replace") if isinstance(v, (bytes, bytearray)) else (v or "")
+        rc, out, err = "timeout", _s(e.stdout), _s(e.stderr)
     events = []
     for line in (out or "").splitlines():
         try:
@@ -196,7 +217,8 @@ def main():
                   "ANTHROPIC_DEFAULT_OPUS_MODEL": "fake/model", "ANTHROPIC_DEFAULT_SONNET_MODEL": "fake/model",
                   "ANTHROPIC_DEFAULT_HAIKU_MODEL": "fake/model", "CLAUDE_CODE_SUBAGENT_MODEL": "fake/model",
                   "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
-    report = {"generated_at": datetime.now(timezone.utc).isoformat(), "claude_version": None, "scenarios": {}}
+    report = {"generated_at": datetime.now(timezone.utc).isoformat(), "producer": producer_stamp(__file__),
+              "claude_version": None, "scenarios": {}}
     try:
         report["claude_version"] = subprocess.run([claude, "--version"], capture_output=True, text=True, timeout=20).stdout.strip()
     except Exception:

@@ -2971,6 +2971,8 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
 
 ## Verification checklist before implementation
 
+> **Evidence provenance.** Every report under `probes/` carries a `producer` stamp (script, schema version, git sha) from schema 2 onwards; `probes/README.md` lists which script revision produced each file. `probe_report_2026-09-16_run1.json` predates the probe-5 isolation and probe-12 backoff changes and is kept as **historical** evidence (its probe 3/4 `endpoints_selected: null` reflects the pre-fix field name, not the API); `_run2.json` supersedes it for probes 3, 5 and 12.
+
 Probes marked **KEY** need `OPENROUTER_API_KEY` and must be run by the user; the harness
 never embeds or prints the value. `scripts/probe_openrouter.py` (PR-0) runs the no-key
 API probes and, when the key is exported, the KEY probes, writing `probe_report.json` with
