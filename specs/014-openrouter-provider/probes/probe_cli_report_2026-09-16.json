@@ -1,10 +1,16 @@
 {
-  "generated_at": "2026-09-16T17:58:22.647965+00:00",
-  "claude_version": "2.1.273 (Claude Code)",
+  "generated_at": "2026-09-17T07:45:23.289038+00:00",
+  "producer": {
+    "script": "probe_claude_cli.py",
+    "schema": 2,
+    "git_sha": "bdee811",
+    "dirty": false
+  },
+  "claude_version": "2.1.274 (Claude Code)",
   "scenarios": {
     "A_single_header_hook_subagent": {
       "cli_rc": 0,
-      "elapsed_s": 3.4,
+      "elapsed_s": 3.3,
       "requests_total": 5,
       "messages_requests": 5,
       "subagent_like_requests": 1,
@@ -21,19 +27,19 @@
       ],
       "hook_ran": true,
       "hook_env_has_settings_values": {
-        "ANTHROPIC_BASE_URL": "http://127.0.0.1:56000",
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:62597",
         "CLAUDE_CODE_USE_VERTEX": "",
         "ANTHROPIC_VERTEX_PROJECT_ID": "",
         "ANTHROPIC_AUTH_TOKEN": "<present>"
       },
       "request_log": [
         {
-          "t": 2.07,
+          "t": 2.08,
           "method": "POST",
           "path": "/v1/messages?beta=true",
           "headers": {
             "authorization": "<present>",
-            "user-agent": "claude-cli/2.1.273 (external, sdk-cli)",
+            "user-agent": "claude-cli/2.1.274 (external, sdk-cli)",
             "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24",
             "anthropic-version": "2023-06-01",
             "x-eval-run-id": "probe-single"
@@ -56,15 +62,15 @@
             "NotebookEdit",
             "Read"
           ],
-          "system_head": "x-anthropic-billing-header: cc_version=2.1.273.919; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
+          "system_head": "x-anthropic-billing-header: cc_version=2.1.274.628; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
         },
         {
-          "t": 3.14,
+          "t": 3.1,
           "method": "POST",
           "path": "/v1/messages?beta=true",
           "headers": {
             "authorization": "<present>",
-            "user-agent": "claude-cli/2.1.273 (external, sdk-cli)",
+            "user-agent": "claude-cli/2.1.274 (external, sdk-cli)",
             "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24",
             "anthropic-version": "2023-06-01",
             "x-eval-run-id": "probe-single"
@@ -87,15 +93,15 @@
             "NotebookEdit",
             "Read"
           ],
-          "system_head": "x-anthropic-billing-header: cc_version=2.1.273.919; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
+          "system_head": "x-anthropic-billing-header: cc_version=2.1.274.628; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
         },
         {
-          "t": 3.15,
+          "t": 3.11,
           "method": "POST",
           "path": "/v1/messages?beta=true",
           "headers": {
             "authorization": "<present>",
-            "user-agent": "claude-cli/2.1.273 (external, sdk-cli)",
+            "user-agent": "claude-cli/2.1.274 (external, sdk-cli)",
             "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24",
             "anthropic-version": "2023-06-01",
             "x-eval-run-id": "probe-single"
@@ -118,15 +124,15 @@
             "WebFetch",
             "WebSearch"
           ],
-          "system_head": "x-anthropic-billing-header: cc_version=2.1.273.960; cc_entrypoint=sdk-cli; cc_is_subagent=true; You are a Claude agent, "
+          "system_head": "x-anthropic-billing-header: cc_version=2.1.274.449; cc_entrypoint=sdk-cli; cc_is_subagent=true; You are a Claude agent, "
         },
         {
-          "t": 3.15,
+          "t": 3.12,
           "method": "POST",
           "path": "/v1/messages?beta=true",
           "headers": {
             "authorization": "<present>",
-            "user-agent": "claude-cli/2.1.273 (external, sdk-cli)",
+            "user-agent": "claude-cli/2.1.274 (external, sdk-cli)",
             "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24",
             "anthropic-version": "2023-06-01",
             "x-eval-run-id": "probe-single"
@@ -149,7 +155,7 @@
             "NotebookEdit",
             "Read"
           ],
-          "system_head": "x-anthropic-billing-header: cc_version=2.1.273.919; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
+          "system_head": "x-anthropic-billing-header: cc_version=2.1.274.628; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
         },
         {
           "t": 3.26,
@@ -157,7 +163,7 @@
           "path": "/v1/messages?beta=true",
           "headers": {
             "authorization": "<present>",
-            "user-agent": "claude-cli/2.1.273 (external, sdk-cli)",
+            "user-agent": "claude-cli/2.1.274 (external, sdk-cli)",
             "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24",
             "anthropic-version": "2023-06-01",
             "x-eval-run-id": "probe-single"
@@ -180,7 +186,7 @@
             "NotebookEdit",
             "Read"
           ],
-          "system_head": "x-anthropic-billing-header: cc_version=2.1.273.919; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
+          "system_head": "x-anthropic-billing-header: cc_version=2.1.274.628; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
         }
       ],
       "event_summary": [
@@ -245,7 +251,7 @@
           "error": null
         }
       ],
-      "stdout_tail": "gent_stats\":{\"spawned\":1,\"requested\":{\"background\":0,\"foreground\":0,\"unset\":1},\"started_in_background\":1,\"max_depth\":1,\"spawned_by_subagents\":0,\"completed\":1,\"failed\":0,\"killed\":{\"parent\":0,\"user\":0,\"system\":0},\"refused\":{\"depth_limit\":0,\"concurrency_limit\":0,\"budget\":0},\"by_type\":{\"general-purpose\":1}},\"is_error\":false,\"num_turns\":1,\"subtype\":\"success\",\"api_error_status\":null,\"result\":\"done\",\"ttft_ms\":84,\"type\":\"result\",\"duration_ms\":87,\"uuid\":\"ec485aad-7104-4924-ac95-69512d578a25\",\"ttft_stream_ms\":84,\"time_to_request_ms\":83,\"first_content_frame_ms\":84,\"queued_turn_count\":0,\"result_index\":1}\n",
+      "stdout_tail": "stats\":{\"spawned\":1,\"requested\":{\"background\":0,\"foreground\":0,\"unset\":1},\"started_in_background\":1,\"max_depth\":1,\"spawned_by_subagents\":0,\"completed\":1,\"failed\":0,\"killed\":{\"parent\":0,\"user\":0,\"system\":0},\"refused\":{\"depth_limit\":0,\"concurrency_limit\":0,\"budget\":0},\"by_type\":{\"general-purpose\":1}},\"is_error\":false,\"num_turns\":1,\"subtype\":\"success\",\"api_error_status\":null,\"result\":\"done\",\"ttft_ms\":120,\"type\":\"result\",\"duration_ms\":123,\"uuid\":\"d3bb85e8-1ef2-4aaf-aa16-75a0962aa33f\",\"ttft_stream_ms\":120,\"time_to_request_ms\":119,\"first_content_frame_ms\":120,\"queued_turn_count\":0,\"result_index\":1}\n",
       "stderr_tail": "[claude-code:unrecognized_model] {\"model\":\"fake/model\",\"query_source\":\"sdk\"}\n"
     },
     "B_multi_header": {
@@ -255,7 +261,7 @@
       "headers_seen_on_first_request": {
         "authorization": "<present>",
         "http-referer": "https://example.invalid/aeh",
-        "user-agent": "claude-cli/2.1.273 (external, sdk-cli)",
+        "user-agent": "claude-cli/2.1.274 (external, sdk-cli)",
         "x-openrouter-title": "aeh-probe",
         "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24",
         "anthropic-version": "2023-06-01",
@@ -266,13 +272,13 @@
       "all_three_present_on_subagent": true,
       "request_log": [
         {
-          "t": 5.38,
+          "t": 5.47,
           "method": "POST",
           "path": "/v1/messages?beta=true",
           "headers": {
             "authorization": "<present>",
             "http-referer": "https://example.invalid/aeh",
-            "user-agent": "claude-cli/2.1.273 (external, sdk-cli)",
+            "user-agent": "claude-cli/2.1.274 (external, sdk-cli)",
             "x-openrouter-title": "aeh-probe",
             "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24",
             "anthropic-version": "2023-06-01",
@@ -296,16 +302,16 @@
             "NotebookEdit",
             "Read"
           ],
-          "system_head": "x-anthropic-billing-header: cc_version=2.1.273.919; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
+          "system_head": "x-anthropic-billing-header: cc_version=2.1.274.628; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
         },
         {
-          "t": 6.33,
+          "t": 6.51,
           "method": "POST",
           "path": "/v1/messages?beta=true",
           "headers": {
             "authorization": "<present>",
             "http-referer": "https://example.invalid/aeh",
-            "user-agent": "claude-cli/2.1.273 (external, sdk-cli)",
+            "user-agent": "claude-cli/2.1.274 (external, sdk-cli)",
             "x-openrouter-title": "aeh-probe",
             "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24",
             "anthropic-version": "2023-06-01",
@@ -329,16 +335,16 @@
             "NotebookEdit",
             "Read"
           ],
-          "system_head": "x-anthropic-billing-header: cc_version=2.1.273.919; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
+          "system_head": "x-anthropic-billing-header: cc_version=2.1.274.628; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
         },
         {
-          "t": 6.34,
+          "t": 6.52,
           "method": "POST",
           "path": "/v1/messages?beta=true",
           "headers": {
             "authorization": "<present>",
             "http-referer": "https://example.invalid/aeh",
-            "user-agent": "claude-cli/2.1.273 (external, sdk-cli)",
+            "user-agent": "claude-cli/2.1.274 (external, sdk-cli)",
             "x-openrouter-title": "aeh-probe",
             "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24",
             "anthropic-version": "2023-06-01",
@@ -362,16 +368,16 @@
             "WebFetch",
             "WebSearch"
           ],
-          "system_head": "x-anthropic-billing-header: cc_version=2.1.273.960; cc_entrypoint=sdk-cli; cc_is_subagent=true; You are a Claude agent, "
+          "system_head": "x-anthropic-billing-header: cc_version=2.1.274.449; cc_entrypoint=sdk-cli; cc_is_subagent=true; You are a Claude agent, "
         },
         {
-          "t": 6.35,
+          "t": 6.52,
           "method": "POST",
           "path": "/v1/messages?beta=true",
           "headers": {
             "authorization": "<present>",
             "http-referer": "https://example.invalid/aeh",
-            "user-agent": "claude-cli/2.1.273 (external, sdk-cli)",
+            "user-agent": "claude-cli/2.1.274 (external, sdk-cli)",
             "x-openrouter-title": "aeh-probe",
             "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24",
             "anthropic-version": "2023-06-01",
@@ -395,16 +401,16 @@
             "NotebookEdit",
             "Read"
           ],
-          "system_head": "x-anthropic-billing-header: cc_version=2.1.273.919; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
+          "system_head": "x-anthropic-billing-header: cc_version=2.1.274.628; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
         },
         {
-          "t": 6.47,
+          "t": 6.65,
           "method": "POST",
           "path": "/v1/messages?beta=true",
           "headers": {
             "authorization": "<present>",
             "http-referer": "https://example.invalid/aeh",
-            "user-agent": "claude-cli/2.1.273 (external, sdk-cli)",
+            "user-agent": "claude-cli/2.1.274 (external, sdk-cli)",
             "x-openrouter-title": "aeh-probe",
             "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,effort-2025-11-24",
             "anthropic-version": "2023-06-01",
@@ -428,7 +434,7 @@
             "NotebookEdit",
             "Read"
           ],
-          "system_head": "x-anthropic-billing-header: cc_version=2.1.273.919; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
+          "system_head": "x-anthropic-billing-header: cc_version=2.1.274.628; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
         }
       ],
       "event_summary": [
@@ -493,7 +499,7 @@
           "error": null
         }
       ],
-      "stdout_tail": "stats\":{\"spawned\":1,\"requested\":{\"background\":0,\"foreground\":0,\"unset\":1},\"started_in_background\":1,\"max_depth\":1,\"spawned_by_subagents\":0,\"completed\":1,\"failed\":0,\"killed\":{\"parent\":0,\"user\":0,\"system\":0},\"refused\":{\"depth_limit\":0,\"concurrency_limit\":0,\"budget\":0},\"by_type\":{\"general-purpose\":1}},\"is_error\":false,\"num_turns\":1,\"subtype\":\"success\",\"api_error_status\":null,\"result\":\"done\",\"ttft_ms\":102,\"type\":\"result\",\"duration_ms\":105,\"uuid\":\"fd0f74b5-f056-4b30-8aa7-e9f5f6ebf14e\",\"ttft_stream_ms\":102,\"time_to_request_ms\":101,\"first_content_frame_ms\":102,\"queued_turn_count\":0,\"result_index\":1}\n",
+      "stdout_tail": "stats\":{\"spawned\":1,\"requested\":{\"background\":0,\"foreground\":0,\"unset\":1},\"started_in_background\":1,\"max_depth\":1,\"spawned_by_subagents\":0,\"completed\":1,\"failed\":0,\"killed\":{\"parent\":0,\"user\":0,\"system\":0},\"refused\":{\"depth_limit\":0,\"concurrency_limit\":0,\"budget\":0},\"by_type\":{\"general-purpose\":1}},\"is_error\":false,\"num_turns\":1,\"subtype\":\"success\",\"api_error_status\":null,\"result\":\"done\",\"ttft_ms\":110,\"type\":\"result\",\"duration_ms\":112,\"uuid\":\"4c0dff02-b996-4972-9ce1-faad81e38493\",\"ttft_stream_ms\":110,\"time_to_request_ms\":109,\"first_content_frame_ms\":110,\"queued_turn_count\":0,\"result_index\":1}\n",
       "stderr_tail": "[claude-code:unrecognized_model] {\"model\":\"fake/model\",\"query_source\":\"sdk\"}\n"
     },
     "C_max_budget_zero": {
