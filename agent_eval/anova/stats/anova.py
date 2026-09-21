@@ -18,8 +18,10 @@ Three analysis methods, each valid under different assumptions:
 
 from __future__ import annotations
 
+import itertools
 import math
 import re
+import warnings
 from typing import Any
 
 import numpy as np
@@ -49,6 +51,10 @@ def repeated_measures_anova(
     (``p_adjusted``, ``correction``, ``family_size``) are carried purely for
     schema consistency with ``mixed_effects_anova`` — ``p_adjusted`` equals
     ``p_value`` under every correction method.
+
+    ``contrasts`` holds the post-hoc pairwise level comparisons (paired tests,
+    corrected within the factor); they are computed whenever pairwise tests
+    are possible, regardless of the omnibus outcome.
     """
     correction = normalize_correction(correction)
     # Degenerate design: with no variance in the response (e.g. every cell
@@ -68,9 +74,25 @@ def repeated_measures_anova(
             "factor": factor,
             "note": "No variance in response — ANOVA undefined (all scores identical).",
             "details": [],
+            # Constant response: every paired difference is identically 0, so
+            # no pairwise test exists either — excluded with a reason, never
+            # given a fabricated p.
+            "contrasts": {factor: _contrast_block(
+                factor, [], correction=correction, alpha=alpha,
+                contrast_type="paired", omnibus_p_adjusted=None,
+                reason="No variance in response — no pairwise tests computed.",
+            )},
         }
 
     aov = pg.rm_anova(data=data, dv=response, within=factor, subject=subject)
+
+    # Pairwise contrasts are computed even when the omnibus test below turns
+    # out degenerate (e.g. perfect separation kills the F but the paired tests
+    # simply report their own degeneracy per pair) — no hidden gating.
+    contrasts = {factor: _rm_pairwise_contrasts(
+        data, factor, subject=subject, response=response, alpha=alpha,
+        correction=correction, omnibus_p_adjusted=None,
+    )}
 
     if "F" not in aov.columns or pd.isna(aov["F"].iloc[0]):
         return {
@@ -85,6 +107,7 @@ def repeated_measures_anova(
             "factor": factor,
             "note": "Degenerate design — no F statistic produced.",
             "details": aov.to_dict(orient="records"),
+            "contrasts": contrasts,
         }
 
     f_stat = float(aov["F"].iloc[0])
@@ -116,8 +139,10 @@ def repeated_measures_anova(
             "factor": factor,
             "note": "Degenerate design — near-zero within-subject variance produced a non-finite F.",
             "details": aov.to_dict(orient="records"),
+            "contrasts": contrasts,
         }
 
+    contrasts[factor]["omnibus_p_adjusted"] = p_val
     return {
         "f_statistic": f_stat,
         "p_value": p_val,
@@ -130,6 +155,7 @@ def repeated_measures_anova(
         "alpha": alpha,
         "factor": factor,
         "details": aov.to_dict(orient="records"),
+        "contrasts": contrasts,
     }
 
 
@@ -228,6 +254,213 @@ def adjust_term_p_values(
     return p_adjusted, significant, len(tested)
 
 
+# --------------------------------------------------------------------------
+# Post-hoc pairwise level contrasts (per factor, corrected within the factor)
+# --------------------------------------------------------------------------
+
+# What a contrast's ``estimate`` is, per computation path — stamped on each
+# factor block so a report never presents a reference-cell contrast as a
+# marginal mean.
+_CONTRAST_NOTES = {
+    "paired": ("Estimates are observed paired mean differences (a − b) "
+               "across cases."),
+    "marginal": ("Estimates are fixed-effect coefficient differences from the "
+                 "fitted model (single-factor model — marginal differences)."),
+    "reference-cell": ("Estimates are reference-cell contrasts from the fitted "
+                       "model — level differences at the other factors' "
+                       "reference levels, NOT marginal means (the model "
+                       "includes interactions)."),
+}
+
+
+def _contrast_block(
+    factor: str,
+    pairs: list[dict[str, Any]],
+    *,
+    correction: str,
+    alpha: float,
+    contrast_type: str,
+    omnibus_p_adjusted: float | None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Assemble one factor's contrast block, applying the multiplicity
+    correction across that factor's pairs only.
+
+    The family is the pairwise contrasts *within this factor* (never pooled
+    across factors), and — like the term family — counts only real tests: a
+    pair with no finite raw p gets ``p_adjusted=None`` / ``significant=False``
+    plus a ``reason``, and never inflates the other pairs' adjusted values.
+    ``omnibus_p_adjusted`` carries the factor's omnibus result for context;
+    contrasts are computed regardless of it (no significance gating).
+    """
+    raw = {str(i): p.get("p_raw") for i, p in enumerate(pairs)}
+    adjusted, significant, family_size = adjust_term_p_values(
+        raw, correction=correction, alpha=alpha
+    )
+    for i, pair in enumerate(pairs):
+        pair["p_adjusted"] = adjusted[str(i)]
+        pair["significant"] = significant[str(i)]
+        if pair.get("p_raw") is None:
+            pair.setdefault(
+                "reason",
+                "no finite p — degenerate pair, excluded from the correction family",
+            )
+    block = {
+        "correction": correction,
+        "family": f"pairwise level contrasts within factor '{factor}'",
+        "family_size": family_size,
+        "contrast_type": contrast_type,
+        "omnibus_p_adjusted": omnibus_p_adjusted,
+        "note": _CONTRAST_NOTES[contrast_type],
+        "pairs": pairs,
+    }
+    if reason:
+        block["reason"] = reason
+    return block
+
+
+def _rm_pairwise_contrasts(
+    data: pd.DataFrame,
+    factor: str,
+    *,
+    subject: str,
+    response: str,
+    alpha: float,
+    correction: str,
+    omnibus_p_adjusted: float | None,
+) -> dict[str, Any]:
+    """Pairwise paired comparisons for the single-factor design.
+
+    p-values come from pingouin's paired ``pairwise_tests`` (the same engine
+    as ``rm_anova``); estimates and SEs are the observed paired differences
+    (mean and SE of per-case ``a − b``), so the estimate is on the composite
+    scale. The correction is applied by ``_contrast_block`` so degenerate
+    pairs are excluded from the family exactly like everywhere else (pingouin's
+    own ``padjust`` would count them).
+    """
+    levels = sorted(data[factor].dropna().unique().tolist(), key=str)
+    # One observation per subject×level (replications averaged), aligned by
+    # subject so the differences are truly paired.
+    wide = data.pivot_table(index=subject, columns=factor, values=response,
+                            aggfunc="mean")
+    p_by_pair: dict[frozenset, Any] = {}
+    try:
+        # Degenerate pairs (zero-variance differences) make scipy/pingouin
+        # emit RuntimeWarnings for NaN/inf intermediates; the resulting
+        # non-finite p is handled and reported explicitly below, so the
+        # chatter carries no extra information.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            pw = pg.pairwise_tests(data=data, dv=response, within=factor,
+                                   subject=subject, padjust="none")
+        p_col = "p_unc" if "p_unc" in pw.columns else "p-unc"
+        for _, row in pw.iterrows():
+            p_by_pair[frozenset({str(row["A"]), str(row["B"])})] = row[p_col]
+    except Exception:  # noqa: BLE001 — degenerate pairs get no fabricated p
+        pass
+
+    pairs = []
+    for a, b in itertools.combinations(levels, 2):
+        diff = (wide[a] - wide[b]).dropna()
+        n = int(diff.count())
+        estimate = float(diff.mean()) if n else None
+        se = float(diff.std(ddof=1) / math.sqrt(n)) if n >= 2 else None
+        if se is not None and not math.isfinite(se):
+            se = None
+        pair = {
+            "a": str(a),
+            "b": str(b),
+            "estimate": estimate,
+            "se": se,
+            "p_raw": _finite_p_or_none(p_by_pair.get(frozenset({str(a), str(b)}))),
+        }
+        # Zero-variance differences (e.g. perfect separation) drive the paired
+        # t to ±inf, which scipy renders as p = 0.0 — a fabricated certainty,
+        # not a test. The estimate stays (it is the observed difference); the
+        # p does not.
+        if se == 0.0 and pair["p_raw"] is not None:
+            pair["p_raw"] = None
+            pair["reason"] = ("zero-variance paired differences — "
+                              "t-test undefined, excluded from the correction family")
+        pairs.append(pair)
+    return _contrast_block(
+        factor, pairs, correction=correction, alpha=alpha,
+        contrast_type="paired", omnibus_p_adjusted=omnibus_p_adjusted,
+    )
+
+
+def _mixedlm_pairwise_contrasts(
+    fit: Any,
+    *,
+    alpha: float,
+    correction: str,
+    omnibus_p_adjusted: dict[str, float | None],
+) -> dict[str, dict[str, Any]]:
+    """Pairwise level contrasts per factor from the FITTED mixed model.
+
+    No refitting: level-vs-reference is a single fixed-effect coefficient,
+    level A vs level B the coefficient difference — each tested with a
+    contrast vector through ``fit.t_test`` (MixedLM's ``t_test`` takes only
+    numeric contrast matrices over the fixed effects, not string constraints).
+    With interactions in the model these are reference-cell contrasts, flagged
+    as such via ``contrast_type``.
+    """
+    model_data = getattr(getattr(fit, "model", None), "data", None)
+    design_info = getattr(model_data, "design_info", None)
+    if design_info is None:
+        return {}
+    k_fe = len(fit.fe_params)
+    has_interactions = any(len(t.factors) > 1 for t in design_info.terms)
+    contrast_type = "reference-cell" if has_interactions else "marginal"
+
+    contrasts: dict[str, dict[str, Any]] = {}
+    for term in design_info.terms:
+        if len(term.factors) != 1:  # main effects only — one block per factor
+            continue
+        info = design_info.factor_infos.get(term.factors[0])
+        categories = list(getattr(info, "categories", None) or [])
+        slc = design_info.term_name_slices[term.name()]
+        # Treatment coding: the term's columns map to categories[1:] in order,
+        # categories[0] being the reference. Anything else is a coding this
+        # helper doesn't understand — skip rather than mislabel contrasts.
+        if len(categories) < 2 or slc.stop - slc.start != len(categories) - 1:
+            continue
+        col_by_level = {lvl: slc.start + i for i, lvl in enumerate(categories[1:])}
+        factor = _readable_term(term.name())
+
+        pairs = []
+        for a, b in itertools.combinations(categories, 2):
+            # estimate = effect(a) − effect(b); the reference level's
+            # coefficient is identically 0 under treatment coding.
+            row = np.zeros((1, k_fe))
+            estimate = 0.0
+            if a in col_by_level:
+                row[0, col_by_level[a]] = 1.0
+                estimate += float(fit.fe_params.iloc[col_by_level[a]])
+            if b in col_by_level:
+                row[0, col_by_level[b]] = -1.0
+                estimate -= float(fit.fe_params.iloc[col_by_level[b]])
+            try:
+                tt = fit.t_test(row)
+                se = float(np.asarray(tt.sd).ravel()[0])
+                p_raw = _finite_p_or_none(np.asarray(tt.pvalue).ravel()[0])
+            except Exception:  # noqa: BLE001 — this pair's test is degenerate
+                se, p_raw = None, None
+            pairs.append({
+                "a": str(a),
+                "b": str(b),
+                "estimate": estimate,
+                "se": se if se is None or math.isfinite(se) else None,
+                "p_raw": p_raw,
+            })
+        contrasts[factor] = _contrast_block(
+            factor, pairs, correction=correction, alpha=alpha,
+            contrast_type=contrast_type,
+            omnibus_p_adjusted=omnibus_p_adjusted.get(factor),
+        )
+    return contrasts
+
+
 def mixed_effects_anova(
     data: pd.DataFrame,
     factors: list[str],
@@ -248,6 +481,10 @@ def mixed_effects_anova(
     before the significance calls. ``p_values`` holds the raw per-term values,
     ``p_adjusted`` the corrected ones; ``all_p_values``/``coefficients`` keep
     the coefficient-level detail for transparency.
+
+    ``contrasts`` adds the post-hoc pairwise level comparisons per factor,
+    computed from this same fit (no refitting) and corrected within each
+    factor — reference-cell contrasts when the model has interactions.
     """
     correction = normalize_correction(correction)
     fixed_terms = " * ".join(f"C({f})" for f in factors)
@@ -279,6 +516,10 @@ def mixed_effects_anova(
         "factors": factors,
         "aic": float(model.aic),
         "bic": float(model.bic),
+        "contrasts": _mixedlm_pairwise_contrasts(
+            model, alpha=alpha, correction=correction,
+            omnibus_p_adjusted=p_adjusted,
+        ),
     }
     excluded = sorted(t for t, p in term_p_values.items() if p is None)
     if excluded:
