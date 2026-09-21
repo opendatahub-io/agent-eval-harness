@@ -67,6 +67,12 @@ git repo (a per-user temp dir is used as a fallback when unset).
    Benjamini-Hochberg-corrected as *one* family — a screen for which judge moves, while the
    composite keeps its own separate correction family and stays the headline. Judges with
    degenerate designs (constant values, too few crossed cases) are excluded with a reason.
+
+   `anova.json` also carries post-hoc **pairwise level contrasts** per factor (`contrasts` key):
+   every level pair gets an estimate (composite-scale difference), SE, raw p, and a p adjusted
+   within that factor's family — so a significant omnibus becomes actionable ("opus vs sonnet:
+   +0.06, adjusted p = .02"). Computed from the same fit (no refitting) regardless of the omnibus
+   result; with interactions in the model they are reference-cell contrasts and labelled as such.
 4. **Report**: `/eval-compare` renders the cross-condition comparison, including the statistics
    section, from the runs + `anova.json`.
 
@@ -106,6 +112,7 @@ See `references/matrix-schema.md` for the full schema.
 
 - **Repeated-measures ANOVA** (default): Accounts for case difficulty as a blocking factor. Correct when the same cases are evaluated under all conditions.
 - **Mixed-effects model**: For multi-factor designs with crossed random effects. Reports one joint Wald test per term (main effects and interactions), Holm/BH-corrected across the term family.
+- **Pairwise level contrasts (post-hoc)**: For every factor with ≥2 levels, all level pairs with estimate/SE/raw p/adjusted p, Holm-corrected within the factor. From the fitted model (mixedlm coefficient contrasts — reference-cell when interactions are present) or paired pingouin tests (single factor).
 - **One-way ANOVA**: available in the stats library for independent samples (cases NOT reused), but rarely appropriate — the orchestrator does not auto-select it.
 
 See `prompts/interpret-anova.md` for guidance on interpreting results.
