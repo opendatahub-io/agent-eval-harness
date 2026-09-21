@@ -26,6 +26,7 @@ import http.client
 import json
 import os
 import shutil
+import socket
 import ssl
 import subprocess
 import sys
@@ -72,6 +73,10 @@ def _req(method, path, body=None, headers=None, auth="bearer", timeout=120, raw_
         except Exception:
             js = {"raw": txt[:500]}
         return e.code, dict(e.headers or {}), js
+    except (urllib.error.URLError, socket.timeout, TimeoutError, OSError, ValueError) as e:
+        # DNS/connect/TLS/timeout failures: report as status 0 with a transport error instead of
+        # raising, so a probe records 'fail'/'error' and the report is still written.
+        return 0, {}, {"error": {"type": "transport_error", "message": red(repr(e))[:300]}}
 
 
 def post_json(path, body, headers=None, auth="bearer"):
@@ -101,7 +106,7 @@ def post_sse(path, body, headers=None, auth="bearer", timeout=180):
     events, comments = [], []
     if not hasattr(r, "read"):
         return st, hd, [{"event": "error", "data": r}], comments, 0.0
-    t0 = time.time()
+    t0 = time.monotonic()
     ev_name, data_lines = None, []
     for raw in r:
         line = raw.decode(errors="replace").rstrip("\n").rstrip("\r")
@@ -122,7 +127,7 @@ def post_sse(path, body, headers=None, auth="bearer", timeout=180):
             ev_name = line[6:].strip()
         elif line.startswith("data:"):
             data_lines.append(line[5:].strip())
-    return st, hd, events, comments, time.time() - t0
+    return st, hd, events, comments, time.monotonic() - t0
 
 
 def msg_body(model, prompt, max_tokens=32, provider=None, tools=None, tool_choice=None, extra=None):
@@ -172,6 +177,36 @@ def selected_endpoint(metadata):
     return next((e for e in avail if isinstance(e, dict) and e.get("selected")), None)
 
 
+
+def safe_out(path):
+    """Validate an operator-supplied report path: no traversal components, existing parent
+    directory. Absolute paths are allowed on purpose (operators write reports wherever they
+    keep evidence); what is rejected is `..` and a non-existent/unwritable parent."""
+    parts = os.path.normpath(path).split(os.sep)
+    if ".." in parts:
+        raise SystemExit(f"--out must not contain '..' components: {path!r}")
+    parent = os.path.dirname(os.path.abspath(path)) or "."
+    if not os.path.isdir(parent):
+        raise SystemExit(f"--out parent directory does not exist: {parent!r}")
+    return path
+# Environment forwarded to the `claude` subprocess: an explicit allowlist of what Claude Code
+# and the probe need (PATH/HOME/locale/TLS/proxy settings). Nothing else from the operator's
+# shell — in particular no unrelated credentials — reaches the CLI or its descendants.
+CLI_ENV_ALLOWLIST = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE",
+                     "TERM", "TZ", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CLAUDE_CONFIG_DIR", "NODE_OPTIONS",
+                     "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE",
+                     "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy")
+
+
+def cli_env():
+    return {k: os.environ[k] for k in CLI_ENV_ALLOWLIST if k in os.environ}
+
+
+def has_tool_use(js):
+    """True if an Anthropic-format response contains at least one tool_use block."""
+    return any(isinstance(b, dict) and b.get("type") == "tool_use" for b in (js.get("content") or []))
+
+
 def norm_provider(name, catalog):
     """Map a display name or slug to a slug using the public /providers catalog."""
     if not name:
@@ -189,11 +224,11 @@ def probe_13(a, R):
     """x-api-key auth path (non-empty ANTHROPIC_API_KEY) on /messages."""
     st, hd, js = post_json("/messages", msg_body(a.model, "Reply with the word ready.", 8), auth="x-api-key")
     ok = st == 200
-    R.add(13, "pass" if ok else ("inconclusive" if st == 401 else "fail"),
+    R.add(13, "pass" if ok else "fail",
           {"status": st, "works_via_x_api_key": ok,
            "error": red(json.dumps(js.get("error", js))[:300]) if not ok else None},
           note="200 = x-api-key accepted (blank ANTHROPIC_API_KEY is then hygiene, not correctness); "
-               "401 = must be blank.")
+               "401 with a key present = the x-api-key path is rejected, so the blank is mandatory.")
 
 
 def probe_3(a, R):
@@ -236,14 +271,14 @@ def probe_6(a, R, n):
             u = d.get("usage") if isinstance(d.get("usage"), dict) else (m.get("usage") if isinstance(m.get("usage"), dict) else None)
             if u and "cost" in u:
                 cost, ev_cost = u["cost"], ev["event"]
-        t0 = time.time()
+        t0 = time.monotonic()
         gen, gst = None, None
-        while time.time() - t0 < 30:
+        while time.monotonic() - t0 < 30:
             gst, _, gen = get_json("/generation?id=" + urllib.parse.quote(str(gid)))
             if gst == 200:
                 break
             time.sleep(1.0)
-        l = time.time() - t0 if gst == 200 else None
+        l = time.monotonic() - t0 if gst == 200 else None
         total = ((gen or {}).get("data") or {}).get("total_cost") if gst == 200 else None
         eq = (cost is not None and total is not None and abs(float(cost) - float(total)) < 1e-9)
         if not eq:
@@ -291,12 +326,13 @@ def probe_5(a, R, catalog, n):
         st, hd, js = post_json("/messages", msg_body(a.model, "What is the weather in Paris?", 128, provider=prov,
                                                      tools=[WEATHER_TOOL], tool_choice=tc),
                                headers={"X-OpenRouter-Metadata": "enabled"})
+        tool_called = st == 200 and has_tool_use(js)
         isolation[name] = {"status": st, "provider": js.get("provider") if st == 200 else None,
-                           "stop_reason": js.get("stop_reason") if st == 200 else None,
+                           "stop_reason": js.get("stop_reason") if st == 200 else None, "tool_called": tool_called,
                            "error": red(json.dumps(js.get("error", js)))[:300] if st != 200 else None}
-        if st == 200 and working is None and prov is not None:
+        if tool_called and working is None and prov is not None:
             working = (name, prov, tc)
-    tally, errors, first_err = {}, 0, None
+    tally, errors, no_tool_call, first_err = {}, 0, 0, None
     if working:
         name, prov, tc = working
         for i in range(n):
@@ -307,30 +343,46 @@ def probe_5(a, R, catalog, n):
                 errors += 1
                 first_err = first_err or red(json.dumps(js.get("error", js)))[:300]
                 continue
+            if not has_tool_use(js):   # a text-only answer did not exercise the tool-calling route
+                no_tool_call += 1
+                continue
             p = norm_provider(js.get("provider"), catalog)
             tally[p] = tally.get(p, 0) + 1
     outside = {k: v for k, v in tally.items() if k not in allowed}
-    R.add(5, "pass" if tally and not outside and errors == 0 else ("fail" if outside else "inconclusive"),
+    R.add(5, "pass" if tally and not outside and errors == 0 and no_tool_call == 0 else ("fail" if outside else "inconclusive"),
           {"isolation": isolation, "config_used_for_tally": working[0] if working else None, "requests": n if working else 0,
-           "errors": errors, "first_error": first_err, "served_by": tally, "allowed": sorted(allowed), "outside_order_list": outside})
+           "errors": errors, "responses_without_tool_call": no_tool_call, "first_error": first_err,
+           "served_by": tally, "allowed": sorted(allowed), "outside_order_list": outside})
 
 
 def probe_7(a, R, settle):
     """GET /key usage settle time after one request."""
+    def _usage(st, k):
+        u = ((k or {}).get("data") or {}).get("usage") if st == 200 else None
+        return u if isinstance(u, (int, float)) else None
     st0, _, k0 = get_json("/key")
-    u0 = ((k0 or {}).get("data") or {}).get("usage") if st0 == 200 else None
-    post_json("/messages", msg_body(a.model, "Say ready.", 8, provider={"order": a.providers}))
-    t0, last_change, last_val = time.time(), None, u0
-    while time.time() - t0 < settle:
+    u0 = _usage(st0, k0)
+    pst, _, pjs = post_json("/messages", msg_body(a.model, "Say ready.", 8, provider={"order": a.providers}))
+    if u0 is None or pst != 200:
+        R.add(7, "fail", {"key_endpoint_status": st0, "usage_before": u0, "request_status": pst,
+                          "error": red(json.dumps(pjs.get("error", pjs)))[:300] if pst != 200 else "no numeric usage from /key"})
+        return
+    t0, last_change, last_val, failed_reads = time.monotonic(), None, u0, 0
+    while time.monotonic() - t0 < settle:
         time.sleep(5)
         st, _, k = get_json("/key")
-        u = ((k or {}).get("data") or {}).get("usage") if st == 200 else None
+        u = _usage(st, k)
+        if u is None:            # transient /key error: never counts as a change
+            failed_reads += 1
+            continue
         if u != last_val:
-            last_change, last_val = round(time.time() - t0, 1), u
+            last_change, last_val = round(time.monotonic() - t0, 1), u
     R.add(7, "pass" if last_change is not None else "inconclusive",
-          {"key_endpoint_status": st0, "usage_before": u0, "usage_after": last_val,
-           "seconds_until_last_change": last_change, "window_s": settle,
-           "note": "None = no change observed in the window (usage granularity or delay > window)"})
+          {"key_endpoint_status": st0, "request_status": pst, "usage_before": u0, "usage_after": last_val,
+           "seconds_until_last_change": last_change, "window_s": settle, "failed_key_reads": failed_reads,
+           "note": "observed-only: the change is attributed to this request by timing, not by id "
+                   "(unrelated account activity in the window would also move the counter); "
+                   "None = no change observed in the window"})
 
 
 def probe_8(a, R, models):
@@ -353,8 +405,8 @@ def probe_8(a, R, models):
                   "arguments_is_json_string": isinstance(args, str) and _is_json(args),
                   "usage_cost": (js.get("usage") or {}).get("cost") if st == 200 else None,
                   "error": red(json.dumps(js.get("error"))[:200]) if st != 200 else None}
-    ok = all(v["status"] == 200 and v["arguments_is_json_string"] for v in out.values())
-    R.add(8, "pass" if ok else "fail", {"results": out})
+    ok = bool(out) and all(v["status"] == 200 and v["arguments_is_json_string"] for v in out.values())
+    R.add(8, "pass" if ok else ("skipped" if not out else "fail"), {"results": out, **({"reason": "empty --openai-models"} if not out else {})})
 
 
 def _is_json(s):
@@ -369,10 +421,11 @@ def probe_16(a, R):
     """keep-alive comment lines on a long streaming request."""
     st, hd, evs, comments, el = post_sse("/messages", msg_body(a.model, "Write a numbered list of 150 distinct animals, one per line.", 700,
                                                               provider={"order": a.providers}))
-    R.add(16, "pass" if st == 200 else "fail",
+    R.add(16, "pass" if (st == 200 and comments) else ("inconclusive" if st == 200 else "fail"),
           {"status": st, "elapsed_s": round(el, 1), "keepalive_comments": len(comments),
            "comment_samples": [c[:40] for c in comments[:3]], "events": len(evs)},
-          note="KEY half of probe 16 (keep-alives); the fake-upstream half needs the PR-5 gateway.")
+          note="pass = keep-alive comments observed; inconclusive = 200 but none observed (fast stream, "
+               "no heartbeat); the local echo-server half lives in probe_claude_cli.py.")
 
 
 def probe_19(a, R):
@@ -413,12 +466,10 @@ def probe_12(a, R):
         fd = os.open(sp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump(settings, f)
-        env = {k: v for k, v in os.environ.items()
-               if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
-                            "CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION")}
+        env = cli_env()   # allowlist; the credential reaches the CLI only via the 0600 settings file
         cmd = [claude, "--print", "--output-format", "stream-json", "--verbose", "--max-turns", "1",
                "--settings", sp, "--model", a.model, "Reply with exactly the word: ready"]
-        t0 = time.time()
+        t0 = time.monotonic()
         p = subprocess.run(cmd, cwd=tmp, env=env, capture_output=True, text=True, timeout=240)
         ids, models, usage_keys, cost, result_sub, gen_cost = [], set(), [], None, None, None
         for line in p.stdout.splitlines():
@@ -438,17 +489,18 @@ def probe_12(a, R):
         gen_ok, gen_lat = None, None
         gen_ids = [i for i in ids if str(i).startswith("gen-")]
         if gen_ids:
-            t1 = time.time()
-            while time.time() - t1 < 45:  # /generation lags ~8-13s after the request (probe 6)
+            t1 = time.monotonic()
+            while time.monotonic() - t1 < 45:  # /generation lags ~8-13s after the request (probe 6)
                 gst, _, gj = get_json("/generation?id=" + urllib.parse.quote(gen_ids[-1]))
                 if gst == 200:
-                    gen_ok, gen_lat = True, round(time.time() - t1, 1)
+                    gen_ok, gen_lat = True, round(time.monotonic() - t1, 1)
                     gen_cost = ((gj or {}).get("data") or {}).get("total_cost")
                     break
                 time.sleep(2)
             gen_ok = bool(gen_ok)
-        R.add(12, "pass" if p.returncode == 0 and gen_ids else ("fail" if p.returncode != 0 else "inconclusive"),
-              {"exit_code": p.returncode, "elapsed_s": round(time.time() - t0, 1), "result_subtype": result_sub,
+        status = ("fail" if p.returncode != 0 else "pass" if (gen_ids and gen_ok) else "inconclusive")
+        R.add(12, status,
+              {"exit_code": p.returncode, "elapsed_s": round(time.monotonic() - t0, 1), "result_subtype": result_sub,
                "message_id_prefixes": sorted({str(i).split("-")[0].split("_")[0] for i in ids}),
                "gen_ids_seen": len(gen_ids), "generation_lookup_200": gen_ok, "generation_lookup_latency_s": gen_lat,
                "generation_total_cost_last_turn": (gen_cost if gen_ok else None),
@@ -537,12 +589,19 @@ def main():
     want = lambda i: a.only is None or i in a.only
     print(f"OpenRouter spec-014 probes — model={a.model} providers={a.providers} key_present={bool(KEY)}")
 
-    if want(17):
-        probe_17(a, R)
-    if want(18):
-        probe_18(a, R)
-    st, _, cat = get_json("/providers", auth=None)
+    for pid, fn in ((17, lambda: probe_17(a, R)), (18, lambda: probe_18(a, R))):
+        if want(pid):
+            try:
+                fn()
+            except Exception as e:
+                R.add(pid, "error", {"error": red(repr(e))[:300]})
+    try:
+        st, _, cat = get_json("/providers", auth=None)
+    except Exception as e:
+        st, cat = 0, {"error": red(repr(e))[:300]}
     catalog = ((cat or {}).get("data") or []) if st == 200 else []
+    if st != 200:
+        print(f"WARNING: /providers catalog unavailable (status {st}); provider-name normalisation degraded.")
 
     if not KEY:
         print("OPENROUTER_API_KEY not set — KEY probes skipped (3,4,5,6,7,8,12,13,16,19,20).")
@@ -570,7 +629,7 @@ def main():
     report = {"generated_at": datetime.now(timezone.utc).isoformat(), "producer": producer_stamp(__file__),
               "model": a.model, "providers": a.providers,
               "key_present": bool(KEY), "probes": R.probes}
-    with open(a.out, "w") as f:
+    with open(safe_out(a.out), "w") as f:
         json.dump(json.loads(red(json.dumps(report))), f, indent=2)
     print(f"\nwrote {a.out} ({len(R.probes)} probes) — contains outcomes only; safe to share.")
 

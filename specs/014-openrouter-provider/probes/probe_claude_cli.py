@@ -82,7 +82,7 @@ class Fake(http.server.BaseHTTPRequestHandler):
         sysmsg = js.get("system")
         systxt = sysmsg if isinstance(sysmsg, str) else " ".join(b.get("text", "") for b in (sysmsg or []) if isinstance(b, dict))
         tools = [t.get("name") for t in js.get("tools") or [] if isinstance(t, dict)]
-        rec = {"t": round(time.time() - T0, 2), "method": self.command, "path": self.path,
+        rec = {"t": round(time.monotonic() - T0, 2), "method": self.command, "path": self.path,
                "headers": {k: ("<present>" if k in ("authorization", "x-api-key") else v)
                            for k, v in ((k.lower(), v) for k, v in self.headers.items()) if k in INTERESTING_HEADERS},
                "model": js.get("model"), "stream": js.get("stream"), "n_messages": len(js.get("messages") or []),
@@ -159,6 +159,31 @@ def producer_stamp(script_path):
     return stamp
 
 
+
+def safe_out(path):
+    """Validate an operator-supplied report path: no traversal components, existing parent
+    directory. Absolute paths are allowed on purpose (operators write reports wherever they
+    keep evidence); what is rejected is `..` and a non-existent/unwritable parent."""
+    parts = os.path.normpath(path).split(os.sep)
+    if ".." in parts:
+        raise SystemExit(f"--out must not contain '..' components: {path!r}")
+    parent = os.path.dirname(os.path.abspath(path)) or "."
+    if not os.path.isdir(parent):
+        raise SystemExit(f"--out parent directory does not exist: {parent!r}")
+    return path
+# Environment forwarded to the `claude` subprocess: an explicit allowlist of what Claude Code
+# and the probe need (PATH/HOME/locale/TLS/proxy settings). Nothing else from the operator's
+# shell — in particular no unrelated credentials — reaches the CLI or its descendants.
+CLI_ENV_ALLOWLIST = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE",
+                     "TERM", "TZ", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CLAUDE_CONFIG_DIR", "NODE_OPTIONS",
+                     "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE",
+                     "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy")
+
+
+def cli_env():
+    return {k: os.environ[k] for k in CLI_ENV_ALLOWLIST if k in os.environ}
+
+
 def free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
 
@@ -167,9 +192,9 @@ def run_cli(claude, workdir, settings, prompt, extra_args, timeout=180):
     sp = os.path.join(workdir, "settings.json")
     with open(sp, "w") as f:
         json.dump(settings, f)
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("ANTHROPIC_", "CLAUDE_CODE_USE_", "CLOUD_ML_", "AWS_"))}
+    env = cli_env()   # allowlist: no inherited credentials reach the CLI; the fake endpoint needs none
     cmd = [claude, "--print", "--output-format", "stream-json", "--verbose", "--settings", sp] + extra_args
-    t0 = time.time()
+    t0 = time.monotonic()
     try:  # prompt on stdin: --allowedTools is variadic and would swallow a trailing positional prompt
         p = subprocess.run(cmd, cwd=workdir, env=env, capture_output=True, text=True, timeout=timeout, input=prompt)
         rc, out, err = p.returncode, p.stdout, p.stderr
@@ -185,7 +210,7 @@ def run_cli(claude, workdir, settings, prompt, extra_args, timeout=180):
             events.append(json.loads(line))
         except Exception:
             pass
-    return {"rc": rc, "elapsed_s": round(time.time() - t0, 1), "events": events, "stderr_tail": (err or "")[-800:],
+    return {"rc": rc, "elapsed_s": round(time.monotonic() - t0, 1), "events": events, "stderr_tail": (err or "")[-800:],
             "event_summary": [{"type": e.get("type"), "subtype": e.get("subtype"), "error": (e.get("error") or e.get("message") if e.get("type") in ("result", "error") and not isinstance(e.get("message"), dict) else None)} for e in events][:12],
             "stdout_tail": (out or "")[-600:]}
 
@@ -200,7 +225,7 @@ def main():
         print(f"{a.claude_bin} not on PATH"); sys.exit(2)
 
     global T0
-    port = free_port(); T0 = time.time()
+    port = free_port(); T0 = time.monotonic()
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), Fake)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{port}"
@@ -277,11 +302,18 @@ def main():
         "cli_result_subtype": next((e.get("subtype") for e in resC["events"] if e.get("type") == "result"), None),
         "interpretation": None, "event_summary": resC["event_summary"], "stderr_tail": resC["stderr_tail"]}
     c = report["scenarios"]["C_max_budget_zero"]
-    c["interpretation"] = ("0 = unlimited (request was made, run completed)" if c["messages_requests"] > 0 and c["cli_result_subtype"] == "success"
-                           else "0 = immediate stop / error (no request or non-success result)")
+    # The contract under test (checklist row 23): the CLI must REJECT a zero budget before any
+    # request. Record the outcome rather than asserting, so the report is always written.
+    c["rejected_before_request"] = (c["cli_rc"] != 0 and c["messages_requests"] == 0
+                                    and "must be a positive number greater than 0" in (c["stderr_tail"] or ""))
+    c["interpretation"] = ("0 = rejected before any request (CLI validation error) — execute.py must omit the flag for a zero/absent cap"
+                           if c["rejected_before_request"]
+                           else "0 = unlimited (request was made, run completed) — UNEXPECTED for the recorded contract"
+                           if c["messages_requests"] > 0 and c["cli_result_subtype"] == "success"
+                           else "unexpected outcome: see cli_rc / messages_requests / stderr_tail")
 
     srv.shutdown(); shutil.rmtree(tmp, ignore_errors=True)
-    with open(a.out, "w") as f:
+    with open(safe_out(a.out), "w") as f:
         json.dump(report, f, indent=2)
     for k, v in report["scenarios"].items():
         print(f"\n== {k} ==")
