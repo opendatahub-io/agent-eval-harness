@@ -253,15 +253,28 @@ def _resolve_correction(cli_value: str | None, matrix: Any) -> str:
     return DEFAULT_CORRECTION
 
 
+def _resolve_per_judge(cli_value: bool, matrix: Any) -> bool:
+    """--per-judge > matrix.analysis.per_judge > off (the flag only enables)."""
+    return bool(cli_value) or bool(
+        matrix is not None and getattr(matrix, "per_judge", False))
+
+
 def _analyze_and_report(config: Any, runs_dir: Path, *, report_output: str | None,
-                        skip_report: bool, correction: str = DEFAULT_CORRECTION) -> int:
+                        skip_report: bool, correction: str = DEFAULT_CORRECTION,
+                        per_judge: bool = False) -> int:
     from analyze import analyze_runs  # lazy: pulls pandas/scipy only when needed
 
-    analysis, artifact = analyze_runs(runs_dir, config, correction=correction)
+    analysis, artifact = analyze_runs(runs_dir, config, correction=correction,
+                                      per_judge=per_judge)
     print(f"Wrote stats artifact: {artifact}")
     an = analysis.get("anova", {})
     print(f"ANOVA: {an.get('method', '?')} — "
           f"{'SIGNIFICANT' if an.get('significant') else 'not significant'}")
+    pj = analysis.get("per_judge")
+    if pj:
+        print(f"Per-judge ANOVA: {len(pj.get('judges', {}))} judge(s) analysed "
+              f"(BH family of {pj.get('family_size', 0)} test(s), "
+              f"{len(pj.get('excluded', []))} excluded)")
     if not skip_report:
         _invoke_compare(runs_dir, report_output)
     return 0
@@ -320,6 +333,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="Multiple-comparison correction across the ANOVA "
                              "term family (overrides matrix.analysis.correction; "
                              f"default: {DEFAULT_CORRECTION})")
+    parser.add_argument("--per-judge", action="store_true",
+                        help="Also run the ANOVA once per judge (screening), "
+                             "Benjamini-Hochberg-corrected across the whole "
+                             "judges×terms family (enables "
+                             "matrix.analysis.per_judge)")
     args = parser.parse_args(argv)
 
     config = EvalConfig.from_yaml(args.config)
@@ -335,12 +353,14 @@ def main(argv: list[str] | None = None) -> int:
         correction = _resolve_correction(args.correction, matrix)
         return _analyze_and_report(config, runs_dir,
                                    report_output=args.output, skip_report=args.no_report,
-                                   correction=correction)
+                                   correction=correction,
+                                   per_judge=_resolve_per_judge(args.per_judge, matrix))
 
     matrix = MatrixBuilder.from_yaml(Path(args.config), strict=True)
     if matrix is None:
         raise SystemExit(f"No 'matrix:' section found in {args.config}")
     correction = _resolve_correction(args.correction, matrix)
+    per_judge = _resolve_per_judge(args.per_judge, matrix)
     conditions = MatrixBuilder.expand_full_factorial(matrix.factors)
     cases = args.cases or _enumerate_cases(config)
     if not cases:
@@ -358,7 +378,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Completed {len(produced)} run(s).")
     return _analyze_and_report(config, runs_dir,
                                report_output=args.output, skip_report=args.no_report,
-                               correction=correction)
+                               correction=correction, per_judge=per_judge)
 
 
 if __name__ == "__main__":

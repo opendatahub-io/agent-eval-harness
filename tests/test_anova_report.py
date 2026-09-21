@@ -113,6 +113,62 @@ def test_corrected_render_html_shows_raw_adjusted_and_method():
     assert "Holm" in rendered  # the adjusted column names its method
 
 
+def per_judge_analysis():
+    d = corrected_analysis()
+    d["per_judge"] = {
+        "correction": "bh", "family_size": 2, "alpha": 0.05,
+        "judges": {
+            "quality": {"method": "Repeated-measures ANOVA (pingouin rm_anova)",
+                        "terms": {"model": {"p_raw": 0.004, "p_adjusted": 0.008,
+                                            "significant": True}},
+                        "n_cases": 4, "n_conditions": 2},
+            "tests_pass": {"method": "Repeated-measures ANOVA (pingouin rm_anova)",
+                           "terms": {"model": {"p_raw": 0.2, "p_adjusted": 0.2,
+                                               "significant": False}},
+                           "n_cases": 4, "n_conditions": 2},
+        },
+        "excluded": [{"judge": "always_five",
+                      "reason": "constant value — no variance to analyse"}],
+    }
+    return d
+
+
+def test_per_judge_section_rendered_markdown_and_html():
+    report = load_report_module()
+    d = per_judge_analysis()
+
+    markdown = report.render_md("anova-test", d)
+    assert "## Per-judge effects (screening)" in markdown
+    assert "| quality | model | 0.0040 | 0.0080 | SIGNIFICANT | 4 |" in markdown
+    assert "| tests_pass | model | 0.2000 | 0.2000 | not significant | 4 |" in markdown
+    assert "Benjamini-Hochberg" in markdown and "family of 2" in markdown
+    assert "always_five — constant value" in markdown
+
+    rendered = report.render_html("anova-test", d)
+    assert "Per-judge effects (screening)" in rendered
+    assert "<td>quality</td><td>model</td><td class=num>0.0040</td>" in rendered
+    assert "Benjamini-Hochberg" in rendered
+    assert "always_five" in rendered and "constant value" in rendered
+
+
+def test_no_per_judge_block_renders_no_section():
+    report = load_report_module()
+    d = corrected_analysis()
+    assert "Per-judge effects" not in report.render_md("anova-test", d)
+    assert "Per-judge effects" not in report.render_html("anova-test", d)
+
+
+def test_per_judge_html_escapes_user_controlled_values():
+    report = load_report_module()
+    d = per_judge_analysis()
+    evil = "j<img src=y onerror=alert(1)>"
+    d["per_judge"]["judges"] = {evil: d["per_judge"]["judges"]["quality"]}
+    d["per_judge"]["excluded"] = [{"judge": evil, "reason": "<script>x</script>"}]
+    rendered = report.render_html("anova-test", d)
+    assert "<img src=y onerror" not in rendered
+    assert "<script>x</script>" not in rendered
+
+
 def test_render_html_escapes_user_controlled_ids():
     """Model/case ids and run_id come from user-controlled dataset dir names and
     eval.yaml; they must be HTML-escaped so a hostile name can't inject script

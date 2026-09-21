@@ -125,7 +125,10 @@ open <output-dir>/index.html
   (single-factor repeated-measures / one-way analyses; the multi-factor
   mixed-effects model reports per-term Wald tests instead), the design (`n_cases`, `replications`,
   any excluded conditions), and — when the artifact includes one — a
-  **cost/quality Pareto frontier**. Older artifacts without the correction
+  **cost/quality Pareto frontier**. When the artifact carries a `per_judge`
+  block (the opt-in per-judge fan-out), a compact judge-by-term screening
+  table follows, with raw and BH-adjusted p-values and any excluded judges
+  listed with their reasons. Older artifacts without the correction
   fields render with their single p column unchanged. With no `anova.json`,
   this section is simply absent and the rest of the report is unchanged.
 - **Light/dark theme** — a header toggle mirrors the per-run reports and

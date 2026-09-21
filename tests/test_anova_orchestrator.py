@@ -166,6 +166,36 @@ def test_correction_plumbing_config_then_cli_override(tmp_path, monkeypatch):
     assert stats["anova"]["correction"] == "none"
 
 
+def test_per_judge_plumbing_flag_and_config(tmp_path, monkeypatch):
+    """per_judge is opt-in: absent by default, enabled by --per-judge or
+    matrix.analysis.per_judge (either turns the fan-out on)."""
+    cfg = _project(tmp_path)
+    monkeypatch.setenv("AGENT_EVAL_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(O, "_run_eval_for_condition", _stub([]))
+
+    assert O.main(["--config", cfg, "--no-report"]) == 0
+    artifact = tmp_path / "runs" / "myskill" / "anova.json"
+    stats = json.loads(artifact.read_text())
+    assert "per_judge" not in stats  # off by default
+
+    # the CLI flag enables it for a re-analysis
+    assert O.main(["--config", cfg, "--analyze-only", "--no-report",
+                   "--per-judge"]) == 0
+    stats = json.loads(artifact.read_text())
+    assert stats["per_judge"]["correction"] == "bh"
+    # the stub's judge scores a constant 4 -> excluded with a reason, honestly
+    assert stats["per_judge"]["family_size"] == 0
+    assert stats["per_judge"]["excluded"][0]["judge"] == "quality"
+
+    # matrix.analysis.per_judge enables it without the flag
+    raw = yaml.safe_load(Path(cfg).read_text())
+    raw["matrix"]["analysis"] = {"per_judge": True}
+    Path(cfg).write_text(yaml.dump(raw))
+    assert O.main(["--config", cfg, "--analyze-only", "--no-report"]) == 0
+    stats = json.loads(artifact.read_text())
+    assert "per_judge" in stats
+
+
 def test_execute_input_override_helpers(tmp_path):
     """The eval-run --input-override plumbing that carries non-model factors."""
     import yaml as _yaml
