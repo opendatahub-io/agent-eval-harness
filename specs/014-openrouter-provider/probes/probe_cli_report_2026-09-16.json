@@ -1,16 +1,16 @@
 {
-  "generated_at": "2026-09-21T15:20:48.290113+00:00",
+  "generated_at": "2026-09-21T15:37:15.007688+00:00",
   "producer": {
     "script": "probe_claude_cli.py",
     "schema": 2,
-    "git_sha": "5bf35bf",
+    "git_sha": "6bc8580",
     "dirty": false
   },
   "claude_version": "2.1.278 (Claude Code)",
   "scenarios": {
     "A_single_header_hook_subagent": {
       "cli_rc": 0,
-      "elapsed_s": 3.7,
+      "elapsed_s": 3.9,
       "requests_total": 5,
       "messages_requests": 5,
       "subagent_like_requests": 1,
@@ -27,14 +27,14 @@
       ],
       "hook_ran": true,
       "hook_env_has_settings_values": {
-        "ANTHROPIC_BASE_URL": "http://127.0.0.1:56233",
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:63266",
         "CLAUDE_CODE_USE_VERTEX": "",
         "ANTHROPIC_VERTEX_PROJECT_ID": "",
         "ANTHROPIC_AUTH_TOKEN": "<present>"
       },
       "request_log": [
         {
-          "t": 2.4,
+          "t": 2.33,
           "method": "POST",
           "path": "/v1/messages?beta=true",
           "headers": {
@@ -65,7 +65,7 @@
           "system_head": "x-anthropic-billing-header: cc_version=2.1.278.04a; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
         },
         {
-          "t": 3.56,
+          "t": 3.64,
           "method": "POST",
           "path": "/v1/messages?beta=true",
           "headers": {
@@ -96,7 +96,7 @@
           "system_head": "x-anthropic-billing-header: cc_version=2.1.278.04a; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
         },
         {
-          "t": 3.57,
+          "t": 3.65,
           "method": "POST",
           "path": "/v1/messages?beta=true",
           "headers": {
@@ -127,7 +127,7 @@
           "system_head": "x-anthropic-billing-header: cc_version=2.1.278.0cf; cc_entrypoint=sdk-cli; cc_is_subagent=true; You are a Claude agent, "
         },
         {
-          "t": 3.59,
+          "t": 3.65,
           "method": "POST",
           "path": "/v1/messages?beta=true",
           "headers": {
@@ -158,7 +158,7 @@
           "system_head": "x-anthropic-billing-header: cc_version=2.1.278.04a; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
         },
         {
-          "t": 3.69,
+          "t": 3.8,
           "method": "POST",
           "path": "/v1/messages?beta=true",
           "headers": {
@@ -251,7 +251,7 @@
           "error": null
         }
       ],
-      "stdout_tail": "gent_stats\":{\"spawned\":1,\"requested\":{\"background\":0,\"foreground\":0,\"unset\":1},\"started_in_background\":1,\"max_depth\":1,\"spawned_by_subagents\":0,\"completed\":1,\"failed\":0,\"killed\":{\"parent\":0,\"user\":0,\"system\":0},\"refused\":{\"depth_limit\":0,\"concurrency_limit\":0,\"budget\":0},\"by_type\":{\"general-purpose\":1}},\"is_error\":false,\"num_turns\":1,\"subtype\":\"success\",\"api_error_status\":null,\"result\":\"done\",\"ttft_ms\":94,\"type\":\"result\",\"duration_ms\":96,\"uuid\":\"86ff3c67-858d-4461-900b-2c40825dd523\",\"ttft_stream_ms\":94,\"time_to_request_ms\":92,\"first_content_frame_ms\":94,\"queued_turn_count\":0,\"result_index\":1}\n",
+      "stdout_tail": "stats\":{\"spawned\":1,\"requested\":{\"background\":0,\"foreground\":0,\"unset\":1},\"started_in_background\":1,\"max_depth\":1,\"spawned_by_subagents\":0,\"completed\":1,\"failed\":0,\"killed\":{\"parent\":0,\"user\":0,\"system\":0},\"refused\":{\"depth_limit\":0,\"concurrency_limit\":0,\"budget\":0},\"by_type\":{\"general-purpose\":1}},\"is_error\":false,\"num_turns\":1,\"subtype\":\"success\",\"api_error_status\":null,\"result\":\"done\",\"ttft_ms\":126,\"type\":\"result\",\"duration_ms\":129,\"uuid\":\"cc79c26c-5022-4f4c-a9ae-bd8638daf671\",\"ttft_stream_ms\":126,\"time_to_request_ms\":125,\"first_content_frame_ms\":126,\"queued_turn_count\":0,\"result_index\":1}\n",
       "stderr_tail": "[claude-code:unrecognized_model] {\"model\":\"fake/model\",\"query_source\":\"sdk\"}\n"
     },
     "B_multi_header": {
@@ -272,7 +272,7 @@
       "all_three_present_on_subagent": true,
       "request_log": [
         {
-          "t": 5.74,
+          "t": 6.18,
           "method": "POST",
           "path": "/v1/messages?beta=true",
           "headers": {
@@ -305,7 +305,7 @@
           "system_head": "x-anthropic-billing-header: cc_version=2.1.278.04a; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
         },
         {
-          "t": 6.65,
+          "t": 7.33,
           "method": "POST",
           "path": "/v1/messages?beta=true",
           "headers": {
@@ -338,7 +338,7 @@
           "system_head": "x-anthropic-billing-header: cc_version=2.1.278.04a; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
         },
         {
-          "t": 6.66,
+          "t": 7.34,
           "method": "POST",
           "path": "/v1/messages?beta=true",
           "headers": {
@@ -371,7 +371,7 @@
           "system_head": "x-anthropic-billing-header: cc_version=2.1.278.0cf; cc_entrypoint=sdk-cli; cc_is_subagent=true; You are a Claude agent, "
         },
         {
-          "t": 6.66,
+          "t": 7.36,
           "method": "POST",
           "path": "/v1/messages?beta=true",
           "headers": {
@@ -404,7 +404,7 @@
           "system_head": "x-anthropic-billing-header: cc_version=2.1.278.04a; cc_entrypoint=sdk-cli; You are a Claude agent, built on Anthropic's "
         },
         {
-          "t": 6.78,
+          "t": 7.48,
           "method": "POST",
           "path": "/v1/messages?beta=true",
           "headers": {
@@ -499,7 +499,7 @@
           "error": null
         }
       ],
-      "stdout_tail": "ent_stats\":{\"spawned\":1,\"requested\":{\"background\":0,\"foreground\":0,\"unset\":1},\"started_in_background\":1,\"max_depth\":1,\"spawned_by_subagents\":0,\"completed\":1,\"failed\":0,\"killed\":{\"parent\":0,\"user\":0,\"system\":0},\"refused\":{\"depth_limit\":0,\"concurrency_limit\":0,\"budget\":0},\"by_type\":{\"general-purpose\":1}},\"is_error\":false,\"num_turns\":1,\"subtype\":\"success\",\"api_error_status\":null,\"result\":\"done\",\"ttft_ms\":98,\"type\":\"result\",\"duration_ms\":101,\"uuid\":\"73d686e8-2f2c-4df0-b493-34c325f0177f\",\"ttft_stream_ms\":98,\"time_to_request_ms\":97,\"first_content_frame_ms\":98,\"queued_turn_count\":0,\"result_index\":1}\n",
+      "stdout_tail": "stats\":{\"spawned\":1,\"requested\":{\"background\":0,\"foreground\":0,\"unset\":1},\"started_in_background\":1,\"max_depth\":1,\"spawned_by_subagents\":0,\"completed\":1,\"failed\":0,\"killed\":{\"parent\":0,\"user\":0,\"system\":0},\"refused\":{\"depth_limit\":0,\"concurrency_limit\":0,\"budget\":0},\"by_type\":{\"general-purpose\":1}},\"is_error\":false,\"num_turns\":1,\"subtype\":\"success\",\"api_error_status\":null,\"result\":\"done\",\"ttft_ms\":107,\"type\":\"result\",\"duration_ms\":110,\"uuid\":\"146d9005-0499-4430-9e2b-5fe68eba8d57\",\"ttft_stream_ms\":107,\"time_to_request_ms\":106,\"first_content_frame_ms\":107,\"queued_turn_count\":0,\"result_index\":1}\n",
       "stderr_tail": "[claude-code:unrecognized_model] {\"model\":\"fake/model\",\"query_source\":\"sdk\"}\n"
     },
     "C_max_budget_zero": {
