@@ -226,8 +226,14 @@ def _analyze_df(
         design["excluded_cases"] = excluded_cases
     per_case = _build_per_case(df, factors)
 
+    # Post-hoc pairwise level contrasts are produced by the ANOVA functions
+    # (from the same fit — no refitting); lift them to a top-level artifact
+    # key so renderers don't dig inside the omnibus result.
+    contrasts = anova_result.pop("contrasts", {})
+
     return {
         "anova": anova_result,
+        "contrasts": contrasts,
         "condition_summaries": condition_summaries,
         "pareto_frontier": frontier,
         "design": design,

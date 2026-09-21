@@ -139,6 +139,85 @@ def test_legacy_artifact_without_correction_keeps_single_p_column(tmp_path):
     assert "p-value" in html
 
 
+def _contrasts_block(**overrides):
+    block = {
+        "correction": "holm",
+        "family": "pairwise level contrasts within factor 'model'",
+        "family_size": 3,
+        "contrast_type": "reference-cell",
+        "omnibus_p_adjusted": 0.003,
+        "note": "Estimates are reference-cell contrasts from the fitted model "
+                "— level differences at the other factors' reference levels, "
+                "NOT marginal means (the model includes interactions).",
+        "pairs": [
+            {"a": "claude-opus-4-8", "b": "claude-sonnet-4-6",
+             "estimate": 0.06, "se": 0.02, "p_raw": 0.004,
+             "p_adjusted": 0.012, "significant": True},
+            {"a": "claude-opus-4-8", "b": "claude-haiku-4-5",
+             "estimate": 0.01, "se": None, "p_raw": None, "p_adjusted": None,
+             "significant": False, "reason": "no finite p"},
+        ],
+    }
+    block.update(overrides)
+    return block
+
+
+def test_pairwise_contrasts_table_named_method_and_raw_p(tmp_path):
+    """The A-vs-B table renders per factor, names the correction and its
+    within-factor family, keeps raw p beside adjusted, and never fabricates a
+    value for a degenerate pair."""
+    _mk_run(tmp_path, "r-a", "model-a", {"c1": 5})
+    _artifact(tmp_path, anova=_corrected_anova(),
+              contrasts={"model": _contrasts_block()})
+    stats = compare.load_stats_artifact(tmp_path)
+    out = tmp_path / "rep"
+    compare.generate_report(compare.discover_runs(tmp_path), "T", None, out, stats=stats)
+    html = (out / "index.html").read_text()
+    assert "Pairwise level contrasts (post-hoc)" in html
+    assert "Holm-corrected across the 3 contrast(s) within this factor" in html
+    assert "omnibus adjusted p: 0.0030" in html
+    assert "<td>0.0040</td>" in html and "<td>0.0120</td>" in html  # raw + adjusted
+    assert "no test" in html  # degenerate pair, no fabricated p
+    assert "NOT marginal means" in html  # reference-cell contrasts labelled
+
+
+def test_no_contrasts_key_renders_no_posthoc_section(tmp_path):
+    _mk_run(tmp_path, "r-a", "model-a", {"c1": 5})
+    _artifact(tmp_path, anova=_corrected_anova())
+    stats = compare.load_stats_artifact(tmp_path)
+    out = tmp_path / "rep"
+    compare.generate_report(compare.discover_runs(tmp_path), "T", None, out, stats=stats)
+    html = (out / "index.html").read_text()
+    assert "Pairwise level contrasts" not in html
+
+
+def test_contrasts_escape_user_controlled_level_names(tmp_path):
+    evil = "m<script>alert(1)</script>"
+    block = _contrasts_block(pairs=[
+        {"a": evil, "b": "safe", "estimate": 0.1, "se": 0.1,
+         "p_raw": 0.5, "p_adjusted": 0.5, "significant": False}])
+    _mk_run(tmp_path, "r-a", "model-a", {"c1": 5})
+    _artifact(tmp_path, anova=_corrected_anova(), contrasts={"model": block})
+    stats = compare.load_stats_artifact(tmp_path)
+    out = tmp_path / "rep"
+    compare.generate_report(compare.discover_runs(tmp_path), "T", None, out, stats=stats)
+    html = (out / "index.html").read_text()
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_degenerate_contrast_factor_shows_reason(tmp_path):
+    _mk_run(tmp_path, "r-a", "model-a", {"c1": 5})
+    _artifact(tmp_path, anova=_corrected_anova(), contrasts={"model": _contrasts_block(
+        pairs=[], family_size=0,
+        reason="No variance in response — no pairwise tests computed.")})
+    stats = compare.load_stats_artifact(tmp_path)
+    out = tmp_path / "rep"
+    compare.generate_report(compare.discover_runs(tmp_path), "T", None, out, stats=stats)
+    html = (out / "index.html").read_text()
+    assert "No pairwise tests: No variance in response" in html
+
+
 def test_no_variance_artifact_renders_gracefully(tmp_path):
     _mk_run(tmp_path, "r-a", "model-a", {"c1": 5})
     _artifact(tmp_path,

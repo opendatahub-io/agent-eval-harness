@@ -157,6 +157,58 @@ def factor_p_table(an):
     return (f"<table style='margin-top:14px'><thead>{head}</thead>"
             f"<tbody>{rows}</tbody></table>{note}")
 
+# ---------- pairwise level contrasts (post-hoc; anova.json "contrasts") ----------
+def contrast_family_note(blk):
+    # An adjusted value is never shown without naming the method — and the
+    # family is always stated (contrasts within ONE factor, never pooled).
+    c=blk.get("correction")
+    if c=="none":
+        return "No multiple-comparison correction across contrasts — significance on raw p."
+    return (f"{CORR_LABELS.get(c,str(c))}-corrected across the "
+            f"{blk.get('family_size','?')} contrast(s) within this factor; "
+            "significance on adjusted p.")
+def contrast_result(p):
+    if p.get("p_raw") is None:
+        return "no test"
+    return "SIGNIFICANT" if p.get("significant") else "not significant"
+def contrasts_md_lines(contrasts):
+    if not contrasts: return []
+    lines=["","## Pairwise contrasts (post-hoc)"]
+    for factor,blk in contrasts.items():
+        lines+=["",f"### {factor}","",
+                f"- {contrast_family_note(blk)} Omnibus p-adj: {fnum(blk.get('omnibus_p_adjusted'),4)}."]
+        if blk.get("note"): lines.append(f"- {blk['note']}")
+        if blk.get("reason"):
+            lines.append(f"- No pairwise tests: {blk['reason']}")
+            continue
+        lines+=["","| A | B | Estimate | SE | p (raw) | p (adj) | Result |",
+                "|---|---|---|---|---|---|---|"]
+        for p in blk.get("pairs",[]):
+            lines.append(f"| {p.get('a')} | {p.get('b')} | {fnum(p.get('estimate'))} "
+                         f"| {fnum(p.get('se'))} | {fnum(p.get('p_raw'),4)} "
+                         f"| {fnum(p.get('p_adjusted'),4)} | {contrast_result(p)} |")
+    return lines
+def contrasts_html(contrasts):
+    if not contrasts: return ""
+    inner=""
+    for factor,blk in contrasts.items():
+        inner+=(f"<div style='margin-top:14px;font-weight:600'>{esc(factor)}</div>"
+                f"<div class=sub>{esc(contrast_family_note(blk))} Omnibus p-adj: "
+                f"{fnum(blk.get('omnibus_p_adjusted'),4)}. {esc(blk.get('note',''))}</div>")
+        if blk.get("reason"):
+            inner+=f"<div class=sub>No pairwise tests: {esc(blk['reason'])}</div>"
+            continue
+        rows="".join(
+            f"<tr><td>{esc(p.get('a'))}</td><td>{esc(p.get('b'))}</td>"
+            f"<td class=num>{fnum(p.get('estimate'))}</td><td class=num>{fnum(p.get('se'))}</td>"
+            f"<td class=num>{fnum(p.get('p_raw'),4)}</td><td class=num>{fnum(p.get('p_adjusted'),4)}</td>"
+            f"<td>{contrast_result(p)}</td></tr>"
+            for p in blk.get("pairs",[]))
+        inner+=("<table style='margin-top:8px'><thead><tr><th>A</th><th>B</th>"
+                "<th class=num>Estimate</th><th class=num>SE</th><th class=num>p (raw)</th>"
+                f"<th class=num>p (adj)</th><th>Result</th></tr></thead><tbody>{rows}</tbody></table>")
+    return f"<div class=card><h2>Pairwise contrasts (post-hoc)</h2>{inner}</div>"
+
 # ---------- markdown per run ----------
 def render_md(rid,d):
     des,conds,an,per=(d.get("design",{}),d.get("condition_summaries",[]),d.get("anova",{}),d.get("per_case",{}))
@@ -166,6 +218,7 @@ def render_md(rid,d):
     for i,c in enumerate(sorted(conds,key=lambda x:-x.get("mean",0)),1):
         L.append(f"| {i} | {cmodel(c)} | {fnum(c.get('mean'))} | {fnum(c.get('std'))} | {c.get('n','?')} |")
     L+=anova_md_lines(an)
+    L+=contrasts_md_lines(d.get("contrasts",{}))
     if per and cases:
         ms=order_models(list(per.keys()))
         L+=["","## Per-case scores","","| Case | "+" | ".join(m for m in ms)+" |","|---"*(len(ms)+1)+"|"]
@@ -210,6 +263,7 @@ def render_html(rid,d):
     else:
         call="<div class=callout>ANOVA not computable: zero variance (every condition scored identically).</div>"
     anova=f"<div class=tiles>{tiles}</div>{factor_p_table(an)}{call}<div class=sub style='margin-top:12px'>{html.escape(an.get('method','—'))}</div>"
+    pairwise=contrasts_html(d.get("contrasts",{}))
     matrix=""
     if per and cases:
         ms=order_models(list(per.keys()))
@@ -226,7 +280,7 @@ def render_html(rid,d):
     body=(f"<h1>ANOVA — {esc(rid)}</h1><div class=sub>{badge}</div>"
           f"<div class=card><h2>Experiment</h2>{meta}</div>"
           f"<div class=card><h2>Condition means (ranked)</h2>{means}</div>"
-          f"<div class=card><h2>ANOVA</h2>{anova}</div>{matrix}"
+          f"<div class=card><h2>ANOVA</h2>{anova}</div>{pairwise}{matrix}"
           f"<footer>Generated {NOW} from <code>anova.json</code> · composite scores in [0,1].</footer>")
     return page(f"ANOVA — {rid}",body)
 

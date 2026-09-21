@@ -611,6 +611,51 @@ def render_stats_section(stats):
         html += (f'<p style="{muted}">Excluded (missing from some condition): '
                  f'{escape(", ".join(map(str, excluded)))}</p>\n')
 
+    # --- Post-hoc pairwise level contrasts (anova.json "contrasts") ---
+    # Rendered only when the artifact carries them; the family (contrasts
+    # within one factor) and the correction method are always named, and raw
+    # p stays visible next to the adjusted one.
+    contrasts = stats.get("contrasts") or {}
+    if contrasts:
+        html += '<h3>Pairwise level contrasts (post-hoc)</h3>\n'
+        for factor, block in contrasts.items():
+            corr = block.get("correction")
+            if corr == "none":
+                fam = ("no multiple-comparison correction across contrasts — "
+                       "significance on raw p")
+            else:
+                label = _STATS_CORRECTION_LABELS.get(corr, str(corr))
+                fam = (f"{label}-corrected across the "
+                       f"{block.get('family_size', '?')} contrast(s) within "
+                       "this factor")
+            html += (f'<p><strong>{escape(str(factor))}</strong> — {escape(fam)} '
+                     f'&middot; omnibus adjusted p: '
+                     f'{_statnum(block.get("omnibus_p_adjusted"))}</p>\n')
+            if block.get("note"):
+                html += f'<p style="{muted}">{escape(str(block["note"]))}</p>\n'
+            if block.get("reason"):
+                html += (f'<p style="{muted}">No pairwise tests: '
+                         f'{escape(str(block["reason"]))}</p>\n')
+                continue
+            html += ('<table><thead><tr><th>A</th><th>B</th><th>Estimate</th>'
+                     '<th>SE</th><th>p (raw)</th><th>p (adjusted)</th>'
+                     '<th>Result</th></tr></thead><tbody>\n')
+            for pair in block.get("pairs", []):
+                if pair.get("p_raw") is None:
+                    res = "no test"
+                elif pair.get("significant"):
+                    res = "significant"
+                else:
+                    res = "not significant"
+                html += (f'<tr><td>{escape(str(pair.get("a")))}</td>'
+                         f'<td>{escape(str(pair.get("b")))}</td>'
+                         f'<td>{_statnum(pair.get("estimate"))}</td>'
+                         f'<td>{_statnum(pair.get("se"))}</td>'
+                         f'<td>{_statnum(pair.get("p_raw"))}</td>'
+                         f'<td>{_statnum(pair.get("p_adjusted"))}</td>'
+                         f'<td>{res}</td></tr>\n')
+            html += '</tbody></table>\n'
+
     if pareto and any(isinstance(c, dict) and "cost" in c for c in pareto):
         html += ('<h3>Cost / quality Pareto frontier</h3>\n'
                  '<table><thead><tr><th>Condition</th><th>Mean score</th>'

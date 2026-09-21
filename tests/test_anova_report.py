@@ -113,6 +113,85 @@ def test_corrected_render_html_shows_raw_adjusted_and_method():
     assert "Holm" in rendered  # the adjusted column names its method
 
 
+def contrasts_analysis():
+    """An artifact carrying post-hoc pairwise contrasts (top-level key)."""
+    d = corrected_analysis()
+    d["contrasts"] = {
+        "model": {
+            "correction": "holm",
+            "family": "pairwise level contrasts within factor 'model'",
+            "family_size": 2,
+            "contrast_type": "reference-cell",
+            "omnibus_p_adjusted": 0.03,
+            "note": "Estimates are reference-cell contrasts from the fitted "
+                    "model — level differences at the other factors' reference "
+                    "levels, NOT marginal means (the model includes interactions).",
+            "pairs": [
+                {"a": "claude-opus-4-6", "b": "claude-haiku-4-5",
+                 "estimate": 0.5, "se": 0.1, "p_raw": 0.004,
+                 "p_adjusted": 0.008, "significant": True},
+                {"a": "claude-opus-4-6", "b": "claude-x",
+                 "estimate": 0.01, "se": None, "p_raw": None,
+                 "p_adjusted": None, "significant": False,
+                 "reason": "no finite p — degenerate pair, excluded from the "
+                           "correction family"},
+            ],
+        },
+    }
+    return d
+
+
+def test_contrasts_render_markdown_names_method_and_keeps_raw_p():
+    report = load_report_module()
+    markdown = report.render_md("anova-test", contrasts_analysis())
+
+    assert "## Pairwise contrasts (post-hoc)" in markdown
+    assert "### model" in markdown
+    assert "Holm-corrected across the 2 contrast(s) within this factor" in markdown
+    assert "Omnibus p-adj: 0.0300" in markdown
+    # raw p stays visible next to the adjusted one; the degenerate pair shows
+    # no fabricated value
+    assert "| claude-opus-4-6 | claude-haiku-4-5 | 0.500 | 0.100 | 0.0040 | 0.0080 | SIGNIFICANT |" in markdown
+    assert "| claude-opus-4-6 | claude-x | 0.010 | — | — | — | no test |" in markdown
+    assert "NOT marginal means" in markdown
+
+
+def test_contrasts_render_html_table_and_escaping():
+    report = load_report_module()
+    d = contrasts_analysis()
+    evil = "m<script>alert(1)</script>"
+    d["contrasts"]["model"]["pairs"][0]["a"] = evil
+    rendered = report.render_html("anova-test", d)
+
+    assert "Pairwise contrasts (post-hoc)" in rendered
+    assert "Holm-corrected across the 2 contrast(s)" in rendered
+    assert "<script>alert(1)</script>" not in rendered
+    assert "&lt;script&gt;" in rendered
+    assert "<td class=num>0.0040</td><td class=num>0.0080</td>" in rendered
+
+
+def test_no_contrasts_key_renders_no_section():
+    report = load_report_module()
+    markdown = report.render_md("anova-test", corrected_analysis())
+    rendered = report.render_html("anova-test", corrected_analysis())
+    assert "Pairwise contrasts" not in markdown
+    assert "Pairwise contrasts" not in rendered
+
+
+def test_degenerate_contrast_block_shows_reason_not_table():
+    report = load_report_module()
+    d = corrected_analysis()
+    d["contrasts"] = {"model": {
+        "correction": "holm", "family_size": 0, "contrast_type": "paired",
+        "omnibus_p_adjusted": None, "note": "", "pairs": [],
+        "reason": "No variance in response — no pairwise tests computed.",
+    }}
+    markdown = report.render_md("anova-test", d)
+    assert "No pairwise tests: No variance in response" in markdown
+    rendered = report.render_html("anova-test", d)
+    assert "No pairwise tests: No variance in response" in rendered
+
+
 def test_render_html_escapes_user_controlled_ids():
     """Model/case ids and run_id come from user-controlled dataset dir names and
     eval.yaml; they must be HTML-escaped so a hostile name can't inject script

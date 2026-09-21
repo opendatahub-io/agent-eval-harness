@@ -82,6 +82,20 @@ whose test is degenerate (no finite p) are excluded from the family and listed
 under `excluded_terms`. The `--correction` CLI flag on `orchestrate.py`
 overrides this key.
 
+The same method also corrects the **post-hoc pairwise level contrasts** that
+`anova.json` carries under a top-level `contrasts` key — one block per factor
+with ≥2 levels, each pair reporting `estimate` (composite-scale difference,
+`a − b`), `se`, `p_raw`, `p_adjusted`, and `significant`. The correction
+family is the pairwise contrasts *within that factor* (never pooled across
+factors), and each block carries the factor's omnibus adjusted p for context —
+contrasts are computed regardless of the omnibus outcome. They come from the
+already-fitted model (no refitting): pingouin paired tests for single-factor
+designs, coefficient contrasts on the mixed model otherwise — flagged
+`contrast_type: reference-cell` when the model includes interactions (level
+differences at the other factors' reference levels, not marginal means).
+Degenerate pairs (no finite p, e.g. zero-variance paired differences) are
+excluded from the family with a `reason`, never given a fabricated p-value.
+
 ## Full Factorial Expansion
 
 All combinations of factor levels are generated. For N factors with levels L1, L2, ..., LN, the total number of conditions is L1 × L2 × ... × LN.
