@@ -3,7 +3,8 @@
 ## Key Values
 
 - **F-statistic**: Ratio of between-group variance to within-group variance. Higher = larger effect.
-- **p-value**: Probability of observing this F-statistic under the null hypothesis (no real difference). Below alpha (typically 0.05) = statistically significant.
+- **p-value**: Probability of observing this F-statistic under the null hypothesis (no real difference). `p_values` holds the raw per-term values; `p_adjusted` the multiplicity-corrected ones.
+- **significant**: The verdict to report. It is judged on `p_adjusted` under the named `correction` (Holm by default; on raw p only when `correction` is `none`) — never call a term significant from a raw p that the correction rejected, and always name the method next to an adjusted value.
 - **Effect size (eta-squared)**: Proportion of total variance explained by the factor. Small (<0.06), medium (0.06-0.14), large (>0.14).
 
 ## Interpreting Results
@@ -36,7 +37,7 @@ In agent evaluation, the same test cases are typically evaluated under all condi
 With multiple factors (e.g., model × effort), the mixed-effects model reports:
 
 - **Main effects**: Does each factor independently affect scores?
-- **Interactions**: Does the effect of one factor depend on the level of another?
+- **Interactions**: Does the effect of one factor depend on the level of another? Interaction terms appear as `a:b` keys in `p_values`/`p_adjusted` and count toward the correction family (`family_size`).
 - **Random effects**: How much variance is attributable to case difficulty?
 
 Check interaction terms before interpreting main effects — a significant interaction means the main effect story is incomplete.
