@@ -303,6 +303,17 @@ class TestSyntheticGeneration:
                     model="openai:/gpt-4o",
                 )
 
+    def test_generate_synthetic_rejects_openrouter(self, sample_config):
+        """openrouter:/ serves the agent and judge roles (spec 014); synthetic
+        generation needs a Claude model or the runner."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with pytest.raises(ValueError, match="OpenRouter-backed synthetic"):
+                generate_synthetic(
+                    config=sample_config,
+                    output_dir=Path(tmpdir) / "dataset",
+                    model="openrouter:/z-ai/glm-5.2",
+                )
+
     def test_no_seeds_raises_error(self, monkeypatch):
         """Test that config without generation seeds raises error."""
         from agent_eval.config import EvalConfig

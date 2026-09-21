@@ -24,10 +24,11 @@ RUN npm install -g --include=optional \
         @anthropic-ai/claude-code@2.1.228 @openai/codex@0.147.0 \
     && codex --version
 
-# Python deps for the judge engine + LLM judges (Vertex + direct API).
+# Python deps for the judge engine + LLM judges (Vertex + direct API, plus the
+# OpenAI SDK that serves `openai:/` and `openrouter:/` judges in-container).
 # Installed BEFORE the source COPY so editing agent_eval/ doesn't invalidate
 # this (slow) layer.
-RUN pip install --no-cache-dir pyyaml "anthropic[vertex]" jinja2
+RUN pip install --no-cache-dir pyyaml "anthropic[vertex]" jinja2 openai
 
 # agent-eval-harness package: judge engine, reward bridge, tool interception.
 COPY agent_eval /opt/agent-eval-harness/agent_eval

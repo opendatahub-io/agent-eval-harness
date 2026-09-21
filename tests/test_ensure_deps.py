@@ -192,3 +192,47 @@ class TestFallbackWhenDiscoveryFails:
         _write(tmp_path / "eval" / "one" / "eval.yaml", MLFLOW_EVAL)
         ensure_deps._find_eval_yamls(tmp_path)
         assert "discovery failed" not in capsys.readouterr().err
+
+
+class TestOpenAIBackendClassifier:
+    """`_needs_openai_backend` mirrors resolve_judge_backend (spec 013/014):
+    `openai:/`, `openrouter:/` and any non-Claude bare id need the OpenAI SDK."""
+
+    @pytest.mark.parametrize("model", [
+        "openrouter:/z-ai/glm-5.2", "openai:/gpt-4o", "gpt-4o", "o5-mini",
+        "my-gateway-model", "vendor/model",
+    ])
+    def test_openai_sdk_models(self, model):
+        assert ensure_deps._needs_openai_backend(model) is True
+
+    @pytest.mark.parametrize("model", [
+        "sonnet", "claude-opus-4-8", "anthropic:/claude-sonnet-4-5",
+        "runner:/gpt-5.4-medium", "", None,
+    ])
+    def test_non_openai_models(self, model):
+        assert ensure_deps._needs_openai_backend(model) is False
+
+    def test_openrouter_judge_pulls_openai(self, tmp_path):
+        eval_yaml = tmp_path / "eval.yaml"
+        eval_yaml.write_text(textwrap.dedent("""
+            name: t
+            execution:
+              skill: s
+            models:
+              judge: openrouter:/z-ai/glm-5.2
+            judges:
+              - {name: j, prompt: rate it}
+        """))
+        deps = ensure_deps._deps_for_config(eval_yaml)
+        assert any("openai" in str(dep) for dep in deps), deps
+
+    def test_provider_package_is_stdlib_only(self):
+        """No httpx/openrouter extra: the provider package imports with httpx
+        blocked (checked in a subprocess so this process's modules stay put)."""
+        import subprocess
+
+        code = ("import sys; sys.modules['httpx'] = None; "
+                "import agent_eval.providers.openrouter, agent_eval.config; print('ok')")
+        proc = subprocess.run([sys.executable, "-c", code], cwd=REPO_ROOT,
+                              capture_output=True, text=True, timeout=60)
+        assert proc.returncode == 0 and proc.stdout.strip() == "ok", proc.stderr

@@ -601,6 +601,7 @@ def validate_config(path="eval.yaml"):
         "name", "description", "builtin", "check", "prompt", "prompt_file",
         "module", "function", "arguments", "context", "model", "if", "llm_rubric",
         "feedback_type", "samples", "score_range", "step", "agent", "examples",
+        "provider_options",
     }
 
     for j in judges:

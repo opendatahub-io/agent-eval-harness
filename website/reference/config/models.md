@@ -115,6 +115,9 @@ export EVAL_JUDGE_MODEL=claude-opus-4-6   # last-resort default across runs
     - `anthropic:/claude-sonnet-4-5` (or a bare `sonnet`) → Anthropic SDK.
     - `openai:/gpt-4o` (or a bare `gpt-4o`) → OpenAI SDK; set `OPENAI_BASE_URL`
       to reach an OpenAI-compatible gateway (LiteLLM proxy, Azure, local models).
+    - `openrouter:/<author>/<slug>[:variant]` → OpenAI SDK through a dedicated
+      OpenRouter client (`OPENROUTER_API_KEY`, routing from
+      [`models.providers.openrouter`](#providers-openrouter)).
     - `runner:/<model>` → grade through the configured runner (opt-in for models
       only the runner CLI can serve, e.g. Cursor's internal ids).
 
@@ -122,6 +125,44 @@ export EVAL_JUDGE_MODEL=claude-opus-4-6   # last-resort default across runs
     for a statically-set judge model; an env-only `EVAL_JUDGE_MODEL` is checked
     when the judge is built, and `agent:` judge models route through the runner.
     See [judges → Model providers](../../reference/config/judges.md#model-providers-judge-backend).
+
+## providers (openrouter)
+
+`models.providers` is the registry behind `<provider>:/<model>` URIs. One
+provider kind exists, `openrouter`, and the block is optional — an
+`openrouter:/…` judge works with the defaults and `OPENROUTER_API_KEY`
+exported. Secrets are env-only: `api_key_env` names the variable, never a
+value. A top-level `providers:` key is rejected (it lives under `models`).
+
+```yaml
+models:
+  judge: openrouter:/z-ai/glm-5.2
+  providers:
+    openrouter:
+      api_key_env: OPENROUTER_API_KEY            # default
+      base_url: https://openrouter.ai/api        # default; no /v1 (the harness appends it)
+      attribution: { title: agent-eval-harness } # X-OpenRouter-Title (+ HTTP-Referer via `referer`)
+      routing:
+        defaults: { allow_fallbacks: true, sort: throughput }
+        models:
+          z-ai/glm-5.2: { order: [z-ai, novita], allow_fallbacks: false, quantizations: [fp8] }
+      judge:
+        concurrency: 4        # concurrent OpenRouter judge requests
+        max_retries: 3        # 429 (Retry-After), 502/503 and provider-unavailable replies
+        timeout_s: 300
+        extra_body: {}        # static request additions (merged last)
+        inherit_pins: false   # judges send order/only/quantizations only when true
+```
+
+`routing` follows OpenRouter's provider-routing fields (`order`, `only`,
+`ignore`, `allow_fallbacks`, `require_parameters`, `quantizations`, `sort`,
+`data_collection`, `zdr`, `max_price`, plus `fallbacks` for the `models`
+array). Entries in `routing.models` are keyed by the bare slug, so one entry
+covers every `:variant`. The agent-side options the spec documents
+(`preflight`, `budget`, `routing.enforcement`, …) are rejected by name until
+the release that consumes them, so nothing is silently ignored. See
+[judges → OpenRouter judges](judges.md#openrouter-judges) for what a judge
+sends and the `tool_choice` fallback rule.
 
 ## hook
 

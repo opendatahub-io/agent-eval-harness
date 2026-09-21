@@ -45,6 +45,9 @@ _FORWARD_ENV = (
     "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
     "AWS_BEARER_TOKEN_BEDROCK",
     "OPENAI_API_KEY",
+    # `openrouter:/` judges grade in-container through their dedicated client
+    # (spec 014); its default key variable travels like the others.
+    "OPENROUTER_API_KEY",
 )
 
 _HARBOR_LOG_TARGETS = {"/logs/verifier", "/logs/agent", "/logs/artifacts"}

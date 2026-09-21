@@ -1439,3 +1439,375 @@ class TestOpenAIStructuredJudge:
         _get_openai_client()
         assert captured["base_url"] == "http://localhost:8000/v1"
         assert captured["api_key"]  # non-empty placeholder
+
+
+# --- openrouter:/ judges (spec 014) -----------------------------------------
+
+from agent_eval.config import (  # noqa: E402
+    JudgeClientOptions, OpenRouterConfig, ProvidersConfig, RoutingConfig)
+from agent_eval.providers import JudgeProviderError  # noqa: E402
+from agent_eval.providers.openrouter import RoutingTable  # noqa: E402
+
+_OR_SLUG = "z-ai/glm-5.2"
+_OR_PINNED = {"defaults": {"sort": "throughput"},
+              "models": {_OR_SLUG: {"order": ["Z.AI", "novita"],
+                                    "allow_fallbacks": False,
+                                    "quantizations": ["fp8"]}}}
+
+
+def _or_providers(routing=_OR_PINNED, **judge):
+    table = RoutingTable.from_dict(routing) if routing else RoutingTable()
+    return ProvidersConfig(openrouter=OpenRouterConfig(
+        routing=RoutingConfig(defaults=table.defaults, models=table.models),
+        judge=JudgeClientOptions(**judge)))
+
+
+def _or_config(model=f"openrouter:/{_OR_SLUG}", judge=None, **providers_kw):
+    config = EvalConfig(name="test", skill="test")
+    config.models = ModelsConfig(judge=model, providers=_or_providers(**providers_kw))
+    config.judges = [judge or JudgeConfig(name="j", prompt="rate it", feedback_type="bool")]
+    return config
+
+
+def _or_response(tool_name="submit_evaluation", arguments=None, content=None,
+                 finish_reason="stop", error=None, provider=None):
+    tool_calls = None
+    if tool_name is not None:
+        tool_calls = [SimpleNamespace(function=SimpleNamespace(
+            name=tool_name, arguments=arguments))]
+    message = SimpleNamespace(tool_calls=tool_calls, content=content)
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason=finish_reason)])
+    if error is not None:
+        response.error = error
+    if provider is not None:
+        response.provider = provider
+    return response
+
+
+def _or_ok():
+    return _or_response(arguments='{"passed": true, "rationale": "solid"}')
+
+
+def _or_client(*script):
+    """Fake OpenAI client whose create() replays `script` in order: an exception
+    instance is raised, anything else returned; the last entry repeats."""
+    calls = []
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        step = script[min(len(calls) - 1, len(script) - 1)]
+        if isinstance(step, BaseException):
+            raise step
+        return step
+
+    client = SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=create)))
+    client.calls = calls
+    return client
+
+
+class _HttpError(Exception):
+    def __init__(self, status_code, message, retry_after=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
+        headers = {"retry-after": retry_after} if retry_after is not None else {}
+        self.response = SimpleNamespace(headers=headers)
+
+
+def _routing_404():
+    return _HttpError(404, "No endpoints found for z-ai/glm-5.2 that support tool use.")
+
+
+@pytest.fixture
+def or_env(monkeypatch):
+    """Per-test judge-side state: recorded (skipped) backoffs, fresh counters and
+    client cache, and any use of the plain OpenAI client is a failure."""
+    import score
+
+    sleeps = []
+    monkeypatch.setattr(score, "_judge_sleep", sleeps.append)
+
+    def no_plain_client():
+        raise AssertionError("the plain OpenAI client (OPENAI_*) must not be used")
+
+    monkeypatch.setattr(score, "_get_openai_client", no_plain_client)
+    score._reset_tool_choice_fallbacks()
+    score._JUDGE_CLIENTS.clear()
+    score._JUDGE_SEMAPHORES.clear()
+    return sleeps
+
+
+class TestOpenRouterJudge:
+    """`openrouter:/` judges ride the OpenAI transport with a dedicated client
+    (spec 014): routing `extra_body`, the Decision 25 tool_choice ladder,
+    committed-200 detection and the retry policy."""
+
+    def _score(self, config, client, monkeypatch):
+        import score
+
+        seen = {}
+
+        def fake_client_for(cfg):
+            seen["cfg"] = cfg
+            return client
+
+        monkeypatch.setattr(score, "_client_for", fake_client_for)
+        _, scorer, *_ = load_judges(config)[0]
+        result = scorer(outputs={"files": {"output.txt": "test"}})
+        return result, seen.get("cfg")
+
+    def test_dispatch_uses_the_dedicated_client_and_no_pins_by_default(
+            self, or_env, monkeypatch):
+        client = _or_client(_or_ok())
+        result, cfg = self._score(_or_config(), client, monkeypatch)
+        assert result == (True, "solid")
+        assert cfg.name == "openrouter" and cfg.api_key_env == "OPENROUTER_API_KEY"
+        sent = client.calls[0]
+        assert sent["model"] == _OR_SLUG
+        assert sent["tool_choice"] == {"type": "function",
+                                       "function": {"name": "submit_evaluation"}}
+        assert sent["extra_body"] == {"provider": {"sort": "throughput"}}
+        assert "max_tokens" in sent and "max_completion_tokens" not in sent
+
+    def test_inherit_pins_sends_order_quantizations_and_require_parameters(
+            self, or_env, monkeypatch):
+        client = _or_client(_or_ok())
+        self._score(_or_config(inherit_pins=True), client, monkeypatch)
+        assert client.calls[0]["extra_body"]["provider"] == {
+            "order": ["z-ai", "novita"], "allow_fallbacks": False,
+            "quantizations": ["fp8"], "sort": "throughput",
+            "require_parameters": True}
+
+    def test_per_judge_provider_options_routing_fallbacks_and_max_tokens(
+            self, or_env, monkeypatch):
+        judge = JudgeConfig(name="j", prompt="rate it", feedback_type="bool",
+                            provider_options={"routing": {"order": ["novita"]},
+                                              "fallbacks": ["deepseek/deepseek-v4"],
+                                              "max_tokens": 777})
+        client = _or_client(_or_ok())
+        self._score(_or_config(judge=judge), client, monkeypatch)
+        sent = client.calls[0]
+        provider = sent["extra_body"]["provider"]
+        assert provider["order"] == ["novita"]
+        assert provider["allow_fallbacks"] is False        # table entry still applies
+        assert provider["require_parameters"] is True
+        assert sent["extra_body"]["models"] == [_OR_SLUG, "deepseek/deepseek-v4"]
+        assert sent["max_tokens"] == 777
+
+    def test_gpt_via_openrouter_uses_max_tokens(self, or_env, monkeypatch):
+        client = _or_client(_or_ok())
+        self._score(_or_config(model="openrouter:/openai/gpt-5.2", routing=None),
+                    client, monkeypatch)
+        sent = client.calls[0]
+        assert "max_tokens" in sent and "max_completion_tokens" not in sent
+        assert "extra_body" not in sent
+
+    def test_unpinned_judge_never_sends_require_parameters(self, or_env, monkeypatch):
+        routing = {"defaults": {"require_parameters": True, "allow_fallbacks": True}}
+        client = _or_client(_or_ok())
+        self._score(_or_config(routing=routing), client, monkeypatch)
+        assert "extra_body" not in client.calls[0]
+
+    def test_dict_arguments_are_tolerated(self, or_env, monkeypatch):
+        client = _or_client(_or_response(arguments={"passed": False, "rationale": "nope"}))
+        result, _ = self._score(_or_config(), client, monkeypatch)
+        assert result == (False, "nope")
+
+    def test_forced_mode_keeps_the_text_fallback(self, or_env, monkeypatch):
+        client = _or_client(_or_response(
+            tool_name=None, content='{"passed": false, "rationale": "nope"}'))
+        result, _ = self._score(_or_config(), client, monkeypatch)
+        assert result == (False, "nope")
+
+    # -- committed-200 errors and retries -----------------------------------
+
+    def test_committed_200_error_raises_instead_of_text_fallback(
+            self, or_env, monkeypatch):
+        err = {"code": 400, "message": "Provider returned error: invalid request",
+               "metadata": {"provider_name": "Novita"}}
+        client = _or_client(_or_response(tool_name=None, content="",
+                                         finish_reason="error", error=err))
+        with pytest.raises(JudgeProviderError) as exc:
+            self._score(_or_config(max_retries=2), client, monkeypatch)
+        assert exc.value.retryable is False
+        assert exc.value.provider == "Novita"
+        assert exc.value.error_class == "provider"
+        assert len(client.calls) == 1 and or_env == []
+
+    def test_committed_200_overloaded_is_retried(self, or_env, monkeypatch):
+        err = {"code": 502, "message": "Provider overloaded",
+               "metadata": {"provider_name": "Z.AI"}}
+        client = _or_client(
+            _or_response(tool_name=None, finish_reason="error", error=err), _or_ok())
+        result, _ = self._score(_or_config(max_retries=2), client, monkeypatch)
+        assert result == (True, "solid")
+        assert len(client.calls) == 2 and len(or_env) == 1
+
+    def test_finish_reason_error_without_error_object_is_a_provider_error(
+            self, or_env, monkeypatch):
+        client = _or_client(_or_response(tool_name=None, finish_reason="error",
+                                         provider="Novita"))
+        with pytest.raises(JudgeProviderError) as exc:
+            self._score(_or_config(max_retries=0), client, monkeypatch)
+        assert exc.value.provider == "Novita"
+
+    def test_429_honours_retry_after(self, or_env, monkeypatch):
+        client = _or_client(_HttpError(429, "rate limited", retry_after="7"), _or_ok())
+        result, _ = self._score(_or_config(max_retries=1), client, monkeypatch)
+        assert result == (True, "solid") and or_env == [7.0]
+
+    def test_503_is_retried_with_jittered_backoff(self, or_env, monkeypatch):
+        client = _or_client(_HttpError(503, "upstream unavailable"), _or_ok())
+        result, _ = self._score(_or_config(max_retries=1), client, monkeypatch)
+        assert result == (True, "solid")
+        assert len(or_env) == 1 and 0 < or_env[0] <= 45
+
+    def test_retries_exhausted_raise_the_last_error(self, or_env, monkeypatch):
+        client = _or_client(_HttpError(429, "rate limited"))
+        with pytest.raises(_HttpError):
+            self._score(_or_config(max_retries=2), client, monkeypatch)
+        assert len(client.calls) == 3 and len(or_env) == 2
+
+    def test_non_retryable_error_propagates_immediately(self, or_env, monkeypatch):
+        client = _or_client(_HttpError(400, "bad request"))
+        with pytest.raises(_HttpError):
+            self._score(_or_config(max_retries=3), client, monkeypatch)
+        assert len(client.calls) == 1 and or_env == []
+
+    # -- Decision 25 tool_choice ladder --------------------------------------
+
+    def test_ladder_falls_back_to_required_and_records_the_mode(
+            self, or_env, monkeypatch):
+        import score
+
+        client = _or_client(_routing_404(), _or_ok())
+        result, _ = self._score(_or_config(inherit_pins=True), client, monkeypatch)
+        assert result == (True, "solid")
+        assert client.calls[0]["tool_choice"]["type"] == "function"
+        assert client.calls[1]["tool_choice"] == "required"
+        assert score._tool_choice_fallback_count() == 1
+        assert or_env == []  # a routing 404 is never backed off
+
+    def test_ladder_reaches_auto(self, or_env, monkeypatch):
+        import score
+
+        client = _or_client(_routing_404(), _routing_404(), _or_ok())
+        result, _ = self._score(_or_config(inherit_pins=True), client, monkeypatch)
+        assert result == (True, "solid")
+        assert client.calls[2]["tool_choice"] == "auto"
+        assert score._tool_choice_fallback_count() == 1
+
+    def test_ladder_strict_parse_rejects_a_wrong_tool(self, or_env, monkeypatch):
+        client = _or_client(_routing_404(), _or_response(
+            tool_name="something_else", arguments="{}",
+            content='{"passed": true, "rationale": "prose"}'))
+        with pytest.raises(JudgeProviderError) as exc:
+            self._score(_or_config(inherit_pins=True), client, monkeypatch)
+        assert exc.value.error_type == "wrong_tool_call"
+        assert exc.value.tool_choice_mode == "required"
+
+    def test_ladder_strict_parse_rejects_prose(self, or_env, monkeypatch):
+        client = _or_client(_routing_404(), _or_response(
+            tool_name=None, content='{"passed": true, "rationale": "prose"}'))
+        with pytest.raises(JudgeProviderError) as exc:
+            self._score(_or_config(inherit_pins=True), client, monkeypatch)
+        assert exc.value.error_type == "no_tool_call"
+
+    def test_ladder_strict_parse_rejects_a_schema_mismatch(self, or_env, monkeypatch):
+        client = _or_client(_routing_404(), _or_response(arguments='{"verdict": "yes"}'))
+        with pytest.raises(JudgeProviderError) as exc:
+            self._score(_or_config(inherit_pins=True), client, monkeypatch)
+        assert exc.value.error_type == "bad_tool_call"
+
+    def test_persistent_routing_404_is_a_config_error_not_retried(
+            self, or_env, monkeypatch):
+        client = _or_client(_routing_404())
+        with pytest.raises(JudgeProviderError) as exc:
+            self._score(_or_config(inherit_pins=True, max_retries=3), client, monkeypatch)
+        assert exc.value.error_class == "config" and exc.value.retryable is False
+        assert "z-ai" in str(exc.value) and "novita" in str(exc.value)
+        assert len(client.calls) == 3 and or_env == []
+
+    def test_per_case_record_carries_tool_choice_mode_and_summary_counter(
+            self, or_env, monkeypatch, tmp_path):
+        import score
+
+        config = _or_config(inherit_pins=True)
+        config.outputs = [OutputConfig(path="artifacts")]
+        case_dir = tmp_path / "case-001"
+        (case_dir / "artifacts").mkdir(parents=True)
+        (case_dir / "artifacts" / "out.md").write_text("body")
+        client = _or_client(_routing_404(), _or_ok())
+        monkeypatch.setattr(score, "_client_for", lambda cfg: client)
+
+        result = score_cases(load_judges(config), [case_dir], config)
+
+        record = result["per_case"]["case-001"]["j"]
+        assert record["value"] is True
+        assert record["tool_choice_mode"] == "required"
+        assert result["judge_usage"] == {"tool_choice_fallbacks": 1}
+
+    def test_no_fallback_leaves_summary_shape_unchanged(
+            self, or_env, monkeypatch, tmp_path):
+        import score
+
+        config = _or_config()
+        config.outputs = [OutputConfig(path="artifacts")]
+        case_dir = tmp_path / "case-001"
+        (case_dir / "artifacts").mkdir(parents=True)
+        (case_dir / "artifacts" / "out.md").write_text("body")
+        monkeypatch.setattr(score, "_client_for", lambda cfg: _or_client(_or_ok()))
+
+        result = score_cases(load_judges(config), [case_dir], config)
+
+        assert "judge_usage" not in result
+        assert "tool_choice_mode" not in result["per_case"]["case-001"]["j"]
+
+    # -- the client itself ---------------------------------------------------
+
+    def test_client_for_builds_a_dedicated_memoised_client(self, or_env, monkeypatch):
+        import types
+        import score
+        from agent_eval.prompt_backends import resolve_judge_client
+
+        built = []
+
+        class _FakeOpenAI:
+            def __init__(self, **kw):
+                built.append(kw)
+
+        fake = types.ModuleType("openai")
+        fake.OpenAI = _FakeOpenAI
+        monkeypatch.setitem(sys.modules, "openai", fake)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key-value")
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://must-not-be-used:1/v1")
+        cfg = resolve_judge_client(f"openrouter:/{_OR_SLUG}",
+                                   _or_providers(max_retries=2, timeout_s=45))
+
+        first = score._client_for(cfg)
+        second = score._client_for(cfg)
+
+        assert first is second and len(built) == 1
+        kw = built[0]
+        assert kw["base_url"] == "https://openrouter.ai/api/v1"
+        assert kw["api_key"] == "test-key-value"
+        assert kw["default_headers"] == {"X-OpenRouter-Title": "agent-eval-harness"}
+        assert kw["max_retries"] == 2 and kw["timeout"] == 45.0
+
+    def test_client_for_requires_the_key_variable_and_never_echoes_values(
+            self, or_env, monkeypatch):
+        import types
+        import score
+        from agent_eval.prompt_backends import resolve_judge_client
+
+        fake = types.ModuleType("openai")
+        fake.OpenAI = lambda **kw: object()
+        monkeypatch.setitem(sys.modules, "openai", fake)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "leaked-if-used")
+        cfg = resolve_judge_client(f"openrouter:/{_OR_SLUG}", None)
+        with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY") as exc:
+            score._client_for(cfg)
+        assert "leaked-if-used" not in str(exc.value)

@@ -11,6 +11,8 @@ import sys
 
 import yaml
 
+from agent_eval.providers.openrouter.routing import RoutingSpec, RoutingTable
+
 
 def resolve_arguments(
     template: str, input_data: dict, steps: Optional[dict] = None
@@ -655,6 +657,254 @@ class MlflowConfig:
     tags: dict = field(default_factory=dict)
 
 
+# --- Provider registry (spec 014) -------------------------------------------
+#
+# ``models.providers.<name>`` declares how a ``<name>:/<model>`` URI on any
+# role is served. One kind exists (``openrouter``, Decision 1); the registry
+# lives under ``models`` because it only exists to resolve those URIs
+# (Decision 17). This release parses the judge-side options; the agent
+# transport options documented by the spec are rejected by name until the PR
+# that consumes them lands, so nothing an operator writes is silently ignored.
+
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_OPENROUTER_DEFAULT_BASE_URL = "https://openrouter.ai/api"
+_OPENROUTER_KEYS = ("kind", "api_key_env", "base_url", "attribution", "routing", "judge")
+_OPENROUTER_LATER_KEYS = ("management_key_env", "background_model", "preflight",
+                          "cli_budget_inflation", "budget")
+_OPENROUTER_ROUTING_LATER_KEYS = ("policy", "enforcement", "guardrail")
+_OPENROUTER_RESERVED_KEYS = ("transport", "direct", "proxy", "gateway",
+                             "generation_backfill")
+_OPENROUTER_JUDGE_OPTION_KEYS = ("routing", "fallbacks", "max_tokens")
+
+
+@dataclass
+class Attribution:
+    """OpenRouter app-attribution headers sent by the judge client (and, later,
+    the agent): ``HTTP-Referer`` / ``X-OpenRouter-Title``."""
+
+    referer: Optional[str] = None
+    title: Optional[str] = "agent-eval-harness"
+    run_id_header: bool = False
+
+
+@dataclass
+class JudgeClientOptions:
+    """``models.providers.openrouter.judge``: the judge client's retry policy,
+    concurrency cap, static ``extra_body`` and the Decision 25 pin opt-in."""
+
+    concurrency: int = 4
+    max_retries: int = 3
+    timeout_s: float = 300.0
+    extra_body: dict = field(default_factory=dict)
+    inherit_pins: bool = False
+
+
+@dataclass(frozen=True)
+class RoutingConfig(RoutingTable):
+    """``models.providers.openrouter.routing``: ``defaults`` plus per-model
+    entries. Audit policy / enforcement / guardrail options are added by the
+    PRs that consume them and rejected by name until then."""
+
+
+@dataclass
+class OpenRouterConfig:
+    """``models.providers.openrouter`` (spec 014). Secrets are env-only:
+    ``api_key_env`` names the variable holding the key, never the key."""
+
+    kind: str = "openrouter"
+    api_key_env: str = "OPENROUTER_API_KEY"
+    base_url: str = _OPENROUTER_DEFAULT_BASE_URL
+    attribution: Attribution = field(default_factory=Attribution)
+    routing: RoutingConfig = field(default_factory=RoutingConfig)
+    judge: JudgeClientOptions = field(default_factory=JudgeClientOptions)
+
+
+@dataclass
+class ProvidersConfig:
+    """The provider registry under ``models.providers``."""
+
+    openrouter: Optional[OpenRouterConfig] = None
+
+
+def _require_mapping(value, context):
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{context} must be a mapping")
+    return value
+
+
+def _check_keys(raw, context, allowed, *, later=(), reserved=()):
+    for key in raw:
+        if key in allowed:
+            continue
+        if key in reserved:
+            raise ValueError(
+                f"{context}.{key}: no such option — there is a single OpenRouter "
+                "transport (spec 014 Decision 1)")
+        if key in later:
+            raise ValueError(
+                f"{context}.{key} is not implemented yet (spec 014 rollout); "
+                "remove it for now")
+        raise ValueError(
+            f"{context} has unknown key(s): {key} (allowed: {', '.join(allowed)})")
+
+
+def _env_var_name(value, context):
+    """A ``*_env`` setting names an environment variable — never holds a value.
+    The error text never echoes the value."""
+    name = value.strip().lstrip("$") if isinstance(value, str) else ""
+    if not name or not _ENV_NAME_RE.match(name):
+        raise ValueError(
+            f"{context} must name an environment variable (e.g. "
+            "OPENROUTER_API_KEY), not hold a key value")
+    return name
+
+
+def _resolve_base_url(value, context):
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{context} must be a URL string")
+    url = value.strip()
+    if url.startswith("$"):
+        name = url[1:]
+        resolved = os.environ.get(name)
+        if not resolved:
+            raise ValueError(f"{context} references ${name}, which is not set")
+        url = resolved.strip()
+    url = url.rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        raise ValueError(f"{context} must be an http(s) URL")
+    if url.endswith("/v1") or url.endswith("/v1/messages"):
+        raise ValueError(
+            f"{context} must not include the /v1 path — the harness appends "
+            "/v1/… itself")
+    return url
+
+
+def _parse_openrouter_config(raw, context):
+    raw = _require_mapping(raw, context)
+    _check_keys(raw, context, _OPENROUTER_KEYS, later=_OPENROUTER_LATER_KEYS,
+                reserved=_OPENROUTER_RESERVED_KEYS)
+    cfg = OpenRouterConfig()
+    if "api_key_env" in raw:
+        cfg.api_key_env = _env_var_name(raw["api_key_env"], f"{context}.api_key_env")
+    if "base_url" in raw:
+        cfg.base_url = _resolve_base_url(raw["base_url"], f"{context}.base_url")
+
+    attr = _require_mapping(raw.get("attribution"), f"{context}.attribution")
+    _check_keys(attr, f"{context}.attribution", ("referer", "title", "run_id_header"))
+    referer = attr.get("referer")
+    title = attr.get("title", cfg.attribution.title)
+    run_id_header = attr.get("run_id_header", False)
+    if referer is not None and not isinstance(referer, str):
+        raise ValueError(f"{context}.attribution.referer must be a string")
+    if title is not None and not isinstance(title, str):
+        raise ValueError(f"{context}.attribution.title must be a string")
+    if not isinstance(run_id_header, bool):
+        raise ValueError(f"{context}.attribution.run_id_header must be a boolean")
+    cfg.attribution = Attribution(referer=referer or None, title=title or None,
+                                  run_id_header=run_id_header)
+
+    routing_raw = raw.get("routing")
+    if routing_raw is not None:
+        routing_raw = _require_mapping(routing_raw, f"{context}.routing")
+        _check_keys(routing_raw, f"{context}.routing", ("defaults", "models"),
+                    later=_OPENROUTER_ROUTING_LATER_KEYS)
+        table = RoutingTable.from_dict(routing_raw, context=f"{context}.routing")
+        cfg.routing = RoutingConfig(defaults=table.defaults, models=table.models)
+
+    judge_raw = _require_mapping(raw.get("judge"), f"{context}.judge")
+    jctx = f"{context}.judge"
+    _check_keys(judge_raw, jctx,
+                ("concurrency", "max_retries", "timeout_s", "extra_body", "inherit_pins"))
+    opts = JudgeClientOptions()
+    if "concurrency" in judge_raw:
+        v = judge_raw["concurrency"]
+        if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+            raise ValueError(f"{jctx}.concurrency must be an integer >= 1")
+        opts.concurrency = v
+    if "max_retries" in judge_raw:
+        v = judge_raw["max_retries"]
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            raise ValueError(f"{jctx}.max_retries must be an integer >= 0")
+        opts.max_retries = v
+    if "timeout_s" in judge_raw:
+        v = judge_raw["timeout_s"]
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
+            raise ValueError(f"{jctx}.timeout_s must be a number > 0")
+        opts.timeout_s = float(v)
+    if "extra_body" in judge_raw:
+        v = judge_raw["extra_body"]
+        if not isinstance(v, dict):
+            raise ValueError(f"{jctx}.extra_body must be a mapping")
+        opts.extra_body = dict(v)
+    if "inherit_pins" in judge_raw:
+        v = judge_raw["inherit_pins"]
+        if not isinstance(v, bool):
+            raise ValueError(f"{jctx}.inherit_pins must be a boolean")
+        if routing_raw is None:
+            raise ValueError(
+                f"{jctx}.inherit_pins has nothing to inherit — declare "
+                f"{context}.routing first (spec 014 Decision 25)")
+        opts.inherit_pins = v
+    cfg.judge = opts
+    return cfg
+
+
+def _parse_providers(raw, context="models.providers"):
+    providers = ProvidersConfig()
+    raw = _require_mapping(raw, context)
+    for name, block in raw.items():
+        block_ctx = f"{context}.{name}"
+        block_map = _require_mapping(block, block_ctx)
+        kind = block_map.get("kind", name)
+        if kind == "openai-compatible":
+            raise ValueError(
+                f"{block_ctx}: kind 'openai-compatible' is not implemented in "
+                "this release (spec 014 Decision 1); use 'openai:/…' with "
+                "OPENAI_BASE_URL")
+        if name != "openrouter":
+            raise ValueError(
+                f"{block_ctx}: unknown provider; the only declared provider is "
+                "'openrouter' (spec 014 Decision 1)")
+        if kind != name:
+            raise ValueError(f"{block_ctx}.kind must equal '{name}' (got {kind!r})")
+        providers.openrouter = _parse_openrouter_config(block_map, block_ctx)
+    return providers
+
+
+def validate_judge_provider_options(options, model, judge_name):
+    """Validate a judge's ``provider_options`` by the provider kind of its
+    statically-known model. Only ``openrouter:/`` judges take options today
+    (``routing``, ``fallbacks``, ``max_tokens``); the mapping stays opaque in
+    ``JudgeConfig`` so the schema lives with the provider."""
+    from agent_eval.prompt_backends import split_model_uri  # local: import cycle
+
+    if options is None:
+        return {}
+    if not isinstance(options, dict):
+        raise ValueError(f"Judge '{judge_name}': 'provider_options' must be a mapping")
+    if not options:
+        return {}
+    provider, _bare = split_model_uri(model)
+    if provider != "openrouter":
+        got = f"got {model!r}" if model else "no static judge model is set"
+        raise ValueError(
+            f"Judge '{judge_name}': 'provider_options' requires an 'openrouter:/' "
+            f"judge model (per-judge 'model:' or 'models.judge'); {got}")
+    ctx = f"Judge '{judge_name}' provider_options"
+    _check_keys(options, ctx, _OPENROUTER_JUDGE_OPTION_KEYS)
+    if "routing" in options:
+        RoutingSpec.from_dict(options["routing"], context=f"{ctx}.routing")
+    if "fallbacks" in options:
+        RoutingSpec.from_dict({"fallbacks": options["fallbacks"]}, context=ctx)
+    if "max_tokens" in options:
+        v = options["max_tokens"]
+        if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+            raise ValueError(f"{ctx}.max_tokens must be an integer >= 1")
+    return dict(options)
+
+
 @dataclass
 class ModelsConfig:
     """Default models for each role.
@@ -670,6 +920,9 @@ class ModelsConfig:
     subagent: Optional[str] = None
     judge: Optional[str] = None
     hook: Optional[str] = None
+    # Provider registry for `<provider>:/<model>` URIs on the roles above
+    # (spec 014). Readers address it as `config.models.providers`.
+    providers: ProvidersConfig = field(default_factory=ProvidersConfig)
 
 
 @dataclass
@@ -827,6 +1080,11 @@ class JudgeConfig:
     # context, inputs, timeout, max_budget_usd. A nested `runner:` sub-block is
     # parsed into a RunnerConfig by from_yaml.
     agent: dict = field(default_factory=dict)
+    # Provider-specific judge options (spec 014), validated by the provider kind
+    # of the judge's model at load (`validate_judge_provider_options`). For an
+    # `openrouter:/` judge: `routing` (per-judge RoutingSpec override — opts the
+    # judge into pins), `fallbacks`, `max_tokens`.
+    provider_options: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -1194,13 +1452,18 @@ class EvalConfig:
         # Runner config (block form)
         runner = _parse_runner_config(raw.get("runner"), context="runner")
 
-        # Models block
+        # Models block (+ the provider registry, spec 014 Decision 17)
+        if "providers" in raw:
+            raise ValueError(
+                "'providers' moved: declare providers under `models.providers` "
+                "(spec 014 Decision 17)")
         models_raw = raw.get("models", {}) or {}
         models = ModelsConfig(
             skill=models_raw.get("skill"),
             subagent=models_raw.get("subagent"),
             judge=models_raw.get("judge"),
             hook=models_raw.get("hook"),
+            providers=_parse_providers(models_raw.get("providers")),
         )
 
         # MLflow block. Experiment defaults to the eval's top-level
@@ -1482,6 +1745,7 @@ class EvalConfig:
                     samples=int(j.get("samples", 1)),
                     examples=examples_val,
                     agent=agent_val,
+                    provider_options=j.get("provider_options") or {},
                 )
             )
 
@@ -1756,6 +2020,22 @@ class EvalConfig:
                 resolve_judge_backend(model)
             except ValueError as e:
                 raise ValueError(f"{label}: {e}") from e
+
+        # OpenRouter judges (spec 014): `provider_options` is validated by the
+        # provider kind of the judge's statically-known model, and an `agent:`
+        # judge cannot use an `openrouter:/` model — it runs through the
+        # runner, which has no OpenRouter transport yet.
+        from agent_eval.prompt_backends import split_model_uri
+        for jc in config.judges:
+            static_model = jc.model or config.models.judge or ""
+            provider, _bare = split_model_uri(static_model)
+            if jc.agent and provider == "openrouter":
+                raise ValueError(
+                    f"Judge '{jc.name}': agent judges run through the runner, "
+                    f"which cannot serve '{static_model}' yet (spec 014 "
+                    "rollout); use a Claude model or 'runner:/<model>'")
+            jc.provider_options = validate_judge_provider_options(
+                jc.provider_options, static_model, jc.name)
 
         return config
 

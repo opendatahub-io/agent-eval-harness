@@ -20,12 +20,14 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import shutil
 import sys
 import tempfile
 import textwrap
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,9 +41,11 @@ from agent_eval.config import (
 from agent_eval.prompt_backends import (
     extract_runner_text,
     resolve_judge_backend,
+    resolve_judge_client,
     run_prompt_via_runner,
     split_model_uri,
 )
+from agent_eval.providers import JudgeProviderError
 
 # Log (don't silently blank) any undefined variable a judge template references.
 _TEMPLATE_LOGGER = logging.getLogger("agent_eval.judge_template")
@@ -930,6 +934,9 @@ def _make_builtin_scorer(entry, jc, config):
         # Route on the judge model's provider, never on the runner type. Resolved
         # once (fail fast on an ambiguous/unsupported id) and dispatched per case.
         backend, model_arg = resolve_judge_backend(judge_model)
+        openai_kwargs = _openai_judge_kwargs(
+            resolve_judge_client(judge_model, config.models.providers),
+            model_arg, jc.provider_options)
 
         def scorer(outputs=None, **kwargs):
             out = outputs or {}
@@ -944,7 +951,7 @@ def _make_builtin_scorer(entry, jc, config):
                                               images=images)
             if backend == "openai":
                 return _call_structured_judge_openai(rendered, model_arg, "bool",
-                                                     images=images)
+                                                     images=images, **openai_kwargs)
             return _call_structured_judge_via_runner(
                 rendered, model_arg, "bool", config, jc, images=images)
 
@@ -1305,6 +1312,335 @@ def _get_openai_client():
     return OpenAI(**kwargs)
 
 
+# --- Provider-backed judge clients (spec 014) ---------------------------------
+#
+# An `openrouter:/…` judge rides the OpenAI transport with a dedicated client
+# built from `models.providers.openrouter` (`resolve_judge_client`). Nothing in
+# this section reads the process-global OPENAI_* variables.
+
+_JUDGE_CLIENTS = {}
+_JUDGE_SEMAPHORES = {}
+_JUDGE_STATE_LOCK = threading.Lock()
+_JUDGE_CALL_META = threading.local()
+_TOOL_CHOICE_FALLBACKS = {"count": 0}
+_RETRYABLE_STATUSES = (429, 502, 503)
+# Decision 25: forced named-function → "required" → "auto", strict-parsed.
+_TOOL_CHOICE_LADDER = ("function", "required", "auto")
+_judge_sleep = time.sleep  # indirection so tests can skip the backoff
+
+
+def _client_for(cfg):
+    """OpenAI-SDK client for a provider judge client config (`JudgeClientConfig`),
+    memoised per (name, base URL, headers, key variable, retry, timeout).
+
+    `None` is the plain-OpenAI case (`_get_openai_client`). The key is read from
+    `cfg.api_key_env` — no OPENAI_API_KEY fallback, no placeholder (OpenRouter
+    always authenticates) — and the error text names the variable, never a value.
+    """
+    if cfg is None:
+        return _get_openai_client()
+    key = cfg.client_key()
+    with _JUDGE_STATE_LOCK:
+        client = _JUDGE_CLIENTS.get(key)
+    if client is not None:
+        return client
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise RuntimeError(
+            f"'{cfg.name}:/' judges require the 'openai' package. Install it "
+            "into .eval-venv (pip install openai) or use an Anthropic judge "
+            "model.") from exc
+    api_key = os.environ.get(cfg.api_key_env)
+    if not api_key:
+        raise RuntimeError(
+            f"Set {cfg.api_key_env} to use an '{cfg.name}:/' judge model (the "
+            f"{cfg.name} judge client never falls back to OPENAI_API_KEY).")
+    client = OpenAI(
+        api_key=api_key,
+        base_url=cfg.base_url.rstrip("/") + "/v1",
+        default_headers=dict(cfg.default_headers) or None,
+        max_retries=cfg.max_retries,
+        timeout=cfg.timeout_s,
+    )
+    with _JUDGE_STATE_LOCK:
+        return _JUDGE_CLIENTS.setdefault(key, client)
+
+
+def _judge_semaphore(cfg):
+    """Per-provider cap on concurrent judge requests (`judge.concurrency`),
+    independent of the per-case thread pools."""
+    if cfg is None:
+        return None
+    with _JUDGE_STATE_LOCK:
+        sem = _JUDGE_SEMAPHORES.get(cfg.name)
+        if sem is None:
+            sem = threading.BoundedSemaphore(max(1, int(cfg.concurrency)))
+            _JUDGE_SEMAPHORES[cfg.name] = sem
+        return sem
+
+
+def _reset_judge_call_meta():
+    _JUDGE_CALL_META.tool_choice_mode = None
+
+
+def _pop_judge_call_meta():
+    """`tool_choice_mode` of the last OpenAI-shaped judge call on this thread."""
+    mode = getattr(_JUDGE_CALL_META, "tool_choice_mode", None)
+    _JUDGE_CALL_META.tool_choice_mode = None
+    return mode
+
+
+def _record_tool_choice_mode(mode):
+    _JUDGE_CALL_META.tool_choice_mode = mode
+    if mode != "function":
+        with _JUDGE_STATE_LOCK:
+            _TOOL_CHOICE_FALLBACKS["count"] += 1
+
+
+def _tool_choice_fallback_count():
+    with _JUDGE_STATE_LOCK:
+        return _TOOL_CHOICE_FALLBACKS["count"]
+
+
+def _reset_tool_choice_fallbacks():
+    with _JUDGE_STATE_LOCK:
+        _TOOL_CHOICE_FALLBACKS["count"] = 0
+
+
+def _retry_after_seconds(exc):
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if not headers:
+        return None
+    try:
+        value = headers.get("retry-after") or headers.get("Retry-After")
+    except Exception:
+        return None
+    try:
+        return max(0.0, float(value)) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _judge_retry_delay(exc, attempt):
+    """Seconds to wait before retry `attempt` (1-based) of a failed judge call,
+    or None when the error is not retryable. Retryable: HTTP 429 (Retry-After
+    honoured, capped), 502/503, and committed-200 provider_unavailable /
+    provider_overloaded. A routing 404 (config) or any other error propagates —
+    a config error does not heal."""
+    if isinstance(exc, JudgeProviderError):
+        if not exc.retryable:
+            return None
+    else:
+        if getattr(exc, "status_code", None) not in _RETRYABLE_STATUSES:
+            return None
+        retry_after = _retry_after_seconds(exc)
+        if retry_after is not None:
+            return min(retry_after, 120.0)
+    return min(2 ** attempt, 30) * random.uniform(0.5, 1.5)
+
+
+def _with_judge_retries(fn, cfg):
+    """Run `fn()` under the provider judge retry policy (`cfg.max_retries`
+    extra attempts, jittered backoff). `cfg=None` (plain OpenAI) never retries
+    here — the SDK's own retries apply."""
+    retries = max(0, int(cfg.max_retries)) if cfg is not None else 0
+    attempt = 0
+    while True:
+        try:
+            return fn()
+        except Exception as exc:
+            attempt += 1
+            delay = _judge_retry_delay(exc, attempt) if attempt <= retries else None
+            if delay is None:
+                raise
+            _judge_sleep(delay)
+
+
+def _response_error(response):
+    err = getattr(response, "error", None)
+    if err is None and hasattr(response, "model_dump"):
+        try:
+            err = response.model_dump().get("error")
+        except Exception:
+            err = None
+    return err
+
+
+def _raise_if_committed_error(response, provider_name="provider"):
+    """OpenRouter reports an upstream failure inside a 200 body — a top-level
+    `error` object and/or `choices[0].finish_reason == "error"`. Surface it as
+    a `JudgeProviderError` (retryable for unavailable/overloaded upstreams)
+    instead of feeding an empty message to the text parser."""
+    err = _response_error(response)
+    choices = getattr(response, "choices", None) or []
+    finish = getattr(choices[0], "finish_reason", None) if choices else None
+    if err is None and finish != "error":
+        return
+    if isinstance(err, dict):
+        code, message = err.get("code"), str(err.get("message") or "")
+        upstream = (err.get("metadata") or {}).get("provider_name")
+    else:
+        code = getattr(err, "code", None)
+        message = str(getattr(err, "message", "") or err or "")
+        upstream = None
+    upstream = upstream or getattr(response, "provider", None)
+    text = message.lower()
+    overloaded = "overload" in text
+    retryable = (overloaded or code in _RETRYABLE_STATUSES
+                 or any(w in text for w in ("unavailable", "rate limit",
+                                            "timed out", "timeout")))
+    error_type = ("provider_overloaded" if overloaded
+                  else "provider_unavailable" if retryable else "provider_error")
+    raise JudgeProviderError(
+        f"{upstream or provider_name} failed the judge request inside a 200 "
+        f"response (finish_reason={finish}, code={code}): "
+        f"{message or 'no message'}",
+        error_type=error_type, retryable=retryable, provider=upstream)
+
+
+def _is_routing_404(exc):
+    """OpenRouter's "no endpoint can serve this request" answer (probe #5):
+    a 404 `not_found` whose message reads "No endpoints found …"."""
+    if getattr(exc, "status_code", None) != 404:
+        return False
+    text = str(getattr(exc, "message", None) or exc).lower()
+    return "no endpoints found" in text
+
+
+def _tool_choice_for(mode, tool_name):
+    if mode == "function":
+        return {"type": "function", "function": {"name": tool_name}}
+    return mode
+
+
+def _token_limit_kwargs(model, max_tokens, token_param):
+    """`token_param="auto"` picks by model id (OpenAI reasoning models want
+    `max_completion_tokens`); a provider client pins the parameter explicitly
+    (`max_tokens` is OpenRouter's universal one)."""
+    if token_param == "auto":
+        return _openai_token_limit_kwargs(model, max_tokens)
+    return {token_param: max_tokens}
+
+
+def _openai_judge_request(client, cfg, *, model, messages, tool, max_tokens,
+                          token_param="auto", extra_body=None):
+    """One forced-tool judge request. Returns `(response, tool_choice_mode)`.
+
+    Walks the Decision 25 ladder `function → required → auto` when the
+    provider answers a routing 404 ("No endpoints found"): a pinned endpoint
+    that cannot force a named function is retried with a weaker forcing mode
+    and the caller strict-parses the result. (The preflight that picks the
+    rung from the endpoint catalog lands in a later PR; until then both rungs
+    are tried.) A 404 that survives the ladder is a *config* error — the pinned
+    endpoints, or the model, cannot serve tool calling — not a judge failure.
+    Committed-200 upstream errors are raised inside the retry wrapper so the
+    retryable ones get another attempt.
+    """
+    tool_name = tool["function"]["name"]
+    kwargs = dict(model=model, messages=messages, tools=[tool])
+    kwargs.update(_token_limit_kwargs(model, max_tokens, token_param))
+    if extra_body:
+        kwargs["extra_body"] = extra_body
+    provider_name = cfg.name if cfg is not None else "provider"
+    semaphore = _judge_semaphore(cfg)
+    last_404 = None
+    for mode in _TOOL_CHOICE_LADDER:
+        choice = _tool_choice_for(mode, tool_name)
+
+        def _once(choice=choice):
+            if semaphore is None:
+                response = client.chat.completions.create(tool_choice=choice, **kwargs)
+            else:
+                with semaphore:
+                    response = client.chat.completions.create(tool_choice=choice, **kwargs)
+            _raise_if_committed_error(response, provider_name=provider_name)
+            return response
+
+        try:
+            response = _with_judge_retries(_once, cfg)
+        except Exception as exc:
+            if not _is_routing_404(exc):
+                raise
+            last_404 = exc
+            continue
+        _record_tool_choice_mode(mode)
+        return response, mode
+    pins = (extra_body or {}).get("provider") or {}
+    pinned = list(pins.get("order") or pins.get("only") or [])
+    where = f"the pinned providers {pinned}" if pinned else "any endpoint"
+    raise JudgeProviderError(
+        f"{provider_name} has no endpoint serving '{model}' with tool calling "
+        f"through {where} (tool_choice function/required/auto all returned 404 "
+        f"\"No endpoints found\"): {last_404}",
+        error_type="no_endpoints", error_class="config", retryable=False)
+
+
+def _tool_call_arguments(call):
+    """Parsed `function.arguments` — a JSON string on OpenAI, but some
+    OpenRouter upstreams already return the dict."""
+    args = call.function.arguments
+    return args if isinstance(args, dict) else json.loads(args)
+
+
+def _judge_tool_calls(message, tool_name, *, mode):
+    """Parsed arguments of the judge tool call(s) in `message`.
+
+    Forced mode (`function`): every call named `tool_name` whose arguments
+    parse, in order — the caller may still fall back to text parsing. A
+    degraded mode (`required`/`auto`, Decision 25) is strict: the FIRST tool
+    call must be `tool_name` with parseable arguments, else
+    `JudgeProviderError` — never the text fallback, so a weaker forcing mode
+    cannot silently turn a structured verdict into prose.
+    """
+    calls = list(getattr(message, "tool_calls", None) or [])
+    if mode == "function":
+        parsed = []
+        for call in calls:
+            if call.function.name != tool_name:
+                continue
+            try:
+                parsed.append(_tool_call_arguments(call))
+            except (TypeError, ValueError):
+                continue
+        return parsed
+    if not calls:
+        raise JudgeProviderError(
+            f"judge returned no tool call under tool_choice={mode!r} "
+            f"(expected '{tool_name}')",
+            error_type="no_tool_call", tool_choice_mode=mode)
+    first = calls[0]
+    name = getattr(getattr(first, "function", None), "name", None)
+    if name != tool_name:
+        raise JudgeProviderError(
+            f"judge called {name!r} instead of '{tool_name}' under "
+            f"tool_choice={mode!r}",
+            error_type="wrong_tool_call", tool_choice_mode=mode)
+    try:
+        return [_tool_call_arguments(first)]
+    except (TypeError, ValueError) as exc:
+        raise JudgeProviderError(
+            f"judge tool call '{tool_name}' under tool_choice={mode!r} has "
+            f"unparsable arguments: {exc}",
+            error_type="bad_tool_call", tool_choice_mode=mode) from exc
+
+
+def _openai_judge_kwargs(cfg, model_arg, provider_options=None):
+    """Keyword arguments binding an `openai`-transport judge call to its
+    provider client config (spec 014); empty for the plain OpenAI path."""
+    if cfg is None:
+        return {}
+    opts = provider_options or {}
+    kwargs = {
+        "client_cfg": cfg,
+        "extra_body": cfg.judge_extra_body(model_arg, opts),
+        "token_param": cfg.token_param,
+    }
+    if opts.get("max_tokens"):
+        kwargs["max_tokens"] = int(opts["max_tokens"])
+    return kwargs
+
+
 # OpenAI reasoning models (o-series, gpt-5) reject `max_tokens` on the Chat
 # Completions API and require `max_completion_tokens`; other models use
 # `max_tokens`. Matched on the resolved bare id (resolve_judge_backend routes
@@ -1351,13 +1687,22 @@ def _openai_user_message(prompt, images=None):
 
 
 def _call_structured_judge_openai(prompt, model, feedback_type, images=None,
-                                  max_tokens=4096, bounds=None):
+                                  max_tokens=4096, bounds=None, *, client=None,
+                                  extra_body=None, token_param="auto",
+                                  client_cfg=None):
     """Call an OpenAI (or OpenAI-compatible) judge with forced tool output.
 
     Mirrors `_call_structured_judge` so a GPT/o-series judge — or any model
-    behind an OpenAI-compatible gateway (`OPENAI_BASE_URL`) — grades with the same
+    behind an OpenAI-compatible gateway (`OPENAI_BASE_URL`), or an
+    `openrouter:/…` model through its dedicated client — grades with the same
     tool schema, rationale-first ordering, scale, and text-parse fallback,
     regardless of which runner executed the skill under test.
+
+    The keyword-only arguments bind the call to a provider judge client
+    (spec 014): `client_cfg` is the resolved `JudgeClientConfig` (memoised
+    client, retry policy, concurrency cap), `extra_body` the routing
+    declaration, `token_param` the pinned token-limit parameter (`"auto"` =
+    by model id, as for OpenAI). An explicit `client` wins over both.
     """
     is_bool = (feedback_type == "bool")
     if bounds is None:
@@ -1367,25 +1712,17 @@ def _call_structured_judge_openai(prompt, model, feedback_type, images=None,
     system_prompt = _BOOL_SYSTEM_PROMPT if is_bool else _score_system_prompt(bounds)
     parser = (_parse_bool_response if is_bool
               else lambda text: _parse_score_response(text, bounds))
-    client = _get_openai_client()
-    response = client.chat.completions.create(
-        model=model,
-        **_openai_token_limit_kwargs(model, max_tokens),
+    if client is None:
+        client = _client_for(client_cfg)
+    response, mode = _openai_judge_request(
+        client, client_cfg, model=model, tool=tool, max_tokens=max_tokens,
+        token_param=token_param, extra_body=extra_body,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": _openai_user_message(prompt, images)},
-        ],
-        tools=[tool],
-        tool_choice={"type": "function", "function": {"name": judge_tool["name"]}},
-    )
+        ])
     message = response.choices[0].message
-    for call in (getattr(message, "tool_calls", None) or []):
-        if call.function.name != judge_tool["name"]:
-            continue
-        try:
-            data = json.loads(call.function.arguments)
-        except (TypeError, ValueError):
-            continue
+    for data in _judge_tool_calls(message, judge_tool["name"], mode=mode):
         rationale = str(data.get("rationale") or "").strip()
         if is_bool:
             if isinstance(data.get("passed"), bool):
@@ -1396,7 +1733,13 @@ def _call_structured_judge_openai(prompt, model, feedback_type, images=None,
                         rationale or "(no rationale provided)")
             except (KeyError, TypeError, ValueError):
                 pass
-    # Fallback: model emitted text instead of a tool call.
+        if mode != "function":
+            raise JudgeProviderError(
+                f"judge tool call '{judge_tool['name']}' under tool_choice="
+                f"{mode!r} does not match the verdict schema",
+                error_type="bad_tool_call", tool_choice_mode=mode)
+    # Fallback: model emitted text instead of a tool call (forced mode only —
+    # a degraded mode raised above rather than parse prose).
     return parser((message.content or "").strip())
 
 
@@ -1919,6 +2262,7 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
     per_case = {}
     aggregated = {name: {"values": [], "errored_cases": 0}
                   for name, *_ in judges}
+    _reset_tool_choice_fallbacks()
     parallelism = min(len(case_dirs), os.cpu_count() or 4)
     lock = threading.Lock()
     completed = 0
@@ -1971,12 +2315,25 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
             else:
                 n = 1
             bounds = judge_bounds.get(name)
+            modes = []
+
+            def _run_scorer():
+                # Capture the Decision 25 tool_choice mode the OpenAI-shaped
+                # judge call ended up in (thread-local, set by the call).
+                _reset_judge_call_meta()
+                try:
+                    return scorer(outputs=rec)
+                finally:
+                    mode = _pop_judge_call_meta()
+                    if mode and mode != "function":
+                        modes.append(mode)
+
             try:
                 if n > 1:
                     runs = []
                     for _ in range(n):
                         try:
-                            v, rat = _normalize_result(scorer(outputs=rec))
+                            v, rat = _normalize_result(_run_scorer())
                             v = _enforce_bounds(v, bounds, name)
                             runs.append({"value": v, "rationale": rat})
                         except Exception as e:
@@ -1984,7 +2341,7 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
                             runs.append({"value": None, "error": str(e)})
                     case_results[name] = _aggregate_samples(runs, judge_type)
                 else:
-                    v, rat = _normalize_result(scorer(outputs=rec))
+                    v, rat = _normalize_result(_run_scorer())
                     v = _enforce_bounds(v, bounds, name)
                     case_results[name] = {"value": v, "rationale": rat,
                                           "judge_type": judge_type}
@@ -1992,6 +2349,8 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
                 _log_judge_error(case_id, e)
                 case_results[name] = {"value": None, "error": str(e),
                                       "judge_type": judge_type}
+            if modes and isinstance(case_results.get(name), dict):
+                case_results[name]["tool_choice_mode"] = modes[-1]
         # Annotate step-scoped judges so the summary/report shows the step.
         for jn, sid in judge_steps.items():
             if isinstance(case_results.get(jn), dict):
@@ -2067,7 +2426,13 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
                     "total_cases": len(scored),
                 }
 
-    return {"per_case": per_case, "aggregated": aggregated}
+    result = {"per_case": per_case, "aggregated": aggregated}
+    # Judge-side usage (spec 014). Only the Decision 25 fallback counter exists
+    # yet; the full usage side channel (tokens, cost) is a later PR.
+    fallbacks = _tool_choice_fallback_count()
+    if fallbacks:
+        result["judge_usage"] = {"tool_choice_fallbacks": fallbacks}
+    return result
 
 
 def _make_inline_check(jc):
@@ -2622,6 +2987,12 @@ def _load_llm_judge(jc, config, project_root=None):
     # enforced only when a `score_range` is declared (see `judge_bounds`), so the
     # stated scale always matches the enforced one.
     backend, model_arg = resolve_judge_backend(judge_model)
+    # An `openrouter:/` judge binds to its dedicated client (spec 014): routing
+    # `extra_body`, token parameter and retry policy come from
+    # `models.providers.openrouter` + the judge's `provider_options`.
+    openai_kwargs = _openai_judge_kwargs(
+        resolve_judge_client(judge_model, config.models.providers),
+        model_arg, jc.provider_options)
 
     def scorer(outputs=None, **kwargs):
         out = outputs or {}
@@ -2632,7 +3003,8 @@ def _load_llm_judge(jc, config, project_root=None):
                                           images=images, bounds=bounds)
         if backend == "openai":
             return _call_structured_judge_openai(
-                rendered, model_arg, feedback_type, images=images, bounds=bounds)
+                rendered, model_arg, feedback_type, images=images, bounds=bounds,
+                **openai_kwargs)
         return _call_structured_judge_via_runner(
             rendered, model_arg, feedback_type, config, jc, bounds=bounds,
             images=images)
@@ -2680,8 +3052,13 @@ class PairwiseResult:
 
 
 def compare_runs(run_a_dir, run_b_dir, config, case_ids,
-                 prompt=None, prompt_file=None, model=None):
-    """Compare two runs using position-swapped LLM judge."""
+                 prompt=None, prompt_file=None, model=None,
+                 provider_options=None):
+    """Compare two runs using position-swapped LLM judge.
+
+    `provider_options` is the pairwise judge's `JudgeConfig.provider_options`
+    (routing/fallbacks/max_tokens for an `openrouter:/` model).
+    """
     comparison_prompt = prompt
     if not comparison_prompt and prompt_file:
         comparison_prompt = Path(prompt_file).read_text()
@@ -2704,11 +3081,17 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
         return {"error": (f"pairwise judging does not support runner-backed "
                           f"models ({model!r}); use an 'anthropic:/' or "
                           f"'openai:/' model")}
+    judge_client_cfg = resolve_judge_client(
+        model, getattr(getattr(config, "models", None), "providers", None))
     try:
-        client = (_get_openai_client() if backend == "openai"
-                  else _get_anthropic_client())
+        if backend == "openai":
+            client = (_client_for(judge_client_cfg) if judge_client_cfg is not None
+                      else _get_openai_client())
+        else:
+            client = _get_anthropic_client()
     except Exception as e:
         return {"error": str(e)}
+    judge_kwargs = _openai_judge_kwargs(judge_client_cfg, model_arg, provider_options)
 
     def _compare_case(case_id):
         record_a = load_case_record(run_a_dir / "cases" / case_id, config)
@@ -2733,7 +3116,8 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
         output_a = _fence_untrusted(output_a, "output")
         output_b = _fence_untrusted(output_b, "output")
         msg_ab = f"## Output A\n\n{output_a}\n\n## Output B\n\n{output_b}"
-        pref_ab, err = _call_judge(backend, client, comparison_prompt, msg_ab, model_arg)
+        pref_ab, err = _call_judge(backend, client, comparison_prompt, msg_ab,
+                                   model_arg, **judge_kwargs)
         if pref_ab:
             result.pref_ab = pref_ab.get("preferred")
             result.reasoning_ab = pref_ab
@@ -2742,7 +3126,8 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
             return result
 
         msg_ba = f"## Output A\n\n{output_b}\n\n## Output B\n\n{output_a}"
-        pref_ba, err = _call_judge(backend, client, comparison_prompt, msg_ba, model_arg)
+        pref_ba, err = _call_judge(backend, client, comparison_prompt, msg_ba,
+                                   model_arg, **judge_kwargs)
         if pref_ba:
             result.pref_ba = pref_ba.get("preferred")
             result.reasoning_ba = pref_ba
@@ -2939,12 +3324,15 @@ _PAIRWISE_SYSTEM = (
     "write any text outside the tool call." + _UNTRUSTED_DATA_GUARD)
 
 
-def _call_judge(backend, client, system_prompt, user_message, model, max_tokens=16384):
+def _call_judge(backend, client, system_prompt, user_message, model,
+                max_tokens=16384, **openai_kwargs):
     """Run one pairwise comparison, dispatching on the resolved judge backend so
-    an OpenAI (or OpenAI-compatible) model can judge alongside Anthropic."""
+    an OpenAI (or OpenAI-compatible / OpenRouter) model can judge alongside
+    Anthropic. `openai_kwargs` (client_cfg/extra_body/token_param) bind an
+    `openrouter:/` judge to its client config; empty otherwise."""
     if backend == "openai":
         return _call_pairwise_openai(client, system_prompt, user_message, model,
-                                     max_tokens=max_tokens)
+                                     max_tokens=max_tokens, **openai_kwargs)
     try:
         response = client.messages.create(
             model=model, max_tokens=max_tokens,
@@ -2976,28 +3364,26 @@ def _call_judge(backend, client, system_prompt, user_message, model, max_tokens=
         return None, str(e)
 
 
-def _call_pairwise_openai(client, system_prompt, user_message, model, max_tokens=16384):
-    """OpenAI (or OpenAI-compatible) pairwise comparison, mirroring _call_judge."""
+def _call_pairwise_openai(client, system_prompt, user_message, model,
+                          max_tokens=16384, *, extra_body=None,
+                          token_param="auto", client_cfg=None):
+    """OpenAI (or OpenAI-compatible / OpenRouter) pairwise comparison, mirroring
+    _call_judge. The keyword-only arguments bind the call to a provider judge
+    client exactly as in `_call_structured_judge_openai`."""
     tool = _to_openai_tool(_PAIRWISE_TOOL)
+    binding = dict(extra_body=extra_body, token_param=token_param,
+                   client_cfg=client_cfg)
     try:
-        response = client.chat.completions.create(
-            model=model,
-            **_openai_token_limit_kwargs(model, max_tokens),
+        response, mode = _openai_judge_request(
+            client, client_cfg, model=model, tool=tool, max_tokens=max_tokens,
+            token_param=token_param, extra_body=extra_body,
             messages=[
                 {"role": "system", "content": _PAIRWISE_SYSTEM},
                 {"role": "user", "content": f"{system_prompt}\n\n{user_message}"},
-            ],
-            tools=[tool],
-            tool_choice={"type": "function",
-                         "function": {"name": "submit_comparison"}},
-        )
+            ])
         message = response.choices[0].message
-        for call in (getattr(message, "tool_calls", None) or []):
-            if call.function.name == "submit_comparison":
-                try:
-                    return json.loads(call.function.arguments), None
-                except (TypeError, ValueError):
-                    pass
+        for data in _judge_tool_calls(message, "submit_comparison", mode=mode):
+            return data, None
         text = message.content or ""
         parsed = _extract_judge_json(text) if text else None
         if parsed is not None:
@@ -3005,7 +3391,8 @@ def _call_pairwise_openai(client, system_prompt, user_message, model, max_tokens
         finish = response.choices[0].finish_reason
         if finish == "length" and max_tokens < 32768:
             return _call_pairwise_openai(client, system_prompt, user_message,
-                                         model, max_tokens=max_tokens * 2)
+                                         model, max_tokens=max_tokens * 2,
+                                         **binding)
         return None, (f"No submit_comparison tool call in response "
                       f"(finish_reason={finish})")
     except Exception as e:
@@ -3347,6 +3734,8 @@ def cmd_judges(args):
         for name, agg in judge_results.get("aggregated", {}).items()
     }, runs_dir)
     _merge_summary(args.run_id, "per_case", judge_results.get("per_case", {}), runs_dir)
+    if judge_results.get("judge_usage"):
+        _merge_summary(args.run_id, "judge_usage", judge_results["judge_usage"], runs_dir)
 
     # Workload-agnostic run metrics for cross-run / cross-model comparison
     rr_path = runs_dir / args.run_id / "run_result.json"
@@ -3431,6 +3820,8 @@ def cmd_pairwise(args):
             prompt=pairwise_jc.prompt if pairwise_jc else None,
             prompt_file=prompt_file,
             model=model,
+            provider_options=(pairwise_jc.provider_options
+                              if pairwise_jc else None),
         )
         if "error" in r:
             print(f"ERROR: {r['error']}", file=sys.stderr)

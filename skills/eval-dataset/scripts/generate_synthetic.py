@@ -68,6 +68,12 @@ def generate_synthetic(
             "OpenAI-native synthetic generation is not supported. Use a Claude "
             "model, or a runner-managed model ('runner:/<model>') so the "
             "configured runner generates the cases.")
+    if provider == "openrouter":
+        raise ValueError(
+            "OpenRouter-backed synthetic generation is not supported "
+            "('openrouter:/…' models serve the agent and judge roles). Use a "
+            "Claude model, or a runner-managed model ('runner:/<model>') so the "
+            "configured runner generates the cases.")
 
     client = None
     use_anthropic = is_anthropic_model(model)

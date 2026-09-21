@@ -124,7 +124,10 @@ def _needs_openai_backend(model):
     """Whether a judge model id routes to the OpenAI SDK (see resolve_judge_backend).
 
     Stdlib-only mirror of the routing classifier — ensure_deps runs before the
-    venv exists, so it cannot import agent_eval.prompt_backends.
+    venv exists, so it cannot import agent_eval.prompt_backends. Mirrors its
+    two rules: an explicit provider other than `anthropic:/` / `runner:/`
+    (`openai:/`, `openrouter:/`) uses the OpenAI SDK, and so does any bare id
+    that is not a Claude-family alias (GPT/o-series or a gateway model name).
     """
     value = (str(model) if model else "").strip().lower()
     if not value:
@@ -134,7 +137,7 @@ def _needs_openai_backend(model):
         return provider not in ("anthropic", "runner")
     if "claude" in value or value.startswith(("opus", "sonnet", "haiku", "anthropic")):
         return False
-    return value.startswith(("gpt", "o1", "o3", "o4", "chatgpt"))
+    return True
 
 
 def _parse_yaml_minimal(text):

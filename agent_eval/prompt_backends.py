@@ -12,8 +12,9 @@ import copy
 import json
 import shutil
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from agent_eval.agent import RUNNERS
 from agent_eval.events import extract_conversation_text, parse_stream_events
@@ -65,7 +66,10 @@ def resolve_judge_backend(model: Optional[str]) -> tuple[str, str]:
 
     - ``"anthropic"`` — direct Anthropic SDK; ``model_arg`` is the bare id.
     - ``"openai"`` — OpenAI SDK (honors ``OPENAI_BASE_URL`` for OpenAI-compatible
-      gateways); ``model_arg`` is the bare id.
+      gateways); ``model_arg`` is the bare id. ``openrouter:/<author>/<slug>``
+      resolves here too: same transport, but score.py binds it to a dedicated
+      client built from ``models.providers.openrouter`` (see
+      ``resolve_judge_client``), never to the process-global ``OPENAI_*``.
     - ``"runner"`` — the configured eval runner CLI (explicit opt-in for
       runner-managed ids such as Cursor's ``gpt-5.4-medium``); ``model_arg`` is
       the bare id.
@@ -83,12 +87,20 @@ def resolve_judge_backend(model: Optional[str]) -> tuple[str, str]:
         return ("anthropic", bare)
     if provider == "openai":
         return ("openai", bare)
+    if provider == "openrouter":
+        # OpenRouter ids are always ``<author>/<slug>[:variant]``.
+        if not bare or "/" not in bare.partition(":")[0]:
+            raise ValueError(
+                "openrouter judge model needs '<author>/<slug>', e.g. "
+                "'openrouter:/z-ai/glm-5.2'")
+        return ("openai", bare)
     if provider is not None:
         raise ValueError(
             f"Unsupported judge model provider {provider!r} in {model!r}. Use "
             f"'anthropic:/…', 'openai:/…' (point OPENAI_BASE_URL at an "
-            f"OpenAI-compatible gateway to reach other providers), or "
-            f"'runner:/{bare}' to grade through the configured runner.")
+            f"OpenAI-compatible gateway), 'openrouter:/<author>/<slug>' (any "
+            f"model OpenRouter serves), or 'runner:/{bare}' to grade through "
+            f"the configured runner.")
     # Bare id (no provider prefix).
     if is_anthropic_model(bare):
         return ("anthropic", bare)
@@ -98,6 +110,80 @@ def resolve_judge_backend(model: Optional[str]) -> tuple[str, str]:
     # ``gpt-5.4-medium``) must be written ``runner:/<model>`` to grade through
     # the configured runner instead.
     return ("openai", bare)
+
+
+@dataclass(frozen=True)
+class JudgeClientConfig:
+    """How score.py builds the OpenAI-SDK client of a provider-backed judge.
+
+    Resolved by ``resolve_judge_client`` from ``models.providers.<name>`` for a
+    ``<name>:/`` judge model (``None`` on the Anthropic/OpenAI/runner paths).
+    ``extra_body`` is the operator's static dict (``judge.extra_body``); the
+    per-model routing part is computed per call by ``judge_extra_body`` and the
+    static dict wins on a key clash.
+    """
+
+    name: str
+    base_url: str
+    api_key_env: str
+    default_headers: dict = field(default_factory=dict)
+    extra_body: dict = field(default_factory=dict)
+    token_param: str = "max_tokens"
+    max_retries: int = 3
+    timeout_s: float = 300.0
+    concurrency: int = 4
+    routing: Any = None  # RoutingTable (agent_eval.providers.openrouter)
+    inherit_pins: bool = False
+
+    def client_key(self) -> tuple:
+        """Memoisation key for the SDK client. Names the key variable, never a value."""
+        return (self.name, self.base_url,
+                tuple(sorted(self.default_headers.items())),
+                self.api_key_env, self.max_retries, self.timeout_s)
+
+    def judge_extra_body(self, model: str,
+                         provider_options: Optional[dict] = None) -> dict:
+        """``extra_body`` of one judge request: the Decision 25 routing part for
+        ``model`` merged with the operator's static ``extra_body`` (later wins)."""
+        from agent_eval.providers.openrouter.routing import judge_extra_body
+
+        body = judge_extra_body(self.routing, model, inherit_pins=self.inherit_pins,
+                                provider_options=provider_options)
+        return {**body, **dict(self.extra_body or {})}
+
+
+def resolve_judge_client(model: Optional[str], providers=None) -> Optional[JudgeClientConfig]:
+    """Client config for a provider-backed judge model, or ``None``.
+
+    ``providers`` is ``config.models.providers``. Absent ``openrouter`` block →
+    the defaults apply, so an ``openrouter:/…`` judge works with nothing but
+    ``OPENROUTER_API_KEY`` exported. Every pre-existing routing (bare ids,
+    ``anthropic:/``, ``openai:/``, ``runner:/``) returns ``None``.
+    """
+    provider, _bare = split_model_uri(model)
+    if provider != "openrouter":
+        return None
+    from agent_eval.config import OpenRouterConfig  # local: keep this module light
+
+    cfg = getattr(providers, "openrouter", None) or OpenRouterConfig()
+    headers = {}
+    if cfg.attribution.referer:
+        headers["HTTP-Referer"] = cfg.attribution.referer
+    if cfg.attribution.title:
+        headers["X-OpenRouter-Title"] = cfg.attribution.title
+    return JudgeClientConfig(
+        name="openrouter",
+        base_url=cfg.base_url.rstrip("/"),
+        api_key_env=cfg.api_key_env,
+        default_headers=headers,
+        extra_body=dict(cfg.judge.extra_body or {}),
+        token_param="max_tokens",
+        max_retries=cfg.judge.max_retries,
+        timeout_s=cfg.judge.timeout_s,
+        concurrency=cfg.judge.concurrency,
+        routing=cfg.routing,
+        inherit_pins=cfg.judge.inherit_pins,
+    )
 
 
 def extract_runner_text(result) -> str:

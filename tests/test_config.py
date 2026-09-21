@@ -693,3 +693,208 @@ runner: {type: cursor, workspace_mode: repo}
 
     assert cfg.runner.type == "cursor"
     assert cfg.runner.workspace_mode == "repo"
+
+
+# --- models.providers (spec 014) ---------------------------------------------
+
+_OR_BASE = "name: t\nexecution:\n  skill: s\njudges:\n  - {name: j, prompt: rate it}\n"
+
+
+def _or_yaml(tmp_path, models_body, extra=""):
+    return _write(tmp_path, _OR_BASE + "models:\n" + models_body + extra)
+
+
+def test_openrouter_judge_needs_no_providers_block(tmp_path):
+    cfg = EvalConfig.from_yaml(_or_yaml(tmp_path, "  judge: openrouter:/z-ai/glm-5.2\n"))
+    assert cfg.models.judge == "openrouter:/z-ai/glm-5.2"
+    assert cfg.models.providers.openrouter is None
+
+
+def test_models_block_without_providers_is_unchanged(tmp_path):
+    cfg = EvalConfig.from_yaml(_or_yaml(tmp_path, "  judge: sonnet\n"))
+    assert cfg.models.providers.openrouter is None
+    assert cfg.judges[0].provider_options == {}
+
+
+def test_openrouter_block_defaults(tmp_path):
+    cfg = EvalConfig.from_yaml(_or_yaml(
+        tmp_path, "  judge: openrouter:/z-ai/glm-5.2\n  providers:\n    openrouter: {}\n"))
+    orc = cfg.models.providers.openrouter
+    assert orc.kind == "openrouter"
+    assert orc.api_key_env == "OPENROUTER_API_KEY"
+    assert orc.base_url == "https://openrouter.ai/api"
+    assert (orc.attribution.referer, orc.attribution.title, orc.attribution.run_id_header) == (
+        None, "agent-eval-harness", False)
+    assert orc.routing.is_empty
+    assert (orc.judge.concurrency, orc.judge.max_retries, orc.judge.timeout_s,
+            orc.judge.extra_body, orc.judge.inherit_pins) == (4, 3, 300.0, {}, False)
+
+
+def test_openrouter_block_parses(tmp_path):
+    cfg = EvalConfig.from_yaml(_or_yaml(tmp_path, """  judge: openrouter:/z-ai/glm-5.2
+  providers:
+    openrouter:
+      kind: openrouter
+      api_key_env: $MY_OR_KEY
+      base_url: https://openrouter.ai/api/
+      attribution: {referer: https://example.test, title: my-eval, run_id_header: true}
+      routing:
+        defaults: {allow_fallbacks: true, sort: throughput}
+        models:
+          z-ai/glm-5.2: {order: [Z.AI, novita], allow_fallbacks: false, quantizations: [fp8]}
+      judge:
+        concurrency: 2
+        max_retries: 1
+        timeout_s: 60
+        inherit_pins: true
+        extra_body: {reasoning: {effort: high}}
+"""))
+    orc = cfg.models.providers.openrouter
+    assert orc.api_key_env == "MY_OR_KEY"
+    assert orc.base_url == "https://openrouter.ai/api"
+    assert (orc.attribution.referer, orc.attribution.title, orc.attribution.run_id_header) == (
+        "https://example.test", "my-eval", True)
+    spec = orc.routing.for_model("z-ai/glm-5.2:exacto")
+    assert spec.order == ("z-ai", "novita") and spec.allow_fallbacks is False
+    assert spec.quantizations == ("fp8",) and spec.sort == "throughput"
+    assert (orc.judge.concurrency, orc.judge.max_retries, orc.judge.timeout_s,
+            orc.judge.inherit_pins) == (2, 1, 60.0, True)
+    assert orc.judge.extra_body == {"reasoning": {"effort": "high"}}
+
+
+def test_openrouter_base_url_env_indirection(tmp_path, monkeypatch):
+    monkeypatch.setenv("OR_BASE", "https://gw.example.test/api/")
+    cfg = EvalConfig.from_yaml(_or_yaml(
+        tmp_path, "  judge: openrouter:/z-ai/glm-5.2\n  providers:\n"
+                  "    openrouter: {base_url: $OR_BASE}\n"))
+    assert cfg.models.providers.openrouter.base_url == "https://gw.example.test/api"
+    monkeypatch.delenv("OR_BASE")
+    with pytest.raises(ValueError, match=r"base_url references \$OR_BASE, which is not set"):
+        EvalConfig.from_yaml(_or_yaml(
+            tmp_path, "  judge: openrouter:/z-ai/glm-5.2\n  providers:\n"
+                      "    openrouter: {base_url: $OR_BASE}\n"))
+
+
+def test_top_level_providers_key_is_rejected(tmp_path):
+    body = _OR_BASE + "providers:\n  openrouter: {}\n"
+    with pytest.raises(ValueError, match=r"models\.providers.*Decision 17"):
+        EvalConfig.from_yaml(_write(tmp_path, body))
+
+
+@pytest.mark.parametrize("block, match", [
+    ("    openrouter: {kind: openai}\n", r"kind must equal 'openrouter'"),
+    ("    openrouter: {kind: openai-compatible}\n", "not implemented in this release"),
+    ("    mygw: {kind: openai-compatible}\n", "not implemented in this release"),
+    ("    together: {}\n", "unknown provider"),
+    ("    openrouter: {api_key_env: 'sk-or-v1-0123456789abcdef'}\n", "must name an environment variable"),
+    ("    openrouter: {api_key_env: ''}\n", "must name an environment variable"),
+    ("    openrouter: {base_url: https://openrouter.ai/api/v1}\n", r"/v1"),
+    ("    openrouter: {base_url: openrouter.ai}\n", r"http\(s\) URL"),
+    ("    openrouter: {judge: {inherit_pins: true}}\n", "nothing to inherit"),
+    ("    openrouter: {judge: {inherit_pins: false}}\n", "nothing to inherit"),
+    ("    openrouter: {routing: {defaults: {}}, judge: {inherit_pins: 'yes'}}\n", "must be a boolean"),
+    ("    openrouter: {judge: {concurrency: 0}}\n", ">= 1"),
+    ("    openrouter: {judge: {max_retries: -1}}\n", ">= 0"),
+    ("    openrouter: {judge: {timeout_s: 0}}\n", "> 0"),
+    ("    openrouter: {judge: {extra_body: [1]}}\n", "must be a mapping"),
+    ("    openrouter: {judge: {foo: 1}}\n", "unknown key"),
+    ("    openrouter: {attribution: {foo: 1}}\n", "unknown key"),
+    ("    openrouter: {attribution: {run_id_header: 'yes'}}\n", "boolean"),
+    ("    openrouter: {routing: {defaults: {quantizations: [q4]}}}\n", "quantization"),
+    ("    openrouter: {routing: {models: {glm: {}}}}\n", "<author>/<slug>"),
+    ("    openrouter: {routing: {enforcement: audit}}\n", "not implemented yet"),
+    ("    openrouter: {routing: {policy: warn}}\n", "not implemented yet"),
+    ("    openrouter: {preflight: strict}\n", "not implemented yet"),
+    ("    openrouter: {budget: {run_usd: 5}}\n", "not implemented yet"),
+    ("    openrouter: {transport: proxy}\n", "Decision 1"),
+    ("    openrouter: {direct: {}}\n", "Decision 1"),
+    ("    openrouter: {foo: 1}\n", "unknown key"),
+    ("    openrouter: 3\n", "must be a mapping"),
+])
+def test_openrouter_block_rejections(tmp_path, block, match):
+    body = "  judge: openrouter:/z-ai/glm-5.2\n  providers:\n" + block
+    with pytest.raises(ValueError, match=match):
+        EvalConfig.from_yaml(_or_yaml(tmp_path, body))
+
+
+def test_api_key_env_error_never_echoes_the_value(tmp_path):
+    body = "  judge: openrouter:/z-ai/glm-5.2\n  providers:\n    openrouter: {api_key_env: 'sk-or-v1-SECRETVALUE'}\n"
+    with pytest.raises(ValueError) as exc:
+        EvalConfig.from_yaml(_or_yaml(tmp_path, body))
+    assert "SECRETVALUE" not in str(exc.value)
+
+
+def test_openrouter_judge_model_shape_checked_at_load(tmp_path):
+    with pytest.raises(ValueError, match=r"models\.judge:.*<author>/<slug>"):
+        EvalConfig.from_yaml(_or_yaml(tmp_path, "  judge: openrouter:/glm-5.2\n"))
+
+
+# --- judges[].provider_options ----------------------------------------------
+
+def test_provider_options_parsed_for_openrouter_judge(tmp_path):
+    body = ("name: t\nexecution:\n  skill: s\njudges:\n"
+            "  - name: j\n    prompt: rate it\n    model: openrouter:/z-ai/glm-5.2\n"
+            "    provider_options:\n"
+            "      routing: {order: [Z.AI], allow_fallbacks: false}\n"
+            "      fallbacks: [deepseek/deepseek-v4]\n"
+            "      max_tokens: 8192\n")
+    cfg = EvalConfig.from_yaml(_write(tmp_path, body))
+    assert cfg.judges[0].provider_options == {
+        "routing": {"order": ["Z.AI"], "allow_fallbacks": False},
+        "fallbacks": ["deepseek/deepseek-v4"], "max_tokens": 8192}
+
+
+def test_provider_options_accepts_models_judge_as_the_static_model(tmp_path):
+    body = ("name: t\nexecution:\n  skill: s\nmodels:\n  judge: openrouter:/z-ai/glm-5.2\n"
+            "judges:\n  - {name: j, prompt: rate it, provider_options: {max_tokens: 4096}}\n")
+    cfg = EvalConfig.from_yaml(_write(tmp_path, body))
+    assert cfg.judges[0].provider_options == {"max_tokens": 4096}
+
+
+@pytest.mark.parametrize("judge, match", [
+    ("{name: j, prompt: rate it, model: sonnet, provider_options: {max_tokens: 1}}",
+     r"requires an 'openrouter:/' judge model.*got 'sonnet'"),
+    ("{name: j, prompt: rate it, model: 'openai:/gpt-4o', provider_options: {max_tokens: 1}}",
+     r"requires an 'openrouter:/' judge model"),
+    ("{name: j, prompt: rate it, provider_options: {max_tokens: 1}}",
+     r"no static judge model is set"),
+    ("{name: j, prompt: rate it, model: 'openrouter:/z-ai/glm-5.2', provider_options: {foo: 1}}",
+     "unknown key"),
+    ("{name: j, prompt: rate it, model: 'openrouter:/z-ai/glm-5.2', provider_options: {max_tokens: 0}}",
+     ">= 1"),
+    ("{name: j, prompt: rate it, model: 'openrouter:/z-ai/glm-5.2', provider_options: {routing: {order: []}}}",
+     "non-empty list"),
+    ("{name: j, prompt: rate it, model: 'openrouter:/z-ai/glm-5.2', provider_options: {fallbacks: [a/b, c/d, e/f, g/h]}}",
+     "at most 3"),
+    ("{name: j, prompt: rate it, model: 'openrouter:/z-ai/glm-5.2', provider_options: [1]}",
+     "must be a mapping"),
+])
+def test_provider_options_rejections(tmp_path, judge, match):
+    body = f"name: t\nexecution:\n  skill: s\njudges:\n  - {judge}\n"
+    with pytest.raises(ValueError, match=match):
+        EvalConfig.from_yaml(_write(tmp_path, body))
+
+
+def test_empty_provider_options_on_any_judge_is_fine(tmp_path):
+    body = ("name: t\nexecution:\n  skill: s\njudges:\n"
+            "  - {name: j, prompt: rate it, model: sonnet, provider_options: {}}\n")
+    assert EvalConfig.from_yaml(_write(tmp_path, body)).judges[0].provider_options == {}
+
+
+def test_agent_judge_cannot_use_an_openrouter_model(tmp_path):
+    body = ("name: t\nexecution:\n  skill: s\njudges:\n"
+            "  - {name: j, prompt: rate it, model: 'openrouter:/z-ai/glm-5.2', "
+            "agent: {allowed_tools: [Read]}}\n")
+    with pytest.raises(ValueError, match=r"agent judges run through the runner"):
+        EvalConfig.from_yaml(_write(tmp_path, body))
+    # ... including when the model comes from models.judge
+    body = ("name: t\nexecution:\n  skill: s\nmodels:\n  judge: openrouter:/z-ai/glm-5.2\n"
+            "judges:\n  - {name: j, prompt: rate it, agent: {allowed_tools: [Read]}}\n")
+    with pytest.raises(ValueError, match=r"agent judges run through the runner"):
+        EvalConfig.from_yaml(_write(tmp_path, body))
+
+
+def test_agent_judge_with_other_providers_still_loads(tmp_path):
+    body = ("name: t\nexecution:\n  skill: s\njudges:\n"
+            "  - {name: j, prompt: rate it, model: 'gemini:/x', agent: {allowed_tools: [Read]}}\n")
+    assert EvalConfig.from_yaml(_write(tmp_path, body)).judges[0].model == "gemini:/x"

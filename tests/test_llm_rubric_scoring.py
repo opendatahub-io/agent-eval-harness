@@ -414,3 +414,36 @@ class TestLLMRubricErrorHandling:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_openrouter_judge_model_binds_its_client_config():
+    """An openrouter:/ judge takes the OpenAI arm with its client config
+    (spec 014): token parameter pinned to max_tokens, extra_body from routing,
+    never the Anthropic or runner path."""
+    from unittest.mock import patch
+
+    import score
+    from agent_eval.config import EvalConfig, JudgeConfig, ModelsConfig
+
+    config = EvalConfig(name="t", skill="s")
+    config.models = ModelsConfig(judge="openrouter:/z-ai/glm-5.2")
+    jc = JudgeConfig(name="j", llm_rubric="Response is helpful",
+                     provider_options={"fallbacks": ["deepseek/deepseek-v4"]})
+    config.judges = [jc]
+
+    with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+        with patch("score._call_structured_judge") as direct_call, \
+                patch("score._call_structured_judge_via_runner") as runner_call, \
+                patch("score._call_structured_judge_openai",
+                      return_value=(3, "ok")) as openai_call:
+            scorer = score._load_llm_judge(jc, config)
+            result = scorer(outputs={"files": {"output.txt": "test"}})
+
+    assert result == (3, "ok")
+    direct_call.assert_not_called()
+    runner_call.assert_not_called()
+    assert openai_call.call_args.args[1] == "z-ai/glm-5.2"
+    kwargs = openai_call.call_args.kwargs
+    assert kwargs["client_cfg"].name == "openrouter"
+    assert kwargs["token_param"] == "max_tokens"
+    assert kwargs["extra_body"] == {"models": ["z-ai/glm-5.2", "deepseek/deepseek-v4"]}

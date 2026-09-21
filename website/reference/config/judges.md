@@ -177,14 +177,43 @@ an OpenAI judge works with a claude-code runner. Write the model as a
 | --- | --- | --- |
 | `sonnet`, `claude-sonnet-4-5`, `anthropic:/…` | Anthropic SDK | Direct forced-tool structured output; image evidence and Vertex supported. |
 | `openai:/gpt-4o`, `gpt-4o`, or any other bare id | OpenAI SDK | Function-calling structured output. Point `OPENAI_BASE_URL` at an OpenAI-compatible gateway (LiteLLM proxy, Azure, local, …) to reach other providers or self-hosted models. Needs the `openai` package and either `OPENAI_API_KEY` or `OPENAI_BASE_URL` (a gateway without auth works — a placeholder key is supplied). |
+| `openrouter:/z-ai/glm-5.2`, `openrouter:/openai/gpt-5.2:exacto` | OpenAI SDK, dedicated OpenRouter client | Any model OpenRouter serves (`<author>/<slug>[:variant]`). Reads `OPENROUTER_API_KEY` (never `OPENAI_*`), sends the routing declared under `models.providers.openrouter`, and reports OpenRouter's own failures instead of parsing an empty reply. |
 | `runner:/gpt-5.4-medium` | Configured runner | Explicit opt-in for a model only the runner CLI can serve (e.g. Cursor's internal models). |
 
 An explicit unsupported provider (e.g. `gemini:/…`) is rejected at config load
 when the judge model is set statically (`models.judge` or a per-judge `model:`);
 a value coming only from `EVAL_JUDGE_MODEL` is validated when the judge is built,
 and `agent:` judges route their model through the runner rather than an SDK.
-Reach an unsupported provider via an OpenAI-compatible gateway (`openai:/…` +
-`OPENAI_BASE_URL`) or `runner:/…`.
+Reach an unsupported provider via OpenRouter (`openrouter:/<author>/<slug>`),
+an OpenAI-compatible gateway (`openai:/…` + `OPENAI_BASE_URL`) or `runner:/…`.
+
+#### OpenRouter judges
+
+An `openrouter:/…` judge needs nothing but `OPENROUTER_API_KEY` exported. The
+optional `models.providers.openrouter` block (see
+[models → providers](models.md#providers-openrouter)) sets the client options
+and a routing table. Provider pins are **opt-in for judges**: OpenRouter
+answers `404 "No endpoints found"` when a forced tool call meets a pinned
+endpoint that cannot force a named function, so a judge sends the table's
+`order`/`only`/`quantizations` only when `judge.inherit_pins: true` or the
+judge declares its own routing. When a pinned judge still hits that 404 the
+harness retries with `tool_choice: required`, then `auto`, strict-parses the
+first tool call (a non-verdict answer is an error, never a prose fallback),
+records the mode as `tool_choice_mode` on the per-case record and counts it in
+`summary.yaml` under `judge_usage.tool_choice_fallbacks`.
+
+Per-judge `provider_options` (only valid with an `openrouter:/` model):
+
+```yaml
+judges:
+  - name: rfe_quality
+    prompt_file: eval/judges/rfe_quality.md
+    model: openrouter:/z-ai/glm-5.2
+    provider_options:
+      routing: { order: [z-ai], allow_fallbacks: false }   # opts this judge into pins
+      fallbacks: [deepseek/deepseek-v4]                    # OpenRouter `models` fallbacks
+      max_tokens: 8192                                     # overrides the call-site default
+```
 
 ### Verdict output
 

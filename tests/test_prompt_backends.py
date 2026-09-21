@@ -173,3 +173,91 @@ def test_resolve_judge_backend(model, expected):
 def test_resolve_judge_backend_rejects(model):
     with pytest.raises(ValueError):
         resolve_judge_backend(model)
+
+
+# --- openrouter:/ judge routing (spec 014) -----------------------------------
+
+@pytest.mark.parametrize("model, expected", [
+    ("openrouter:/z-ai/glm-5.2", ("openai", "z-ai/glm-5.2")),
+    ("openrouter:/openai/gpt-5.2:exacto", ("openai", "openai/gpt-5.2:exacto")),
+    ("openrouter:/anthropic/claude-opus-4-8", ("openai", "anthropic/claude-opus-4-8")),
+    ("OpenRouter://z-ai/glm-5.2", ("openai", "z-ai/glm-5.2")),
+])
+def test_resolve_judge_backend_openrouter(model, expected):
+    assert resolve_judge_backend(model) == expected
+
+
+@pytest.mark.parametrize("model", ["openrouter:/", "openrouter://", "openrouter:/glm-5.2"])
+def test_resolve_judge_backend_openrouter_needs_author_and_slug(model):
+    with pytest.raises(ValueError, match="<author>/<slug>"):
+        resolve_judge_backend(model)
+
+
+def test_unknown_prefix_is_still_unknown_and_the_hint_names_openrouter():
+    with pytest.raises(ValueError, match=r"Unsupported judge model provider 'other'.*openrouter:/"):
+        resolve_judge_backend("other:/x")
+
+
+def test_is_anthropic_model_openrouter_claude_is_false():
+    assert is_anthropic_model("openrouter:/anthropic/claude-opus-4-8") is False
+
+
+@pytest.mark.parametrize("model", [
+    "sonnet", "gpt-4o", "anthropic:/claude-sonnet-4-5", "openai:/gpt-4o",
+    "runner:/gpt-5.4-medium", "my-gateway-model", "vendor/model", "", None,
+])
+def test_resolve_judge_client_is_none_for_every_existing_path(model):
+    from agent_eval.prompt_backends import resolve_judge_client
+    assert resolve_judge_client(model, None) is None
+
+
+def test_resolve_judge_client_defaults_without_a_providers_block():
+    from agent_eval.prompt_backends import JudgeClientConfig, resolve_judge_client
+
+    cfg = resolve_judge_client("openrouter:/z-ai/glm-5.2:exacto", None)
+    assert isinstance(cfg, JudgeClientConfig)
+    assert cfg.name == "openrouter"
+    assert cfg.base_url == "https://openrouter.ai/api"
+    assert cfg.api_key_env == "OPENROUTER_API_KEY"
+    assert cfg.token_param == "max_tokens"
+    assert cfg.default_headers == {"X-OpenRouter-Title": "agent-eval-harness"}
+    assert (cfg.max_retries, cfg.timeout_s, cfg.concurrency, cfg.inherit_pins) == (3, 300.0, 4, False)
+    assert cfg.judge_extra_body("z-ai/glm-5.2:exacto") == {}
+
+
+def test_resolve_judge_client_reads_models_providers(tmp_path):
+    from agent_eval.prompt_backends import resolve_judge_client
+
+    path = _write_config(tmp_path, """
+name: t
+execution:
+  skill: s
+models:
+  judge: openrouter:/z-ai/glm-5.2
+  providers:
+    openrouter:
+      attribution: {referer: https://example.test/eval, title: my-eval}
+      routing:
+        defaults: {sort: throughput}
+        models:
+          z-ai/glm-5.2: {order: [Z.AI, novita], allow_fallbacks: false}
+      judge:
+        concurrency: 2
+        max_retries: 1
+        timeout_s: 60
+        inherit_pins: true
+        extra_body: {reasoning: {effort: high}}
+judges:
+  - {name: j, prompt: rate it}
+""")
+    config = EvalConfig.from_yaml(path)
+    cfg = resolve_judge_client(config.models.judge, config.models.providers)
+    assert cfg.default_headers == {"HTTP-Referer": "https://example.test/eval",
+                                   "X-OpenRouter-Title": "my-eval"}
+    assert (cfg.max_retries, cfg.timeout_s, cfg.concurrency, cfg.inherit_pins) == (1, 60.0, 2, True)
+    body = cfg.judge_extra_body("z-ai/glm-5.2")
+    assert body["provider"] == {"order": ["z-ai", "novita"], "allow_fallbacks": False,
+                                "sort": "throughput", "require_parameters": True}
+    assert body["reasoning"] == {"effort": "high"}
+    # The memoisation key names the variable, never a key value.
+    assert "OPENROUTER_API_KEY" in cfg.client_key()
