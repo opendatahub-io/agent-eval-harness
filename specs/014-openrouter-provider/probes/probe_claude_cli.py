@@ -17,7 +17,7 @@ The fake endpoint scripts the conversation: turn 1 → tool_use Bash(echo hi) (f
 hook), turn 2 → tool_use Agent (spawns a subagent, whose own request lands here),
 subagent → end_turn, main → end_turn. No secrets involved; the report is safe to share.
 
-    python3 scripts/probe_claude_cli.py [--claude-bin claude] [--out probe_cli_report.json]
+    python3 specs/014-openrouter-provider/probes/probe_claude_cli.py [--claude-bin claude] [--out probe_cli_report.json]
 """
 import argparse
 import http.server

@@ -8,10 +8,10 @@ stores it (every error string is redacted), and writes ``probe_report.json``
 containing outcomes and evidence only.
 
     export OPENROUTER_API_KEY=sk-or-...        # in YOUR shell; the script never echoes it
-    python3 scripts/probe_openrouter.py                      # all runnable probes
-    python3 scripts/probe_openrouter.py --only 3 6 13        # a subset
-    python3 scripts/probe_openrouter.py --include-openai     # also probe 8 (gpt-5* judge call)
-    python3 scripts/probe_openrouter.py --no-claude          # skip the `claude --print` probe (12)
+    python3 specs/014-openrouter-provider/probes/probe_openrouter.py                      # all runnable probes
+    python3 specs/014-openrouter-provider/probes/probe_openrouter.py --only 3 6 13        # a subset
+    python3 specs/014-openrouter-provider/probes/probe_openrouter.py --include-openai     # also probe 8 (gpt-5* judge call)
+    python3 specs/014-openrouter-provider/probes/probe_openrouter.py --no-claude          # skip the `claude --print` probe (12)
 
 Cost: ~45 tiny requests on the default model (z-ai/glm-5.3-flash) ≈ a few cents.
 Probe 8 (opt-in) adds one judge-shaped call per OpenAI slug. Probe 12 runs one

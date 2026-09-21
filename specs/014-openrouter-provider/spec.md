@@ -3,7 +3,7 @@
 Status: proposed — **re-founded 2026-09-16 per maintainer directive** ("it should really
 be direct, no LiteLLM; and it must work with the podman / Harbor runner"): the
 agent-under-test talks to OpenRouter **directly**, there is **no proxy of any kind** in
-scope (the harness-owned shaping gateway of earlier revisions is deferred to "Out of scope
+scope (the harness-owned shaping proxy of earlier revisions is deferred to "Out of scope
 (future)"; its contract text lives in the git history of this file), routing pins are
 enforced by **post-hoc audit** (default) or by a **server-side per-run key guardrail**
 (opt-in), and Harbor podman + Kubernetes are MVP scope. See "Review log" and Decisions 31/32.
@@ -28,7 +28,7 @@ used throughout:
 
 ## Problem
 
-The harness can point a judge at any OpenAI-compatible gateway (spec 013), but it
+The harness can point a judge at any OpenAI-compatible endpoint (spec 013), but it
 has **no notion of a provider for the agent-under-test** and **no cost provenance**:
 
 - `EvalRunner.execute()` receives a bare `model` string (agent_eval/agent/base.py:56-67)
@@ -94,7 +94,7 @@ has **no notion of a provider for the agent-under-test** and **no cost provenanc
   resolved only in `from_yaml` would be invisible to them.
 
 Goal: **declare OpenRouter once (`openrouter:/<author>/<slug>` on any model role
-plus a `providers.openrouter` block); have the agent-under-test talk to OpenRouter
+plus a `models.providers.openrouter` block); have the agent-under-test talk to OpenRouter
 directly (no proxy — not LiteLLM, not a harness-owned one); get *audited* routing
 (preflight resolves the declared pins against the public catalogs, the per-request
 `/generation` backfill checks every served provider against them, and an opt-in per-run
@@ -102,7 +102,7 @@ key guardrail enforces them server-side), true cost with provenance from the sam
 backfill, and judge cost — on local claude-code, Harbor podman and Kubernetes alike —
 without a monkeypatch or a second config file, while keeping every existing config,
 budget contract and Harbor/K8s deployment working unchanged.** The fix is
-*direct transport + audit*, not a gateway: what a proxy would have added back
+*direct transport + audit*, not a proxy: what a proxy would have added back
 (per-request body pins, an in-flight real-cost gate) is listed under "Out of scope
 (future)" with the rationale for deferring it.
 
@@ -120,18 +120,18 @@ enforcement levels** for the declared routing pins, one contract for everything 
 | agent, Harbor Kubernetes / EvalHub | same | credentials Secret carries `OPENROUTER_API_KEY`; the harness maps it to `ANTHROPIC_AUTH_TOKEN` via `secretKeyRef` next to the existing `envFrom` (kubernetes.py:244-246); non-secret plan env in the pod spec; Vertex vars already excluded (kubernetes.py:42-50) | same | same (transcripts come back through the job dir) | same |
 | judges | `https://openrouter.ai/api/v1/chat/completions` | OpenAI SDK, dedicated client (never process-global `OPENAI_*`), `extra_body` routing, `usage.cost` inline | judge pins opt-in (`judge.inherit_pins`), `tool_choice` ladder (Decision 30) — unchanged | `source: judge` ledger records, `judge_cost_usd` in `summary.yaml` | judge client holds `OPENROUTER_API_KEY` in the harness process only |
 
-| `providers.openrouter.routing.enforcement` | What is enforced, where | Budget | Key isolation | Requires |
+| `models.providers.openrouter.routing.enforcement` | What is enforced, where | Budget | Key isolation | Requires |
 | --- | --- | --- | --- | --- |
 | `audit` (**default**) | **preflight** resolves the declared pins (`order`/`quantizations` intent per routing key) against the public `/models/{slug}/endpoints` + `/providers` catalogs and writes `routing_snapshot.json`; **post-run audit** joins every backfilled `provider_name` against the pinned set → `routing.violations`, `routing_enforcement: audit`; compare/anova refuse to pool runs whose audits differ (`policy: strict` → run degraded/failed per config; `warn` → flagged) | CLI cap on the inflated estimate during the run; **real cost is post hoc** (`--strict-cost` fails the run when the backfilled Σ exceeds `budget.run_usd`) | none — the agent holds the operator key (`provider.key_exposed_to_agent: true`) | `OPENROUTER_API_KEY` |
 | `key-guardrail` (opt-in) | everything `audit` does **plus** a per-run inference key provisioned through the management API with a guardrail allow-list = pinned providers and `limit_usd` = run budget, used for the run and revoked in a `finally` → **server-side** enforcement of pins and budget | server-side `limit_usd` (real cost, in flight) + the CLI cap | per-run key; the agent never sees the operator key | `OPENROUTER_API_KEY` + `OPENROUTER_MANAGEMENT_KEY`; guardrail field semantics DOCUMENTED/UNVERIFIED (probe #26) |
 
-There is no `gateway:` mode, no `gateway:/` provider kind and no proxy process. An operator
-who already fronts Claude Code with an Anthropic-compatible gateway (e.g. the in-cluster
-LiteLLM) keeps doing so through plain `execution.env` exactly as today — that path is
-untouched and **unsupported by this feature** (no ledger; `cost_source: runner:estimate`, a
-label the runner itself writes — reconcile is a no-op with no plan).
-Judges behind an operator gateway keep the unchanged PR #216 paths (`anthropic:/` +
-`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_BASE_URL`, or `openai:/` + `OPENAI_BASE_URL`).
+There is no proxy process and no second transport mode. An operator who already fronts
+Claude Code with an Anthropic-compatible endpoint (e.g. an in-cluster LiteLLM) keeps doing
+so through plain `execution.env` exactly as today — that path is untouched and
+**unsupported by this feature** (no ledger; `cost_source: runner:estimate`, a label the
+runner itself writes — reconcile is a no-op with no plan). Judges behind such an endpoint
+keep the unchanged PR #216 paths (`anthropic:/` + `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_BASE_URL`,
+or `openai:/` + `OPENAI_BASE_URL`).
 
 Load-bearing facts, by evidence class:
 
@@ -180,7 +180,7 @@ Load-bearing facts, by evidence class:
   delta).
 - **VERIFIED (no-key Claude Code CLI probes 2026-09-16, Claude Code 2.1.274 against a local
   fake Anthropic endpoint; `probes/probe_cli_report_2026-09-16.json`, produced by
-  `scripts/probe_claude_cli.py`; checklist rows 1, 9, 10, 22, 23, 27):** a `--settings` env
+  `specs/014-openrouter-provider/probes/probe_claude_cli.py`; checklist rows 1, 9, 10, 22, 23, 27):** a `--settings` env
   block beats a user-level `~/.claude/settings.json` that forces `CLAUDE_CODE_USE_VERTEX=1` and
   routes **every** request of a 3-turn run — root turns and the spawned subagent's request —
   to `ANTHROPIC_BASE_URL`; a PreToolUse hook subprocess inherits the settings-env values
@@ -207,8 +207,8 @@ ships with `enforcement: audit`, whose two inputs are already VERIFIED: stream-j
 Same grammar as spec 013 (`split_model_uri`, prompt_backends.py:25-36):
 `openrouter:/<author>/<slug>[:variant[:variant…]]` is accepted on `models.skill`,
 `models.subagent`, `models.judge`, `models.hook`, per-judge `model:`, and the CLI
-`--model`/`--subagent-model`/`--judge-model`. There is no `gateway:/` scheme (dropped with
-the LiteLLM-motivated pass-through kind, Decision 31).
+`--model`/`--subagent-model`/`--judge-model`. `openrouter:/` is the only URI scheme this
+spec adds; this spec reserves no other scheme (Decision 31).
 Variants (`:exacto`, `:nitro`, `:floor`; combinable, last one sets the sort — VERIFIED)
 travel in the URI tail and are passed verbatim to Claude Code (`--model z-ai/glm-5.2:exacto`)
 and to the alias env vars; on the agent path they are the **only** routing control that
@@ -225,29 +225,53 @@ Within one run the agent roles (`skill`, `subagent`, `hook`) must share a provid
 (one plan per run); mixing `openrouter:/` and a bare id across them is a load error
 (Config validation) — one overlay env block cannot serve two endpoints.
 
-#### Provider registry (`providers:`)
+#### Provider registry (`models.providers`)
 
 ```
-providers:
-  <name>:                 # the only name in this spec: openrouter
-    kind: <name>          # optional; must equal <name> for now (reserved for future
-                          #   user-chosen names and kind: openai-compatible)
+models:
+  skill: openrouter:/<author>/<slug>   # any role URI may name a declared provider
+  providers:
+    <name>:                 # the only name in this spec: openrouter
+      kind: <name>          # optional; must equal <name> for now (reserved for future
+                            #   user-chosen names and kind: openai-compatible)
 ```
 
+The registry is a sub-key of `models:`, not a top-level key (Decision 33): it exists only
+to resolve the `<provider>:/<model>` URIs that already live under `models.*` (skill /
+subagent / judge / hook — the cross-cutting scope of spec 013 / PR #216), so nesting keeps
+model configuration cohesive, adds no top-level namespace, and lets an `extends:` overlay
+override `models.providers.openrouter.routing` alongside `models.skill` in one block.
 Builtin implicit providers `anthropic`, `openai`, `runner` are URI schemes with today's
-env-driven behaviour and cannot be declared under `providers:`. **One declared kind**:
-`openrouter` (full design below). The earlier `gateway` kind (Anthropic-compatible
-pass-through for an operator-run LiteLLM) is dropped: anyone with such a gateway keeps
-using plain `execution.env` as today, outside this feature. `kind: openai-compatible` is
+env-driven behaviour and cannot be declared under `models.providers`. **One declared kind**:
+`openrouter` (full design below). No second provider kind is introduced: an operator who
+runs an Anthropic-compatible endpoint (e.g. a LiteLLM) keeps reaching it through plain
+`execution.env` as today, outside this feature. `kind: openai-compatible` is
 reserved in the schema and rejected with "not implemented" (Out of scope). A provider
 entry is a **declaration**: it is inert until an effective role URI names it (BC-5; see
 `execute.py` activation rule). Validation rejects an explicit URI provider only if it
-is neither builtin nor declared. Sub-keys of `providers.openrouter` (the `OpenRouterConfig` dataclass, config.py): `kind`,
+is neither builtin nor declared. Sub-keys of `models.providers.openrouter` (the `OpenRouterConfig` dataclass, config.py): `kind`,
 `api_key_env`, `base_url`, `management_key_env`, `attribution`, `background_model`,
 `preflight`, `cli_budget_inflation`, `budget`, `routing` (`defaults`, `models`, `policy`,
-`enforcement`, `guardrail`), `judge`. There is no
-`gateway`, `gateway_options` or `direct` key; a config that still carries one fails
-validation with a pointer to Decision 31.
+`enforcement`, `guardrail`), `judge`. There is no transport-mode key of any kind (the
+pre-2026-09-16 draft's mode/`direct.*` keys never shipped); an unknown sub-key fails
+validation by name with a pointer to Decision 31.
+
+#### Config overlay (`extends:` — a NEW, optional top-level key, PR-3a)
+
+`extends:` is **not an existing harness feature**: it is a new top-level eval-config key
+proposed by this spec and delivered in PR-3a. Semantics: `extends: <path relative to the
+file>` loads the base config and deep-merges the overlay on top (dicts merge, scalars
+override, lists per the merge policy in the `agent_eval/config.py` section — scalar lists
+extend with dedupe, `judges`/`steps` merge by key — with a `!replace` tag as the escape
+hatch). It is resolved in the **single raw loader** (`load_raw`), so every reader —
+execute/score/report, Harbor task bundling, EvalHub, validate, discovery — sees the merged
+config, and the resolved chain is recorded in `eval_params.config_chain`. The key is
+**independent of the OpenRouter feature and droppable**: its motivation is the
+`eval.yaml` / `eval-openrouter.yaml` drift in rfe-creator, not the transport. Relation to
+rfe-creator: rfe-creator now *generates* `eval.yaml` from a skeleton plus per-type fragments
+(`scripts/generate_eval_config.py`); the generated `eval.yaml` stays the base and an
+OpenRouter profile `extends:` it, so the generator is untouched. (Alternatively the
+generator could emit per-provider configs directly, in which case PR-3a would be skipped.)
 
 #### `RoutingSpec` (one object, two serialisations)
 
@@ -281,7 +305,7 @@ variant, data policy through the account settings); and (b) the **judge path**, 
 dict-deep, **lists replace** — this is the one place list
 replacement is correct: `order` and `quantizations` are complete statements, unlike the
 `extends:` overlay policy below):
-`providers.openrouter.routing.defaults` ← `providers.openrouter.routing.models.<routing key>`
+`models.providers.openrouter.routing.defaults` ← `models.providers.openrouter.routing.models.<routing key>`
 ← role override (`judges[].provider_options.routing`). Provider identifiers are
 normalised to lowercase slugs via the `/api/v1/providers` catalog before sending
 (`Novita`→`novita`, `Z.AI`→`z-ai`, `StreamLake`→`streamlake`). This is a **cosmetic /
@@ -296,7 +320,7 @@ display name in the catalog) still fail `preflight: strict`.
 `ignore`/`quantizations` per the `/endpoints` catalog, or `None` when the key is unpinned
 (no `order`/`only` and `allow_fallbacks` not `false`) — an unpinned key is never audited.
 `to_chat_extra_body(slug, role="judge")` yields the judge `extra_body` — the full
-`{"provider": {...}, "models": [...]}` dict **only when the judge inherits pins** (`providers.openrouter.judge.inherit_pins: true`
+`{"provider": {...}, "models": [...]}` dict **only when the judge inherits pins** (`models.providers.openrouter.judge.inherit_pins: true`
 or a per-judge `provider_options.routing`, Decision 30); otherwise the judge dict carries
 only the non-binding keys (`sort`, `data_collection`, `zdr`, `max_price`, `fallbacks`) and
 no `order`/`only`/`quantizations`. `require_parameters` is sent for judges **only when the
@@ -404,7 +428,7 @@ Adds/normalises these fields (all optional; old files stay readable):
 | --- | --- |
 | `cost_usd` | agent spend. Provider active: when generation coverage ≥ 0.8, Σ ledger `cost_usd` over `role: agent` rows with `status: ok` (6 dp); when coverage < 0.8, the `key-usage` row's delta (the only number that covers the missing ids); `null` when neither landed (no ok rows and no key delta). Provider inactive: unchanged. Never a mix of the two sources and never the estimate. |
 | `cost_usd_estimate` | the runner's own number (Claude Code's Anthropic-priced estimate, 2–60× inflated on OpenRouter); set once, never overwritten (idempotent). |
-| `cost_source` | `<origin>:<method>`: `openrouter:generation` (Σ backfilled rows, coverage ≥ 0.8), `openrouter:key-usage` (key delta, coverage < 0.8), `runner:estimate` (provider active but no truth source landed **and** the operator passed `--allow-estimate`, otherwise `unavailable`; also written **by the Claude Code runner itself, never by reconcile**, when its own env carries an `ANTHROPIC_BASE_URL` whose host is not `api.anthropic.com` — an operator gateway through plain `execution.env`, no plan: the CLI's Anthropic-priced number is an estimate there, and reconcile leaves such a file untouched), `runner:reported` (Claude Code on Anthropic-direct/Vertex, opaque CLI `metrics.json`; legacy default when the field is missing), `harness:estimate` (codex litellm pricing), `unavailable`. Legacy literals are recognised by every reader: `openrouter-reconciled` (files patched by `reconcile_cost.py`) reads as real OpenRouter cost, `runner-reported`/`harness-estimate` read as their colon forms. |
+| `cost_source` | `<origin>:<method>`: `openrouter:generation` (Σ backfilled rows, coverage ≥ 0.8), `openrouter:key-usage` (key delta, coverage < 0.8), `runner:estimate` (provider active but no truth source landed **and** the operator passed `--allow-estimate`, otherwise `unavailable`; also written **by the Claude Code runner itself, never by reconcile**, when its own env carries an `ANTHROPIC_BASE_URL` whose host is not `api.anthropic.com` — an operator-run Anthropic-compatible endpoint through plain `execution.env`, no plan: the CLI's Anthropic-priced number is an estimate there, and reconcile leaves such a file untouched), `runner:reported` (Claude Code on Anthropic-direct/Vertex, opaque CLI `metrics.json`; legacy default when the field is missing), `harness:estimate` (codex litellm pricing), `unavailable`. Legacy literals are recognised by every reader: `openrouter-reconciled` (files patched by `reconcile_cost.py`) reads as real OpenRouter cost, `runner-reported`/`harness-estimate` read as their colon forms. |
 | `cost_confidence` | **by coverage** (`requests_priced / requests`, over the stream-json `message_ids` of the run — the denominator is what the transcript says happened, not what the ledger holds): `high` — coverage ≥ 0.95 (the expected outcome now that probe #12 is VERIFIED) **and** the key-usage cross-check, when available, is within 5 %; `medium` — coverage in [0.8, 0.95), or key-usage-only on a key asserted dedicated (`key-guardrail`'s per-run key, or `budget.dedicated_key: true` under `audit`); `low` — coverage < 0.8 on a non-dedicated key (C12), or coverage ≥ 0.8 with a key-usage deviation > 5 % (something else spent on the key, or ids are missing from the transcript). |
 | `cost_coverage` | `{requests, requests_priced, requests_missing_cost, requests_unattributed, coverage, key_usage_delta_usd, key_usage_settle_s}` — `requests` = distinct `gen-…` ids seen in stream-json (agent + hook), `requests_priced` = `status: ok` rows, `requests_missing_cost` = `backfill_failed`, `requests_unattributed` = rows without `provider_name` (expected 0; `/generation` always carries it). |
 | `cost_warnings` | list of strings, e.g. `"ledger sum $1.61 differs from key-usage delta $1.67 by 3.6%"`, `"3 of 1341 requests lack provider attribution; routing audit incomplete"`, `"per-model cost: no ledger rows for modelUsage key 'z-ai/glm-5.2-20260616'"`. |
@@ -513,7 +537,7 @@ be sent to OpenRouter and 404. `count_tokens`: OpenRouter has no
 `/v1/messages/count_tokens` (404, VERIFIED) and Claude Code 2.1.274 **never calls it** — zero
 calls in a 3-turn direct run with a tool call and a subagent (probe #22, RESOLVED for this CLI
 version, `probes/probe_cli_report_2026-09-16.json`). Nothing in the direct design plans around
-it; the only residue is a watch item: re-run `scripts/probe_claude_cli.py` on CLI upgrades,
+it; the only residue is a watch item: re-run `specs/014-openrouter-provider/probes/probe_claude_cli.py` on CLI upgrades,
 and if `count_tokens` appears, OpenRouter 404s it. The request path the CLI actually uses is
 `/v1/messages?beta=true` — matchers strip the query string. **Beta headers (row 20):** Claude
 Code 2.1.274 sends `anthropic-beta: claude-code-20250219, interleaved-thinking-2025-05-14,
@@ -525,10 +549,11 @@ harness strips or rewrites.
 
 Per runner, the template lands as follows:
 
-- **Local `claude-code`** — merged into the per-run **overlay** settings `env` (`extends:`
-  overlay, PR-3a; written 0600 under `<run_dir>/provider/`, removed in `finally`), which
-  the workspace builder deep-merges last (workspace.py:721-757), so it wins over
-  `execution.env` and `runner.settings.env`. Subagents and hook children inherit the
+- **Local `claude-code`** — merged into the per-run **settings overlay** `env`
+  (`<ws>/.claude/.eval-overlay.json`, written 0600 next to the workspace `settings.json` by
+  `_write_settings_overlay` and passed via `--settings`, removed in `finally`; PR-5 — a
+  runtime file, unrelated to the `extends:` config overlay of PR-3a), which is applied last,
+  so it wins over `execution.env` and `runner.settings.env`. Subagents and hook children inherit the
   settings env (probe #1 VERIFIED incl. children, CLI 2.1.274: the subagent's request and the
   PreToolUse hook subprocess both carried the overlay's `ANTHROPIC_BASE_URL`/blanked Vertex
   vars; PR-5 e2e additionally asserts that a run with `--subagent-model` produces gen ids
@@ -564,7 +589,7 @@ Per runner, the template lands as follows:
   is per trial); the optional `x-eval-run-id` custom header exists only for the operator's
   OpenRouter activity page.
 
-**Enforcement levels (`providers.openrouter.routing.enforcement`).**
+**Enforcement levels (`models.providers.openrouter.routing.enforcement`).**
 
 - `audit` (default). Three steps, all outside the request path:
   1. **Preflight** (`agent_eval/providers/openrouter/preflight.py`, `preflight: strict | warn | off`):
@@ -642,13 +667,13 @@ Everything the client writes is a ledger row; it never touches `run_result.json`
 
 **Budget mapping.** `execution.max_budget_usd` keeps its **per-invocation** contract
 (execution.md:14,29; resolved per case/step at execute.py:493-495, 1289-1290): the CLI
-receives `--max-budget-usd = cap × providers.openrouter.cli_budget_inflation` (default 50)
+receives `--max-budget-usd = cap × models.providers.openrouter.cli_budget_inflation` (default 50)
 because Claude Code enforces it on its Anthropic-priced estimate (2–60× inflated); the
 resolved value is recorded as `eval_params.budget.cli_cap_usd`. A resolved cap `≤ 0` or
 `None` means **omit the flag** (no CLI cap; `cli_cap_usd: null`) — the CLI rejects
 `--max-budget-usd 0` outright ("must be a positive number greater than 0", exit 1, no
 request; probe #23 VERIFIED on 2.1.274), so execute.py must never pass `0` through.
-`providers.openrouter.budget.run_usd` is the
+`models.providers.openrouter.budget.run_usd` is the
 whole-run real-dollar pool: at `audit` it is enforced **post hoc only** (reconcile sets
 `budget.exceeded: run`, `exceeded_reason: post-hoc`; `--strict-cost` makes execute.py
 exit 2 when the backfilled Σ exceeds it — Known limitations); at `key-guardrail` it is the
@@ -681,15 +706,15 @@ first-byte watchdog: a slow pinned provider is bounded by the case/step timeout 
 - `resolve_judge_backend(model)` (:61-100) keeps its 2-tuple contract and its three
   transport values `anthropic | openai | runner`: add, before the generic
   unsupported-provider branch (:86-91), `if provider == "openrouter": if not bare: raise ValueError("openrouter judge model needs '<author>/<slug>', e.g. 'openrouter:/z-ai/glm-5.2'"); return ("openai", bare)`.
-  There is no `gateway:/` scheme (dropped, Decision 31): an unknown provider prefix keeps
-  falling into the generic unsupported-provider branch, and its ValueError text names
+  Unknown provider prefixes are rejected exactly as today — no special case: they keep
+  falling into the generic unsupported-provider branch, whose ValueError text names
   `openrouter:/…` as the supported non-builtin form. Update the docstring (:61-75) and the
   ValueError text (:86-91) accordingly. Every existing return value is unchanged; bare
   `vendor/model` ids still route to `openai` (spec 013 contract, tests/test_prompt_backends.py:160-162).
 - New sibling `resolve_judge_client(model, providers) -> JudgeClientConfig | None`
   (BC-1): `None` for today's paths; for `openrouter:/…` a frozen
   `JudgeClientConfig(name="openrouter", base_url, api_key_env, default_headers, extra_body: dict, token_param="max_tokens", max_retries, timeout_s, concurrency)`
-  built from `providers.openrouter` (`extra_body` is the static operator dict copied from
+  built from `models.providers.openrouter` (`extra_body` is the static operator dict copied from
   `JudgeClientOptions.extra_body`; there is no `extra_body_fn` — the per-model routing part
   is computed at the call site by `routing.to_chat_extra_body(...)` and merged as
   `routing | cfg.extra_body`, see score.py). The provider name is recoverable from
@@ -702,9 +727,12 @@ first-byte watchdog: a slow pinned provider is bounded by the case/step timeout 
 
 ### `agent_eval/config.py`
 
-- New dataclasses next to `ModelsConfig` (:659-672):
+- `ModelsConfig` (:659-672) gains one field, `providers: ProvidersConfig`, parsed from the
+  `models.providers` mapping (Decision 33); new dataclasses next to it:
 
   ```
+  ModelsConfig(skill, subagent, judge, hook,                # existing role URIs (:659-672)
+               providers=ProvidersConfig(openrouter=None))  # NEW: the provider registry lives under models
   ProvidersConfig(openrouter: OpenRouterConfig | None)      # one declared kind (Decision 31)
   OpenRouterConfig(
       kind="openrouter",
@@ -728,21 +756,28 @@ first-byte watchdog: a slow pinned provider is bounded by the case/step timeout 
   ```
 
   Removed relative to the pre-2026-09-16 draft (a config carrying any of them fails
-  validation with a pointer to Decision 31): `gateway`, `gateway_options.*`, `direct.*`
-  (`generation_backfill` is always on — it *is* the cost source; `acknowledge_key_exposure`
-  is moot because the operator key reaching the agent at `audit` is the documented default,
-  printed at run start, and `key-guardrail` is the opt-in that removes it),
-  `budget.max_unpriced`/`max_unpriced_ratio` (there is no in-flight gate to trip; unpriced
-  requests are reported through `cost_coverage`), and the whole `GatewayProviderConfig`
-  kind.
+  validation with a pointer to Decision 31, like any other unknown sub-key): the transport
+  mode/options keys, `direct.*` (`generation_backfill` is always on — it *is* the cost
+  source; `acknowledge_key_exposure` is moot because the operator key reaching the agent at
+  `audit` is the documented default, printed at run start, and `key-guardrail` is the
+  opt-in that removes it), `budget.max_unpriced`/`max_unpriced_ratio` (there is no
+  in-flight gate to trip; unpriced requests are reported through `cost_coverage`), and the
+  draft's second provider-kind dataclass.
 
-  `EvalConfig.providers` parsed in `from_yaml` beside the models block (:1195-1203).
+  `ModelsConfig.providers` is parsed in `from_yaml` inside the models block (:1195-1203); a
+  top-level `providers:` key is rejected with "moved: declare providers under
+  `models.providers` (spec 014 Decision 33)". Every reader addresses it as
+  `config.models.providers` (never `config.providers`).
   `JudgeConfig` (:770-832) gains `provider_options: dict`, kept opaque in `JudgeConfig` and
   validated by the judge's provider kind (`validate_judge_options(dict)` — for `openrouter`:
   `routing`, `fallbacks`, `max_tokens`; precedence `provider_options.max_tokens` > call-site
   default) so the schema lives with the provider (BC-10) — the URI stays the contract, as
   spec 013 required.
-- **`extends:` overlay via one raw loader (C2 / BC-2).** `agent_eval.config.load_raw(path) -> tuple[dict, list[str]]`
+- **`extends:` overlay via one raw loader (C2 / BC-2).** `extends:` is a **new**, optional
+  top-level eval-config key introduced by this spec (PR-3a), not an existing harness
+  feature; it is independent of the OpenRouter feature and can be dropped without touching
+  the transport (its motivation is the `eval.yaml` / `eval-openrouter.yaml` drift; see the
+  Contracts subsection "Config overlay"). `agent_eval.config.load_raw(path) -> tuple[dict, list[str]]`
   is the *only* place that resolves `extends: <relative path>` (against the file's own
   directory, recursively, cycle detection, depth ≤ 8); it returns the merged mapping with
   the `extends` key removed plus the resolved chain. `from_yaml` (:1108-1115) becomes a thin
@@ -790,8 +825,8 @@ first-byte watchdog: a slow pinned provider is bounded by the case/step timeout 
 
 Layout and the one-way dependency rule (BC-6): `providers/` top level imports **nothing** from
 a kind subpackage; kind subpackages import upward only; `agent/`, `config`, `harbor` and the
-eval-run scripts import providers. There is no `agent_eval/gateway/` package (Decision 31)
-and nothing in `providers/` opens a listening socket: every module below is a pure client
+eval-run scripts import providers. There is no proxy package (Decision 31) and nothing in
+`providers/` opens a listening socket: every module below is a pure client
 of `openrouter.ai` or a pure function over files in `<run_dir>/provider/`.
 
 - `base.py`: `AgentModel(provider, slug, variants, key)`, `parse_agent_model(uri) -> AgentModel`
@@ -815,7 +850,7 @@ of `openrouter.ai` or a pure function over files in `<run_dir>/provider/`.
 
   | key | value |
   | --- | --- |
-  | `ANTHROPIC_BASE_URL` | `providers.openrouter.base_url` (default `https://openrouter.ai/api`, no `/v1` — VERIFIED) |
+  | `ANTHROPIC_BASE_URL` | `models.providers.openrouter.base_url` (default `https://openrouter.ai/api`, no `/v1` — VERIFIED) |
   | `ANTHROPIC_AUTH_TOKEN` | the run's inference key: `secrets="ref"` → `$OPENROUTER_API_KEY` (resolved by the writer's existing `$VAR` logic, never a literal in config/argv); `"literal"` → the value (0600 overlay only); `"omit"` → key absent (K8s pod: supplied via `secretKeyRef`). At `key-guardrail` the per-run key replaces the operator key on every target (`literal` in the overlay/carrier env, per-run Secret on K8s). |
   | `ANTHROPIC_API_KEY` | `""` (explicitly empty as **hygiene**: a non-empty value is sent as `x-api-key`, and a valid key sent that way WORKS on `/messages` — probe #13 VERIFIED 2026-09-16 — so the blank exists to keep a stale host Anthropic key or cached-OAuth state from reaching OpenRouter, not for correctness; Config validation warns, never errors, on a non-empty value) |
   | `CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`, `GOOGLE_CLOUD_PROJECT`, `CLAUDE_CODE_USE_BEDROCK`, `AWS_REGION`, `AWS_BEARER_TOKEN_BEDROCK` | `""` (blank, not unset — an empty string beats a user-level settings.json and a podman-forwarded host value alike) |
@@ -1001,8 +1036,8 @@ ledger record `source: generation`, `role: agent` (or `hook` for the ids the sam
 case's `$AGENT_EVAL_HOOK_IDS` JSONL after the root stream ends — the hook's own response
 ids, tools.py), with `message_index`, `model_echo` = `assistant.message.model` (bare
 slug) and `model_served` = `/generation` permaslug. Ids that are not `gen-…`
-(Anthropic-direct, Vertex, an operator gateway through plain `execution.env`) are kept for
-the estimate path only. The same pass classifies Claude Code's `error` events with
+(Anthropic-direct, Vertex, an operator-run Anthropic-compatible endpoint through plain
+`execution.env`) are kept for the estimate path only. The same pass classifies Claude Code's `error` events with
 `errors.py` (`RunResult.error_class`) and detects the `key-guardrail` 402 (`budget.exceeded_reason:
 limit_usd`) — the only visibility the harness has into a failed agent-path request, since it
 is not on the HTTP path. Tag nothing else — the estimate stays what it is (and is known to
@@ -1048,7 +1083,7 @@ trial transcript, so the id collection is one implementation.
   them, and a Vertex hook is rejected at load when a plan is active — justified by probe
   #10: the hook subprocess demonstrably inherits the overlay env). Without a plan, forwarding is
   unchanged (`_SAFE_ENV_KEYS` itself is untouched; tests/test_extract_progress.py:397-404 passes).
-  No gateway variables exist; hook children and subagents get the same direct env as the
+  No proxy variables exist; hook children and subagents get the same direct env as the
   CLI by inheritance (the overlay `env` is process env for everything Claude Code spawns —
   probe #1 VERIFIED incl. subagent and hook children on 2.1.274, kept green by
   `test_claude_cli_direct`). `OPENROUTER_API_KEY` and
@@ -1059,8 +1094,8 @@ trial transcript, so the id collection is one implementation.
 - Result construction (:527-538 timeout path, :633-645): populate `message_ids`,
   `cost_usd_estimate = cost_usd` and `cost_source = "runner:reported"` — or
   `"runner:estimate"` when the runner's effective env has an `ANTHROPIC_BASE_URL` whose host
-  is not `api.anthropic.com` (operator gateway via plain `execution.env`, no plan: the CLI
-  prices at Anthropic rates, so it is an estimate, not a report; the runner labels it because
+  is not `api.anthropic.com` (an operator-run Anthropic-compatible endpoint via plain
+  `execution.env`, no plan: the CLI prices at Anthropic rates, so it is an estimate, not a report; the runner labels it because
   reconcile is a no-op without a plan). Reconcile rewrites both when a plan is active. Live progress (:895-897) prints
   `Done (N turns, est. $X)` when a plan is active so nobody reads the estimate as spend.
 
@@ -1085,7 +1120,7 @@ and `AGENT_EVAL_ROUTING_ENFORCEMENT=<level>` (not `AGENT_EVAL_HOOK_IDS`, which i
 and set by `claude_code._build_env` for Claude Code hooks only), and **drops `cfg.api_key_env` and
 `cfg.management_key_env`** from the copied environment (OPS-12) — lifecycle hooks
 (`before_all`/`after_all`/…) do not talk to OpenRouter, and the management key must never
-reach a subprocess. Nothing else is scrubbed; there are no gateway variables to add.
+reach a subprocess. Nothing else is scrubbed; there are no proxy variables to add.
 
 ### `agent_eval/harbor/run.py`, `podman.py`, `kubernetes.py`, `k8s_resources.py`, `results.py`, `tasks.py`, `reward.py`
 
@@ -1159,8 +1194,8 @@ reach a subprocess. Nothing else is scrubbed; there are no gateway variables to 
   the existing `envFrom.secretRef` :244-246, so a stale `ANTHROPIC_AUTH_TOKEN`/
   `ANTHROPIC_BASE_URL` in the credentials Secret cannot leak through — documented). Existing
   K8s deployments whose credentials Secret points `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`
-  at an in-cluster gateway keep working **unchanged** when no `openrouter:/` role is
-  configured (no plan, no new requirement, `cost_source: runner:estimate`). The
+  at an in-cluster Anthropic-compatible endpoint keep working **unchanged** when no
+  `openrouter:/` role is configured (no plan, no new requirement, `cost_source: runner:estimate`). The
   `export KEY=value;` exec prefix is built in **kubernetes.py `exec()` (:541-548, `:547`)**,
   not run.py (C10): run.py drops the `ANTHROPIC_AUTH_TOKEN` carrier from `--agent-env` on the
   K8s path (the pod already has it), so the key value is never inlined into an exec command
@@ -1199,7 +1234,7 @@ reach a subprocess. Nothing else is scrubbed; there are no gateway variables to 
   mapping** (no `extends:` key) so `tests/eval.yaml` is self-contained, the in-container
   `reward.py:481 from_yaml` never resolves a path relative to the container, and both the
   `bundled_cfg.get("judges")` verifier selection (:511) and the reward bridge see the full
-  config; keeps `providers.openrouter` (judge routing, `judge.inherit_pins`) and
+  config; keeps `models.providers.openrouter` (judge routing, `judge.inherit_pins`) and
   `judges[].provider_options`; records `config_chain` in `task.toml metadata` (BC-2). The
   bundle carries no key, no enforcement level and no plan-derived env (interception.py).
 - `reward.py` `score_case` (:213-225): judge usage is written per judge into the
@@ -1210,9 +1245,9 @@ reach a subprocess. Nothing else is scrubbed; there are no gateway variables to 
 - `--model`/`--subagent-model` (:354-372) accept URIs; resolution (:406-411) becomes
   `skill = parse_agent_model(args.model or config.models.skill)`. **Activation rule (BC-5):**
   the agent plan is built iff the *effective* agent model (CLI > config) has provider
-  `openrouter`; judges consult `providers.openrouter` iff their own URI is `openrouter:/`;
-  a `providers.*` block with no matching role is inert. After CLI resolution (not in
-  `from_yaml`) print one WARNING when `providers.openrouter` is declared but no effective
+  `openrouter`; judges consult `models.providers.openrouter` iff their own URI is `openrouter:/`;
+  a `models.providers.*` block with no matching role is inert. After CLI resolution (not in
+  `from_yaml`) print one WARNING when `models.providers.openrouter` is declared but no effective
   role or CLI model uses `openrouter:/` ("routing table inactive").
 - Startup order: config → `build_plan(config, roles, runner="claude-code", run_id)` (at
   `key-guardrail` `build_plan` first checks that `management_key_env` is set in the harness
@@ -1294,8 +1329,8 @@ reach a subprocess. Nothing else is scrubbed; there are no gateway variables to 
   `max_retries=cfg.max_retries`, `timeout=cfg.timeout_s`; memoised per `(base_url, headers, api_key_env)`.
   `_get_openai_client()` is the `judge_client_cfg is None` case. Error text never
   contains a value (test-enforced, as for `_get_openai_client` :1289-1298). The judge path
-  is **unchanged by the 2026-09-16 re-founding**: judges never went through the gateway in
-  any revision (score.py runs in its own process), so nothing here depends on the transport
+  is **unchanged by the 2026-09-16 re-founding**: judges never went through the deferred
+  shaping proxy in any revision (score.py runs in its own process), so nothing here depends on the transport
   decision — the client talks to `https://openrouter.ai/api/v1/chat/completions` with the
   operator key from `OPENROUTER_API_KEY` at every enforcement level (the per-run key is the
   *agent's*; judge rows are always spent on the operator key (ledger rows carry no scope field;
@@ -1322,7 +1357,7 @@ reach a subprocess. Nothing else is scrubbed; there are no gateway variables to 
   `require_parameters: true` — while the same request unpinned succeeds. Policy:
   1. **Judge pins are opt-in.** `routing.defaults`/`routing.models` `order`/`only`/
      `quantizations` apply to the *agent* roles; `to_chat_extra_body(slug, role="judge")`
-     emits them for a judge only when `providers.openrouter.judge.inherit_pins: true` or the
+     emits them for a judge only when `models.providers.openrouter.judge.inherit_pins: true` or the
      judge sets `provider_options.routing`. Unpinned judges keep `sort`, `data_collection`,
      `zdr`, `max_price` and `fallbacks` only; `require_parameters` is sent for a judge **only
      when its routing carries pins** (`order`/`only`) — an unpinned judge never sends it
@@ -1346,7 +1381,7 @@ reach a subprocess. Nothing else is scrubbed; there are no gateway variables to 
      — not as a judge failure and not as `infra_errors`.
 - Dispatch sites stay three-way (`anthropic | openai | runner`): `_make_builtin_scorer`
   (:915-946), `_load_llm_judge` (:2612-2638), `compare_runs` (:2696-2712, client selection),
-  `_call_judge` (:2942-2947) obtain `judge_client_cfg = resolve_judge_client(model, config.providers)`
+  `_call_judge` (:2942-2947) obtain `judge_client_cfg = resolve_judge_client(model, config.models.providers)`
   and pass it into the `openai` arm. Pairwise `--model` (:3407-3410) accepts the URI.
 - Usage side channel (all backends): scorers may return `JudgeOutcome(value, rationale, usage)`;
   `_normalize_result` (:1574-1580) returns `(value, rationale, usage|None)`; `_score_case`
@@ -1401,7 +1436,7 @@ The AskUserQuestion hook model client (:243, `anthropic.Anthropic(timeout=30.0)`
 change of construction: the hook subprocess inherits Claude Code's env, which under a plan
 is the overlay's direct block, so the SDK's own `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`
 resolution points it at OpenRouter with the bare hook slug (`models.hook`, defaulting to the
-skill model). No gateway vars exist and none are read. Its spend is real: the response `id`
+skill model). No proxy vars exist and none are read. Its spend is real: the response `id`
 is a `gen-…` id, so the hook writes it to `$AGENT_EVAL_HOOK_IDS` (a per-case JSONL under
 `<run_dir>/provider/`, path exported by `claude_code._build_env` when a plan is active) and
 `stream_capture`'s collector feeds those ids to the backfill as `role: hook` (reported as
@@ -1484,7 +1519,7 @@ pod spec).
 Fail fast in `EvalConfig.from_yaml` (next to :1737-1761), one consolidated error per
 category listing every offender:
 
-- **Enforcement / guardrail (Decision 31/32):** `providers.openrouter.routing.enforcement`
+- **Enforcement / guardrail (Decision 31/32):** `models.providers.openrouter.routing.enforcement`
   ∉ {`audit`, `key-guardrail`} → error. `key-guardrail` requires (a) `budget.run_usd` set and
   `> 0` (it becomes the per-run key's `limit_usd`; there is no unlimited per-run key), (b)
   at least one routing key with a `pinned_set` **or** `guardrail.providers` as an explicit
@@ -1498,10 +1533,11 @@ category listing every offender:
   key-guardrail lands in PR-6`. `guardrail.providers` entries are normalised like
   `RoutingSpec.order` (catalog slug, display name with a WARNING, unknown → error under
   `preflight: strict`). `guardrail.settle_s < 20` is a warning naming the VERIFIED settle.
-  `routing.policy` ∉ {`strict`, `warn`} → error. **Removed keys** — `gateway`,
-  `gateway_options`, `direct`, `budget.max_unpriced`, `budget.max_unpriced_ratio`,
-  `providers.gateway` — are rejected by name with "removed 2026-09-16: no proxy in scope;
-  see spec 014 Decision 31" (one error listing every offender), never silently ignored.
+  `routing.policy` ∉ {`strict`, `warn`} → error. **Removed keys** — the pre-directive
+  draft's transport mode/options keys, `direct`, `budget.max_unpriced`,
+  `budget.max_unpriced_ratio` — are rejected by name with "removed 2026-09-16: no proxy in
+  scope; see spec 014 Decision 31" (one error listing every offender), never silently
+  ignored; any other unknown sub-key is an ordinary unknown-key error.
 - **Agent-path routing intent (RoutingSpec):** a `routing.defaults`/`routing.models` entry
   carrying `require_parameters`, `sort`, `data_collection`, `zdr` or `max_price` under a
   routing key that is used by an agent role emits a WARNING per key ("not sendable from
@@ -1510,12 +1546,13 @@ category listing every offender:
   spec is sent in full to judges that inherit pins. `quantizations` with no `order`/`only`
   is a WARNING ("quantization is pinned indirectly through providers; nothing to audit").
 - `openrouter:/` with an empty model on any role; unknown explicit provider on
-  `models.skill`/`subagent`/`hook` (same label style as judges — `gateway:/` is now simply
-  unknown); agent roles (`skill`, `subagent`, `hook`) on different provider kinds.
+  `models.skill`/`subagent`/`hook` (same label style as judges; any prefix other than the
+  builtins and `openrouter:/` is simply unknown); agent roles (`skill`, `subagent`, `hook`)
+  on different provider kinds.
 - **Bare-id footgun (replaces the draft's "block present but unused → error", BC-5):**
-  `providers.openrouter` present AND a role model is a bare id whose `routing_key` matches a
+  `models.providers.openrouter` present AND a role model is a bare id whose `routing_key` matches a
   `routing.models` key (or is a bare non-Anthropic id) → error "bare model id next to
-  providers.openrouter — use openrouter:/<id> or drop the pins". An unused `providers.*`
+  models.providers.openrouter — use openrouter:/<id> or drop the pins". An unused `models.providers.*`
   block is otherwise inert (a warning is printed by execute.py/score.py after CLI resolution).
 - An `openrouter:/` agent model with `runner.type: cursor` → error (no base-URL knob);
   `codex`/`cli`/`responses-api` with such an agent model → error ("direct OpenRouter
@@ -1540,17 +1577,18 @@ category listing every offender:
   `management_key_env` name) on any of those surfaces — `execution.env`, `runner.env`,
   `runner.settings.env`, the `steps[]` variants — are **always** rejected, plan or no plan
   (they would be baked into task packages by interception.py:171-176 and into workspace
-  settings). Message format: `remove <surface>.<KEY>; owned by providers.openrouter
+  settings). Message format: `remove <surface>.<KEY>; owned by models.providers.openrouter
   (enforcement=<level>)`, one error listing every offending pair. (Ownership is enforced by
   overlay/`--agent-env`/pod-spec merge order regardless; this check exists so a migrating
   user gets one actionable message, not N retries.)
 - `routing` schema: known keys only, quantization enum, `fallbacks ≤ 3`, `sort` shape;
-  `providers.openrouter.judge.inherit_pins` must be a bool (default `false`; Decision 30) and
-  is rejected when `providers.openrouter.routing` is absent (nothing to inherit);
+  `models.providers.openrouter.judge.inherit_pins` must be a bool (default `false`; Decision 30) and
+  is rejected when `models.providers.openrouter.routing` is absent (nothing to inherit);
   `api_key_env`/`management_key_env` must name a variable (never a value — a value that
   looks like `sk-or-…` is rejected with the variable name only in the message);
-  `providers.<name>.kind` must equal `<name>`; `kind: openai-compatible` → "not implemented
-  in this release"; unknown top-level `providers.*` names (including `gateway`) are errors.
+  `models.providers.<name>.kind` must equal `<name>`; `kind: openai-compatible` → "not implemented
+  in this release"; any other `models.providers.*` name is an error; a top-level
+  `providers:` key is an error pointing at `models.providers` (Decision 33).
   `cli_budget_inflation` must be a number ≥ 1 (a value of 1 is allowed for operators who
   want the CLI's estimate cap to bite; a warning notes the estimate is inflated).
 - `provider_options` validated by the judge's provider kind; `extends:` cycles/depth errors;
@@ -1562,14 +1600,15 @@ category listing every offender:
 `judges.md:169-195` (table row, `provider_options`), `runner.md:125-142,246-268` (managed-key
 ownership next to `runner.settings`, precedence) and `execution.md:14,29,198-215,252-253`
 (managed keys, precedence, "per-invocation semantics unchanged under OpenRouter",
-`providers.openrouter.budget.run_usd`), `environment-variables.md:13-70,104-141`
+`models.providers.openrouter.budget.run_usd`), `environment-variables.md:13-70,104-141`
 (`OPENROUTER_API_KEY`, `OPENROUTER_MANAGEMENT_KEY` — env-only, never in config; proxy/CA
 pass-through; corrected Harbor forwarding table stating which host vars are **dropped**
 under a plan; no `OPENROUTER_BASE_URL`), `guides/harbor.md:146-157,202-232` (podman:
 direct env via `--agent-env`, key resolved on the host, Vertex vars not forwarded; K8s:
 Secret key name `OPENROUTER_API_KEY` → `ANTHROPIC_AUTH_TOKEN` mapping, per-run Secret at
-`key-guardrail`; existing in-cluster-gateway deployments unchanged when no `openrouter:/`
-role is configured), new `reference/config/providers.md` (the single `openrouter` kind,
+`key-guardrail`; existing in-cluster Anthropic-compatible-endpoint deployments unchanged
+when no `openrouter:/` role is configured), new `reference/config/providers.md` (the `models.providers` registry
+— nested under `models` per Decision 33, cross-linked from `models.md` — the single `openrouter` kind,
 every knob above, `extends:` merge policy with `!replace`, path resolution) and
 `guides/openrouter.md` (direct transport and why there is no proxy — Decision 31 in one
 paragraph; enforcement levels `audit` vs `key-guardrail` with what each does and does not
@@ -1583,8 +1622,8 @@ cross-link.
 
 ## Behavior changes / migration
 
-- No behaviour changes unless a model URI uses `openrouter:/` (the only provider kind —
-  `gateway:/` is an unknown prefix, Decision 31). Bare ids, `openai:/` + `OPENAI_BASE_URL`,
+- No behaviour changes unless a model URI uses `openrouter:/` (the only provider kind and
+  the only URI scheme this spec adds, Decision 31). Bare ids, `openai:/` + `OPENAI_BASE_URL`,
   `runner:/`, `_SAFE_ENV_KEYS` pass-through (tests/test_extract_progress.py:397-404;
   unchanged when no plan is active), `runner.env` `$VAR` semantics,
   `execution.env → settings.json`, `runner.settings.env` last-wins (**for non-managed
@@ -1592,13 +1631,19 @@ cross-link.
   overwritten by the overlay regardless), the forced `CLAUDE_CODE_SUBAGENT_MODEL`, Harbor
   `--agent-env` carriers (tests/test_harbor_run.py:336-366), podman host-env forwarding
   (`_FORWARD_ENV`, podman.py:36-49 — unchanged **without** a plan), existing K8s
-  in-cluster-gateway credentials Secrets, and hand-written configs such as today's
-  `eval-openrouter.yaml` keep working unchanged. An operator who fronts Claude Code with
-  their own Anthropic-compatible gateway via plain `execution.env` keeps that path as-is:
+  in-cluster credentials Secrets that point at an Anthropic-compatible endpoint, and
+  hand-written configs such as today's `eval-openrouter.yaml` keep working unchanged. An
+  operator who fronts Claude Code with their own Anthropic-compatible endpoint via plain
+  `execution.env` keeps that path as-is:
   no plan, no ledger, `cost_source: runner:estimate` (unsupported by this feature, not
   broken by it).
+- **`models.providers` is a new, optional sub-key of `models`** (Decision 33) — the only
+  config surface this feature adds besides `judges[].provider_options` and the
+  `openrouter:/` URIs; the OpenRouter feature itself introduces no top-level key (the
+  independent, optional `extends:` key is PR-3a, below), and an existing `models:` block
+  without it parses exactly as today.
 - **No process is added to the run.** Nothing listens on a port, no bind address, no
-  token file, no `gateway.json`; `openrouter.ai` is the only endpoint the agent talks to,
+  token file, no handshake file; `openrouter.ai` is the only endpoint the agent talks to,
   from the host, from the podman container and from the K8s pod alike. What the harness
   adds is out-of-band only: preflight GETs before spend, `/generation` + `/key` GETs after
   each request, and (at `key-guardrail`) three management-API calls per run.
@@ -1608,7 +1653,7 @@ cross-link.
   `cap × cli_budget_inflation` so the inflated estimate does not kill a run early. The
   cap stops being a real-dollar bound: at `enforcement: audit` the real cost is known
   post hoc (`--strict-cost` against `budget.run_usd`), at `key-guardrail` the per-run key's
-  `limit_usd` is the in-flight real-dollar bound. `providers.openrouter.budget.run_usd` is
+  `limit_usd` is the in-flight real-dollar bound. `models.providers.openrouter.budget.run_usd` is
   new and additive.
 - **Host Vertex/Bedrock vars stop reaching containers while a plan is active.** Today
   podman forwards `CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`
@@ -1641,15 +1686,21 @@ cross-link.
 - `resolve_judge_backend` returns unchanged values for every existing input; only
   `openrouter:/…` stops raising (it resolves to the `openai` transport). `ensure_deps` may now
   install `openai` for a few bare non-Claude judge ids that previously failed at score time.
-- `extends:` is a new key; a file containing it is a profile (skipped by discovery, run via
-  `--config`). List merge follows the documented `runner.settings` policy (extend) plus dedupe
-  and key-merge for `judges`/`steps`; `!replace` opts out.
+- `extends:` is a **new, optional** top-level key introduced by PR-3a (no existing config
+  uses it; a config without it parses exactly as today). `extends: <path relative to the
+  file>` deep-merges the overlay over the base in the single raw loader, so every reader
+  sees the merged config and `eval_params.config_chain` records the chain. A file containing
+  it is a profile (skipped by discovery, run via `--config`). List merge follows the
+  documented `runner.settings` policy (extend) plus dedupe and key-merge for
+  `judges`/`steps`; `!replace` opts out. The key is independent of the OpenRouter feature
+  and droppable; rfe-creator's generated `eval.yaml` (`scripts/generate_eval_config.py`)
+  stays the base an OpenRouter profile extends, so the generator is untouched.
 - **rfe-creator migration** (PR-8, its own PR after PR-5 for local + podman and PR-7 for
   K8s; nothing in the harness depends on it). What goes away and what replaces it:
 
   | Today (LiteLLM setup) | After |
   | --- | --- |
-  | `eval/litellm/config.yaml` router pins (`:34-207`: `order`, `allow_fallbacks: false`, `quantizations`, `require_parameters`) | `providers.openrouter.routing.models` in `eval.yaml`, ported **once** with slugs normalised and `require_parameters` dropped from agent keys (unsendable — a WARNING if kept); inert for Anthropic runs. Enforcement: `audit` by default; `key-guardrail` when a management key is available. |
+  | `eval/litellm/config.yaml` router pins (`:34-207`: `order`, `allow_fallbacks: false`, `quantizations`, `require_parameters`) | `models.providers.openrouter.routing.models` in `eval.yaml`, ported **once** with slugs normalised and `require_parameters` dropped from agent keys (unsendable — a WARNING if kept); inert for Anthropic runs. Enforcement: `audit` by default; `key-guardrail` when a management key is available. |
   | `eval/litellm/config.yaml:216-229` router retries / first-token timeouts / cooldowns | none (no proxy) — Claude Code's retries + OpenRouter fallbacks; the case timeout is the bound (Known limitations). |
   | `eval/litellm/custom_callbacks.py` `chunk_parser` monkeypatch (inline `usage.cost`/`provider`) | `/generation` backfill of the stream-json gen ids (`cost_source: openrouter:generation`) — no code in rfe-creator. |
   | `reconcile_cost.py` from `after_all`/`before_report` + `real_cost.json` | reconcile at every `run_result.json` write inside the harness; `real_cost.json` files stay as history only. |
@@ -1671,8 +1722,8 @@ cross-link.
   forwarded under a plan (above). K8s: the credentials Secret gains one key,
   `OPENROUTER_API_KEY`; the harness maps it to `ANTHROPIC_AUTH_TOKEN` via `secretKeyRef` and
   writes the non-secret plan env into the pod spec — a Secret that today points
-  `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` at an in-cluster gateway keeps working unchanged
-  when no `openrouter:/` role is configured. At `key-guardrail` on K8s the harness creates
+  `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` at an in-cluster Anthropic-compatible endpoint
+  keeps working unchanged when no `openrouter:/` role is configured. At `key-guardrail` on K8s the harness creates
   and deletes a per-run Secret (`agent-eval-<run_id>-openrouter`), which needs `create`/
   `delete` on `secrets` in the namespace — a new RBAC requirement documented in
   `guides/harbor.md`. Task packages (`--tasks-dir`) never contain provider env or keys.
@@ -1680,8 +1731,8 @@ cross-link.
 ## Config examples
 
 Every key below is one of the `OpenRouterConfig` fields in the `agent_eval/config.py`
-section; nothing else is accepted (`gateway`, `gateway_options`, `direct`,
-`budget.max_unpriced*` and `providers.gateway` are rejected by name, Config validation).
+section; nothing else is accepted (the pre-directive draft's transport keys, `direct` and
+`budget.max_unpriced*` are rejected by name; anything else is an unknown key — Config validation).
 
 Minimal — direct, local claude-code, agent and judge on OpenRouter, all defaults
 (`enforcement: audit`, `preflight: strict`, `cli_budget_inflation: 50`, no pins):
@@ -1691,8 +1742,8 @@ models:
   skill:    openrouter:/z-ai/glm-5.2:exacto     # :exacto = OpenRouter's tool-calling routing variant (VERIFIED accepted); the only in-request routing control
   subagent: openrouter:/z-ai/glm-5.2:exacto
   judge:    openrouter:/openai/gpt-5.2
-providers:
-  openrouter: {}          # OPENROUTER_API_KEY must be exported in the shell running /eval-run; the agent talks to https://openrouter.ai/api directly
+  providers:
+    openrouter: {}          # OPENROUTER_API_KEY must be exported in the shell running /eval-run; the agent talks to https://openrouter.ai/api directly
 ```
 
 Run start prints `enforcement: audit — key exposed to agent: operator key`; the run ends
@@ -1703,32 +1754,36 @@ nothing to audit).
 declared once; what differs is who enforces it and which key the agent holds:
 
 ```yaml
-providers:
-  openrouter:
-    routing:
-      enforcement: audit                         # DEFAULT — preflight checks the pins against the public catalogs; the /generation backfill audits every served provider after the fact
-      policy: strict                             # a violation marks the run degraded (--strict-routing exits 2); warn = flagged only
-      models:
-        z-ai/glm-5.2: { order: [novita, streamlake], allow_fallbacks: false, quantizations: [fp8] }
-    budget:
-      run_usd: 25.0                              # post hoc at audit: --strict-cost exits 2 when the backfilled Σ exceeds it; no in-flight real-dollar gate
+models:
+  skill:    openrouter:/z-ai/glm-5.2
+  providers:
+    openrouter:
+      routing:
+        enforcement: audit                         # DEFAULT — preflight checks the pins against the public catalogs; the /generation backfill audits every served provider after the fact
+        policy: strict                             # a violation marks the run degraded (--strict-routing exits 2); warn = flagged only
+        models:
+          z-ai/glm-5.2: { order: [novita, streamlake], allow_fallbacks: false, quantizations: [fp8] }
+      budget:
+        run_usd: 25.0                              # post hoc at audit: --strict-cost exits 2 when the backfilled Σ exceeds it; no in-flight real-dollar gate
 ```
 
 ```yaml
-providers:
-  openrouter:
-    management_key_env: OPENROUTER_MANAGEMENT_KEY   # NAME of the env var; read once at plan build, never placed in any env target
-    routing:
-      enforcement: key-guardrail                 # OPT-IN — per-run inference key with allowed providers = pinned set and limit_usd = budget.run_usd; revoked in finally
-      policy: strict
-      models:
-        z-ai/glm-5.2: { order: [novita, streamlake], allow_fallbacks: false, quantizations: [fp8] }
-      guardrail:
-        key_name: "agent-eval {run_id}"
-        providers: pinned                        # union of every routing key's pinned providers (or an explicit list)
-        settle_s: 20                             # key-usage settle before the run-end read and the revoke (VERIFIED ~20 s)
-    budget:
-      run_usd: 25.0                              # REQUIRED here: becomes the per-run key's limit_usd, enforced server-side in flight
+models:
+  skill:    openrouter:/z-ai/glm-5.2
+  providers:
+    openrouter:
+      management_key_env: OPENROUTER_MANAGEMENT_KEY   # NAME of the env var; read once at plan build, never placed in any env target
+      routing:
+        enforcement: key-guardrail                 # OPT-IN — per-run inference key with allowed providers = pinned set and limit_usd = budget.run_usd; revoked in finally
+        policy: strict
+        models:
+          z-ai/glm-5.2: { order: [novita, streamlake], allow_fallbacks: false, quantizations: [fp8] }
+        guardrail:
+          key_name: "agent-eval {run_id}"
+          providers: pinned                        # union of every routing key's pinned providers (or an explicit list)
+          settle_s: 20                             # key-usage settle before the run-end read and the revoke (VERIFIED ~20 s)
+      budget:
+        run_usd: 25.0                              # REQUIRED here: becomes the per-run key's limit_usd, enforced server-side in flight
 ```
 
 At `key-guardrail` the agent never holds the operator key (`provider.key_scope: per-run`),
@@ -1746,51 +1801,50 @@ models:
   subagent: openrouter:/z-ai/glm-5.2
   judge:    anthropic:/claude-opus-4-8          # ambient Vertex/Anthropic in the score.py process — untouched
   # hook: openrouter:/z-ai/glm-5.2               # default = skill model when a plan is active
-
-providers:
-  openrouter:
-    api_key_env: OPENROUTER_API_KEY              # NAME of the env var; never a value
-    management_key_env: OPENROUTER_MANAGEMENT_KEY   # read only at routing.enforcement: key-guardrail
-    base_url: https://openrouter.ai/api          # the one base-URL knob ($VAR allowed); no /v1 — Claude Code appends /v1/messages
-    attribution:
-      referer: https://github.com/opendatahub-io/rfe-creator
-      title: rfe-creator eval
-      run_id_header: false                       # true adds x-eval-run-id (activity-page tagging only); Referer + Title (+ run id) travel as one multi-line ANTHROPIC_CUSTOM_HEADERS (row 27 VERIFIED)
-    background_model: null                       # haiku slot = model under test (default)
-    preflight: strict                            # strict | warn | off — the only pre-spend check of the pins on the agent path
-    cli_budget_inflation: 50                     # CLI --max-budget-usd = execution.max_budget_usd × 50 (the CLI caps its own inflated estimate)
-    budget:
-      run_usd: null                              # optional whole-run real-dollar pool: post hoc at audit (--strict-cost), limit_usd of the per-run key at key-guardrail
-      dedicated_key: false                       # operator assertion that nothing else spends on OPENROUTER_API_KEY during the run (key-usage confidence)
-    routing:
-      enforcement: audit                         # audit (default) | key-guardrail
-      policy: strict                             # what a failed audit does: strict = run degraded (--strict-routing exits 2); warn = flagged
-      defaults: { allow_fallbacks: true }        # require_parameters is NOT here: unsendable from Claude Code (warning if set on an agent key); judges add it themselves when they inherit pins
-      models:
-        z-ai/glm-5.2:
-          order: [novita, streamlake]            # slugs (display names accepted with a warning)
-          allow_fallbacks: false
-          quantizations: [fp8]
-        z-ai/glm-5.3-flash:
-          order: [z-ai, novita]
-          allow_fallbacks: false
-        deepseek/deepseek-v4.1-flash:
-          order: [deepseek]
-          allow_fallbacks: false                 # preflight fails if the account privacy toggle excludes the endpoint
-        moonshotai/kimi-k3:
-          sort: throughput                       # judge-only knob (unsendable from Claude Code → WARNING on an agent key; use the :nitro variant on the id instead)
-          fallbacks: [z-ai/glm-5.3-flash]        # judge-only: OpenRouter `models` (≤3); the agent path cannot send it
-      guardrail:                                 # used only at enforcement: key-guardrail
-        key_name: "agent-eval {run_id}"
-        providers: pinned
-        revoke_on_exit: true
-        settle_s: 20
-    judge:
-      concurrency: 4
-      max_retries: 3
-      timeout_s: 300
-      extra_body: {}
-      inherit_pins: false                        # Decision 30: judges ignore routing order/only/quantizations (and send no require_parameters) unless true or the judge sets provider_options.routing
+  providers:
+    openrouter:
+      api_key_env: OPENROUTER_API_KEY              # NAME of the env var; never a value
+      management_key_env: OPENROUTER_MANAGEMENT_KEY   # read only at routing.enforcement: key-guardrail
+      base_url: https://openrouter.ai/api          # the one base-URL knob ($VAR allowed); no /v1 — Claude Code appends /v1/messages
+      attribution:
+        referer: https://github.com/opendatahub-io/rfe-creator
+        title: rfe-creator eval
+        run_id_header: false                       # true adds x-eval-run-id (activity-page tagging only); Referer + Title (+ run id) travel as one multi-line ANTHROPIC_CUSTOM_HEADERS (row 27 VERIFIED)
+      background_model: null                       # haiku slot = model under test (default)
+      preflight: strict                            # strict | warn | off — the only pre-spend check of the pins on the agent path
+      cli_budget_inflation: 50                     # CLI --max-budget-usd = execution.max_budget_usd × 50 (the CLI caps its own inflated estimate)
+      budget:
+        run_usd: null                              # optional whole-run real-dollar pool: post hoc at audit (--strict-cost), limit_usd of the per-run key at key-guardrail
+        dedicated_key: false                       # operator assertion that nothing else spends on OPENROUTER_API_KEY during the run (key-usage confidence)
+      routing:
+        enforcement: audit                         # audit (default) | key-guardrail
+        policy: strict                             # what a failed audit does: strict = run degraded (--strict-routing exits 2); warn = flagged
+        defaults: { allow_fallbacks: true }        # require_parameters is NOT here: unsendable from Claude Code (warning if set on an agent key); judges add it themselves when they inherit pins
+        models:
+          z-ai/glm-5.2:
+            order: [novita, streamlake]            # slugs (display names accepted with a warning)
+            allow_fallbacks: false
+            quantizations: [fp8]
+          z-ai/glm-5.3-flash:
+            order: [z-ai, novita]
+            allow_fallbacks: false
+          deepseek/deepseek-v4.1-flash:
+            order: [deepseek]
+            allow_fallbacks: false                 # preflight fails if the account privacy toggle excludes the endpoint
+          moonshotai/kimi-k3:
+            sort: throughput                       # judge-only knob (unsendable from Claude Code → WARNING on an agent key; use the :nitro variant on the id instead)
+            fallbacks: [z-ai/glm-5.3-flash]        # judge-only: OpenRouter `models` (≤3); the agent path cannot send it
+        guardrail:                                 # used only at enforcement: key-guardrail
+          key_name: "agent-eval {run_id}"
+          providers: pinned
+          revoke_on_exit: true
+          settle_s: 20
+      judge:
+        concurrency: 4
+        max_retries: 3
+        timeout_s: 300
+        extra_body: {}
+        inherit_pins: false                        # Decision 30: judges ignore routing order/only/quantizations (and send no require_parameters) unless true or the judge sets provider_options.routing
 
 execution:
   max_budget_usd: 5.0                            # per case/step (unchanged contract) — the CLI receives 250.0 (× cli_budget_inflation) and enforces it on its Anthropic-priced estimate; real dollars are bounded by budget.run_usd (post hoc at audit, in flight at key-guardrail)
@@ -1801,10 +1855,12 @@ Judge pins opt-in (Decision 30). By default judges send **no** `order`/`only`/
 two ways to opt in:
 
 ```yaml
-providers:
-  openrouter:
-    judge:
-      inherit_pins: true                         # every openrouter:/ judge whose slug has a routing.models entry sends that entry (+ require_parameters: true) in extra_body.provider
+models:
+  judge:    openrouter:/z-ai/glm-5.2
+  providers:
+    openrouter:
+      judge:
+        inherit_pins: true                         # every openrouter:/ judge whose slug has a routing.models entry sends that entry (+ require_parameters: true) in extra_body.provider
 # — or per judge, leaving inherit_pins false:
 judges:
   - name: rfe_quality
@@ -1830,8 +1886,10 @@ judges:
     model: openrouter:/openai/gpt-5.2
 ```
 
-Overlay profile (kills the eval.yaml / eval-openrouter.yaml fork). The routing table lives
-once in `eval.yaml` (above); the profile flips roles and adds project glue only:
+Overlay profile (kills the eval.yaml / eval-openrouter.yaml fork) using the **new, optional**
+`extends:` key of PR-3a. The routing table lives once in `eval.yaml` (above — in rfe-creator
+the file generated by `scripts/generate_eval_config.py`, left untouched); the profile flips
+roles and adds project glue only:
 
 ```yaml
 # eval-profiles/openrouter-glm-5.2.yaml
@@ -1853,7 +1911,7 @@ records `["eval.yaml", "eval-profiles/openrouter-glm-5.2.yaml"]`. With the table
 base, a zero-profile run also works: `/eval-run --model openrouter:/z-ai/glm-5.2` on
 `eval.yaml` builds the plan with the pinned `routing_sha`.
 
-Harbor podman — **the same profile, no extra config**. The `providers:` block has no
+Harbor podman — **the same profile, no extra config**. The `models.providers` block has no
 runner-specific key; `run_harbor()` picks the `harbor_carrier` env target by itself:
 
 ```bash
@@ -1876,13 +1934,13 @@ Kubernetes with a Secret (zero infra; PR-7). The credentials Secret named by
 
 ```yaml
 # kubectl create secret generic agent-eval-credentials --from-literal=OPENROUTER_API_KEY=…   (plus whatever it holds today)
-providers:
-  openrouter:
-    routing: { enforcement: audit }              # key-guardrail on K8s additionally creates/deletes the per-run Secret agent-eval-<run_id>-openrouter (RBAC: secrets create/delete)
-    budget: { dedicated_key: true }              # a cluster-only key nothing else spends on → key-usage fallback is `medium`, not `low`
 models:
   skill:    openrouter:/z-ai/glm-5.2:exacto
   subagent: openrouter:/z-ai/glm-5.2:exacto
+  providers:
+    openrouter:
+      routing: { enforcement: audit }              # key-guardrail on K8s additionally creates/deletes the per-run Secret agent-eval-<run_id>-openrouter (RBAC: secrets create/delete)
+      budget: { dedicated_key: true }              # a cluster-only key nothing else spends on → key-usage fallback is `medium`, not `low`
 ```
 
 Pod spec produced (`kubernetes.py _pod_manifest`, :193-268): the plan's non-secret block as
@@ -1891,8 +1949,8 @@ Pod spec produced (`kubernetes.py _pod_manifest`, :193-268): the plan's non-secr
 `{name: ANTHROPIC_AUTH_TOKEN, valueFrom: {secretKeyRef: {name: agent-eval-credentials, key: OPENROUTER_API_KEY}}}`;
 `env[]` wins over the existing `envFrom.secretRef` (:244-246), so a stale
 `ANTHROPIC_BASE_URL` in the same Secret cannot re-route. A deployment whose Secret points
-Claude Code at an in-cluster gateway keeps working unchanged **as long as no role is
-`openrouter:/`** — that setup is outside this feature (no ledger, `runner:estimate`), not
+Claude Code at an in-cluster Anthropic-compatible endpoint keeps working unchanged **as long
+as no role is `openrouter:/`** — that setup is outside this feature (no ledger, `runner:estimate`), not
 broken by it.
 
 Environment (harness process): `OPENROUTER_API_KEY` (required only when some role uses
@@ -1912,8 +1970,9 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
 
 - `tests/test_prompt_backends.py`: `openrouter:/z-ai/glm-5.2` → `("openai","z-ai/glm-5.2")`;
   `resolve_judge_client` returns a `JudgeClientConfig` for it and `None` for every existing
-  row; variants preserved; `openrouter:/` raises; `gateway:/x` is an **unknown prefix** on
-  judges and agents alike (same error as any unknown scheme — no special casing);
+  row; variants preserved; `openrouter:/` raises; any other non-builtin prefix (e.g.
+  `other:/x`) is an **unknown prefix** on judges and agents alike (same error as any unknown
+  scheme — no special casing);
   `is_anthropic_model("openrouter:/anthropic/claude-opus-4-8") is False`; every pre-existing
   row unchanged.
 - `tests/test_providers.py` (new): `parse_agent_model`/`routing_key` (variants, `[1m]`,
@@ -2078,10 +2137,13 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
   `run_result.cost_usd` untouched by judge cost.
 - `tests/test_config.py`: `OpenRouterConfig` defaults (`enforcement: audit`, `policy: strict`,
   `preflight: strict`, `cli_budget_inflation: 50`, `judge.inherit_pins: false`, guardrail
-  defaults); `kind` must equal name; the **single kind** — `providers.gateway`, `kind:
-  openai-compatible` and any other name rejected; **removed keys** `gateway`,
-  `gateway_options`, `direct`, `budget.max_unpriced`, `budget.max_unpriced_ratio` rejected
-  by name with the Decision 31 pointer, one error listing every offender; `enforcement`
+  defaults); `providers` parsed from `models.providers` into `ModelsConfig.providers`, a
+  top-level `providers:` key rejected with the Decision 33 pointer, a `models:` block without
+  `providers` unchanged; `kind` must equal name; the **single kind** — `kind:
+  openai-compatible` and any other `models.providers.*` name rejected; **removed keys** (the
+  pre-directive draft's transport mode/options keys, `direct`, `budget.max_unpriced`,
+  `budget.max_unpriced_ratio`) rejected by name with the Decision 31 pointer, one error
+  listing every offender; `enforcement`
   enum; `key-guardrail` requires `budget.run_usd > 0` and pins or an explicit
   `guardrail.providers` list; `guardrail.settle_s < 20` warns; agent-key
   `require_parameters`/`sort`/`fallbacks` warn; `api_key_env`/`management_key_env` values
@@ -2163,7 +2225,7 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
   entry, no `$VAR` literals, no `None`, no `ANTHROPIC_CUSTOM_HEADERS` (nothing per-case is
   baked; attribution is per trial via gen ids); the skip list is imported from `env.py`,
   not duplicated; bundled `tests/eval.yaml` of an `extends:` overlay without `judges:`
-  contains the base judges, dataset, thresholds, `providers.openrouter` (judge routing,
+  contains the base judges, dataset, thresholds, `models.providers.openrouter` (judge routing,
   `inherit_pins`) and no `extends` key; `task.toml` metadata carries `config_chain`.
 - `tests/test_harbor_podman.py`: `test_podman_forward_excludes_under_plan` — `_start_container`
   with `exclude = MANAGED_ENV_KEYS ∪ {api_key_env, management_key_env}` (minus `api_key_env`
@@ -2231,8 +2293,9 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
   request (path, headers, body) stands in for `openrouter.ai` via `base_url`;
   `CLAUDE_CONFIG_DIR=<tmp>` so user settings cannot leak, `ANTHROPIC_API_KEY` unset,
   `DISABLE_TELEMETRY=1`, 60 s per case. The test is the CI form of the real
-  `scripts/probe_claude_cli.py` (PR-0): it reuses the script's fake-endpoint server and
-  request recorder, and the assertions below are the facts the script established on Claude
+  `specs/014-openrouter-provider/probes/probe_claude_cli.py` (PR-0, a spec-local verification
+  artefact that the harness suite does not import): the test carries its own copy of the
+  fake-endpoint server and request recorder, and the assertions below are the facts the script established on Claude
   Code 2.1.274 (`probes/probe_cli_report_2026-09-16.json`) — note the CLI posts to
   `/v1/messages?beta=true`, so route matching strips the query string. Automates probes 1, 9,
   10, 16 (echo-server half), 22, 23, 24 and checklist row 27 (multi-header
@@ -2268,7 +2331,7 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
 - Recorded SSE golden fixtures (IMPL-09): `tests/data/openrouter/messages_stream_<shape>.sse`
   + `.headers.json` sidecar for shapes `basic`, `tool_use`, `thinking`, `keepalive_heavy`,
   `error_mid_stream`, `fallbacks_served`, plus `messages_nonstream.json` and
-  `chat_completions_stream.sse`. Produced only by `scripts/probe_openrouter.py --record-fixtures`
+  `chat_completions_stream.sse`. Produced only by `specs/014-openrouter-provider/probes/probe_openrouter.py --record-fixtures`
   (PR-0, KEY) from live `/v1/messages` streams; redaction keeps event order, event names,
   every `usage`/`cost`/`provider`/`openrouter_metadata`/`endpoints` field and comment lines
   verbatim, rewrites `id`s to `gen-REDACTED-<n>` and text/thinking deltas to same-length
@@ -2320,7 +2383,7 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
   by a provider outside the set is billed, kept and reported as a `routing.violations`
   entry, never prevented. Only `key-guardrail` turns pins into a server-side refusal — and
   its field semantics are DOCUMENTED/UNVERIFIED until probe #26 (PR-6). The harness-owned
-  gateway that would restore per-request pins is deferred (Out of scope).
+  shaping proxy that would restore per-request pins is deferred (Out of scope).
 - **Real-cost budget is post hoc at `audit`.** The only in-flight cap is the CLI's
   `--max-budget-usd` on its Anthropic-priced estimate (× `cli_budget_inflation`, i.e.
   deliberately loose); `budget.run_usd` is checked against the backfilled Σ at reconcile
@@ -2399,7 +2462,7 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
 - **`count_tokens` (probe #22, RESOLVED for Claude Code 2.1.274):** OpenRouter has no
   `POST /api/v1/messages/count_tokens` (404, VERIFIED) and the CLI made zero calls to it in a
   3-turn run with a tool call and a subagent, so nothing answers it and nothing needs to.
-  Watch item: re-run `scripts/probe_claude_cli.py` on CLI upgrades; if `count_tokens`
+  Watch item: re-run `specs/014-openrouter-provider/probes/probe_claude_cli.py` on CLI upgrades; if `count_tokens`
   appears, OpenRouter 404s it and `test_claude_cli_direct.py` (e) fails first.
 - Cost units: `usage.cost` is documented as "credits", `/generation` and `/key` as USD;
   the 1:1 USD mapping is VERIFIED (probe #6, 2026-09-16: `usage.cost == /generation
@@ -2417,11 +2480,11 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
 
 ## Out of scope (future)
 
-- **Harness-owned shaping gateway** (deferred by the 2026-09-16 maintainer directive,
+- **Harness-owned shaping proxy** (deferred by the 2026-09-16 maintainer directive,
   Decision 31). Earlier revisions of this spec made an in-process Anthropic-in /
   Anthropic-out pass-through the default transport on local claude-code and Harbor podman
-  (`gateway: auto | managed | direct`, `gateway_options`, per-case bearer tokens,
-  `gateway.json`, `events.jsonl`, a `count_tokens` relay, a default-deny route table with a
+  (a transport-mode key `auto | managed | direct` with an options block, per-case bearer
+  tokens, a handshake file, `events.jsonl`, a `count_tokens` relay, a default-deny route table with a
   `passthrough` allow-list, an in-stream SSE tap, pre-first-byte retries, first-byte/idle
   watchdogs, a per-routing-key cooldown with strict/warn widening, an in-flight 402 budget
   gate, an httpx upstream client and HTTP/1.1 chunked framing rules). **What it would add
@@ -2441,33 +2504,31 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
   invariant, SSE tap event map, timeouts/IMPL-07, cooldown/OPS-09, events/OPS-10,
   budget/OPS-01/02, framing/IMPL-06, a K8s Deployment variant and the `serve` CLI/IMPL-08)
   lives in the **git history of this file** (revisions before 2026-09-16). If revived it
-  slots in as a third `enforcement` level (`gateway`) reusing the ledger, reconcile,
-  catalog and snapshot of this spec unchanged — the ledger `source` vocabulary reserves
-  `gateway-stream` for it.
-- **LiteLLM and the `gateway:/` provider kind.** The pre-2026-09-16 draft carried a
-  `providers.gateway: {base_url, token_env}` pass-through kind so an existing LiteLLM (or
-  any Anthropic-compatible proxy) could be declared in `providers:` and addressed as
-  `gateway:/<model>` — no pins, no ledger, `runner:estimate`. Dropped: it added a second
-  kind for zero cost truth, and the operator who has such a gateway already reaches it
-  through plain `execution.env`/`runner.settings.env` (that path is unchanged and simply
-  not part of this feature). rfe-creator's own LiteLLM setup is retired by PR-8, not
-  re-declared. If a declared-gateway kind ever returns it would be a `providers.<name>`
-  entry with `kind: anthropic-compatible`, reusing `settings_env_block` with a different
-  base URL and no ledger — not a transport the harness runs.
+  would slot in as a third `enforcement` level reusing the ledger, reconcile, catalog and
+  snapshot of this spec unchanged; this spec reserves no name, URI scheme or ledger
+  `source` value for it.
+- **Other provider kinds.** Other provider kinds (an OpenAI-compatible endpoint, an MLflow
+  AI Gateway or OpenShift AI gateway, an operator-run LiteLLM, ...) are future work; this
+  spec reserves no URI scheme, provider name or config key for them. Today an operator-run
+  Anthropic-compatible endpoint keeps working through plain `execution.env` /
+  `runner.settings.env` exactly as before, outside this feature (no pins, no ledger,
+  `cost_source: runner:estimate`). rfe-creator's own LiteLLM setup is retired by PR-8, not
+  re-declared. A future kind would be a `models.providers.<name>` entry with its own `kind`,
+  reusing `settings_env_block` with a different base URL — not a transport the harness runs.
 - Any harness-owned in-flight watchdog on the agent's request path (`first_byte_s`,
   `idle_s`, a content-level `first_token_s`), retry, cooldown or provider widening — all
-  presuppose the gateway; today the case/step timeout and Claude Code's own retries are the
-  only bounds (Known limitations).
-- A local `count_tokens` answer (the gateway's chars/4 estimate) — moot on Claude Code
+  presuppose the deferred shaping proxy; today the case/step timeout and Claude Code's own
+  retries are the only bounds (Known limitations).
+- A local `count_tokens` answer (the deferred shaping proxy's chars/4 estimate) — moot on Claude Code
   2.1.274 (zero `count_tokens` calls, probe #22); revived only if a later CLI starts calling
   the route and cannot live with OpenRouter's 404.
-- Generic `providers.<name>: {kind: openai-compatible, base_url, api_key_env}` judge
+- Generic `models.providers.<name>: {kind: openai-compatible, base_url, api_key_env}` judge
   providers and user-chosen provider names — they will reuse the `JudgeClientConfig` seam and
-  the `kind` key introduced here rather than a new backend string; `providers.openrouter: {}`
+  the `kind` key introduced here rather than a new backend string; `models.providers.openrouter: {}`
   stays the shorthand and `openrouter` stays the single kind of this release.
 - Any harness-side in-flight real-cost gate at `enforcement: audit` (reservation, 402 on a
-  running Σ) — needs the gateway; `key-guardrail`'s server-side `limit` is the supported
-  in-flight cap.
+  running Σ) — needs the deferred shaping proxy; `key-guardrail`'s server-side `limit` is
+  the supported in-flight cap.
 - Codex (`OPENAI_BASE_URL` + `OPENAI_API_KEY` mapping to OpenRouter's `/v1/chat/completions`
   with the same backfill), opaque `cli` runner placeholders (`{base_url}`, `{auth_token}`),
   Responses API runner, EvalHub beyond the env pass-through (`adapter.py:213` ignores
@@ -2487,7 +2548,7 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
 1. **Agent transport: direct connection to OpenRouter — superseded by maintainer directive
    2026-09-16 (direct-only; see Decision 31).** *Original (kept for traceability):* options
    were (a) LiteLLM subprocess with a generated config, (b) direct connection only, (c) a
-   harness-owned Anthropic-native shaping gateway; the choice was (c) with (b) as a peer mode,
+   harness-owned Anthropic-native shaping proxy; the choice was (c) with (b) as a peer mode,
    on the grounds that the body-level facts (`provider`/`models`/`session_id`/`user`
    accepted; `usage.cost` always returned; count_tokens 404) and, after probes 3/6/16, the
    in-stream observability facts made a shaping proxy both correct and complete, and that (b)
@@ -2499,7 +2560,7 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
    cost truth and a post-hoc routing audit without any process on the HTTP path. The
    maintainer chose operational simplicity — no proxy to manage, Harbor parity for free — over
    the two things only a proxy can give (per-request body pins, an in-flight real-cost gate),
-   which are mitigated by `enforcement: audit` / `key-guardrail` (Decision 31). The gateway's
+   which are mitigated by `enforcement: audit` / `key-guardrail` (Decision 31). The proxy's
    contract text lives in the git history of this file; httpx is no longer a dependency
    (Decision 29 amended).
 2. **Direct mode is a real mode, not a smoke test.** Zero-infra K8s parity and a
@@ -2519,19 +2580,19 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
    cost for `z-ai/glm-5.3-flash` — the estimate is never reported as spend.
    *Superseded by maintainer directive 2026-09-16 (direct-only, Decision 31):* "direct" is no
    longer a mode next to "managed" — it is the **only** transport, so the words
-   `gateway: direct`, `routing.enforcement: none` (as a transport marker) and "what direct
+   the draft's transport-mode key, `routing.enforcement: none` (as a transport marker) and "what direct
    lacks versus managed" are retired. What this decision established survives unchanged:
    per-request cost truth via gen-id backfill (`cost_source: openrouter:generation`,
    `cost_confidence: high` at ≥ 0.95 coverage), key-usage delta as the cross-check, and the
    estimate kept as `cost_usd_estimate`. The enforcement gap is now covered by the two
-   `providers.openrouter.routing.enforcement` levels (`audit` default, `key-guardrail`
+   `models.providers.openrouter.routing.enforcement` levels (`audit` default, `key-guardrail`
    opt-in) rather than by a proxy.
 3. **Judge backend: OpenAI SDK on `/api/v1/chat/completions` with a dedicated client.**
-   Options: Anthropic SDK against `/api/v1/messages`; route judges through the gateway;
+   Options: Anthropic SDK against `/api/v1/messages`; route judges through the proxy;
    OpenAI SDK. Choice: OpenAI SDK — reuses the PR #216 structured-judge path verbatim,
    `extra_body` carries the same `RoutingSpec`, `usage.cost`/`provider` are reachable via
    `getattr` on the response objects without SDK changes, and score.py must work as a
-   separate process with no gateway alive (re-scoring). `judge_via: gateway` dropped (judge 2).
+   separate process with no proxy alive (re-scoring). `judge_via: proxy` dropped (judge 2).
 4. **One `RoutingSpec`, request-body injection for both roles; no guardrails, presets or
    management key.** The LiteLLM pins port 1:1 with identical semantics per role (judge 2's
    decisive point). *Amended 2026-09-16 (probe #5, Decision 30):* the pins still port 1:1
@@ -2565,6 +2626,14 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
    local report, validate_eval, anova/reorganize and discovery (C2/BC-2 — the draft's "needs
    only `from_yaml`" was wrong: five production readers load the file raw); it records
    `config_chain` in `eval_params`, and `--print` makes the merge visible with provenance.
+   `extends:` is a **new** top-level key proposed here (PR-3a), not an existing harness
+   feature; `extends: <path relative to the file>` deep-merges the overlay over the base
+   (dicts merge, lists per Decision 20, `!replace` escape). It is independent of the
+   OpenRouter feature and droppable: its motivation is the `eval.yaml` / `eval-openrouter.yaml`
+   drift. rfe-creator now generates `eval.yaml` from a skeleton + per-type fragments
+   (`scripts/generate_eval_config.py`); that generated file stays the base and an OpenRouter
+   profile `extends:` it, so the generator is untouched — alternatively the generator could
+   emit per-provider configs and PR-3a would be skipped.
 6. **Cost provenance: `cost_usd` is `null` when a provider is active and no truth source
    succeeded; the estimate is always preserved as `cost_usd_estimate`; `cost_source` is
    always written.** Judge 2 feared null would need every reader taught; verified false:
@@ -2572,9 +2641,10 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
    (cursor_agent.py:203; execute.py:748-761; report.py:971-972; compare.py:126-128;
    analyze.py:330-335; log_results.py:281). Never showing an inflated number as spend
    (judges 1 and 3) wins. `--strict-cost` adds an exit code for CI. *Amended 2026-09-16 (Decision 31):* the
-   `gateway:/` kind that was the deliberate exception is dropped; the one case left where the
-   estimate is the only number — Claude Code behind an operator gateway through plain
-   `execution.env`, no plan — is labelled `runner:estimate` by the runner itself at result
+   pass-through kind that was the deliberate exception is not introduced (no second provider
+   kind or URI scheme); the one case left where the estimate is the only number — Claude Code
+   behind an operator-run Anthropic-compatible endpoint through plain `execution.env`, no
+   plan — is labelled `runner:estimate` by the runner itself at result
    construction (claude_code.py), never by reconcile, which stays a no-op without a plan.
 7. **Reconcile once, at write time, as a pure function — no hooks.** Derived metrics,
    MLflow, compare and anova read `run_result.json` at their own time (digest);
@@ -2603,7 +2673,7 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
    not an error; the overlay still writes `""` because the strip in `_build_env` (C3) and
    the overlay together are what keep the host's real key off the wire.
 9. **Secrets: the agent holds a per-run/per-case random token; the key is held by the
-   execute.py process, the in-process gateway thread (in execute.py or harbor/run.py, Decision 28), score.py, and (only when an in-container
+   execute.py process, the in-process proxy thread (in execute.py or harbor/run.py, Decision 28), score.py, and (only when an in-container
    `openrouter:/` judge exists) the podman container; lifecycle hooks and the Harbor child
    process do not receive it (OPS-12); no management key anywhere.** Key names in config,
    `$VAR` references in templates, `OPENROUTER_API_KEY` rejected on every authoring surface,
@@ -2611,7 +2681,7 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
    that also covers the host's fake Anthropic credentials. Direct mode is the documented
    exception and is flagged.
    *Superseded by maintainer directive 2026-09-16 (direct-only, Decision 31):* there is no
-   per-case token and no gateway holder any more. At `audit` the agent process (local CLI,
+   per-case token and no proxy holder any more. At `audit` the agent process (local CLI,
    podman container, K8s pod) **holds the operator key** as `ANTHROPIC_AUTH_TOKEN`
    (`provider.key_exposed_to_agent: true`, `key_scope: operator`, one stderr notice at run
    start); at `key-guardrail` it holds a **per-run key** with a provider allow-list and
@@ -2629,13 +2699,13 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
     `per_model_usage`/cost stay single-model; a cheap background model is an explicit,
     recorded choice. Settles README.md:62 vs eval-openrouter.yaml:30.
 11. **Budget: `execution.max_budget_usd` keeps its documented per-invocation scope in every
-    mode; the gateway enforces it per token on real ledger cost with an Anthropic-shaped 402;
+    mode; the proxy enforces it per token on real ledger cost with an Anthropic-shaped 402;
     a separate optional `budget.run_usd` caps the run; the CLI cap is an inflated backstop,
     never a sentinel; the gate fails closed.** The draft summed the whole run against the
     per-case number (a 20-case run at ~$0.54/case would die at `5.0` after ~9 cases) and
     removed the client-side ceiling with `1000000` (C1/OPS-01/OPS-02). Only the pricing basis
     changes (real vs Anthropic-priced estimate). The ×10 heuristic is gone; `cli_budget_inflation`
-    (default 50) applies in every mode as the backstop that matters only if the gateway is
+    (default 50) applies in every mode as the backstop that matters only if the proxy is
     broken. Unpriced records are charged from preflight pricing, and repeated unpriced
     records trip a `cost_unknown` 402 rather than spending blind.
     *Superseded by maintainer directive 2026-09-16 (direct-only, Decision 31):* with no
@@ -2674,22 +2744,22 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
     at 60 s, run-end retry, `Retry-After` on 429) and the `/key` settle read (60 s). The
     case/step timeout remains the only wall clock; "never cap reasoning" still holds.
     `count_tokens` is a non-issue on Claude Code 2.1.274 (zero calls observed, probe #22
-    RESOLVED; watch item on CLI upgrades via `scripts/probe_claude_cli.py`).
-13. **Harbor: podman via a host-side gateway thread in the harbor/run.py process (in-process,
+    RESOLVED; watch item on CLI upgrades via `specs/014-openrouter-provider/probes/probe_claude_cli.py`).
+13. **Harbor: podman via a host-side proxy thread in the harbor/run.py process (in-process,
     Decision 28 — no subprocess) with a reachability probe and
     an explicit, opt-in fallback to direct (`on_unreachable`, Decision 25 — the automatic
     fallback this decision originally recorded was withdrawn for OPS-05); K8s defaults to direct with `secretKeyRef` and no
-    exec-inlining; operator gateways are a separate `gateway` provider kind, not an
-    OpenRouter mode.** Keeps K8s working with zero new infra (judges 1 and 3), keeps the
+    exec-inlining; operator-run Anthropic-compatible endpoints were a separate pass-through
+    provider kind, not an OpenRouter mode.** Keeps K8s working with zero new infra (judges 1 and 3), keeps the
     existing in-cluster LiteLLM usable **without any config change** (today's Secret setup
-    has no plan and keeps working), and drops the external-gateway ledger pull (judge 2). The
-    draft nested `external` under `providers.openrouter`, which forced `openrouter:/` slugs,
-    `OPENROUTER_API_KEY` and preflight onto a gateway that may front Bedrock or Anthropic
+    has no plan and keeps working), and drops the external-proxy ledger pull (judge 2). The
+    draft nested `external` under `models.providers.openrouter`, which forced `openrouter:/` slugs,
+    `OPENROUTER_API_KEY` and preflight onto an endpoint that may front Bedrock or Anthropic
     (BC-7). The exec-prefix suppression lives where the prefix is built (kubernetes.py:547, C10).
-    The in-cluster managed gateway Deployment is future work.
+    The in-cluster managed proxy Deployment is future work.
     *Superseded by maintainer directive 2026-09-16 (direct-only; Decisions 31/32):* no
-    host-side gateway thread, no reachability probe, no `on_unreachable`, no `gateway`
-    provider kind. Harbor **podman** and **K8s** are MVP-class consumers of the one direct
+    host-side shaping-proxy thread, no reachability probe, no `on_unreachable`, and no
+    second provider kind or URI scheme. Harbor **podman** and **K8s** are MVP-class consumers of the one direct
     transport: podman receives the plan's env block via `--agent-env` (Harbor merges it last,
     `harbor 0.13.1 agents/base.py:288-291`, VERIFIED) with the key resolved on the host —
     the same exposure class as today's `ANTHROPIC_AUTH_TOKEN` forwarding (podman.py:36-49) —
@@ -2698,7 +2768,7 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
     K8s gets `OPENROUTER_API_KEY` from the credentials Secret (`secretKeyRef` →
     `ANTHROPIC_AUTH_TOKEN` mapped by the harness) plus the plan's non-secret env, with Vertex
     vars already excluded (kubernetes.py:42-50). An operator who fronts an Anthropic-compatible
-    gateway keeps using plain `execution.env` as today — unsupported by this feature, no
+    endpoint keeps using plain `execution.env` as today — unsupported by this feature, no
     config change. The exec-prefix anchor (kubernetes.py:547, C10) stands.
 14. **One ledger file and schema for agent, hook and judge records with `role`, `source`
     and `provider_kind` fields; per-model attribution by the join rule, never a proportional
@@ -2716,10 +2786,10 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
     (`model_requested`/`model_echo`/`model_served` + permaslug map, C7) is unchanged.
 15. **Interception bakes the case header only in managed mode and skips `$VAR`/`None`/managed
     keys; baked keys and `--agent-env` keys are disjoint by construction.** Host-specific
-    values (gateway port, token, run id) must not be frozen into reusable packages; the case
-    header gives per-case attribution for free where a gateway reads it. In direct mode the
+    values (proxy port, token, run id) must not be frozen into reusable packages; the case
+    header gives per-case attribution for free where a proxy reads it. In direct mode the
     draft baked `x-eval-case-id` while `--agent-env` carried `x-session-id` — one variable,
-    one survivor, and no gateway to read the loser (C5); now the header decision is
+    one survivor, and no proxy to read the loser (C5); now the header decision is
     mode-specific and single-sourced in `settings_env_block`, so probe #15 is a guard, not a gate.
     *Superseded 2026-09-16 (Decision 31):* no managed mode, no case header — interception bakes
     nothing provider-related; only the `MANAGED_ENV_KEYS` exclusion survives (C5 moot).
@@ -2738,8 +2808,8 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
     `key-guardrail` → OpenRouter's own `limit_usd` on the per-run key (server-side, in
     flight, real cost). Pricing-based charging, miss-count trip, overshoot bound and
     admission reservation are all moot; "no in-flight reservation" survives trivially.
-18. **Provider seam shape: a `providers:` mapping with a reserved `kind`, fixed names
-    `openrouter`/`gateway` in this spec, and a `JudgeClientConfig` seam that keeps the
+18. **Provider seam shape: a `models.providers` mapping with a reserved `kind`, a fixed name
+    set (originally two names) in this spec, and a `JudgeClientConfig` seam that keeps the
     judge transport set at three.** The draft encoded OpenRouter as a fourth backend string
     with a name-specific client getter and four new dispatch arms (BC-1). Resolution between
     the two BC-1 alternatives: implement the narrow seam now (transport + client config,
@@ -2747,11 +2817,11 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
     `openai-compatible` land without breaking the schema, and do not build the generic kind
     in this spec. `resolve_judge_backend` keeps its 2-tuple contract (existing tests and the
     spec 013 rows unchanged); the sibling `resolve_judge_client` carries the provider context.
-    *Amended 2026-09-16 (Decision 31):* the fixed name set is `openrouter` only; `gateway` went
-    with its kind.
+    *Amended 2026-09-16 (Decision 31):* the fixed name set is `openrouter` only; no second
+    provider kind or URI scheme is introduced.
 19. **Package layout: two packages — `agent_eval/providers/` (neutral core: base, env,
     ledger, reconcile, passthrough; plus `openrouter/` for OpenRouter API knowledge) and
-    `agent_eval/gateway/` (runtime) — with a one-way import direction and provider-neutral
+    `agent_eval/proxy/` (runtime) — with a one-way import direction and provider-neutral
     names (`<run_dir>/provider/…`, `cost_source: <origin>:<method>`).** The draft's
     `providers/` ↔ `openrouter/` split had `providers/openrouter.py` importing
     `openrouter/routing.py` while `openrouter/reconcile.py` needed `ProviderPlan` — a cycle
@@ -2761,8 +2831,8 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
     removes the cycle rather than tolerating it; the `cost_source` enum is restructured
     (legacy literals kept readable) rather than left as `<provider>-<method>` because the
     draft already drifted between `runner-estimate` and `runner-reported`.
-    *Amended 2026-09-16 (Decision 31):* `agent_eval/gateway/` is not built and `passthrough`
-    leaves the neutral core (BC-6 gateway/ moot); the one-way import direction and the
+    *Amended 2026-09-16 (Decision 31):* the runtime package (the shaping proxy) is not built
+    and `passthrough` leaves the neutral core (the BC-6 runtime half is moot); the one-way import direction and the
     provider-neutral names stand.
 20. **`extends:` merge policy: reuse the harness's existing `_deep_merge` (lifted, with
     dedupe) — scalar lists extend, `judges`/`steps` merge by key, `!replace` opts out; paths
@@ -2778,14 +2848,14 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
     Managed-mode `/generation` backfill of `provider_name` reuses the direct-mode worker.
     *Amended 2026-09-16 (Decision 31):* no managed mode — the `/generation` backfill is the
     only attribution path (audit) and the never-infer rule applies to it unchanged.
-22. **Activation is URI-driven; a `providers.*` block is an inert declaration.** The draft's
+22. **Activation is URI-driven; a `models.providers.*` block is an inert declaration.** The draft's
     "block present but no `openrouter:/` role → error" prevented the base `eval.yaml` from
     holding the shared routing table and forced every profile to duplicate the pins whose
     drift caused the 2026-07-22 provider-roulette incident (BC-5); it also contradicted the
     execute.py sentence that built a plan from the block alone. Kept the real footgun as a
     narrow error (bare id next to matching pins) and moved the "unused block" signal to a
     post-CLI-resolution warning.
-23. **Rollout re-ordered: cost substrate (ledger, reconcile, catalog) is PR-4, the gateway
+23. **Rollout re-ordered: cost substrate (ledger, reconcile, catalog) is PR-4, the proxy
     is PR-5 and the MVP; `pricing_for` and the tap self-test move ahead of the budget gate
     that needs them (IMPL-01 / IMPL-02).** The draft's PR-4 promised a ledger-based 402
     gate, a tap self-test and pricing-based charging while `ledger.py` was PR-5 and
@@ -2793,11 +2863,11 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
     milestone, would also have shipped routing without cost truth and so regressed
     rfe-creator's proxy-reconciled setup. Each PR now depends only on earlier PRs.
     *Amended 2026-09-16 (Decisions 31/32):* PR-5 (MVP) is the direct transport for claude-code
-    + Harbor podman, not the gateway; tap self-test and budget gate are gone; the ordering
+    + Harbor podman, not the proxy; tap self-test and budget gate are gone; the ordering
     rule stands.
-24. **Gateway routes are default-deny; `gateway_options.passthrough` is a validated
+24. **Proxy routes are default-deny; `proxy_options.passthrough` is a validated
     allow-list whose POST entries are budgeted, shaped and ledgered like agent traffic
-    (OPS-04).** The draft's catch-all `/v1/*` relay made the gateway an unshaped,
+    (OPS-04).** The draft's catch-all `/v1/*` relay made the proxy an unshaped,
     un-budgeted proxy for the operator key reachable from the agent's Bash environment
     (claude_code.py:712-733) and, in podman mode, from the LAN. Only two entries are
     accepted — `GET /v1/models` (public, read-only) and `POST /v1/chat/completions`
@@ -2806,13 +2876,13 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
     ledgered (`role: denied`) and evented so a misbehaving agent is visible, not silent.
     Deviation from the finding's wording: 404 (not 403) keeps the response Anthropic-shaped
     and indistinguishable from an unimplemented route for the client.
-    *Superseded by maintainer directive 2026-09-16 (direct-only, Decision 31):* no gateway,
-    no route table, no `gateway_options.passthrough`. The concern OPS-04 raised — the agent's
+    *Superseded by maintainer directive 2026-09-16 (direct-only, Decision 31):* no proxy,
+    no route table, no `proxy_options.passthrough`. The concern OPS-04 raised — the agent's
     Bash environment (claude_code.py:712-733) can spend on the key it holds — is now an
     accepted, stated property of `audit` (Known limitations, `key_exposed_to_agent: true`)
     and is **bounded** at `key-guardrail` by the per-run key's allow-list and `limit_usd`.
     In-container `openrouter:/` judges reach OpenRouter directly with the operator key.
-25. **Harbor podman managed→direct fallback is opt-in (`gateway_options.on_unreachable:
+25. **Harbor podman managed→direct fallback is opt-in (`proxy_options.on_unreachable:
     fail | direct`, default `fail`) and, when taken, is recorded as `provider.fallback_from:
     managed` and treated as a different factor level by compare/anova (OPS-05).** A
     reachability hiccup must not silently hand the raw key to the agent container and
@@ -2821,9 +2891,9 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
     *Superseded 2026-09-16 (Decision 31):* no managed mode, no fallback, no `on_unreachable` /
     `acknowledge_key_exposure` (OPS-05 moot); podman is direct-only, `key_exposed_to_agent: true`
     recorded at `audit`.
-26. **Cooldown counts only pre-first-byte `infra` failures, per routing key, per gateway
+26. **Cooldown counts only pre-first-byte `infra` failures, per routing key, per proxy
     process, resets on any committed 200, and answers a strict 503 instantly with
-    `Retry-After` (OPS-09).** Counting 4xx or gateway-issued refusals would let one case's
+    `Retry-After` (OPS-09).** Counting 4xx or proxy-issued refusals would let one case's
     oversized context or one exhausted token sideline the model for every case; counting
     truncations would punish slow-but-serving providers. The instant local 503 is what
     keeps a cooldown from ever looking like a stall to rfe-creator's wave-stall guard
@@ -2832,7 +2902,7 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
     `(slug, provider)` — with `allow_fallbacks: false` and an `order` list the served
     provider is the pinned set by construction, and a per-provider counter would need
     attribution *before* the first byte, which the stream cannot give.
-    *Superseded 2026-09-16 (Decision 31):* no gateway process, no cooldown (OPS-09 moot); the
+    *Superseded 2026-09-16 (Decision 31):* no proxy process, no cooldown (OPS-09 moot); the
     only in-flight refusal the harness sees is the `key-guardrail` 402.
 27. **Degradation is signalled at the moment it happens — `provider/events.jsonl` + stderr
     one-liners + a marker in the live progress line — and a widened run's ledger records
@@ -2845,23 +2915,23 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
     *Superseded 2026-09-16 (Decision 31):* no `events.jsonl`, no in-flight widen, no effective
     `routing_sha` (OPS-10 moot); degradation is post hoc — `routing.violations` /
     `degraded_reason` at reconcile, stderr one-liners and the progress-line marker remain.
-28. **The gateway is in-process everywhere; there is no subprocess mode (IMPL-08).** Both
+28. **The proxy is in-process everywhere; there is no subprocess mode (IMPL-08).** Both
     hosts — execute.py and harbor/run.py — are long-lived Python processes that already own
-    the run lifecycle, so `Gateway.start()` on a daemon thread + `stop()` in `finally` covers
+    the run lifecycle, so `Proxy.start()` on a daemon thread + `stop()` in `finally` covers
     local and Harbor podman alike; harbor/run.py binds `0.0.0.0` and mints per-case tokens
     before `Popen`. A `serve` CLI, file-based token registry, stdout readiness handshake and
     signal handling would add a second test surface and a few hundred lines with no
     capability the thread lacks; they are deferred to the PR-9 Deployment, the only consumer
-    that cannot import the harness. `gateway.json.mode` keeps its field with the single
+    that cannot import the harness. `proxy.json.mode` keeps its field with the single
     value `in-process`.
     *Superseded by maintainer directive 2026-09-16 (direct-only, Decision 31):* moot — there
-    is no gateway process of any kind, in-process or subprocess, and no `gateway.json`. The
+    is no proxy process of any kind, in-process or subprocess, and no `proxy.json`. The
     lifecycle shape this decision settled (start after preflight, `finally: stop()` in
     execute.py and harbor/run.py) is reused verbatim by `plan.close()` for the backfill
     worker, the key-usage settle read and the per-run key revoke.
 29. **HTTP/1.1 keep-alive with hand-written chunked framing, not HTTP/1.0 + close
     (IMPL-06); httpx is a declared `openrouter` extra, not a transitive assumption
-    (IMPL-03); `first_byte_s` is a gateway-side watchdog over httpx's single read timeout
+    (IMPL-03); `first_byte_s` is a proxy-side watchdog over httpx's single read timeout
     (IMPL-07).** The chunked terminator is the only unambiguous end-of-stream for the
     client, the tap and the tests — a close-delimited HTTP/1.0 body cannot distinguish
     "complete" from "truncated", which is precisely the distinction the truncation
@@ -2873,7 +2943,7 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
     realised as `httpx.Timeout(read=idle_s)` + two `threading.Timer`s calling
     `response.close()`; a content-level first-token timeout is out of scope.
     *Superseded by maintainer directive 2026-09-16 (direct-only, Decision 31):* framing,
-    timeouts and the httpx extra are moot with the gateway. The remaining HTTP client — the
+    timeouts and the httpx extra are moot with the proxy. The remaining HTTP client — the
     `/generation`, `/key`, `/models/{slug}/endpoints`, `/providers`, `/models/user` reads and
     the management-API `POST/DELETE /keys` at `key-guardrail` — is small, non-streaming JSON
     and uses **stdlib `urllib.request`** over the default SSL context (already
@@ -2892,7 +2962,7 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
     and `require_parameters` only filters, it cannot create an endpoint. Consequences:
     (a) preflight checks `supports_tool_choice` for every pinned endpoint — `auto` for agent
     slugs (Claude Code sends `auto`), `function` for judge slugs — and FAILs a pinned set that
-    supports none of the mode the role needs; (b) the gateway never adds or rewrites
+    supports none of the mode the role needs; (b) the proxy never adds or rewrites
     `tool_choice` (semantic passthrough); (c) judge pins are **opt-in**
     (`judge.inherit_pins` / `provider_options.routing`) because a judge does not need
     endpoint determinism the way the agent does, and a pinned judge whose endpoint lacks
@@ -2904,15 +2974,15 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
     `degraded_reason: unroutable`). Rejected alternative: auto-widening pins on this 404 —
     it would silently route a strict run to an unpinned endpoint, the exact failure mode
     strict pins exist to prevent.
-    *Amended 2026-09-16 (direct-only, Decision 31):* (b) and (d) referred to the gateway.
+    *Amended 2026-09-16 (direct-only, Decision 31):* (b) and (d) referred to the proxy.
     Now: the agent path never forces `tool_choice` because Claude Code sends `auto`, and the
     routing 404 can only occur on the judge path (chat/completions), where score.py maps it
     to `JudgeProviderError` (`error_class: config`) — no cooldown exists to exclude it from.
     (a) and (c) apply unchanged.
-31. **Direct-only transport; no LiteLLM; the shaping gateway is deferred (maintainer
+31. **Direct-only transport; no LiteLLM; the shaping proxy is deferred (maintainer
     directive 2026-09-16: "it should really be direct, no LiteLLM; and it must work with
     the podman / Harbor runner").** Options considered: (a) keep the harness-owned shaping
-    gateway as default with direct as a peer mode (the pre-directive design); (b) LiteLLM
+    proxy as default with direct as a peer mode (the pre-directive design); (b) LiteLLM
     subprocess with a generated config (rfe-creator's current `eval/litellm/` setup);
     (c) **direct only** — Claude Code's env template (`ANTHROPIC_BASE_URL=https://openrouter.ai/api`,
     `ANTHROPIC_AUTH_TOKEN=<key>`, blank `ANTHROPIC_API_KEY`, Vertex vars blanked,
@@ -2924,11 +2994,11 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
     pins are enforceable *and* auditable from `/generation.provider_name`), #6
     (`usage.cost == total_cost`, 8–13 s lag → the backfill is exact, only late), #3/#13/#20
     (`/messages` accepts Claude Code's headers, `x-api-key` and `anthropic-beta` → no
-    request rewriting needed). With those facts, the gateway bought only per-request body
+    request rewriting needed). With those facts, the proxy bought only per-request body
     pins (`quantizations`, `require_parameters`), an in-flight real-cost gate, per-case
     tokens and an in-stream ledger — at the price of a listener, framing, timeouts,
-    cooldown, a `count_tokens` synthesiser, an httpx dependency, a `gateway:/` kind, ~1000
-    lines and a host-reachability problem under podman. Operational simplicity wins: no
+    cooldown, a `count_tokens` synthesiser, an httpx dependency, a second (pass-through)
+    provider kind, ~1000 lines and a host-reachability problem under podman. Operational simplicity wins: no
     proxy process to manage or debug, Harbor podman/K8s parity for free (the env block is
     the whole integration), one transport on every runner, and (b)'s known defects
     (chunk_parser monkeypatch, `_GEN_META`, loopback-only) are retired rather than
@@ -2939,15 +3009,16 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
     against `/endpoints` + `/providers`, `routing_snapshot.json`, post-run audit →
     `routing.violations`, compare/anova refuse to pool differing audits) by default;
     `enforcement: key-guardrail` (per-run key, server-side provider allow-list + `limit_usd`,
-    revoked in a `finally`; probe #26) opt-in. Consequences for the spec: the gateway and
-    the LiteLLM-motivated `gateway:/` kind move to Out of scope (contract text in git
-    history; revivable as a third `enforcement` level); `providers:` has one kind;
+    revoked in a `finally`; probe #26) opt-in. Consequences for the spec: the shaping
+    proxy moves to Out of scope (contract text in git history; revivable as a third
+    `enforcement` level) and no second provider kind or URI scheme is introduced — the
+    LiteLLM-motivated pass-through kind of the draft is dropped; `models.providers` has one kind;
     Decisions 1, 2, 4, 6, 9, 11, 12, 13, 14, 15, 17, 18, 19, 21, 23, 24, 25, 26, 27, 28, 29 carry
     superseded/amended notes;
     rfe-creator retires `eval/litellm/` and `reconcile_cost.py` in PR-8 without a
     replacement proxy.
 32. **Harbor podman in the MVP (PR-5); Kubernetes/EvalHub in PR-7.** Options: (a) local
-    claude-code first, Harbor in PR-7 (the pre-directive plan, which needed a gateway
+    claude-code first, Harbor in PR-7 (the pre-directive plan, which needed a proxy
     reachability story before podman could ship); (b) podman in the MVP, K8s next;
     (c) everything in one PR. Choice: (b) — **PR-5 = local claude-code + Harbor podman**,
     PR-7 = K8s/EvalHub. Why: the maintainer's second clause makes podman a hard
@@ -2968,30 +3039,48 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
     `x-eval-run-id`-style custom header stays optional. Costs: PR-5 grows by the
     `--agent-env` builder, the forwarding conditional and `results.py` id extraction;
     the MVP acceptance gains a podman run.
+33. **The provider registry is `models.providers`, not a top-level `providers:` key**
+    (maintainer feedback 2026-09-21). Options: (a) a new top-level `providers:` mapping
+    (the pre-2026-09-21 text); (b) `models.providers`. Choice: (b). Why: the registry exists
+    only to resolve the `<provider>:/<model>` URIs that already live under `models.*`
+    (skill / subagent / judge / hook — the same cross-cutting scope spec 013 / PR #216
+    gave model URIs), so nesting it keeps model configuration cohesive in one block, avoids
+    reserving a new top-level namespace in the eval config, and lets an `extends:` overlay
+    override `models.providers.openrouter.routing` alongside `models.skill` in a single
+    `models:` stanza. Consequences: `ProvidersConfig` is a field of `ModelsConfig`
+    (`config.models.providers`, never `config.providers`); every path in prose, validation
+    messages and docs reads `models.providers.openrouter.<key>`; a top-level `providers:`
+    key is rejected with a pointer here; the activation rule reads "a `models.providers.*`
+    block is inert until an effective role URI names it". Reserved names and kinds are
+    unchanged (single kind `openrouter`, Decision 31); nothing about the ledger,
+    `eval_params` or the env templates embeds the config path, so no field is renamed there.
 
 ## Verification checklist before implementation
 
 > **Evidence provenance.** Every report under `probes/` carries a `producer` stamp (script, schema version, git sha) from schema 2 onwards; `probes/README.md` lists which script revision produced each file. `probe_report_2026-09-16_run1.json` predates the probe-5 isolation and probe-12 backoff changes and is kept as **historical** evidence (its probe 3/4 `endpoints_selected: null` reflects the pre-fix field name, not the API); `_run2.json` supersedes it for probes 3, 5 and 12.
 
 Probes marked **KEY** need `OPENROUTER_API_KEY` and must be run by the user; the harness
-never embeds or prints the value. `scripts/probe_openrouter.py` (PR-0) runs the no-key
+never embeds or prints the value. The two probe scripts are **spec-local verification
+artefacts** (PR-0): they live under `specs/014-openrouter-provider/probes/` next to the
+evidence they produce and are not harness tooling (nothing under `agent_eval/`, `skills/` or
+`scripts/` imports or ships them). `specs/014-openrouter-provider/probes/probe_openrouter.py` runs the no-key
 API probes and, when the key is exported, the KEY probes, writing `probe_report.json` with
 results only (and, with `--record-fixtures`, the redacted SSE golden fixtures — IMPL-09);
-`scripts/probe_claude_cli.py` (PR-0) runs the no-key **Claude Code CLI** probes (rows 1, 9,
+`specs/014-openrouter-provider/probes/probe_claude_cli.py` runs the no-key **Claude Code CLI** probes (rows 1, 9,
 10, 22, 23, 27) against a local fake Anthropic endpoint and writes
 `probes/probe_cli_report_2026-09-16.json`. Blocking probes gate the PR named in the last
 column. The no-key Claude Code probes 1, 9, 10, 16 (echo-server half), 22, 23, 24 and row 27
 (multi-header) are additionally kept green by `tests/test_claude_cli_direct.py` (Tests; the
 CI form of `probe_claude_cli.py` — a local echo server standing in for `openrouter.ai`), so a
 Claude Code upgrade that changes client behaviour fails CI rather than a future run. **Re-cut 2026-09-16 (direct-only,
-Decision 31):** rows that only existed for the shaping gateway are converted or retired in
+Decision 31):** rows that only existed for the shaping proxy are converted or retired in
 place (numbering is stable so the evidence files and earlier review rounds still resolve):
 #2 → direct e2e via Harbor podman with tools; #11 re-scoped to container egress (DEFERRED); #16 fake-upstream half → local echo
-server against the CLI; #19 gateway half dropped; #24 informational. Two rows are added for the
+server against the CLI; #19 proxy half dropped; #24 informational. Two rows are added for the
 direct-only foundation: #25 (Harbor trial artefacts keep the assistant `message.id`s) and #26
 (management-API key-guardrail semantics). All VERIFIED rows and their evidence are kept.
 
-**Probe results (2026-09-16).** `scripts/probe_openrouter.py` (PR-0, on this branch) was run
+**Probe results (2026-09-16).** `specs/014-openrouter-provider/probes/probe_openrouter.py` (PR-0, on this branch) was run
 with a key against `z-ai/glm-5.3-flash`, `order: [z-ai, novita]`; evidence (results only,
 no values) is in `probes/probe_report_2026-09-16_run1.json` and `_run2.json`. Rows marked
 **VERIFIED** below carry a one-clause result; the design consequences are folded into the
@@ -3014,13 +3103,13 @@ succeeds unpinned → new preflight check, judge fallback policy and error class
 zero `: OPENROUTER PROCESSING` comments → keep-alives are not a heartbeat on fast streams;
 (9) `/endpoints` status values seen `{0, -2}` → `status < 0` = degraded. Unverified rows are
 unchanged and still gate their PRs. *Read after the 2026-09-16 re-foundation:* the "tap
-contract" evidence of (1) no longer drives a gateway tap (there is none); it is kept because it
+contract" evidence of (1) no longer drives a proxy tap (there is none); it is kept because it
 fixes the redacted SSE fixtures (`tests/data/openrouter/*.sse`) and documents what a future
-`enforcement: gateway` level would read. Items (2)–(5), (7) and (9) are the load-bearing facts
+third `enforcement` level (a revived shaping proxy) would read. Items (2)–(5), (7) and (9) are the load-bearing facts
 of the direct design: gen-id backfill, `/generation` timing, `x-api-key` tolerance, pins vs
 Auto Exacto, bare-slug echo and `/endpoints` status semantics.
 
-**No-key CLI probe results (2026-09-16, Claude Code 2.1.274).** The scenarios were first run on Claude Code 2.1.273 with identical outcomes; the CLI auto-updated to 2.1.274 before the committed evidence was regenerated with the `producer` stamp, so 2.1.274 is the version the checked-in report records. `scripts/probe_claude_cli.py`
+**No-key CLI probe results (2026-09-16, Claude Code 2.1.274).** The scenarios were first run on Claude Code 2.1.273 with identical outcomes; the CLI auto-updated to 2.1.274 before the committed evidence was regenerated with the `producer` stamp, so 2.1.274 is the version the checked-in report records. `specs/014-openrouter-provider/probes/probe_claude_cli.py`
 (PR-0) ran the Claude Code side against a local fake Anthropic endpoint with the user's
 `~/.claude/settings.json` forcing Vertex; evidence (results only, no values) is in
 `probes/probe_cli_report_2026-09-16.json`. Consequences folded into the sections they
@@ -3038,33 +3127,33 @@ re-scoped to container egress and DEFERRED until the podman machine is up.
 
 | # | Assumption | Probe | Blocks |
 | --- | --- | --- | --- |
-| 1 | **VERIFIED incl. subagent/hook children (2026-09-16, Claude Code 2.1.274, `probes/probe_cli_report_2026-09-16.json` via `scripts/probe_claude_cli.py`; CLI half first seen live in `probes/probe_report_2026-09-16_run2.json`, probe #12):** with the user `~/.claude/settings.json` forcing `CLAUDE_CODE_USE_VERTEX=1` and every `ANTHROPIC_*`/Vertex var removed from the process env, a `--settings` env block (Vertex vars `""`, `ANTHROPIC_BASE_URL` = local fake endpoint, `ANTHROPIC_AUTH_TOKEN` dummy, `ANTHROPIC_API_KEY` `""`) routed **all 5 requests** of a 3-turn run to the local endpoint — root turns and the spawned subagent request (Agent tool; `subagent_stats spawned=1 completed=1`); nothing reached Vertex; the PreToolUse hook subprocess inherited the settings-env values (`ANTHROPIC_BASE_URL` = local endpoint, `CLAUDE_CODE_USE_VERTEX` = `""`, `ANTHROPIC_VERTEX_PROJECT_ID` = `""`, `ANTHROPIC_AUTH_TOKEN` present). The CLI posts to `/v1/messages?beta=true` — path matching must strip the query string. Since `_build_env` strips managed keys from the process env when a plan is active (C3), this is a functional check of the settings-vs-settings layer pair, not a secrecy gate. | No key: `scripts/probe_claude_cli.py` (a local fake Anthropic endpoint; `claude --print --output-format stream-json --settings <env block>` with Vertex forced in user settings and the managed keys absent from the process env; a prompt that spawns a subagent and fires a PreToolUse hook). Kept green by `tests/test_claude_cli_direct.py` (a)/(b)/(i). | PR-5 — result folded in |
-| 2 | **Converted 2026-09-16 (was: e2e through the shaping gateway).** Claude Code works end-to-end **directly** against `https://openrouter.ai/api` from a **Harbor podman trial** with a non-Anthropic model and tool calls (streaming, thinking blocks, `cache_control` accepted; no parameter rejections; the plan's env block delivered via `--agent-env` and the host Vertex vars not forwarded), and the trial's captured transcript yields the `gen-…` ids the backfill needs (joint with #25). The local-CLI half of the same statement is already VERIFIED by #12. | **KEY**: PR-5 build; one `harbor run` under podman with a one-tool prompt on `z-ai/glm-5.3-flash`, `enforcement: audit`, `:exacto`; assert exit 0, tool call executed, `run_result.json` per-trial `cost_usd` non-null with `cost_source: openrouter:generation`, `routing.audited == requests`, `violations == []`, and `podman inspect`-level absence of `CLAUDE_CODE_USE_VERTEX` from the container env. | PR-5 |
+| 1 | **VERIFIED incl. subagent/hook children (2026-09-16, Claude Code 2.1.274, `probes/probe_cli_report_2026-09-16.json` via `specs/014-openrouter-provider/probes/probe_claude_cli.py`; CLI half first seen live in `probes/probe_report_2026-09-16_run2.json`, probe #12):** with the user `~/.claude/settings.json` forcing `CLAUDE_CODE_USE_VERTEX=1` and every `ANTHROPIC_*`/Vertex var removed from the process env, a `--settings` env block (Vertex vars `""`, `ANTHROPIC_BASE_URL` = local fake endpoint, `ANTHROPIC_AUTH_TOKEN` dummy, `ANTHROPIC_API_KEY` `""`) routed **all 5 requests** of a 3-turn run to the local endpoint — root turns and the spawned subagent request (Agent tool; `subagent_stats spawned=1 completed=1`); nothing reached Vertex; the PreToolUse hook subprocess inherited the settings-env values (`ANTHROPIC_BASE_URL` = local endpoint, `CLAUDE_CODE_USE_VERTEX` = `""`, `ANTHROPIC_VERTEX_PROJECT_ID` = `""`, `ANTHROPIC_AUTH_TOKEN` present). The CLI posts to `/v1/messages?beta=true` — path matching must strip the query string. Since `_build_env` strips managed keys from the process env when a plan is active (C3), this is a functional check of the settings-vs-settings layer pair, not a secrecy gate. | No key: `specs/014-openrouter-provider/probes/probe_claude_cli.py` (a local fake Anthropic endpoint; `claude --print --output-format stream-json --settings <env block>` with Vertex forced in user settings and the managed keys absent from the process env; a prompt that spawns a subagent and fires a PreToolUse hook). Kept green by `tests/test_claude_cli_direct.py` (a)/(b)/(i). | PR-5 — result folded in |
+| 2 | **Converted 2026-09-16 (was: e2e through the shaping proxy).** Claude Code works end-to-end **directly** against `https://openrouter.ai/api` from a **Harbor podman trial** with a non-Anthropic model and tool calls (streaming, thinking blocks, `cache_control` accepted; no parameter rejections; the plan's env block delivered via `--agent-env` and the host Vertex vars not forwarded), and the trial's captured transcript yields the `gen-…` ids the backfill needs (joint with #25). The local-CLI half of the same statement is already VERIFIED by #12. | **KEY**: PR-5 build; one `harbor run` under podman with a one-tool prompt on `z-ai/glm-5.3-flash`, `enforcement: audit`, `:exacto`; assert exit 0, tool call executed, `run_result.json` per-trial `cost_usd` non-null with `cost_source: openrouter:generation`, `routing.audited == requests`, `violations == []`, and `podman inspect`-level absence of `CLAUDE_CODE_USE_VERTEX` from the container env. | PR-5 |
 | 3 | **VERIFIED (2026-09-16, `probes/probe_report_2026-09-16_run1.json`):** `message_start.message` carries `id` (`gen-…`), `model` (bare slug echo), `provider` (display name, e.g. `"Z.AI"`) and `usage`; `usage.cost` arrives in `message_delta.usage`; `X-OpenRouter-Metadata: enabled` IS honoured on `/messages` and `openrouter_metadata` arrives in `message_stop` as `{requested, strategy: "direct", region, summary, attempt, is_byok, endpoints: {total, available: [{provider, model: <dated permaslug>, selected: bool}, …]}}` — there is **no** `endpoints.selected` field, the selected endpoint is the `available[]` entry with `selected: true`; `X-Generation-Id` header present; event order `message_start`, `content_block_*`, `message_delta`, `message_stop`, then one trailing `data` frame. Placement of top-level `provider` and `openrouter_metadata` in the `/messages` SSE stream. | **KEY**: one streaming `POST /api/v1/messages` with the metadata header; record which events carry which fields. Result (2026-09-16 re-cut): no tap consumes this any more; the evidence fixes the SSE golden fixtures and the fact that quantization is **not** in the stream (it is joined from `/endpoints`), which the audit relies on. | — result folded in (fixtures; audit join) |
 | 4 | **VERIFIED (2026-09-16, run1):** `order: ["z-ai"]` and `order: ["Z.AI"]` are both accepted and both served by Z.AI — matching accepts slug and display name, case-insensitively. Provider identifier matching in `provider.order`/`only` on `/messages`. | **KEY**: two requests with slug vs display name, `allow_fallbacks: false`, metadata header; compare the `selected: true` endpoint. Result: slug normalisation stays as a cosmetic/consistency step, not a correctness requirement; "unknown names fail `preflight: strict`" stays. | PR-6 — result folded in |
 | 5 | **VERIFIED with a critical caveat (2026-09-16, run1+run2):** `order: [z-ai, novita]` + `allow_fallbacks: false` + `tool_choice: {type: auto}` on 20 tool-calling requests → 20/20 served by z-ai, 0 outside the list, `stop_reason: tool_use` — explicit `order` + `allow_fallbacks: false` DOES override Auto Exacto. **BUT** a forced `tool_choice: {type: "tool", name: …}` under the same pins → HTTP 404 `error_type: not_found` "No endpoints found for z-ai/glm-5.3-flash" (identical with and without `require_parameters: true`), while the same forced request **without** pins → 200 served by NextBit. Forced/named `tool_choice` is only supported by some endpoints; pins + forced `tool_choice` can make a model unroutable. | **KEY**: 20 tool-calling requests under a 2-provider `order`; tally the `selected: true` endpoint; then one forced-tool request pinned vs unpinned. Result: preflight `supports_tool_choice` check for pinned endpoints, judge fallback policy, 404 classified `error_class: config` (judge path; never retried) — Decision 30. | PR-6 — result folded in |
 | 6 | **VERIFIED (2026-09-16, run1):** `usage.cost == GET /generation total_cost` for 10/10 requests (USD 1:1); the cost event is `message_delta`; the first `/generation` 200 arrived **7.6–12.7 s after `message_stop`** (never "within seconds"); `/generation` `provider_name` is the display name. `usage.cost` == `total_cost`, cost event placement, `/generation` availability. | **KEY**: compare for 10 requests; record the event carrying `usage.cost`; time first 200 on `/generation` after `message_stop`. Result: `generation.py` backoff = first poll ~5 s, then every 2 s, give up at 60 s (record `cost_confidence: low` + retry at run end). | PR-4 — result folded in |
 | 7 | **VERIFIED (2026-09-16, run1):** `GET /api/v1/key` `usage` changed 20.3 s after a request. Settle window for the key-usage cross-check. | **KEY**: poll every 5 s after one request; record when it changes/stops changing. Result: `guardrail.settle_s` default 20 s (minimum wait before the run-end read), poll ceiling 60 s (was 120). | PR-6 — result folded in |
 | 8 | **VERIFIED (2026-09-16, run1):** `openai/gpt-5.2` on chat/completions with forced function `tool_choice` + `max_tokens` → 200, `function.arguments` is a JSON string, `usage.cost` present (0.000854). OpenRouter accepts `max_tokens` with forced `tool_choice` for `openai/gpt-5*` and returns `function.arguments` as a JSON string. | **KEY**: one judge-shaped call per slug; assert 200 and the arguments type. Result: PR-1 OpenAI-slug handling confirmed (`openai/o3*` not separately probed). | PR-1 — result folded in |
-| 9 | **VERIFIED (2026-09-16, CLI 2.1.274, `probes/probe_cli_report_2026-09-16.json`):** a single-header `ANTHROPIC_CUSTOM_HEADERS` (`x-eval-run-id: …`) from the settings env was present on the root requests **and** on the subagent request. Together with row 27 (multi-header form) this puts the whole attribution set (`HTTP-Referer` + `X-OpenRouter-Title` [+ optional `x-eval-run-id`]) in PR-5; the run tag stays optional (`run_id_header`, activity-page tagging only — cost and per-case attribution come from gen ids, Decision 32). | No key: `scripts/probe_claude_cli.py`; inspect the recorded headers across root and subagent requests. Kept green by `test_claude_cli_direct` (d). | PR-5 — result folded in |
-| 10 | **VERIFIED (2026-09-16, CLI 2.1.274, `probes/probe_cli_report_2026-09-16.json`):** the PreToolUse hook subprocess inherits the settings-env values Claude Code applied (`ANTHROPIC_BASE_URL`, blanked Vertex vars, `ANTHROPIC_AUTH_TOKEN`), so an Anthropic `models.hook` alongside an OpenRouter agent **would** be redirected to OpenRouter and 404 on its slug — the load-time rejection of a Vertex/Anthropic hook under a plan (Config validation, tools.py) now rests on evidence rather than a conditional. The hook's own Anthropic client therefore reaches OpenRouter **directly** with the overlay env; its `gen-…` ids ledger as `role: hook` (`hook_cost_usd`, C11). | No key: `scripts/probe_claude_cli.py` records the hook subprocess env. `test_claude_cli_direct` (i) asserts the hook's request is distinguishable (its own `message.id`) from the agent's. | PR-5 — result folded in |
-| 11 | **Re-scoped for direct mode 2026-09-16 (was: RETIRED with the gateway); DEFERRED — not executed:** the only podman requirement left is **container egress to `openrouter.ai`** (no host gateway exists; `host.containers.internal` reachability is gone with Decision 31). The podman machine on the dev box was not running (last up ~3 months ago), so the check did not run. Public TLS, CA/proxy vars forwarded as today (podman.py:36-49). | No key, when the machine is up: `podman run --rm docker.io/library/python:3.12-alpine python3 -c "import urllib.request;print(urllib.request.urlopen('https://openrouter.ai/api/v1/providers',timeout=20).status)"` → expect `200`. | PR-5 (podman acceptance only; #2 is the full e2e) |
+| 9 | **VERIFIED (2026-09-16, CLI 2.1.274, `probes/probe_cli_report_2026-09-16.json`):** a single-header `ANTHROPIC_CUSTOM_HEADERS` (`x-eval-run-id: …`) from the settings env was present on the root requests **and** on the subagent request. Together with row 27 (multi-header form) this puts the whole attribution set (`HTTP-Referer` + `X-OpenRouter-Title` [+ optional `x-eval-run-id`]) in PR-5; the run tag stays optional (`run_id_header`, activity-page tagging only — cost and per-case attribution come from gen ids, Decision 32). | No key: `specs/014-openrouter-provider/probes/probe_claude_cli.py`; inspect the recorded headers across root and subagent requests. Kept green by `test_claude_cli_direct` (d). | PR-5 — result folded in |
+| 10 | **VERIFIED (2026-09-16, CLI 2.1.274, `probes/probe_cli_report_2026-09-16.json`):** the PreToolUse hook subprocess inherits the settings-env values Claude Code applied (`ANTHROPIC_BASE_URL`, blanked Vertex vars, `ANTHROPIC_AUTH_TOKEN`), so an Anthropic `models.hook` alongside an OpenRouter agent **would** be redirected to OpenRouter and 404 on its slug — the load-time rejection of a Vertex/Anthropic hook under a plan (Config validation, tools.py) now rests on evidence rather than a conditional. The hook's own Anthropic client therefore reaches OpenRouter **directly** with the overlay env; its `gen-…` ids ledger as `role: hook` (`hook_cost_usd`, C11). | No key: `specs/014-openrouter-provider/probes/probe_claude_cli.py` records the hook subprocess env. `test_claude_cli_direct` (i) asserts the hook's request is distinguishable (its own `message.id`) from the agent's. | PR-5 — result folded in |
+| 11 | **Re-scoped for direct mode 2026-09-16 (was: RETIRED with the proxy); DEFERRED — not executed:** the only podman requirement left is **container egress to `openrouter.ai`** (no host proxy exists; `host.containers.internal` reachability is gone with Decision 31). The podman machine on the dev box was not running (last up ~3 months ago), so the check did not run. Public TLS, CA/proxy vars forwarded as today (podman.py:36-49). | No key, when the machine is up: `podman run --rm docker.io/library/python:3.12-alpine python3 -c "import urllib.request;print(urllib.request.urlopen('https://openrouter.ai/api/v1/providers',timeout=20).status)"` → expect `200`. | PR-5 (podman acceptance only; #2 is the full e2e) |
 | 12 | **VERIFIED (2026-09-16, `probes/probe_report_2026-09-16_run2.json`):** direct-mode `claude --print --output-format stream-json` exits 0; assistant `message.id` values ARE `gen-…` ids (2 per turn incl. a `generate_session_title` background call); `assistant.message.model` and `result.modelUsage` keys echo the **bare** slug; `GET /generation` for the CLI's gen id → 200 after 9.4 s with `total_cost 0.00165633` vs Claude Code's `total_cost_usd` estimate 0.1005 (~60× inflated); stderr shows a harmless `[claude-code:unrecognized_model] {"model":"z-ai/glm-5.3-flash","query_source":"generate_session_title"}`. The run went to `openrouter.ai` despite `CLAUDE_CODE_USE_VERTEX=1` in user settings (probe #1, CLI half) and Claude Code's `anthropic-beta` headers were tolerated (probe #20). Claude Code's stream-json `message.id` is OpenRouter's `gen-…` id; `modelUsage` keys echo the bare slug. | **KEY**: direct env template, `claude --print --output-format stream-json --verbose`; grep `"id":"gen-`; record `modelUsage` keys and `message.model`; `GET /generation?id=`. Result: direct mode promoted to per-request cost truth via gen-id backfill (`cost_source: openrouter:generation`); key-usage delta becomes the cross-check; join-rule fixture = bare-slug echo (see #19). | PR-6, PR-4 — result folded in |
 | 13 | **VERIFIED (2026-09-16, run1):** a VALID key sent as `x-api-key` (i.e. a non-empty `ANTHROPIC_API_KEY`) **works** on `/messages` (200). A valid key sent as `x-api-key` works or fails cleanly. | **KEY**: one request with `x-api-key` only. Result: the blank `ANTHROPIC_API_KEY` is hygiene (do not leak a stale Anthropic key; avoid cached-OAuth confusion), not correctness — validation severity = **warning** (Config validation; Decision 8 amended). | PR-5 — result folded in |
 | 14 | **VERIFIED on the installed versions (2026-09-16, openai 2.30.0 and 2.46.0):** `OpenAI(default_headers=, max_retries=, timeout=, base_url=)` and `chat.completions.create(extra_body=, extra_headers=, tool_choice=, max_tokens=, max_completion_tokens=)` exist and the response models expose pydantic `model_extra` (→ `usage.cost`/`provider`). These have been part of the v1 client since openai 1.0, so the `>=1.70` floor (pyproject.toml:35) is safe; **PR-1 CI pins/verifies the 1.70 floor** in a scratch venv. | No key: introspection on the installed client (done); PR-1 CI: `pip install openai==1.70` in a scratch venv + the fake-server unit tests; raise the floor (Containerfile + ensure_deps) only if that job fails. | PR-1 — result folded in (floor re-pinned in CI) |
 | 15 | **Measurement, not an assertion of a winner:** which layer Claude Code applies inside the Harbor container when a baked project settings.json env key and a `--agent-env` process env key overlap (HOME=/workspace, CLAUDE_CONFIG_DIR=/logs/agent/sessions). Probe #1 covers settings-vs-settings; this is the sole settings-vs-process probe. *Re-scoped 2026-09-16:* interception bakes **no** provider env key any more (there is no per-case header to bake, C5 → direct-only), so the design carries everything via `--agent-env` and this row is a guard against a future baked key, not an MVP gate. | No key: one podman trial against an echo endpoint with a sentinel `ANTHROPIC_CUSTOM_HEADERS` baked and a different one via `--agent-env`; record which arrives, plus `Authorization` (dummy token). | PR-7 (guard; low) |
-| 16 | **KEY half VERIFIED (2026-09-16, run1): a 5 s / 702-event stream carried ZERO `: OPENROUTER PROCESSING` comments — keep-alives are not a steady heartbeat on fast streams (informational now that the harness owns no idle timer, Decision 12 amended). Echo-server half UNVERIFIED (converted 2026-09-16 from "fake upstream in the gateway tests"):** how Claude Code surfaces an upstream mid-stream SSE `error` event and an HTTP 402 (OpenRouter's `insufficient_credits` / per-run key `limit_usd` refusal) — ends the turn with an API error, no retry storm, and the error text reaches stream-json/stderr in a form `stream_capture.py` can classify as `budget.exceeded_reason: limit_usd` (`key-guardrail`) or `error_class: infra`. | No key: local echo server (`tests/test_claude_cli_direct.py`) replaying the `error_mid_stream` fixture and answering 402 with an OpenRouter-shaped body; run `claude --print --output-format stream-json` against it; record exit code, the `result` event's `is_error`/subtype and stderr. | PR-5 (classification incl. `limit_usd` detection); PR-6 only adds the per-run keys whose refusals it classifies |
+| 16 | **KEY half VERIFIED (2026-09-16, run1): a 5 s / 702-event stream carried ZERO `: OPENROUTER PROCESSING` comments — keep-alives are not a steady heartbeat on fast streams (informational now that the harness owns no idle timer, Decision 12 amended). Echo-server half UNVERIFIED (converted 2026-09-16 from "fake upstream in the proxy tests"):** how Claude Code surfaces an upstream mid-stream SSE `error` event and an HTTP 402 (OpenRouter's `insufficient_credits` / per-run key `limit_usd` refusal) — ends the turn with an API error, no retry storm, and the error text reaches stream-json/stderr in a form `stream_capture.py` can classify as `budget.exceeded_reason: limit_usd` (`key-guardrail`) or `error_class: infra`. | No key: local echo server (`tests/test_claude_cli_direct.py`) replaying the `error_mid_stream` fixture and answering 402 with an OpenRouter-shaped body; run `claude --print --output-format stream-json` against it; record exit code, the `result` event's `is_error`/subtype and stderr. | PR-5 (classification incl. `limit_usd` detection); PR-6 only adds the per-run keys whose refusals it classifies |
 | 17 | **VERIFIED (2026-09-16, run1, no key): TLS via the default trust store reaches `openrouter.ai`.** The injected truststore reaches `openrouter.ai` on a machine with a corporate CA (RH-IT-Root-CA.pem present in rfe-creator). The probe ran with httpx; the design now uses stdlib `urllib.request` over the same default SSL context (Decision 29 amended), which `agent_eval._bootstrap`'s `truststore.inject_into_ssl()` also covers — re-checked by a one-line `urllib` variant in PR-4's `test_openrouter_generation`. | No key: `.eval-venv/bin/python -c "import agent_eval._bootstrap, urllib.request; print(urllib.request.urlopen('https://openrouter.ai/api/v1/models').status)"`. | PR-4 — result folded in (urllib re-check) |
 | 18 | **VERIFIED as far as observable (2026-09-16, run1, no key):** `/endpoints` `status` values observed `{0, -2}` (Crusoe `-2` at 94.8 % uptime); the exact enum semantics remain undocumented. Endpoint `status` enum semantics and `uptime_last_30m` thresholds usable for preflight filtering. | No key: sample `/models/{slug}/endpoints` for the models in scope. Result: preflight treats `status < 0` as **degraded** (excluded from the eligible set under `strict`, WARN under `warn`). | PR-6 — result folded in |
-| 19 | **API half VERIFIED (2026-09-16, run1): bare, `:exacto` and `[1m]` all 200; `response.model` echoes the BARE slug in all three cases; metadata carries the dated permaslug. Gateway half dropped 2026-09-16 (Decision 31) — a `fallbacks`-served request cannot happen on the agent path (Claude Code sends no `models` list), and the CLI echo for bare/`:variant`/`[1m]` is already covered by #12.** The `[1m]` marker and `:variant` suffixes are handled by OpenRouter, and what `message_start.message.model` / `result.modelUsage` keys echo for a bare slug, a `:variant` slug and a `[1m]` slug. | **KEY** (done for the API; the CLI form of `:exacto` is a one-line extension of #12's direct run — record `modelUsage` keys and `GET /generation` `model` for it). Result: join rule = strip variants/`[1m]` on the request side AND expect a bare-slug echo; permaslug only in `/generation` (`model_served`); PR-4's join-rule fixture is cut from probe #12's direct captures. | PR-4 — result folded in (`:exacto` CLI echo: low) |
+| 19 | **API half VERIFIED (2026-09-16, run1): bare, `:exacto` and `[1m]` all 200; `response.model` echoes the BARE slug in all three cases; metadata carries the dated permaslug. Proxy half dropped 2026-09-16 (Decision 31) — a `fallbacks`-served request cannot happen on the agent path (Claude Code sends no `models` list), and the CLI echo for bare/`:variant`/`[1m]` is already covered by #12.** The `[1m]` marker and `:variant` suffixes are handled by OpenRouter, and what `message_start.message.model` / `result.modelUsage` keys echo for a bare slug, a `:variant` slug and a `[1m]` slug. | **KEY** (done for the API; the CLI form of `:exacto` is a one-line extension of #12's direct run — record `modelUsage` keys and `GET /generation` `model` for it). Result: join rule = strip variants/`[1m]` on the request side AND expect a bare-slug echo; permaslug only in `/generation` (`model_served`); PR-4's join-rule fixture is cut from probe #12's direct captures. | PR-4 — result folded in (`:exacto` CLI echo: low) |
 | 20 | **VERIFIED (2026-09-16, run1/run2, via probe #12): Claude Code's `anthropic-beta` headers were tolerated by OpenRouter on a direct `claude --print` run against a non-Anthropic model** — the set 2.1.274 sends is recorded once in the Direct transport contract (`claude-code-20250219, interleaved-thinking-2025-05-14, thinking-token-count-2026-05-13, context-management-2025-06-27, prompt-caching-scope-2026-01-05, mid-conversation-system-2026-04-07, mid-conversation-tool-changes-2026-07-01, effort-2025-11-2…`) as VERIFIED-tolerated.** Claude Code's `anthropic-beta` headers (1M context, interleaved thinking) are accepted or ignored by OpenRouter for non-Anthropic models. | **KEY**: direct `claude --print` run (done); the 1M-context alias (`[1m]`) on a direct run is covered by #2's podman e2e `RunResult.error_class`. | PR-5 (low) — result folded in |
 | 21 | **VERIFIED (by reading `harbor 0.13.1 agents/base.py:288-291`):** Harbor merges `--agent-env` last over its stock claude-code agent env. | Source read (no run needed); re-check on Harbor upgrades. | — |
-| 22 | **RESOLVED for Claude Code 2.1.274 (2026-09-16, `probes/probe_cli_report_2026-09-16.json`):** the CLI made **zero** calls to `POST /v1/messages/count_tokens` in a 3-turn direct run with a tool call and a subagent; OpenRouter's 404 on that route is moot for this version and no design text plans around it. **Watch item:** re-run `scripts/probe_claude_cli.py` on CLI upgrades; if `count_tokens` appears, OpenRouter 404s it. | No key: `scripts/probe_claude_cli.py` records every route the CLI hits; `test_claude_cli_direct` (e) asserts zero `count_tokens` calls so an upgrade that starts calling it fails CI. | — result folded in (watch item) |
-| 23 | **VERIFIED (2026-09-16, CLI 2.1.274, `probes/probe_cli_report_2026-09-16.json`):** `claude --print --max-budget-usd 0` is **rejected** by the CLI ("--max-budget-usd must be a positive number greater than 0", exit 1, no request). Consequence: execute.py/claude_code.py must **not** pass `0` — a resolved cap `≤ 0`/`None` **omits the flag** (no CLI cap, `cli_cap_usd: null`); the key-guardrail `limit_usd` is unaffected (Budget mapping; Decision 11 amended). | No key: `scripts/probe_claude_cli.py` (done). `test_claude_cli_direct` (f) asserts the flag is omitted for cap ≤ 0 on the recorded argv. | PR-5 — result folded in |
+| 22 | **RESOLVED for Claude Code 2.1.274 (2026-09-16, `probes/probe_cli_report_2026-09-16.json`):** the CLI made **zero** calls to `POST /v1/messages/count_tokens` in a 3-turn direct run with a tool call and a subagent; OpenRouter's 404 on that route is moot for this version and no design text plans around it. **Watch item:** re-run `specs/014-openrouter-provider/probes/probe_claude_cli.py` on CLI upgrades; if `count_tokens` appears, OpenRouter 404s it. | No key: `specs/014-openrouter-provider/probes/probe_claude_cli.py` records every route the CLI hits; `test_claude_cli_direct` (e) asserts zero `count_tokens` calls so an upgrade that starts calling it fails CI. | — result folded in (watch item) |
+| 23 | **VERIFIED (2026-09-16, CLI 2.1.274, `probes/probe_cli_report_2026-09-16.json`):** `claude --print --max-budget-usd 0` is **rejected** by the CLI ("--max-budget-usd must be a positive number greater than 0", exit 1, no request). Consequence: execute.py/claude_code.py must **not** pass `0` — a resolved cap `≤ 0`/`None` **omits the flag** (no CLI cap, `cli_cap_usd: null`); the key-guardrail `limit_usd` is unaffected (Budget mapping; Decision 11 amended). | No key: `specs/014-openrouter-provider/probes/probe_claude_cli.py` (done). `test_claude_cli_direct` (f) asserts the flag is omitted for cap ≤ 0 on the recorded argv. | PR-5 — result folded in |
 | 24 | Claude Code's retry behaviour on a 503/529 with `Retry-After` (honoured? max attempts? backoff ceiling?). *Re-scoped 2026-09-16:* informational — there is no harness cooldown to tune (Decision 12 amended); the answer documents how long a case can stall on an OpenRouter-side provider outage before the case timeout is the only backstop, and feeds the `case timeout < PIPELINE_WAVE_STALL_SECS` guidance. | No key: echo server answers 503 + `Retry-After: 5` to `claude --print "say hi"`; time the attempts. | — (docs; low) |
 | 25 | **UNVERIFIED (added 2026-09-16, direct-only foundation):** Harbor's captured trial artefacts (`<trial>/agent/claude-code.txt`, read by harbor/results.py:163-168 → `_extract_transcript_metrics` :80-160) contain the assistant `message.id`s (`gen-…`) — it is Claude Code's own `--output-format stream-json`, so this is expected, but harbor 0.13.1's `installed/claude_code.py` post-processing has not been checked for id stripping. Determines whether per-trial cost on podman/K8s is per-request (`openrouter:generation`) or key-usage-only. | No key: one podman trial against the local echo server replaying the `basic` fixture (ids `gen-REDACTED-<n>`); grep the trial dir for `"id":"gen-`; also check `result.modelUsage` keys survive. Fallback if stripped: per-trial `cost_usd: null`, run-level `openrouter:key-usage`, `audit_complete: false` (Known limitations › Harbor podman). | PR-5 |
-| 26 | **DOCUMENTED / UNVERIFIED (added 2026-09-16, direct-only foundation):** management-API key guardrail semantics — `POST /api/v1/keys` field names for the allowed-provider list and `limit` (USD), whether the allow-list is per key or account-wide, how it interacts with the account's paid-training / ZDR data policy (the filter that made `deepseek-v4.1-flash` unroutable), whether a request outside the allow-list fails with a routing 404 or is silently re-routed, `limit` semantics (hard 402 vs soft), and that `DELETE /api/v1/keys/{hash}` revokes immediately. Needed for `enforcement: key-guardrail` to be **server-side** enforcement rather than a label. | **KEY (management)**: with `OPENROUTER_MANAGEMENT_KEY` exported, `scripts/probe_openrouter.py --management`: create a key with allow-list `[z-ai]` and `limit: 0.01`; one pinned-compatible request → 200 served by z-ai; one request on a slug z-ai does not serve → record status/body; spend past the limit → record the 402 body; `DELETE` → a follow-up request 401s; never prints key values. | PR-6 (`key-guardrail`) |
-| 27 | **VERIFIED (2026-09-16, CLI 2.1.274, `probes/probe_cli_report_2026-09-16.json`):** the multi-line value `HTTP-Referer: …\nX-OpenRouter-Title: …\nx-eval-run-id: …` was sent as **three separate headers** (all three observed) on root and subagent requests. Consequence: PR-5 sends Referer + Title (+ the optional run id) together — the former "PR-5 single Referer line, PR-6 adds the rest" split is removed everywhere (env template, env.py table, config example, `test_claude_cli_direct` (d), PR-5/PR-6 entries); row 9 is the single-header case. | No key: `scripts/probe_claude_cli.py` (done); `test_claude_cli_direct` (d) asserts each line arrives as its own header on root and subagent requests. | PR-5 — result folded in |
+| 26 | **DOCUMENTED / UNVERIFIED (added 2026-09-16, direct-only foundation):** management-API key guardrail semantics — `POST /api/v1/keys` field names for the allowed-provider list and `limit` (USD), whether the allow-list is per key or account-wide, how it interacts with the account's paid-training / ZDR data policy (the filter that made `deepseek-v4.1-flash` unroutable), whether a request outside the allow-list fails with a routing 404 or is silently re-routed, `limit` semantics (hard 402 vs soft), and that `DELETE /api/v1/keys/{hash}` revokes immediately. Needed for `enforcement: key-guardrail` to be **server-side** enforcement rather than a label. | **KEY (management)**: with `OPENROUTER_MANAGEMENT_KEY` exported, `specs/014-openrouter-provider/probes/probe_openrouter.py --management`: create a key with allow-list `[z-ai]` and `limit: 0.01`; one pinned-compatible request → 200 served by z-ai; one request on a slug z-ai does not serve → record status/body; spend past the limit → record the 402 body; `DELETE` → a follow-up request 401s; never prints key values. | PR-6 (`key-guardrail`) |
+| 27 | **VERIFIED (2026-09-16, CLI 2.1.274, `probes/probe_cli_report_2026-09-16.json`):** the multi-line value `HTTP-Referer: …\nX-OpenRouter-Title: …\nx-eval-run-id: …` was sent as **three separate headers** (all three observed) on root and subagent requests. Consequence: PR-5 sends Referer + Title (+ the optional run id) together — the former "PR-5 single Referer line, PR-6 adds the rest" split is removed everywhere (env template, env.py table, config example, `test_claude_cli_direct` (d), PR-5/PR-6 entries); row 9 is the single-header case. | No key: `specs/014-openrouter-provider/probes/probe_claude_cli.py` (done); `test_claude_cli_direct` (d) asserts each line arrives as its own header on root and subagent requests. | PR-5 — result folded in |
 
 ## Rollout plan
 
@@ -3072,17 +3161,21 @@ Each PR is independently shippable with green tests and no behaviour change for
 configs that do not opt in. **Ordering rule (Decision 23):** a PR may depend only on code
 shipped in the same or an earlier PR, so the cost substrate (ledger, reconcile, catalog,
 generation client, readers) lands *before* the transport that feeds it. **Re-cut 2026-09-16
-(Decisions 31/32):** there is no gateway PR any more. The first PR that replaces rfe-creator's
+(Decisions 31/32):** there is no proxy PR any more. The first PR that replaces rfe-creator's
 LiteLLM proxy is **PR-5, the MVP**: the direct transport for the local claude-code runner
 **and** Harbor podman, with cost truth (gen-id `/generation` backfill from PR-4) and
 `enforcement: audit` at its preflight minimum, so the first proxy-free run already reports
 real `cost_usd` (`cost_source: openrouter:generation`) — direct transport without cost truth
 would regress today's `custom_callbacks` + `reconcile_cost.py` setup and is not a shippable
 milestone on its own. PR-6 completes preflight/audit/snapshot and adds `key-guardrail`;
-PR-7 adds Kubernetes/EvalHub and docs. The former PR-5b (gateway hardening) is deleted.
+PR-7 adds Kubernetes/EvalHub and docs. The former PR-5b (proxy hardening) is deleted.
 
 - **PR-0 — Spec + probes (no behaviour change).** `specs/014-openrouter-provider/spec.md`
-  (this document); `scripts/probe_openrouter.py` — **already written on this branch** —
+  (this document) and two **spec-local verification artefacts** under
+  `specs/014-openrouter-provider/probes/` — probe scripts that live next to the evidence
+  they produce, are not harness tooling (not under `scripts/`, not imported by `agent_eval/`
+  or `skills/`, not part of the harness test suite) and are run by hand when the checklist
+  needs refreshing. `specs/014-openrouter-provider/probes/probe_openrouter.py` — **already written on this branch** —
   implementing the checklist (no-key probes runnable in CI, KEY probes when the variable is
   exported, `--management` probes when `OPENROUTER_MANAGEMENT_KEY` is exported; never prints
   values); `probe_report.json` schema; the evidence directory
@@ -3090,13 +3183,14 @@ PR-7 adds Kubernetes/EvalHub and docs. The former PR-5b (gateway hardening) is d
   (`probe_report_2026-09-16_run1.json`, `_run2.json`: results, timings and redacted shapes
   only — no key material, no bodies) that the Verification checklist cites;
   `--record-fixtures` writes the redacted `tests/data/openrouter/*.sse` golden fixtures
-  (IMPL-09) that the echo server replays. `scripts/probe_claude_cli.py` — **also already
+  (IMPL-09) that the echo server replays. `specs/014-openrouter-provider/probes/probe_claude_cli.py` — **also already
   written on this branch** — runs the no-key Claude Code CLI probes (rows 1, 9, 10, 22, 23,
   27) against a local fake Anthropic endpoint (records path incl. the `?beta=true` query,
   headers, the subagent request and the hook subprocess env; never prints secret values) and
   writes `probes/probe_cli_report_2026-09-16.json` (Claude Code 2.1.274), the second
   committed evidence file; `tests/test_claude_cli_direct.py` (PR-5) is its CI form. Tests:
-  probe script unit tests with a fake server; `test_fixtures_lint`. Status: the KEY probes
+  none for the probe scripts themselves (spec-local artefacts outside the harness suite);
+  `tests/test_fixtures_lint.py` lints the fixtures they record. Status: the KEY probes
   3–8, 12, 13, 16 (keep-alive half), 19 (API half), 20 and the no-key 17/18 ran on 2026-09-16
   (`probe_openrouter.py`); the no-key CLI rows 1 (incl. subagent/hook children), 9, 10, 23,
   27 are VERIFIED and 22 RESOLVED on 2.1.274 (`probe_claude_cli.py`); 14 VERIFIED on the
@@ -3112,10 +3206,10 @@ PR-7 adds Kubernetes/EvalHub and docs. The former PR-5b (gateway hardening) is d
   `auto` + strict parse of the first tool call, `JudgeProviderError` never text fallback, the
   routing 404 as `error_class: config`) with `tool_choice_mode` on the judge usage/ledger
   record and `judge_usage.tool_choice_fallbacks`; `judge.inherit_pins` (default `false`) and
-  the per-role `to_chat_extra_body()` rule; `JudgeConfig.provider_options` (kind-validated); a minimal `providers.openrouter` parse
+  the per-role `to_chat_extra_body()` rule; `JudgeConfig.provider_options` (kind-validated); a minimal `models.providers.openrouter` parse
   (`base_url`, `attribution`, `routing`, `judge` options only — the full `ProvidersConfig`, plan
   build and cross-surface validation land in PR-3b) so `resolve_judge_client(model,
-  config.providers)` has its input under the ordering rule; config-load acceptance;
+  config.models.providers)` has its input under the ordering rule; config-load acceptance;
   ensure_deps alignment; generate_synthetic rejection; Containerfile `openai`; docs rows.
   Immediately usable with `OPENROUTER_API_KEY` exported. Tests: test_prompt_backends,
   test_score_builtin, test_pairwise_providers, test_llm_rubric_scoring, test_config,
@@ -3130,9 +3224,18 @@ PR-7 adds Kubernetes/EvalHub and docs. The former PR-5b (gateway hardening) is d
   validate_eval.py, discover_configs with `include_profiles`, anova/matrix.py, reorganize.py);
   ensure_deps profile follow; `task.toml metadata.config_chain`. Tests: test_config,
   test_config_raw_readers, test_harbor_task_generation (overlay bundle), test_report
-  (overlay renders base judges), test_ensure_deps. rfe-creator can convert
-  `eval-openrouter.yaml` to an overlay immediately after this PR.
-- **PR-3b — Providers block (single kind, Decision 31).** `agent_eval/providers/` (base,
+  (overlay renders base judges), test_ensure_deps. `extends:` is a **new, optional**
+  top-level eval-config key (not an existing harness feature): `extends: <path relative to
+  the file>` deep-merges the overlay over the base in the single raw loader, so every reader
+  sees the merged config and `eval_params.config_chain` records the chain. This PR is
+  **independent of the OpenRouter feature and droppable** — its motivation is the
+  `eval.yaml` / `eval-openrouter.yaml` drift. rfe-creator now generates `eval.yaml` from a
+  skeleton + per-type fragments (`scripts/generate_eval_config.py`); the generated file
+  stays the base and an OpenRouter profile `extends:` it, so the generator is untouched and
+  rfe-creator can convert `eval-openrouter.yaml` to an overlay immediately after this PR.
+  (Alternatively the generator could emit per-provider configs directly and PR-3a would be
+  skipped.)
+- **PR-3b — `models.providers` block (single kind, Decision 31; nested under `models`, Decision 33).** `agent_eval/providers/` (base,
   env with `settings_env_block`/`MANAGED_ENV_KEYS` and the alias derivation of Decision 10,
   `openrouter/routing.py` — `RoutingSpec` with `to_chat_extra_body()` for judges and the
   pinned-set view the audit and the key guardrail consume, `openrouter/plan.py` —
@@ -3140,9 +3243,10 @@ PR-7 adds Kubernetes/EvalHub and docs. The former PR-5b (gateway hardening) is d
   selecting only *how the env block is delivered*, `routing.enforcement ∈ {audit,
   key-guardrail}` parsed and validated (`key-guardrail` requires `management_key_env` present
   in the process env and `budget.run_usd` set), `plan.close()` as a no-op hook for now),
-  `ProvidersConfig(openrouter: OpenRouterConfig | None)` with the reserved `kind` and the
-  **rejection of retired keys** (`gateway`, `gateway_options.*`, `direct.*`,
-  `providers.gateway`, `gateway:/` URIs → `ConfigError` pointing at Decision 31), all
+  `ModelsConfig.providers: ProvidersConfig(openrouter: OpenRouterConfig | None)` with the reserved `kind` and the
+  **rejection of retired keys** (the pre-directive draft's transport mode/options keys and
+  `direct.*` → `ConfigError` pointing at Decision 31; any other unknown provider name or URI
+  prefix is an ordinary unknown-name/unknown-prefix error), all
   load-time validation (managed-key ownership across six surfaces, `ANTHROPIC_API_KEY`
   non-empty = warning, `OPENROUTER_API_KEY`/`OPENROUTER_MANAGEMENT_KEY` env-only, bare-id
   footgun, WARNING on `require_parameters`/`sort`/`data_collection`/`zdr`/`max_price` under a
@@ -3224,7 +3328,7 @@ PR-7 adds Kubernetes/EvalHub and docs. The former PR-5b (gateway hardening) is d
   (2) one podman `harbor run` with `--config eval-profiles/<overlay>.yaml`, with and without
   `--no-llm-judges`, plus a `--tasks-dir` reuse of packages generated from that overlay,
   ending with per-trial `cost_source: openrouter:generation` and `routing.violations == []`
-  (probe #2); (3) the same runs with `providers:` removed are byte-identical to today.
+  (probe #2); (3) the same runs with `models.providers` removed are byte-identical to today.
   PR-5 ships the **full attribution header set** (`HTTP-Referer` + `X-OpenRouter-Title`
   [+ `x-eval-run-id`]) as one multi-line `ANTHROPIC_CUSTOM_HEADERS` (row 27 VERIFIED) and
   the budget-flag mapping `cap ≤ 0`/`None` → no `--max-budget-usd` (row 23 VERIFIED: the CLI
@@ -3235,7 +3339,7 @@ PR-7 adds Kubernetes/EvalHub and docs. The former PR-5b (gateway hardening) is d
   and 20 were VERIFIED the same day, so none of them gate any longer. Tests:
   test_env_writers_conformance (overlay/`--agent-env`/interception legs),
   test_claude_cli_direct (IMPL-09 re-cut: local echo server, no key; the CI form of
-  `scripts/probe_claude_cli.py`; automates probes 1, 9, 10, 16 (echo-server half), 22, 23,
+  `specs/014-openrouter-provider/probes/probe_claude_cli.py`; automates probes 1, 9, 10, 16 (echo-server half), 22, 23,
   24 and checklist row 27 (multi-header `ANTHROPIC_CUSTOM_HEADERS`) — overlay beats user
   settings, subagent auth, fixture replay → `message_ids` + one `GET /generation` per id,
   zero `count_tokens` calls, 402/`error` surfacing, `--max-budget-usd` omitted for cap ≤ 0),
@@ -3299,7 +3403,7 @@ PR-7 adds Kubernetes/EvalHub and docs. The former PR-5b (gateway hardening) is d
   runner.md ownership rule, README quick-start (`--model openrouter:/…`), migration notes.
   Acceptance: one K8s run (`audit`) ending with `cost_source: openrouter:generation` and
   `cost_confidence: high`; one K8s run at `key-guardrail` whose per-run Secret is gone after
-  the run; one K8s run on an existing Secret-based LiteLLM config with no `providers:`
+  the run; one K8s run on an existing Secret-based LiteLLM config with no `models.providers`
   block, unchanged. Gated by probes 9 and 15 (guards, low). Tests: test_harbor_kubernetes
   (`secretKeyRef` mapping, `env[]` precedence, exec-prefix, no Vertex vars),
   test_harbor_k8s_resources (per-run Secret create/delete, name, labels),
@@ -3310,26 +3414,36 @@ PR-7 adds Kubernetes/EvalHub and docs. The former PR-5b (gateway hardening) is d
   with **no replacement proxy**, `.gitignore` `.env`, README/MEMORY updates. Acceptance:
   glm-5.2 v5 re-run under podman compared against the last proxy-reconciled baseline
   (cost within 5 %, `routing.violations == []`); merged profile keeps `Skill`/`Agent`.
-- **PR-9 (future) — other runners, generic kinds, deferred gateway.** Codex
+- **PR-9 (future) — other runners, other provider kinds, deferred shaping proxy.** Codex
   `OPENAI_BASE_URL` mapping, cli runner placeholders, `kind: openai-compatible` judge
-  providers, and — only if the Out-of-scope rationale is re-validated — the shaping gateway
-  as a third `enforcement: gateway` level (per-request body pins, in-flight real-cost gate,
+  providers and other kinds (an MLflow AI Gateway or OpenShift AI gateway provider, ...; no
+  name or scheme reserved here), and — only if the Out-of-scope rationale is re-validated —
+  the shaping proxy as a third `enforcement` level (per-request body pins, in-flight real-cost gate,
   per-case tokens, in-stream ledger; contract text in this file's git history).
 
 ## Review log
 
-- **2026-09-16 — no-key CLI probe fold-in.** `scripts/probe_claude_cli.py` results (Claude Code 2.1.274, `probes/probe_cli_report_2026-09-16.json`) folded in: rows 1 (incl. children), 9, 10, 23, 27 VERIFIED, 22 RESOLVED, 14 VERIFIED (installed `openai`), 11 re-scoped to container egress and DEFERRED; attribution headers moved wholly into PR-5, the budget-flag mapping became `cap ≤ 0/None → no --max-budget-usd`, the hook rejection is now evidence-based, `count_tokens` planning text removed (watch item only), the 2.1.274 `anthropic-beta` set recorded in the Direct transport contract.
+- **2026-09-21 — maintainer feedback, item A (registry under `models`).** The provider
+  registry moved from a top-level `providers:` key to `models.providers` (Decision 33):
+  every YAML example now declares `models: {skill: openrouter:/…, providers: {openrouter: …}}`;
+  `ProvidersConfig` became `ModelsConfig.providers` (config.py section, PR-3b); prose,
+  validation messages, Docs, Behavior changes, Tests (`test_config`) and the activation rule
+  read `models.providers.*`; a top-level `providers:` key is now a load error pointing at
+  Decision 33. Item D (probe scripts): the two producer scripts under
+  `specs/014-openrouter-provider/probes/` are described as spec-local verification
+  artefacts (PR-0, checklist intro, Tests, `probes/README.md`), not harness tooling.
+- **2026-09-16 — no-key CLI probe fold-in.** `specs/014-openrouter-provider/probes/probe_claude_cli.py` results (Claude Code 2.1.274, `probes/probe_cli_report_2026-09-16.json`) folded in: rows 1 (incl. children), 9, 10, 23, 27 VERIFIED, 22 RESOLVED, 14 VERIFIED (installed `openai`), 11 re-scoped to container egress and DEFERRED; attribution headers moved wholly into PR-5, the budget-flag mapping became `cap ≤ 0/None → no --max-budget-usd`, the hook rejection is now evidence-based, `count_tokens` planning text removed (watch item only), the 2.1.274 `anthropic-beta` set recorded in the Direct transport contract.
 
 **Foundation change 2026-09-16 (maintainer directive: "direct, no LiteLLM; must work with
 the podman / Harbor runner" — Decisions 31/32).** The three review rounds below were run
-against a design whose default transport was a harness-owned shaping gateway. That
+against a design whose default transport was a harness-owned shaping proxy. That
 foundation is gone: the agent talks to OpenRouter directly on every runner, routing pins are
 enforced by preflight + post-hoc audit (`enforcement: audit`, default) or by a server-side
 per-run key guardrail (`enforcement: key-guardrail`, opt-in), and Harbor podman + K8s are MVP
 scope. The entries below are **kept verbatim as the record of what was decided and why**;
 this paragraph and the "Disposition (post-2026-09-16)" column of the index say what each
 confirmed id means now. **Moot (the mechanism they hardened no longer exists):** the
-gateway halves of **OPS-02** (tap self-test, pricing-based charging, `cost_unknown` 402,
+proxy halves of **OPS-02** (tap self-test, pricing-based charging, `cost_unknown` 402,
 overshoot bound), **OPS-03** (`committed`/`truncated_by` from the tap, truncated
 charge-and-backfill — the `generation.py` worker itself survives as the primary source),
 **OPS-04** (default-deny routes, `passthrough` allow-list), **OPS-05** (`on_unreachable`,
@@ -3337,20 +3451,20 @@ charge-and-backfill — the `generation.py` worker itself survives as the primar
 degradation events, `routing_sha` recompute on widen — there is no `provider/events.jsonl`;
 preflight/backfill diagnostics are stderr one-liners plus fields in `routing_snapshot.json`
 / `run_result.json`, Decision 27), **OPS-11** (`request_s`), **OPS-13**
-(gateway error-body shaping), **IMPL-03** (httpx extra → stdlib `urllib`), **IMPL-06**
+(proxy error-body shaping), **IMPL-03** (httpx extra → stdlib `urllib`), **IMPL-06**
 (framing), **IMPL-07** (timeouts), **IMPL-08** (in-process vs subprocess), the budget-gate
 parts of **C1 / OPS-01 / IMPL-01** (per-token 402 keyed on `{run_id, case_id, step_id}`,
 `register_token`), **C6**'s tap placement (kept as fixture evidence), **C8**/**C9**
 (`count_tokens` synthesis, semantic-passthrough invariant), **C11**'s `x-eval-role` header
 (hook cost is now split by request id), **C5**'s managed-mode case header, **BC-7**'s
-`gateway` kind and **Decision 17**. **Still applying, unchanged or re-homed:** **C2 / BC-2 /
+second (pass-through) provider kind and **Decision 17**. **Still applying, unchanged or re-homed:** **C2 / BC-2 /
 IMPL-04** (`load_raw` + `extends:` — untouched by the transport), **C3** (managed-key strip
 in `_build_env`), **C4 / BC-3 / OPS-07** (overlay precedence + six-surface validation; the
 `ANTHROPIC_API_KEY` warning), **C7** (join rule; `model_served` now from `/generation`
 only), **C10** (exec-prefix anchor), **C12** (generation-primary ≥ 0.95, key delta
 cross-check, `dedicated_key`), **BC-1** (provider registry seam, now one kind), **BC-4**
 (`deep_merge`), **BC-5** (URI-driven activation), **BC-6** (package layout minus
-`agent_eval/gateway/`; `cost_source: <origin>:<method>`), **BC-9** (preflight degrade,
+`agent_eval/proxy/`; `cost_source: <origin>:<method>`), **BC-9** (preflight degrade,
 `budget.enforcement` recorded — values now `cli-estimate`/`key-guardrail`), **BC-10**,
 **OPS-06** (refutation stands; the `finally:` unlink is now the *only* mode's hygiene),
 **OPS-08** (null-cost arithmetic), **OPS-12** (hooks/child processes never get the key —
@@ -3366,16 +3480,16 @@ also owns `generation.py` and the `urllib` client, so PR-5 only wires producers.
 Confirmed findings applied (id → what changed):
 
 - **C1 / OPS-01** → Budget scope restored to per-invocation: `register_token(case_id, step_id, budget_usd)`
-  carries the value execute.py already resolves (:493-495, :1289-1290); gateway 402 keyed on
-  the presenting token's `{run_id, case_id, step_id}`; new optional `providers.openrouter.budget.run_usd`;
+  carries the value execute.py already resolves (:493-495, :1289-1290); proxy 402 keyed on
+  the presenting token's `{run_id, case_id, step_id}`; new optional `models.providers.openrouter.budget.run_usd`;
   `budget_exceeded` replaced by a scope-tagged `budget` object (per case: `"invocation"`, run: `"run"`);
   `eval_params.budget.{cli_cap_usd, invocation_usd, run_usd, enforcement}`; config-example
-  comment, Behavior changes, Decision 11, execution.md rows and gateway tests rewritten.
+  comment, Behavior changes, Decision 11, execution.md rows and proxy tests rewritten.
 - **OPS-02** → Sentinel removed; `cli_budget_inflation` promoted to every mode as backstop;
   fail-closed: preflight tap self-test, pricing-based charge for unpriced records
-  (`cost_estimated`), `cost_unknown` 402 trip (`providers.openrouter.budget.max_unpriced` /
+  (`cost_estimated`), `cost_unknown` 402 trip (`models.providers.openrouter.budget.max_unpriced` /
   `.max_unpriced_ratio`), overshoot bound stated
-  and `budget.overshoot_usd` surfaced; cap ≤ 0 = no gateway gate; Decision 17 records the
+  and `budget.overshoot_usd` surfaced; cap ≤ 0 = no proxy gate; Decision 17 records the
   reservation choice.
 - **C2 / BC-2** → `load_raw(path) -> (mapping, chain)` is the single `extends:` resolver;
   `from_yaml` wraps it; tasks.py:99, run.py:452, evalhub/runner.py:206, report.py:143/2978,
@@ -3422,8 +3536,8 @@ Confirmed findings applied (id → what changed):
   `message_start.message.model`, `response.model` and the `modelUsage` keys echo the **bare**
   slug for bare, `:variant` and `[1m]` requests; the dated permaslug appears only in
   `openrouter_metadata`/`/generation` (`model_served`). The join keeps the permaslug arm as a
-  guard for `fallbacks`-served requests (gateway half of #19 still open).
-- **BC-1** → `providers:` mapping with reserved `kind`; `resolve_judge_backend` keeps its
+  guard for `fallbacks`-served requests (proxy half of #19 still open).
+- **BC-1** → `models.providers` mapping with reserved `kind`; `resolve_judge_backend` keeps its
   2-tuple and three transports (`openrouter:/` → `openai`); new `resolve_judge_client` +
   `JudgeClientConfig`; `_client_for` replaces `_get_openrouter_client`; dispatch sites stay
   three-way; generic `openai-compatible` listed under Out of scope; Decision 18.
@@ -3436,15 +3550,16 @@ Confirmed findings applied (id → what changed):
   URI is `openrouter:/`; post-CLI warning; shared routing table example moved into base
   `eval.yaml`; zero-profile `--model openrouter:/…` documented; Decision 22.
 - **BC-6** → Two packages with one-way imports (`providers/` core + `providers/openrouter/`,
-  `gateway/`); `<run_dir>/provider/…`; `cost_source` as `<origin>:<method>` with legacy
+  `proxy/`); `<run_dir>/provider/…`; `cost_source` as `<origin>:<method>` with legacy
   literals readable and the `runner-estimate`/`runner-reported` drift removed; ledger
   `provider_kind`; ledger/reconcile tests parameterised over the kinds that write records
-  (`openrouter`, `anthropic`, `openai` — the `gateway` kind writes none, so its only reconcile
-  test is `no ledger → runner:estimate + banner`); Decision 19.
-- **BC-7** → `external` removed from `OpenRouterConfig`; new `providers.gateway` kind with
-  `gateway:/` agent-only URIs, no preflight/ledger/OpenRouter key, `runner:estimate` + banner;
+  (`openrouter`, `anthropic`, `openai` — the draft's pass-through kind wrote none, so its only
+  reconcile test was `no ledger → runner:estimate + banner`); Decision 19.
+- **BC-7** → `external` removed from `OpenRouterConfig`; the draft then added a second
+  pass-through kind with agent-only URIs, no preflight/ledger/OpenRouter key,
+  `runner:estimate` + banner (since dropped, Decision 31: no second kind or scheme);
   existing Secret-based K8s deployments explicitly unchanged; one base-URL knob
-  (`providers.openrouter.base_url`, `$VAR`), `OPENROUTER_BASE_URL` dropped; preflight scoped
+  (`models.providers.openrouter.base_url`, `$VAR`), `OPENROUTER_BASE_URL` dropped; preflight scoped
   to `openrouter:/` slugs; Decision 13.
 
 Optional (LOW / unverified) suggestions applied because they were cheap and clearly
@@ -3483,11 +3598,11 @@ disposition of every confirmed id is traceable):
 
 - **IMPL-01** — applied via **C1 / OPS-01** (per-invocation scope restored, Decision 11) and
   via the rollout re-order in Decision 23 (`## Rollout plan`: PR-4 = cost substrate incl.
-  `ledger.py`/`pricing_for`, PR-5 = gateway + budget gate; ordering rule "a PR may depend
+  `ledger.py`/`pricing_for`, PR-5 = proxy + budget gate; ordering rule "a PR may depend
   only on earlier PRs"); the sentinel-CLI-cap gap between PRs no longer exists (OPS-02).
 - **IMPL-02** — applied with deviation (Decision 23): PR-4 is no longer the first proxy-free
   milestone; PR-5 is the MVP and ships routing **with** cost truth
-  (`cost_source: openrouter:gateway`), per-module size guards are stated in PR-5, and
+  (the retired proxy-side `cost_source` literal), per-module size guards are stated in PR-5, and
   cooldown / widening / passthrough ledgering / the conditional count_tokens relay switch (the local estimate itself ships in PR-5, as the Design section's default) are deferred to PR-5b
   (IMPL-10 split). Deviation: the per-case token registry stays in PR-5 (needed for the
   per-invocation 402 of C1) rather than being deferred as the finding proposed.
@@ -3503,19 +3618,19 @@ disposition of every confirmed id is traceable):
   the `skills/eval-run/scripts/workspace.py` section; Decision 8. *Amended by probe results
   2026-09-16 (row 13):* `ANTHROPIC_API_KEY` is the one static managed key whose non-empty
   value is a warning rather than an error (see C4 / BC-3). The finding's fourth item
-  (gateway asserts `model`/token match the plan at first request) was **not applied**: the
+  (proxy asserts `model`/token match the plan at first request) was **not applied**: the
   Request-shaping step keys routing on `routing_key(body.model)` per request and the token
   gate already binds each request to a plan-issued `{run_id, case_id, step_id}`, so no
   separate first-request assertion was added.
 - **Checker contradiction #1** (PR-4 needs PR-5/PR-6 code) — resolved by Decision 23 and
   the rewritten PR-4/PR-5/PR-5b/PR-6 entries under `## Rollout plan`; probe #2/#6 gating
   moved accordingly in the Verification checklist. Round-3 strict check found the same
-  class of defect for probe #19 (its procedure runs through the PR-5 gateway yet it gated
+  class of defect for probe #19 (its procedure runs through the PR-5 proxy yet it gated
   PR-4's join rule): probe #19 now blocks PR-5 only (low) and re-cuts the join-rule fixture;
   PR-4 is gated by probes 6 and 12, its fixture cut from the proxy-log conversion and probe
   #12's direct-mode captures.
 - **Round-3 residuals (strict check)** — (1) IMPL-08 residue swept (see the IMPL-08 entry);
-  (2) probe #19 ordering, above; (3) `count_tokens` default: Design (Gateway HTTP contract,
+  (2) probe #19 ordering, above; (3) `count_tokens` default: Design (Proxy HTTP contract,
   Known limitations) and Rollout had inverse defaults — Rollout now matches Design: PR-5
   ships `count_tokens.py` (local chars/4 estimate served by default, size guard ≤ 40) and
   PR-5b holds only the conditional switch to relaying the upstream 404 if probe #22 shows
@@ -3524,7 +3639,7 @@ disposition of every confirmed id is traceable):
   same **budgeted set** (`role: agent` plus allow-listed `role: passthrough` POST relays,
   identical to reconcile's `cost_usd`) as the exclusion/inclusion bullet that defines it,
   instead of the literally narrower `role: agent` only; (5) `openrouter/plan.py`
-  (`ProviderPlan` build, `resolve_gateway_mode`, `require_httpx()` at plan build) is now
+  (`ProviderPlan` build, the retired transport-mode resolver, `require_httpx()` at plan build) is now
   assigned to PR-3b, which previously listed only base/env/passthrough/routing.
 
 Round-2 confirmed OPS findings applied (verifier-refined fixes; deviations recorded in
@@ -3543,10 +3658,10 @@ Decisions 24-27):
   2 s, give up at 60 s (first 200 observed 7.6–12.7 s after `message_stop`), and the
   key-usage settle window is a 20 s minimum wait polled to a 60 s ceiling (update seen at 20.3 s).
 - **OPS-04** — applied: default-deny routes with `role: denied` ledger records and `denied`
-  events; `gateway_options.passthrough` allow-list limited to `GET /v1/models` and
+  events; `proxy_options.passthrough` allow-list limited to `GET /v1/models` and
   `POST /v1/chat/completions`, relayed POSTs budgeted/shaped/tapped and counted in both
   sums; Decision 24; tests (404 on `/v1/chat/completions` with a valid token, no upstream call).
-- **OPS-05** — applied: `gateway_options.on_unreachable: fail | direct` (default `fail`,
+- **OPS-05** — applied: `proxy_options.on_unreachable: fail | direct` (default `fail`,
   loud error with probe output); `direct` requires `direct.acknowledge_key_exposure: true`
   and records `provider.fallback_from: managed`; compare/anova treat `enforcement: none` as
   a separate factor level; Decision 13 amended, Decision 25; PR-7 and test_harbor_run updated.
@@ -3557,7 +3672,7 @@ Decisions 24-27):
   `trace_builder.py` read reconciled per-step/per-model cost and never re-inflate from the
   estimate; `trace_from_stdout.py` labels; case aggregate with a `null` case is `null`); tests.
 - **OPS-09** — applied: cooldown counting/never-counting/reset/trip rules, scope = routing
-  key per gateway process, `Retry-After` on the strict 503, events on enter/exit, the
+  key per proxy process, `Retry-After` on the strict 503, events on enter/exit, the
   `cooldown_s < case timeout < PIPELINE_WAVE_STALL_SECS` relation with a validation warning,
   probe #24 (Claude Code `Retry-After` behaviour); Decision 26 records the routing-key (not
   `(slug, provider)`) deviation. *Amended by probe results 2026-09-16 (row 5, Decision 30):*
@@ -3567,33 +3682,33 @@ Decisions 24-27):
   budget refusal, truncation, violation, off-primary provider, denied, direct fallback;
   `routing_sha` recomputed on widen with `routing_sha_configured` and `degraded: true` per
   record; `routing.sha: {configured, effective}` and `degraded_at`/`degraded_reason` in
-  reconcile; `gateway.json` rewritten; `[routing degraded: …]` marker on the execute.py
+  reconcile; `proxy.json` rewritten; `[routing degraded: …]` marker on the execute.py
   progress line (:985-990); Decision 27 records the `provider/` path deviation.
 
 Round-2 internal-consistency fixes (checker contradictions #2-#8, IMPL-05):
 
-- **Budget knob path** → one path, `providers.openrouter.budget.{run_usd, max_unpriced,
+- **Budget knob path** → one path, `models.providers.openrouter.budget.{run_usd, max_unpriced,
   max_unpriced_ratio}`, matching `OpenRouterConfig.budget=BudgetOptions(...)`; the
-  `gateway_options.budget.*` variants in the gateway section and Out of scope were removed;
+  `proxy_options.budget.*` variants in the proxy section and Out of scope were removed;
   the config example lists all three keys.
-- **Kubernetes default transport** → `OpenRouterConfig.gateway` defaults to `auto`;
-  `openrouter/plan.py resolve_gateway_mode(configured, backend)` is the single definition
+- **Kubernetes default transport** (pre-directive draft; superseded — there is one transport now) → the
+  draft's transport-mode field defaulted to `auto`; a single resolver in `openrouter/plan.py` was the one definition
   (`auto` → `managed` on local/harbor-podman, `direct` on harbor-kubernetes/evalhub; explicit
   `managed` on K8s/evalhub = plan-build error, never a silent switch); the architecture
-  table, kubernetes.py section, both config examples, Config validation, `eval_params.provider.gateway`
+  table, kubernetes.py section, both config examples, Config validation, the draft's `eval_params.provider` mode field
   and test_harbor_run reference it.
 - **`JudgeClientConfig` vs `cfg.extra_body`** → the dataclass carries a static `extra_body: dict`
   (from `JudgeClientOptions.extra_body`); `extra_body_fn` dropped; score.py's
   `routing | cfg.extra_body` merge is now consistent with the field set.
 - **Env-var naming** → `AGENT_EVAL_GATEWAY_BIND` and token prefix `agent_eval_`; no `AEH_*`/`aeh_`
-  names remain; precedence `gateway_options.bind` > `AGENT_EVAL_GATEWAY_BIND` > mode default
+  names remain; precedence `proxy_options.bind` > `AGENT_EVAL_GATEWAY_BIND` > mode default
   stated in the Environment paragraph and the dataclass comment.
 - **Preflight vs tap self-test ordering** → the self-test is defined once under Budget as an
-  in-process check (`gateway/selftest.py:run_tap_selftest` over `upstream`+`tap`+`ledger`,
+  in-process check (`proxy/selftest.py:run_tap_selftest` over `upstream`+`tap`+`ledger`,
   no HTTP listener, ledgered `role: preflight`, excluded from budget sums); preflight.py and
-  the execute.py startup order (config → preflight incl. self-test → gateway start) refer to it.
-- **Ledger `provider_kind`** → enum is `openrouter | anthropic | openai`; the `gateway` kind
-  writes no records, and the kind-parameterised ledger/reconcile tests say so.
+  the execute.py startup order (config → preflight incl. self-test → proxy start) refer to it.
+- **Ledger `provider_kind`** → enum is `openrouter | anthropic | openai`; the draft's
+  pass-through kind wrote no records, and the kind-parameterised ledger/reconcile tests said so.
 - **IMPL-05** → the execute.py reconcile-at-write contract enumerates all eight write sites
   (:982, :1117, :1168, :1392, :1426, :1679, :1768, :1840) plus harbor/run.py:663 behind one
   `write_run_result` helper; grep-based guard `tests/test_execute_write_sites.py` and
@@ -3602,9 +3717,9 @@ Round-2 internal-consistency fixes (checker contradictions #2-#8, IMPL-05):
 Round-2 confirmed IMPL findings applied (IMPL-03/06/07/08/09; Decisions 28-29):
 
 - **IMPL-03** — applied: httpx declared as the pyproject `openrouter` extra
-  (`httpx>=0.27,<1`), installed by `ensure_deps._deps_for_config` on any `providers.openrouter`
+  (`httpx>=0.27,<1`), installed by `ensure_deps._deps_for_config` on any `models.providers.openrouter`
   / `openrouter:/` role, `.[openrouter]` in the Containerfile, `require_httpx()` plan-build
-  `ConfigError` when absent (all modes); the "transitive via anthropic" claims in the Gateway
+  `ConfigError` when absent (all modes); the "transitive via anthropic" claims in the Proxy
   HTTP contract, ensure_deps section and Decision 1 removed; `test_ensure_deps` case.
 - **IMPL-06** — applied: **HTTP framing** block (protocol 1.1, keep-alive + 75 s server idle,
   no pipelining claim, `Content-Length`/chunked/411/400 request handling incl. a stdlib
@@ -3625,15 +3740,15 @@ Round-2 confirmed IMPL findings applied (IMPL-03/06/07/08/09; Decisions 28-29):
   comment cadence; `first_byte_s` covers pre-first-token silence.
   `tests/test_gateway_timeouts.py`.
 - **IMPL-08** — applied: in-process only; `__main__.py`, `serve`, `--token-file` and the
-  `GATEWAY_URL=` handshake removed from the gateway package, harbor/run.py (now
-  `Gateway.start(bind="0.0.0.0")` + `finally: stop()`), Docs CLI list, PR-5b and
-  test_gateway; `gateway.json.mode` fixed to `in-process`; the `serve` CLI moved to Out of
+  `GATEWAY_URL=` handshake removed from the proxy package, harbor/run.py (now
+  `Proxy.start(bind="0.0.0.0")` + `finally: stop()`), Docs CLI list, PR-5b and
+  test_gateway; `proxy.json.mode` fixed to `in-process`; the `serve` CLI moved to Out of
   scope as a PR-9 item; Decision 28. Round-3 residue sweep: the stale "subprocess
-  handshake" test in PR-5b's test list, PR-7's "gateway subprocess" scope line,
-  test_harbor_run's "gateway subprocess started/stopped" assertion, Decisions 9 and 13
-  ("gateway thread/subprocess", "host-side gateway subprocess") and the execute.py
+  handshake" test in PR-5b's test list, PR-7's "proxy subprocess" scope line,
+  test_harbor_run's "proxy subprocess started/stopped" assertion, Decisions 9 and 13
+  ("proxy thread/subprocess", "host-side proxy subprocess") and the execute.py
   progress-line paragraph ("the subprocess's stderr is piped through") were reworded to
-  in-process; PR-7 now names `Gateway.start(bind="0.0.0.0")` + `finally: stop()` directly.
+  in-process; PR-7 now names `Proxy.start(bind="0.0.0.0")` + `finally: stop()` directly.
 - **IMPL-09** — applied: `tests/test_gateway_claude_cli.py` (`claude_cli` marker, runs when
   the CLI is on PATH, no key; automates probes 1/9/10/16/22/24 incl. 402/synthesized-error
   exit behaviour and header propagation), recorded/redacted SSE golden fixtures produced by
@@ -3647,56 +3762,56 @@ Legend: **applied** = fix adopted as proposed; **deviation (Decision N)** = adop
 recorded design deviation; **refuted** = refuted by verifiers, not applied. The text after
 "→" is the **post-2026-09-16 disposition** (Foundation change paragraph above): **moot** =
 the hardened mechanism no longer exists under the direct-only foundation; **still applies**
-= unchanged or re-homed. The "Section(s) edited" column is historical (gateway sections now
+= unchanged or re-homed. The "Section(s) edited" column is historical (proxy sections now
 live in git history / Out of scope).
 
 | Id | Disposition | Section(s) edited |
 |----|-------------|-------------------|
-| C1 | applied (Decision 11) → **partly moot 2026-09-16**: per-token 402 gone; per-invocation CLI cap kept, `run_usd` post hoc at `audit` / `limit_usd` at `key-guardrail` | Gateway HTTP contract › Budget; `execute.py`; Behavior changes; Config examples |
+| C1 | applied (Decision 11) → **partly moot 2026-09-16**: per-token 402 gone; per-invocation CLI cap kept, `run_usd` post hoc at `audit` / `limit_usd` at `key-guardrail` | Proxy HTTP contract › Budget; `execute.py`; Behavior changes; Config examples |
 | C2 | applied (Decision 5) → still applies | `agent_eval/config.py` › `load_raw`; harbor `tasks.py`; `ensure_deps.py`; Tests |
 | C3 | applied (Decision 8) → still applies | `agent_eval/agent/claude_code.py` › `_build_env`; `providers/env.py`; Tests (`test_secrets_hygiene`) |
 | C4 | applied (Decision 8) → still applies | `claude_code.py` › Settings overlay; Config validation; Behavior changes; Docs (runner.md) |
 | C5 | applied (Decision 15) → **moot**: no case header; nothing baked, all env via overlay/`--agent-env` | `agent_eval/tools/interception.py`; `providers/env.py` › `settings_env_block(target=)`; Known limitations; probe #15 |
 | C6 | applied (Decisions 1, 21) → tap placement **moot** (kept as fixture evidence); unattributed path re-homed to the audit | Architecture at a glance (VERIFIED/DOCUMENTED/UNVERIFIED); Reconcile › degraded path; checklist row 3 |
 | C7 | applied → still applies (`model_served` from `/generation` only) | Ledger (`model_echo`); Reconcile › per-model join; probes #12/#19; Tests |
-| C8 | applied → **moot** (no `count_tokens` synthesis; probe #22 RESOLVED on CLI 2.1.274 — zero calls; watch item only) | Gateway HTTP contract › `count_tokens` (UNVERIFIED, probe #22) |
-| C9 | applied → **moot** (no relay to keep semantically transparent) | Gateway HTTP contract › semantic passthrough invariant; Tests |
+| C8 | applied → **moot** (no `count_tokens` synthesis; probe #22 RESOLVED on CLI 2.1.274 — zero calls; watch item only) | Proxy HTTP contract › `count_tokens` (UNVERIFIED, probe #22) |
+| C9 | applied → **moot** (no relay to keep semantically transparent) | Proxy HTTP contract › semantic passthrough invariant; Tests |
 | C10 | applied → still applies | `harbor/kubernetes.py` (exec-prefix anchor :547) |
 | C11 | applied → header **moot**; `hook_cost_usd` kept, split by request id | Ledger (`role: hook`, `x-eval-role`); Reconcile (`hook_cost_usd`) |
 | C12 | applied → still applies (generation-primary, key delta cross-check) | Reconcile (`direct.dedicated_key`, inconsistent-delta rule, generation ≥0.95) |
-| BC-1 | applied (Decision 18) → still applies, one kind (`gateway` dropped, Decision 31) | Provider registry; `prompt_backends.py`; `score.py` › `_client_for`; Out of scope |
+| BC-1 | applied (Decision 18) → still applies, one kind (no second kind or scheme, Decision 31) | Provider registry; `prompt_backends.py`; `score.py` › `_client_for`; Out of scope |
 | BC-2 | applied (Decision 5) → still applies | as C2 (`load_raw`, `_bundle_eval_config`, `discover_configs`) |
 | BC-3 | applied (Decision 8) → still applies | as C4 (overlay precedence, env-writer validation) |
 | BC-4 | applied (Decision 20) → still applies | `config.py` › `deep_merge`; Config examples (profile); Tests |
 | BC-5 | applied (Decision 22) → still applies | Config validation (activation rule); `execute.py`; Config examples |
-| BC-6 | applied (Decision 19) → still applies minus `agent_eval/gateway/` | `agent_eval/providers/`, `agent_eval/gateway/` layout; Ledger (`cost_source`, `provider_kind`); Tests |
-| BC-7 | applied (Decision 13) → `gateway` kind **dropped** (Decision 31); `base_url` knob and preflight scope kept | Provider registry (`gateway` kind); `providers.openrouter.base_url`; preflight scope |
+| BC-6 | applied (Decision 19) → still applies minus the runtime (shaping-proxy) package | `agent_eval/providers/` + runtime package layout; Ledger (`cost_source`, `provider_kind`); Tests |
+| BC-7 | applied (Decision 13) → second (pass-through) kind **dropped** (Decision 31: no second kind or scheme); `base_url` knob and preflight scope kept | Provider registry; `models.providers.openrouter.base_url`; preflight scope |
 | BC-8 | refuted → unchanged | — |
 | BC-9 | applied → still applies (`budget.enforcement` values re-cut) | Reconcile (`budget.enforcement`); preflight catalog-fetch degrade |
 | BC-10 | applied → still applies | Config validation (`provider_options` per kind, `max_tokens` precedence) |
 | OPS-01 | applied (Decision 11) → as C1 (partly moot) | as C1 (per-invocation 402, `budget.run_usd`, `eval_params.budget`) |
-| OPS-02 | applied (Decision 17) → **moot** (no harness gate; Decision 17 replaced); `cli_budget_inflation` backstop kept | Gateway HTTP contract › Budget (fail-closed rules, `max_unpriced*`, `overshoot_usd`); `claude_code.py` (`cli_budget_inflation`) |
+| OPS-02 | applied (Decision 17) → **moot** (no harness gate; Decision 17 replaced); `cli_budget_inflation` backstop kept | Proxy HTTP contract › Budget (fail-closed rules, `max_unpriced*`, `overshoot_usd`); `claude_code.py` (`cli_budget_inflation`) |
 | OPS-03 | applied → tap fields **moot**; `generation.py` backfill is now the primary source (PR-4) | Ledger (`committed`/`truncated_by`/`supersedes_attempt`, Status semantics); Reconcile (`generation.py` backfill, `cost_confidence`); Tests |
-| OPS-04 | applied (Decision 24) → **moot** (no routes); exposure stated in Known limitations, bounded by `key-guardrail` | Gateway HTTP contract › Routes (default-deny, `gateway_options.passthrough` allow-list); Config examples; Tests |
+| OPS-04 | applied (Decision 24) → **moot** (no routes); exposure stated in Known limitations, bounded by `key-guardrail` | Proxy HTTP contract › Routes (default-deny, `proxy_options.passthrough` allow-list); Config examples; Tests |
 | OPS-05 | deviation (Decision 25; Decision 13 amended) → **moot** (no managed→direct fallback; one transport) | `harbor/run.py` (`on_unreachable: fail\|direct`, `acknowledge_key_exposure`); compare/anova factor level; PR-7 |
 | OPS-06 | refuted (rationale above); optional hardening adopted → still applies (`finally:` unlink is the only mode's hygiene) | `finally:` unlink; direct-mode hygiene test |
 | OPS-07 | applied (Decision 8) → still applies | as C4 / BC-3 (`runner.settings.env` in validation, plan-wins overlay); 4th item (first-request model/token assertion) not applied — see above |
 | OPS-08 | applied → still applies | Reconcile › Null-cost arithmetic (`total_cost_usd`/`total_cost_source`); `cost_budget` judge abstain; harbor `results.py`, `trace_builder.py`; Tests |
-| OPS-09 | deviation (Decision 26: scope = routing key) → **moot** (no cooldown; probe #24 informational) | Gateway HTTP contract › Pin policy / cooldown (`Retry-After`, timeout relation + validation warning); probe #24 |
-| OPS-10 | deviation (Decision 27: `provider/` path) → **moot** (no `provider/events.jsonl`; preflight/backfill diagnostics are stderr one-liners + fields in `routing_snapshot.json` / `run_result.json`) | Gateway HTTP contract (`provider/events.jsonl`, `routing_sha_configured`, `degraded`); Reconcile (`routing.sha`, `degraded_at/_reason`); `execute.py` progress marker |
-| OPS-11 | applied → **moot** (no harness timeouts; case timeout is the wall clock) | Gateway HTTP contract › Timeouts (`request_s` default `null`, `infra` classification when set); Decision 12 |
+| OPS-09 | deviation (Decision 26: scope = routing key) → **moot** (no cooldown; probe #24 informational) | Proxy HTTP contract › Pin policy / cooldown (`Retry-After`, timeout relation + validation warning); probe #24 |
+| OPS-10 | deviation (Decision 27: `provider/` path) → **moot** (no `provider/events.jsonl`; preflight/backfill diagnostics are stderr one-liners + fields in `routing_snapshot.json` / `run_result.json`) | Proxy HTTP contract (`provider/events.jsonl`, `routing_sha_configured`, `degraded`); Reconcile (`routing.sha`, `degraded_at/_reason`); `execute.py` progress marker |
+| OPS-11 | applied → **moot** (no harness timeouts; case timeout is the wall clock) | Proxy HTTP contract › Timeouts (`request_s` default `null`, `infra` classification when set); Decision 12 |
 | OPS-12 | applied → still applies, extended to `--agent-env`/Secret paths | `agent_eval/hooks.py` (key dropped from hook env); `harbor/run.py` child-env scrub; Decision 9 |
-| OPS-13 | applied → gateway error shaping **moot**; `error_message` ≤200 / `AGENT_EVAL_DEBUG` rule kept for backfill/preflight errors | Ledger schema (`error_message` ≤200, `metadata` stripped, raw JSON under `AGENT_EVAL_DEBUG`) |
+| OPS-13 | applied → proxy error shaping **moot**; `error_message` ≤200 / `AGENT_EVAL_DEBUG` rule kept for backfill/preflight errors | Ledger schema (`error_message` ≤200, `metadata` stripped, raw JSON under `AGENT_EVAL_DEBUG`) |
 | OPS-14 | applied → still applies, now exact (per-request gen ids; time split gone) | `harbor/results.py` (per-case attribution, best-effort time split for trials); Tests (`test_harbor_results`) |
-| IMPL-01 | applied (Decisions 11, 23) → ordering rule still applies; budget-gate part moot | as C1 / OPS-01 + Rollout plan re-order (PR-4 cost substrate, PR-5 gateway) |
+| IMPL-01 | applied (Decisions 11, 23) → ordering rule still applies; budget-gate part moot | as C1 / OPS-01 + Rollout plan re-order (PR-4 cost substrate, PR-5 proxy) |
 | IMPL-02 | deviation (Decision 23) → still applies (MVP ships with cost truth; size guards re-cut for direct) | Rollout plan (PR-5 = MVP with cost truth, per-module size guard, PR-5b deferrals); token registry kept in PR-5 |
 | IMPL-03 | applied → **moot** (no httpx; stdlib `urllib`, Decision 29 amended) | `scripts/ensure_deps.py` (`openrouter` extra `httpx>=0.27,<1`); `deploy/Containerfile`; `require_httpx()` plan-build error; Decision 1 |
 | IMPL-04 | applied (Decision 5) → still applies | as C2 / BC-2 (`load_raw`, merged bundle with `config_chain`, `test_harbor_task_generation`) |
 | IMPL-05 | applied → still applies | `execute.py` reconcile-at-write contract (all 8 sites + harbor/run.py:663 via `write_run_result`); `tests/test_execute_write_sites.py` |
-| IMPL-06 | applied (Decision 29) → **moot** (no framing) | Gateway HTTP contract › HTTP framing (1.1 keep-alive, chunked request/response handling, 32 MiB → 413); `tests/test_gateway_framing.py` |
-| IMPL-07 | deviation (byte-level `first_byte_s` kept; `first_token_s` → Out of scope) → **moot** (no harness timeouts) | Gateway HTTP contract › Timeouts › Mechanism (`httpx.Timeout` + per-request `Timer`s); `tests/test_gateway_timeouts.py` |
-| IMPL-08 | applied (Decision 28; round-3 residue sweep) → **moot** (no gateway process); lifecycle shape reused by `plan.close()` | `agent_eval/gateway/` (in-process only, no `__main__.py`/`serve`/`--token-file`); `harbor/run.py`; Docs; PR-5b test list; PR-7 scope; test_harbor_run; Decisions 9, 13; execute.py progress-line paragraph; `serve` CLI → Out of scope (PR-9) |
+| IMPL-06 | applied (Decision 29) → **moot** (no framing) | Proxy HTTP contract › HTTP framing (1.1 keep-alive, chunked request/response handling, 32 MiB → 413); `tests/test_gateway_framing.py` |
+| IMPL-07 | deviation (byte-level `first_byte_s` kept; `first_token_s` → Out of scope) → **moot** (no harness timeouts) | Proxy HTTP contract › Timeouts › Mechanism (`httpx.Timeout` + per-request `Timer`s); `tests/test_gateway_timeouts.py` |
+| IMPL-08 | applied (Decision 28; round-3 residue sweep) → **moot** (no proxy process); lifecycle shape reused by `plan.close()` | `agent_eval/proxy/` (in-process only, no `__main__.py`/`serve`/`--token-file`); `harbor/run.py`; Docs; PR-5b test list; PR-7 scope; test_harbor_run; Decisions 9, 13; execute.py progress-line paragraph; `serve` CLI → Out of scope (PR-9) |
 | IMPL-09 | applied → still applies as `test_claude_cli_direct` (echo server) + fixtures | Tests (`test_gateway_claude_cli.py`, recorded SSE fixtures + `test_fixtures_lint`, guard trio); PR-0/PR-5 test lists |
-| IMPL-10 | applied → still applies | Rollout plan (PR-3 split into PR-3a config overlay / PR-3b providers block) |
-| IMPL-11 | applied → still applies (module-main CLIs: preflight, provider revoke) | `agent_eval/gateway/` + Docs (module-main CLIs, no `agent-eval` umbrella command) |
+| IMPL-10 | applied → still applies | Rollout plan (PR-3 split into PR-3a config overlay / PR-3b `models.providers` block) |
+| IMPL-11 | applied → still applies (module-main CLIs: preflight, provider revoke) | `agent_eval/proxy/` + Docs (module-main CLIs, no `agent-eval` umbrella command) |
 | IMPL-12 | applied → still applies | `score.py` (`getattr`/`model_dump` usage extraction); Tests (plain-object fakes); Decision 3 |
