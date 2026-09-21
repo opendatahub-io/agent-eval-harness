@@ -220,3 +220,25 @@ def test_multi_factor_family_includes_interactions(tmp_path):
     tested = [t for e in pj["judges"].values()
               for t in e["terms"].values() if t["p_raw"] is not None]
     assert pj["family_size"] == len(tested) > 0
+
+
+def test_in_memory_scalar_judge_results_are_analysed():
+    """RunResult.judge_results carries plain scalars ({name: True} /
+    ({name: 0.9}) rather than summary.yaml records — the fan-out must accept
+    both shapes instead of silently dropping every judge."""
+    sys.path.insert(0, _scripts_dir)
+    from analyze import analyze_experiment
+    from orchestrate import Condition, RunResult
+
+    out = []
+    for m, q in (("model-a", [4, 5, 4, 5]), ("model-b", [2, 1, 3, 1])):
+        cond = Condition(condition_id=m, levels={"model": m})
+        for i, val in enumerate(q):
+            out.append(RunResult(
+                condition=cond, case_id=f"c{i}", replication=0,
+                judge_results={"quality": val, "tests_pass": val >= 3},
+                composite=val / 5.0, metadata={}))
+    analysis = analyze_experiment(out, factors=["model"], per_judge=True)
+    judges = analysis["per_judge"]["judges"]
+    assert "quality" in judges and "tests_pass" in judges
+    assert analysis["per_judge"]["family_size"] >= 2
