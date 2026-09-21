@@ -100,7 +100,10 @@ def corr_note(an):
     return (f"{corr_label(an)}-adjusted across a family of "
             f"{an.get('family_size','?')} term test(s); significance on adjusted p.")
 def best_p(an):
-    vals=[v for v in pmap(an).values() if isinstance(v,(int,float))]
+    # The headline number must be the one the SIGNIFICANT verdict was judged
+    # on: minimum adjusted p when a correction ran, raw p otherwise.
+    source=padjmap(an) if an.get("correction") not in (None,"none") else pmap(an)
+    vals=[v for v in source.values() if isinstance(v,(int,float))]
     return min(vals) if vals else None
 def sig_for(an,factor):
     sig=an.get("significant")
@@ -176,8 +179,9 @@ def render_html(rid,d):
     p,sig,F=best_p(an),sig_any(an),an.get("f_statistic")
     ng2=an.get("details",[{}])[0].get("ng2") if an.get("details") else None
     computed=isinstance(p,(int,float))
-    badge=(f"<span class='badge sig'>SIGNIFICANT &nbsp;p={fnum(p,3)}</span>" if sig
-           else f"<span class='badge nsig'>not significant"+(f" &nbsp;p={fnum(p,3)}" if computed else " · no variance")+"</span>")
+    plabel="adj. p" if an.get("correction") not in (None,"none") else "p"
+    badge=(f"<span class='badge sig'>SIGNIFICANT &nbsp;{plabel}={fnum(p,3)}</span>" if sig
+           else f"<span class='badge nsig'>not significant"+(f" &nbsp;{plabel}={fnum(p,3)}" if computed else " · no variance")+"</span>")
     levels=", ".join(str(x) for fv in des.get("factors",{}).values() for x in fv)
     meta=("<dl class=meta>"+f"<dt>Factor</dt><dd>{html.escape(factor_label(an))}</dd>"
           f"<dt>Levels</dt><dd>{html.escape(levels)}</dd>"
@@ -195,7 +199,7 @@ def render_html(rid,d):
     effect_label="factors" if "p_values" in an else "η² (effect)"
     effect_value=str(len(pmap(an))) if "p_values" in an else f"{fnum(ng2)}"+(f" · {eff_bucket(ng2)}" if ng2 is not None else "")
     tiles="".join(f"<div class=tile><div class=k>{k}</div><div class=v>{v}</div></div>" for k,v in
-        [("F-statistic",fnum(F)),("p-value",fnum(p,4)),
+        [("F-statistic",fnum(F)),(f"{plabel}-value" if plabel!="p" else "p-value",fnum(p,4)),
          (effect_label,effect_value),("alpha",str(an.get("alpha",0.05)))])
     if sig:
         top=max(conds,key=lambda x:x.get("mean",0))
