@@ -5,10 +5,6 @@ proxy of any kind** in scope — routing pins are enforced by **post-hoc audit**
 or by a **server-side per-run key guardrail** (opt-in); the local claude-code runner and
 Harbor podman are MVP scope, Kubernetes follows in PR-7.
 Base: stacked on spec 013 / PR #216 (`<provider>:/<model>` judge URIs), harness 1.49.1
-Supersedes (project side): rfe-creator's hand-written `eval-openrouter.yaml`
-execution.env block, the local translating proxy + its cost-capture monkeypatch, and the
-`reconcile_cost.py` hooks run from `after_all`/`before_report`. None of them is replaced
-by another proxy.
 
 All `file:line` references are against `/tmp/aeh-main` (release 1.49.1) unless
 prefixed with `rfe-creator/` or `harbor/` (the Harbor package, 0.13.1). Evidence labels
@@ -83,8 +79,8 @@ has **no notion of a provider for the agent-under-test** and **no cost provenanc
   The field is documented as a **per-invocation** cap (execution.md:14,29; config.py:436;
   `steps[].max_budget_usd` overrides, config.py:1155-1171) and resolved once per case/step
   (execute.py:493-495, 1289-1290) — any replacement must keep that scope.
-- eval.yaml and eval-openrouter.yaml are a hand fork that has already drifted by
-  9 judge names, timeout, `traces.events` and permissions; the harness has no
+- a per-provider copy of the base config drifts from it (the copy in use today already
+  differs by 9 judge names, the timeout, `traces.events` and permissions); the harness has no
   overlay/include mechanism, and five production readers load eval.yaml raw
   (harbor/tasks.py:99, harbor/run.py:452, evalhub/runner.py:206,
   skills/eval-analyze/scripts/validate_eval.py:447, config.py `discover_configs` :1798,
@@ -1622,7 +1618,7 @@ cross-link.
   `--agent-env` carriers (tests/test_harbor_run.py:336-366), podman host-env forwarding
   (`_FORWARD_ENV`, podman.py:36-49 — unchanged **without** a plan), existing K8s
   in-cluster credentials Secrets that point at an Anthropic-compatible endpoint, and
-  hand-written configs such as today's `eval-openrouter.yaml` keep working unchanged. An
+  existing configs that set the Anthropic env vars by hand keep working unchanged. An
   operator who fronts Claude Code with their own Anthropic-compatible endpoint via plain
   `execution.env` keeps that path as-is:
   no plan, no ledger, `cost_source: runner:estimate` (unsupported by this feature, not
@@ -1694,10 +1690,10 @@ cross-link.
   | the proxy config router retries / first-token timeouts / cooldowns (`config.yaml:216-229`) | none (no proxy) — Claude Code's retries + OpenRouter fallbacks; the case timeout is the bound (Known limitations). |
   | the proxy's `custom_callbacks.py` `chunk_parser` monkeypatch (inline `usage.cost`/`provider`) | `/generation` backfill of the stream-json gen ids (`cost_source: openrouter:generation`) — no code in rfe-creator. |
   | `reconcile_cost.py` from `after_all`/`before_report` + `real_cost.json` | reconcile at every `run_result.json` write inside the harness; `real_cost.json` files stay as history only. |
-  | `eval-openrouter.yaml:21-41` hand-written env block (Vertex blanks, `ANTHROPIC_BASE_URL` → the proxy, `ANTHROPIC_CUSTOM_HEADERS: $EVAL_RUN_HEADER`, aliases) and `max_budget_usd: 100.0` | `eval-profiles/openrouter-glm-5.2.yaml` with `extends: ../eval.yaml` that flips only `models.skill/subagent`, `execution.timeout`, `execution.env: {JIRA_USER: "", JIRA_TOKEN: ""}`, the two *additional* project allows and the MLflow experiment; `max_budget_usd` returns to a real per-case number (the harness applies `cli_budget_inflation`). |
+  | the per-provider config's env block (Vertex blanks, `ANTHROPIC_BASE_URL` → the proxy, `ANTHROPIC_CUSTOM_HEADERS: $EVAL_RUN_HEADER`, aliases) and `max_budget_usd: 100.0` | `eval-profiles/openrouter-glm-5.2.yaml` with `extends: ../eval.yaml` that flips only `models.skill/subagent`, `execution.timeout`, `execution.env: {JIRA_USER: "", JIRA_TOKEN: ""}`, the two *additional* project allows and the MLflow experiment; `max_budget_usd` returns to a real per-case number (the harness applies `cli_budget_inflation`). |
   | the proxy process + its env in `.env` | `OPENROUTER_API_KEY` (and optionally `OPENROUTER_MANAGEMENT_KEY`) exported in the shell; add `.env` to `.gitignore` (currently only `.envrc`, `.gitignore:7`). |
 
-  Delete the proxy directory and `eval-openrouter.yaml`; move the proxy README's successor
+  Delete the proxy directory and the per-provider config copy; move the proxy README's successor
   section into the repo README and retire the proxy-era MEMORY notes. Acceptance: re-run the glm-5.2
   v5 config through the profile; `cost_usd` matches the last proxy-reconciled
   `real_cost.json` within 5 % with `cost_source: openrouter:generation`,
