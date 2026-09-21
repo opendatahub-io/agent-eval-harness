@@ -120,7 +120,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/orchestrate.py --config eval.yaml --analyze-
 | `--avg-cost-per-run <float>` | unset | Per-run cost used by `--dry-run` for a point estimate. |
 | `--output <path>` | default compare dir | Output dir for the `/eval-compare` report. |
 | `--no-report` | off | Compute `anova.json` but skip rendering the report. |
-| `--correction <method>` | `holm` | Multiple-comparison correction across the ANOVA term family: `holm`, `fdr_bh` (alias `bh`), or `none`. Overrides `matrix.analysis.correction`. |
+| `--correction <method>` | unset | Multiple-comparison correction across the ANOVA term family: `holm`, `fdr_bh` (alias `bh`), or `none`. Overrides `matrix.analysis.correction`; when neither is supplied, `holm` applies. |
 
 !!! tip "Estimate cost before you commit"
     `--dry-run` prints the design and a cost line. It uses `--avg-cost-per-run`
