@@ -125,6 +125,37 @@ The single-factor variants are a family of one, so they carry the same schema
 fields (`p_adjusted` equal to `p_value`, `family_size: 1`) purely for
 consistency.
 
+## Post-hoc pairwise contrasts
+
+The omnibus test only says *"this factor matters"*; the **pairwise level
+contrasts** in `anova.json` (top-level `contrasts` key) say *which* levels
+differ and by how much — e.g. "opus vs sonnet: estimate +0.06, adjusted
+p = .02". For every factor with at least two levels, all level pairs are
+compared:
+
+- **Estimate** — the composite-scale difference `a − b`, with its standard
+  error. In the mixed model these come from the *already fitted* model (no
+  refitting): level-vs-reference is a single fixed-effect coefficient, level A
+  vs level B the coefficient difference. Single-factor designs use pingouin's
+  paired tests with the observed paired mean differences.
+- **Holm within the factor** — the correction family is the pairwise contrasts
+  *within that factor* (never pooled across factors); raw p-values stay
+  visible alongside the adjusted ones, and `significant` is judged on the
+  adjusted value.
+- **Reference-cell contrasts when interactions are present** — with
+  interactions in the mixed model, a coefficient difference is the level
+  contrast *at the other factors' reference levels*, not a marginal mean. The
+  block's `contrast_type` field flags this (`reference-cell` vs `marginal` /
+  `paired`) rather than pretending otherwise.
+- **No gating, no fabrication** — contrasts are computed regardless of the
+  omnibus result (each block carries the factor's omnibus adjusted p for
+  context), and a degenerate pair (no finite p — e.g. zero-variance paired
+  differences under perfect separation) is excluded from the family with a
+  `reason`, never given a made-up p-value.
+
+Both the `/eval-compare` statistics section and the eval-anova deep report
+render an A-vs-B table per factor when contrasts exist.
+
 !!! tip "Greenhouse–Geisser correction"
     Repeated-measures ANOVA assumes *sphericity* (equal variances of the
     differences between conditions), which agent evals usually violate. When
