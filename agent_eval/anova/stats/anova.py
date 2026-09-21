@@ -311,9 +311,12 @@ def _contrast_block(
         "family_size": family_size,
         "contrast_type": contrast_type,
         "omnibus_p_adjusted": omnibus_p_adjusted,
-        "note": _CONTRAST_NOTES[contrast_type],
         "pairs": pairs,
     }
+    # An estimate-interpretation note makes no sense on a block with no
+    # estimates — the reason field carries the story for empty blocks.
+    if pairs:
+        block["note"] = _CONTRAST_NOTES[contrast_type]
     if reason:
         block["reason"] = reason
     return block
@@ -356,8 +359,12 @@ def _rm_pairwise_contrasts(
         p_col = "p_unc" if "p_unc" in pw.columns else "p-unc"
         for _, row in pw.iterrows():
             p_by_pair[frozenset({str(row["A"]), str(row["B"])})] = row[p_col]
-    except Exception:  # noqa: BLE001 — degenerate pairs get no fabricated p
-        pass
+        pw_error = None
+    except Exception as exc:  # noqa: BLE001 — no fabricated p, but a wholesale
+        # pairwise_tests failure is a systemic condition, not per-pair
+        # degeneracy — record it at block level so the artifact tells the
+        # right story.
+        pw_error = f"pairwise tests unavailable: {exc}"
 
     pairs = []
     for a, b in itertools.combinations(levels, 2):
@@ -382,10 +389,13 @@ def _rm_pairwise_contrasts(
             pair["p_raw"] = None
             pair["reason"] = ("zero-variance paired differences — "
                               "t-test undefined, excluded from the correction family")
+        elif pw_error and pair["p_raw"] is None:
+            pair["reason"] = pw_error
         pairs.append(pair)
     return _contrast_block(
         factor, pairs, correction=correction, alpha=alpha,
         contrast_type="paired", omnibus_p_adjusted=omnibus_p_adjusted,
+        reason=pw_error,
     )
 
 

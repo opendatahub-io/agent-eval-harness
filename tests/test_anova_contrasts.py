@@ -278,3 +278,27 @@ class TestContrastsSerialization:
         _, artifact = analyze_runs(runs, NS(reward=None))
         data = json.loads(artifact.read_text())
         assert data["contrasts"] == {}  # single condition → nothing to contrast
+
+
+class TestSystemicPairwiseFailure:
+
+    def test_wholesale_pingouin_failure_gets_a_block_level_reason(
+            self, monkeypatch):
+        """A pairwise_tests crash is a systemic condition — the block (and
+        its p-less pairs) must say so instead of mislabelling every pair as
+        statistically degenerate."""
+        rng = np.random.default_rng(7)
+
+        def boom(**kwargs):
+            raise RuntimeError("simulated pingouin failure")
+
+        monkeypatch.setattr(pg, "pairwise_tests", boom)
+        result = repeated_measures_anova(_three_level_data(rng), factor="model")
+        block = result["contrasts"]["model"]
+        assert "pairwise tests unavailable" in block["reason"]
+        assert block["family_size"] == 0
+        for pair in block["pairs"]:
+            assert pair["p_raw"] is None and not pair["significant"]
+            assert "pairwise tests unavailable" in pair["reason"]
+            # Estimates are observed paired differences — still reported.
+            assert pair["estimate"] is not None
