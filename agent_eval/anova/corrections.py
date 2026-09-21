@@ -23,10 +23,18 @@ def normalize_correction(value: object) -> str:
     """Canonical correction name (``holm`` | ``bh`` | ``none``).
 
     Raises ValueError on anything else so a typo fails at config load, not
-    after the (expensive) runs have already executed.
+    after the (expensive) runs have already executed. Only strings are
+    accepted: stringifying would turn an accidental ``None`` into ``"none"``
+    and silently disable correction — "unset" is the caller's decision
+    (fall back to ``DEFAULT_CORRECTION`` before calling), never this helper's.
     """
+    if not isinstance(value, str):
+        raise ValueError(
+            f"Unknown multiple-comparison correction {value!r}: expected one of "
+            f"{', '.join(sorted(_ALIASES))} (got {type(value).__name__})."
+        )
     try:
-        return _ALIASES[str(value).strip().lower()]
+        return _ALIASES[value.strip().lower()]
     except KeyError:
         raise ValueError(
             f"Unknown multiple-comparison correction {value!r}: expected one of "
