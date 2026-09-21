@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Any
+from typing import Any, Hashable, TypeVar
+
+_K = TypeVar("_K", bound=Hashable)
 
 import numpy as np
 import pandas as pd
@@ -222,22 +224,25 @@ def _term_wald_p_values(fit: Any) -> dict[str, float | None]:
 
 
 def adjust_term_p_values(
-    p_values: dict[str, float | None],
+    p_values: dict[_K, float | None],
     *,
     correction: str = "holm",
     alpha: float = 0.05,
-) -> tuple[dict[str, float | None], dict[str, bool], int]:
-    """Multiplicity correction across one model's family of term tests.
+) -> tuple[dict[_K, float | None], dict[_K, bool], int]:
+    """Multiplicity correction across one family of tests.
 
-    The family is only the *real* tests: a term with a degenerate (None)
-    p-value gets ``p_adjusted=None`` / ``significant=False`` and does not
-    count toward — or inflate — anyone else's adjusted p. With
-    ``correction="none"`` adjusted equals raw and significance is ``p < alpha``.
-    Returns ``(p_adjusted, significant, family_size)``.
+    Keys are opaque test identifiers — term names for one model's family, or
+    composite keys like ``(judge, term)`` tuples when the family spans models
+    (the per-judge fan-out). The family is only the *real* tests: a term with
+    a degenerate (None) p-value gets ``p_adjusted=None`` /
+    ``significant=False`` and does not count toward — or inflate — anyone
+    else's adjusted p. With ``correction="none"`` adjusted equals raw and
+    significance is ``p < alpha``. Returns
+    ``(p_adjusted, significant, family_size)``.
     """
     correction = normalize_correction(correction)
     tested = {t: p for t, p in p_values.items() if p is not None}
-    p_adjusted: dict[str, float | None] = {t: None for t in p_values}
+    p_adjusted: dict[_K, float | None] = {t: None for t in p_values}
     significant = {t: False for t in p_values}
     if tested:
         if correction == "none":

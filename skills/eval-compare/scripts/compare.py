@@ -558,6 +558,57 @@ def _stats_correction_note(an):
             "significance on adjusted p.")
 
 
+# --- per-judge fan-out rendering (self-contained; delimited on purpose) -----
+def _render_per_judge_section(stats):
+    """Compact judge-by-term table for the opt-in per-judge ANOVA fan-out.
+
+    Rendered only when anova.json carries a ``per_judge`` block. Adjusted
+    p-values there are Benjamini-Hochberg across the ONE family spanning all
+    judges × terms (the block's own correction/family_size) — separate from
+    the composite ANOVA's family above. Pure rendering — no stats libs.
+    """
+    pj = stats.get("per_judge") or {}
+    judges = pj.get("judges") or {}
+    excluded = pj.get("excluded") or []
+    if not judges and not excluded:
+        return ""
+    muted = "color:var(--text-muted);font-size:12px;"
+    html = '<h3>Per-judge effects (screening)</h3>\n'
+    if judges:
+        html += ('<table><thead><tr><th>Judge</th><th>Term</th><th>p (raw)</th>'
+                 '<th>p (adjusted)</th><th>Result</th><th>n cases</th></tr>'
+                 '</thead><tbody>\n')
+        for name in sorted(judges):
+            entry = judges[name] or {}
+            for term, cell in (entry.get("terms") or {}).items():
+                res = ("significant" if cell.get("significant")
+                       else "not significant")
+                html += (f'<tr><td>{escape(str(name))}</td>'
+                         f'<td>{escape(str(term))}</td>'
+                         f'<td>{_statnum(cell.get("p_raw"))}</td>'
+                         f'<td>{_statnum(cell.get("p_adjusted"))}</td>'
+                         f'<td>{res}</td>'
+                         f'<td>{escape(str(entry.get("n_cases", "?")))}</td></tr>\n')
+        html += '</tbody></table>\n'
+        label = _STATS_CORRECTION_LABELS.get(pj.get("correction"),
+                                             str(pj.get("correction")))
+        note = (f"{label}-corrected across one family of "
+                f"{pj.get('family_size', '?')} (judge, term) test(s); "
+                "screening only — the composite ANOVA above keeps its own "
+                "correction family.")
+        methods = sorted({str(e.get("method")) for e in judges.values()
+                          if isinstance(e, dict) and e.get("method")})
+        if methods:
+            note += f" Method: {'; '.join(methods)}."
+        html += f'<p style="{muted}">{escape(note)}</p>\n'
+    for ex in excluded:
+        html += (f'<p style="{muted}">Excluded from the family: '
+                 f'{escape(str(ex.get("judge", "?")))} — '
+                 f'{escape(str(ex.get("reason", "")))}</p>\n')
+    return html
+# --- end per-judge fan-out rendering -----------------------------------------
+
+
 def render_stats_section(stats):
     """Render the ANOVA / Pareto statistics section from a pre-computed
     ``anova.json`` (produced by /eval-anova). Pure rendering — no stats libs."""
@@ -610,6 +661,10 @@ def render_stats_section(stats):
     if excluded:
         html += (f'<p style="{muted}">Excluded (missing from some condition): '
                  f'{escape(", ".join(map(str, excluded)))}</p>\n')
+
+    # --- per-judge fan-out (opt-in; empty string unless per_judge present) ---
+    html += _render_per_judge_section(stats)
+    # -------------------------------------------------------------------------
 
     if pareto and any(isinstance(c, dict) and "cost" in c for c in pareto):
         html += ('<h3>Cost / quality Pareto frontier</h3>\n'

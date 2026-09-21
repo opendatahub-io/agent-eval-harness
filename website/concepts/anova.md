@@ -139,6 +139,38 @@ bug. Only cases present under *every* condition are analyzed
 (`_restrict_to_common_cases`); excluded cases are recorded, and replications are
 averaged to one observation per condition × case before the test.
 
+## Per-judge screening (opt-in)
+
+The composite collapses every judge into one number — which answers "did the
+configuration matter overall?" but not "*which* judge moved?". With
+`matrix.analysis.per_judge: true` (or `--per-judge`), the harness additionally
+runs the **same** single/multi-factor ANOVA once per judge, over that judge's
+own per-case values: numeric judges as-is, boolean judges coerced to 0/1 so a
+pass/fail judge is analyzable as a rate. Pairwise verdicts and error/None
+samples produce no observation (never an invented 0).
+
+This fan-out multiplies the number of tests — judges × terms — so it is
+corrected as **one Benjamini–Hochberg family** across all (judge, term)
+p-values. This is where FDR genuinely earns its keep: per-judge effects are a
+screening question ("which judges look affected, at a controlled false
+discovery rate?"), not a confirmatory one. **The composite ANOVA is not part
+of this family** — it keeps its own (Holm by default) correction and remains
+the headline result; treat a significant per-judge row as a lead to
+investigate, not a finding to report on its own.
+
+The same honesty rules apply per judge: each judge's design is restricted to
+the cases it actually scored under *every* condition, and a judge with a
+degenerate design — constant values, fewer than two conditions, fewer than two
+fully-crossed cases, or a failed fit — is listed under `per_judge.excluded`
+with an explicit reason and contributes nothing to the family (`family_size`
+counts only real tests). Raw p-values stay visible next to the adjusted ones
+in `anova.json` and in both reports.
+
+It is off by default: every judge adds model fits and report rows, and a
+routinely-scanned per-judge table invites cherry-picking the one significant
+row. Turn it on when the composite says "significant" and you need to know
+where to look.
+
 ## Cost vs quality: the Pareto frontier
 
 Significance tells you a difference is real; it doesn't tell you it's worth
