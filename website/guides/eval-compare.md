@@ -121,7 +121,9 @@ open <output-dir>/index.html
   present**. It renders the ANOVA verdict (**SIGNIFICANT** / **not significant**
   at your α), a per-term table of **raw and adjusted p-values** (main effects and
   interactions, with the multiplicity-correction method named — Holm by default)
-  alongside the overall **F** statistic, the design (`n_cases`, `replications`,
+  alongside the overall **F** statistic when the artifact provides one
+  (single-factor repeated-measures / one-way analyses; the multi-factor
+  mixed-effects model reports per-term Wald tests instead), the design (`n_cases`, `replications`,
   any excluded conditions), and — when the artifact includes one — a
   **cost/quality Pareto frontier**. When the artifact carries a `per_judge`
   block (the opt-in per-judge fan-out), a compact judge-by-term screening
