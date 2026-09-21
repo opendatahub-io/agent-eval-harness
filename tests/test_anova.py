@@ -149,6 +149,7 @@ class TestRepeatedMeasuresAnova:
         result = repeated_measures_anova(pd.DataFrame(rows), factor="model")
         assert result["p_adjusted"] is None
         assert result["family_size"] == 0
+        assert result["excluded_terms"] == ["model"]
         assert result["correction"] == "holm"
 
     def test_high_case_variance_masks_effect_for_oneway(self):
@@ -396,6 +397,12 @@ class TestAdjustTermPValues:
         with pytest.raises(ValueError, match="correction"):
             adjust_term_p_values({"a": 0.01}, correction="bonferroni-ish")
 
+    def test_none_correction_value_rejected_not_coerced(self):
+        # str(None) == "None" would alias to "none" and silently disable the
+        # correction — unset is the caller's decision, never this helper's.
+        with pytest.raises(ValueError, match="correction"):
+            adjust_term_p_values({"a": 0.01}, correction=None)
+
 
 class TestOneWayAnova:
     """Plain one-way ANOVA — documented as valid only for independent samples."""
@@ -441,6 +448,7 @@ class TestOneWayAnova:
         assert result["p_adjusted"] is None
         assert result["significant"] is False
         assert result["family_size"] == 0
+        assert result["excluded_terms"] == ["x"]
         assert "note" in result
 
 

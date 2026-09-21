@@ -63,6 +63,7 @@ def repeated_measures_anova(
             "significant": False,
             "correction": correction,
             "family_size": 0,
+            "excluded_terms": [factor],
             "method": "Repeated-measures ANOVA (pingouin rm_anova)",
             "alpha": alpha,
             "factor": factor,
@@ -80,6 +81,7 @@ def repeated_measures_anova(
             "significant": False,
             "correction": correction,
             "family_size": 0,
+            "excluded_terms": [factor],
             "method": "Repeated-measures ANOVA (pingouin rm_anova)",
             "alpha": alpha,
             "factor": factor,
@@ -111,6 +113,7 @@ def repeated_measures_anova(
             "significant": False,
             "correction": correction,
             "family_size": 0,
+            "excluded_terms": [factor],
             "method": "Repeated-measures ANOVA (pingouin rm_anova)",
             "alpha": alpha,
             "factor": factor,
@@ -351,4 +354,5 @@ def one_way_anova(
     }
     if p is None:
         result["note"] = "Degenerate design — f_oneway produced no finite p-value."
+        result["excluded_terms"] = [factor_name]
     return result
