@@ -76,7 +76,7 @@ class TestAnalyzeReportSchema:
     def test_multi_factor_per_case_keeps_full_condition(self, monkeypatch):
         from agent_eval.anova.stats import anova as anova_mod
 
-        def mixed_effects_stub(df, factors, alpha=0.05):
+        def mixed_effects_stub(df, factors, alpha=0.05, correction="holm"):
             return {
                 "p_values": {"model": 0.01, "effort": 0.2},
                 "significant": {"model": True, "effort": False},

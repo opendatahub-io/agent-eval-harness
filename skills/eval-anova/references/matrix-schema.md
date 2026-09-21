@@ -17,6 +17,8 @@ matrix:
       - <level_a>
       - <level_b>
   replications: <int>  # default: 1
+  analysis:            # optional
+    correction: holm   # holm (default) | fdr_bh | none
 ```
 
 ## Fields
@@ -63,6 +65,22 @@ Number of times to repeat each condition × case combination. More replications 
 - 1 replication: Quick screening, high noise
 - 3 replications: Good balance for most evaluations
 - 5+ replications: High-confidence results, expensive
+
+### `analysis.correction` (optional, default: `holm`)
+
+The multiple-comparison correction applied across the ANOVA's family of term
+tests (all main effects plus interactions from the one fitted model):
+
+- `holm` (default) — Holm step-down; controls the family-wise error rate.
+- `fdr_bh` (alias `bh`) — Benjamini–Hochberg; controls the false discovery
+  rate. Less conservative, appropriate for screening many factors.
+- `none` — no correction; significance is judged on raw p-values.
+
+Both raw and adjusted p-values are always reported in `anova.json`;
+`significant` is computed on the adjusted value (on raw when `none`). Terms
+whose test is degenerate (no finite p) are excluded from the family and listed
+under `excluded_terms`. The `--correction` CLI flag on `orchestrate.py`
+overrides this key.
 
 ## Full Factorial Expansion
 

@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent_eval.config import EvalConfig
+from agent_eval.anova.corrections import DEFAULT_CORRECTION
 from agent_eval.anova.matrix import Condition, MatrixBuilder, _safe_id_segment
 
 logger = logging.getLogger(__name__)
@@ -243,11 +244,20 @@ def fan_out(
     return produced
 
 
+def _resolve_correction(cli_value: str | None, matrix: Any) -> str:
+    """CLI flag > matrix.analysis.correction > default (holm)."""
+    if cli_value:
+        return cli_value
+    if matrix is not None and getattr(matrix, "correction", None):
+        return matrix.correction
+    return DEFAULT_CORRECTION
+
+
 def _analyze_and_report(config: Any, runs_dir: Path, *, report_output: str | None,
-                        skip_report: bool) -> int:
+                        skip_report: bool, correction: str = DEFAULT_CORRECTION) -> int:
     from analyze import analyze_runs  # lazy: pulls pandas/scipy only when needed
 
-    analysis, artifact = analyze_runs(runs_dir, config)
+    analysis, artifact = analyze_runs(runs_dir, config, correction=correction)
     print(f"Wrote stats artifact: {artifact}")
     an = analysis.get("anova", {})
     print(f"ANOVA: {an.get('method', '?')} — "
@@ -305,6 +315,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="eval-compare report output dir")
     parser.add_argument("--no-report", action="store_true",
                         help="Skip the eval-compare report render")
+    parser.add_argument("--correction", default=None,
+                        choices=("holm", "bh", "fdr_bh", "none"),
+                        help="Multiple-comparison correction across the ANOVA "
+                             "term family (overrides matrix.analysis.correction; "
+                             f"default: {DEFAULT_CORRECTION})")
     args = parser.parse_args(argv)
 
     config = EvalConfig.from_yaml(args.config)
@@ -314,12 +329,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.analyze_only:
         if not runs_dir.is_dir():
             raise SystemExit(f"No runs to analyse under {runs_dir}")
+        # Non-strict: analyze-only also serves run dirs produced without a
+        # matrix (CI fan-outs), where there is no block to read a config from.
+        matrix = MatrixBuilder.from_yaml(Path(args.config))
+        correction = _resolve_correction(args.correction, matrix)
         return _analyze_and_report(config, runs_dir,
-                                   report_output=args.output, skip_report=args.no_report)
+                                   report_output=args.output, skip_report=args.no_report,
+                                   correction=correction)
 
     matrix = MatrixBuilder.from_yaml(Path(args.config), strict=True)
     if matrix is None:
         raise SystemExit(f"No 'matrix:' section found in {args.config}")
+    correction = _resolve_correction(args.correction, matrix)
     conditions = MatrixBuilder.expand_full_factorial(matrix.factors)
     cases = args.cases or _enumerate_cases(config)
     if not cases:
@@ -336,7 +357,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("No cells completed successfully; nothing to analyse.")
     print(f"Completed {len(produced)} run(s).")
     return _analyze_and_report(config, runs_dir,
-                               report_output=args.output, skip_report=args.no_report)
+                               report_output=args.output, skip_report=args.no_report,
+                               correction=correction)
 
 
 if __name__ == "__main__":

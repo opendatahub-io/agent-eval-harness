@@ -529,6 +529,35 @@ def _stats_sig_for(an, factor):
     return bool(sig.get(factor)) if isinstance(sig, dict) else bool(sig)
 
 
+def _stats_padjmap(an):
+    """Map term -> adjusted p-value, mirroring _stats_pmap's shapes."""
+    vals = an.get("p_adjusted")
+    if isinstance(vals, dict):
+        return vals
+    return {an.get("factor") or "effect": vals}
+
+
+_STATS_CORRECTION_LABELS = {
+    "holm": "Holm",
+    "bh": "Benjamini-Hochberg (FDR)",
+    "none": "none",
+}
+
+
+def _stats_correction_note(an):
+    """Names the multiplicity correction behind the adjusted p column — an
+    adjusted value is never rendered without saying which method produced it."""
+    c = an.get("correction")
+    if c is None:
+        return None
+    if c == "none":
+        return "No multiple-comparison correction — significance on raw p-values."
+    label = _STATS_CORRECTION_LABELS.get(c, str(c))
+    return (f"{label}-corrected across a family of "
+            f"{an.get('family_size', '?')} term test(s); "
+            "significance on adjusted p.")
+
+
 def render_stats_section(stats):
     """Render the ANOVA / Pareto statistics section from a pre-computed
     ``anova.json`` (produced by /eval-anova). Pure rendering — no stats libs."""
@@ -548,14 +577,27 @@ def render_stats_section(stats):
         html += f'<p style="{muted}">{escape(str(an["note"]))}</p>\n'
 
     pmap = _stats_pmap(an)
+    # Older anova.json artifacts predate the correction fields; render their
+    # single p column unchanged rather than an unlabelled adjusted one.
+    corrected = an.get("correction") is not None
+    padj = _stats_padjmap(an)
     if any(v is not None for v in pmap.values()):
-        html += ('<table><thead><tr><th>Factor</th><th>p-value</th>'
-                 '<th>Result</th></tr></thead><tbody>\n')
+        if corrected:
+            html += ('<table><thead><tr><th>Term</th><th>p (raw)</th>'
+                     '<th>p (adjusted)</th><th>Result</th></tr></thead><tbody>\n')
+        else:
+            html += ('<table><thead><tr><th>Factor</th><th>p-value</th>'
+                     '<th>Result</th></tr></thead><tbody>\n')
         for factor, p in pmap.items():
             res = "significant" if _stats_sig_for(an, factor) else "not significant"
-            html += (f'<tr><td>{escape(str(factor))}</td>'
-                     f'<td>{_statnum(p)}</td><td>{res}</td></tr>\n')
+            html += f'<tr><td>{escape(str(factor))}</td><td>{_statnum(p)}</td>'
+            if corrected:
+                html += f'<td>{_statnum(padj.get(factor))}</td>'
+            html += f'<td>{res}</td></tr>\n'
         html += '</tbody></table>\n'
+        correction_note = _stats_correction_note(an)
+        if correction_note:
+            html += f'<p style="{muted}">{escape(correction_note)}</p>\n'
         f_stat = an.get("f_statistic")
         bits = []
         if isinstance(f_stat, (int, float)):

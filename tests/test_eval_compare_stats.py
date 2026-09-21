@@ -87,6 +87,58 @@ def test_stats_section_escapes_user_controlled_values(tmp_path):
     assert "&lt;script&gt;" in html
 
 
+def _corrected_anova(**overrides):
+    an = {
+        "p_values": {"model": 0.001, "effort": 0.2, "model:effort": 0.7},
+        "p_adjusted": {"model": 0.003, "effort": 0.4, "model:effort": 0.7},
+        "significant": {"model": True, "effort": False, "model:effort": False},
+        "correction": "holm", "family_size": 3,
+        "method": "Mixed-effects model (statsmodels mixedlm, per-term Wald tests)",
+        "alpha": 0.05, "factors": ["model", "effort"],
+    }
+    an.update(overrides)
+    return an
+
+
+def test_corrected_artifact_shows_raw_and_adjusted_with_method_named(tmp_path):
+    """An adjusted p is never rendered without naming the correction method,
+    and interaction terms get their own rows."""
+    _mk_run(tmp_path, "r-a", "model-a", {"c1": 5})
+    _artifact(tmp_path, anova=_corrected_anova())
+    stats = compare.load_stats_artifact(tmp_path)
+    out = tmp_path / "rep"
+    compare.generate_report(compare.discover_runs(tmp_path), "T", None, out, stats=stats)
+    html = (out / "index.html").read_text()
+    assert "p (raw)" in html and "p (adjusted)" in html
+    assert "Holm" in html and "family of 3" in html
+    assert "model:effort" in html  # interaction row
+
+
+def test_correction_none_is_labelled_not_silent(tmp_path):
+    _mk_run(tmp_path, "r-a", "model-a", {"c1": 5})
+    _artifact(tmp_path, anova=_corrected_anova(
+        correction="none",
+        p_adjusted={"model": 0.001, "effort": 0.2, "model:effort": 0.7}))
+    stats = compare.load_stats_artifact(tmp_path)
+    out = tmp_path / "rep"
+    compare.generate_report(compare.discover_runs(tmp_path), "T", None, out, stats=stats)
+    html = (out / "index.html").read_text()
+    assert "No multiple-comparison correction" in html
+
+
+def test_legacy_artifact_without_correction_keeps_single_p_column(tmp_path):
+    """Pre-correction anova.json artifacts (no correction/p_adjusted fields)
+    must not grow an unlabelled adjusted column."""
+    _mk_run(tmp_path, "r-a", "model-a", {"c1": 5})
+    _artifact(tmp_path)  # the default single-factor artifact has no correction
+    stats = compare.load_stats_artifact(tmp_path)
+    out = tmp_path / "rep"
+    compare.generate_report(compare.discover_runs(tmp_path), "T", None, out, stats=stats)
+    html = (out / "index.html").read_text()
+    assert "p (adjusted)" not in html
+    assert "p-value" in html
+
+
 def test_no_variance_artifact_renders_gracefully(tmp_path):
     _mk_run(tmp_path, "r-a", "model-a", {"c1": 5})
     _artifact(tmp_path,

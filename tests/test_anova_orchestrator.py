@@ -145,6 +145,27 @@ def test_main_run_then_analyze_writes_artifact(tmp_path, monkeypatch):
     assert artifact.exists()
 
 
+def test_correction_plumbing_config_then_cli_override(tmp_path, monkeypatch):
+    """matrix.analysis.correction reaches anova.json; --correction overrides it."""
+    cfg = _project(tmp_path)
+    raw = yaml.safe_load(Path(cfg).read_text())
+    raw["matrix"]["analysis"] = {"correction": "fdr_bh"}
+    Path(cfg).write_text(yaml.dump(raw))
+    monkeypatch.setenv("AGENT_EVAL_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setattr(O, "_run_eval_for_condition", _stub([]))
+
+    assert O.main(["--config", cfg, "--no-report"]) == 0
+    artifact = tmp_path / "runs" / "myskill" / "anova.json"
+    stats = json.loads(artifact.read_text())
+    assert stats["anova"]["correction"] == "bh"  # canonicalised from fdr_bh
+
+    # The CLI flag wins over the config for a re-analysis
+    assert O.main(["--config", cfg, "--analyze-only", "--no-report",
+                   "--correction", "none"]) == 0
+    stats = json.loads(artifact.read_text())
+    assert stats["anova"]["correction"] == "none"
+
+
 def test_execute_input_override_helpers(tmp_path):
     """The eval-run --input-override plumbing that carries non-model factors."""
     import yaml as _yaml

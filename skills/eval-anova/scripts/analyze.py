@@ -37,6 +37,7 @@ import yaml
 
 from agent_eval.anova.archive import ResultsArchiver
 from agent_eval.anova.composite import aggregate_replications
+from agent_eval.anova.corrections import DEFAULT_CORRECTION, normalize_correction
 from agent_eval.harbor.reward import compose_reward, judge_ranges
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,7 @@ def analyze_experiment(
     factors: list[str],
     *,
     alpha: float = 0.05,
+    correction: str = DEFAULT_CORRECTION,
 ) -> dict[str, Any]:
     """Run statistical analysis on in-memory RunResult objects.
 
@@ -71,7 +73,8 @@ def analyze_experiment(
     mixed-effects model for multi-factor designs.
     """
     df = build_results_dataframe(run_results)
-    return _analyze_df(df, factors, alpha=alpha, n_runs=len(run_results))
+    return _analyze_df(df, factors, alpha=alpha, correction=correction,
+                       n_runs=len(run_results))
 
 
 def analyze_runs(
@@ -79,6 +82,7 @@ def analyze_runs(
     eval_config: Any,
     *,
     alpha: float = 0.05,
+    correction: str = DEFAULT_CORRECTION,
     write_to: Path | str | None = None,
 ) -> tuple[dict[str, Any], Path]:
     """Analyse a directory of standard eval-run runs and write ``anova.json``.
@@ -100,7 +104,8 @@ def analyze_runs(
     df = pd.DataFrame(rows)
     n_runs = int(df[["condition_id", "replication"]].drop_duplicates().shape[0])
     analysis = _analyze_df(
-        df, factors, alpha=alpha, n_runs=n_runs, cost_by_condition=cost_by_condition
+        df, factors, alpha=alpha, correction=correction, n_runs=n_runs,
+        cost_by_condition=cost_by_condition,
     )
     analysis["generated_at"] = datetime.datetime.now(
         datetime.timezone.utc
@@ -117,16 +122,20 @@ def _analyze_df(
     factors: list[str],
     *,
     alpha: float = 0.05,
+    correction: str = DEFAULT_CORRECTION,
     n_runs: int | None = None,
     cost_by_condition: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Core statistical analysis over a results DataFrame.
 
     Columns required: ``case_id``, ``composite``, ``condition_id`` and one
-    column per factor. ``replication`` is optional.
+    column per factor. ``replication`` is optional. ``correction`` is the
+    multiple-comparison correction applied across the ANOVA's term family
+    (holm | bh | none).
     """
     if not ANOVA_AVAILABLE:
         raise ImportError(missing_deps_message())
+    correction = normalize_correction(correction)
 
     from agent_eval.anova.stats.anova import mixed_effects_anova, repeated_measures_anova
     from agent_eval.anova.stats.pareto import pareto_frontier
@@ -168,15 +177,20 @@ def _analyze_df(
             "factors": effective,
             "f_statistic": None,
             "p_value": None,
+            "p_adjusted": None,
             "significant": False,
+            "correction": correction,
+            "family_size": 0,
             "alpha": alpha,
             "note": (f"No factor has >=2 levels to compare (conditions={n_conditions})."
                      if factors else "No factors to analyse."),
         }
     elif len(effective) == 1:
-        anova_result = repeated_measures_anova(anova_df, factor=effective[0], alpha=alpha)
+        anova_result = repeated_measures_anova(anova_df, factor=effective[0],
+                                               alpha=alpha, correction=correction)
     else:
-        anova_result = mixed_effects_anova(anova_df, factors=effective, alpha=alpha)
+        anova_result = mixed_effects_anova(anova_df, factors=effective,
+                                           alpha=alpha, correction=correction)
 
     cost_by_condition = cost_by_condition or {}
     condition_summaries = []
