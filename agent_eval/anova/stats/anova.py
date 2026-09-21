@@ -439,8 +439,14 @@ def _mixedlm_pairwise_contrasts(
     as such via ``contrast_type``.
     """
     model_data = getattr(getattr(fit, "model", None), "data", None)
-    design_info = getattr(model_data, "design_info", None)
-    if design_info is None:
+    # statsmodels <=0.14 names the patsy DesignInfo `design_info`; 0.15 renamed
+    # it to `model_spec` (same patsy object when patsy is installed). The
+    # patsy-shaped structure (.terms/.factors/.factor_infos) is required below
+    # — a formulaic spec without it degrades to no contrasts, never mislabels.
+    design_info = (getattr(model_data, "design_info", None)
+                   or getattr(model_data, "model_spec", None))
+    if design_info is None or not hasattr(design_info, "terms") \
+            or not hasattr(design_info, "factor_infos"):
         return {}
     k_fe = len(fit.fe_params)
     has_interactions = any(len(t.factors) > 1 for t in design_info.terms)
