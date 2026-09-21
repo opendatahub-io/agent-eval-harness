@@ -121,6 +121,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/orchestrate.py --config eval.yaml --analyze-
 | `--output <path>` | default compare dir | Output dir for the `/eval-compare` report. |
 | `--no-report` | off | Compute `anova.json` but skip rendering the report. |
 | `--correction <method>` | `holm` | Multiple-comparison correction across the ANOVA term family: `holm`, `fdr_bh` (alias `bh`), or `none`. Overrides `matrix.analysis.correction`. |
+| `--per-judge` | off | Also run the ANOVA once per judge (screening), Benjamini–Hochberg-corrected across the whole judges×terms family. Enables `matrix.analysis.per_judge`. |
 
 !!! tip "Estimate cost before you commit"
     `--dry-run` prints the design and a cost line. It uses `--avg-cost-per-run`
@@ -171,6 +172,12 @@ for multiple comparisons (**Holm** by default; `fdr_bh` or `none` via
 both written to `anova.json`; significance is judged on the adjusted value.
 See [Analysis of variance](../concepts/anova.md#per-term-wald-tests-and-multiplicity-correction)
 for the statistics.
+
+With `--per-judge` (or `matrix.analysis.per_judge: true`), the same ANOVA also
+runs **once per judge** over that judge's per-case values, with one
+Benjamini–Hochberg family across all judges × terms — a screen for *which*
+judge moves, while the composite stays the headline with its own correction
+family. See [Per-judge screening](../concepts/anova.md#per-judge-screening-opt-in).
 
 ### Step 4 — Report
 

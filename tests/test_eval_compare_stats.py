@@ -139,6 +139,64 @@ def test_legacy_artifact_without_correction_keeps_single_p_column(tmp_path):
     assert "p-value" in html
 
 
+def _per_judge_block():
+    return {
+        "correction": "bh", "family_size": 2, "alpha": 0.05,
+        "judges": {
+            "quality": {"method": "Repeated-measures ANOVA (pingouin rm_anova)",
+                        "terms": {"model": {"p_raw": 0.004, "p_adjusted": 0.008,
+                                            "significant": True}},
+                        "n_cases": 4, "n_conditions": 2},
+            "tests_pass": {"method": "Repeated-measures ANOVA (pingouin rm_anova)",
+                           "terms": {"model": {"p_raw": 0.2, "p_adjusted": 0.2,
+                                               "significant": False}},
+                           "n_cases": 4, "n_conditions": 2},
+        },
+        "excluded": [{"judge": "always_five",
+                      "reason": "constant value — no variance to analyse"}],
+    }
+
+
+def test_per_judge_table_rendered_when_block_present(tmp_path):
+    """The judge-by-term screening table names its family and correction and
+    lists exclusions with their reasons; without the block the section stays
+    exactly as before (no per-judge table)."""
+    _mk_run(tmp_path, "r-a", "model-a", {"c1": 5})
+    _artifact(tmp_path, per_judge=_per_judge_block())
+    stats = compare.load_stats_artifact(tmp_path)
+    out = tmp_path / "rep"
+    compare.generate_report(compare.discover_runs(tmp_path), "T", None, out, stats=stats)
+    html = (out / "index.html").read_text()
+    assert "Per-judge effects (screening)" in html
+    assert "quality" in html and "tests_pass" in html
+    assert "Benjamini-Hochberg" in html and "family of 2" in html
+    # raw p stays visible alongside the adjusted value
+    assert "0.0040" in html and "0.0080" in html
+    assert "always_five" in html and "constant value" in html
+
+    # no block -> no table (opt-out is the default shape)
+    _artifact(tmp_path)
+    stats = compare.load_stats_artifact(tmp_path)
+    out2 = tmp_path / "rep2"
+    compare.generate_report(compare.discover_runs(tmp_path), "T", None, out2, stats=stats)
+    assert "Per-judge effects" not in (out2 / "index.html").read_text()
+
+
+def test_per_judge_table_escapes_user_controlled_values(tmp_path):
+    evil = "j<script>alert(1)</script>"
+    _mk_run(tmp_path, "r-a", "model-a", {"c1": 5})
+    pj = _per_judge_block()
+    pj["judges"] = {evil: pj["judges"]["quality"]}
+    pj["excluded"] = [{"judge": evil, "reason": "<img src=x onerror=alert(1)>"}]
+    _artifact(tmp_path, per_judge=pj)
+    stats = compare.load_stats_artifact(tmp_path)
+    out = tmp_path / "rep"
+    compare.generate_report(compare.discover_runs(tmp_path), "T", None, out, stats=stats)
+    html = (out / "index.html").read_text()
+    assert "<script>alert(1)</script>" not in html
+    assert "<img src=x onerror" not in html
+
+
 def test_no_variance_artifact_renders_gracefully(tmp_path):
     _mk_run(tmp_path, "r-a", "model-a", {"c1": 5})
     _artifact(tmp_path,

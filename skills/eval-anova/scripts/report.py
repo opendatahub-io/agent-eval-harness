@@ -134,6 +134,57 @@ def anova_md_lines(an):
                      f"{fnum(an.get('p_adjusted'),4)}")
     lines.append(f"- Result: {'SIGNIFICANT' if sig_any(an) else 'not significant'}")
     return lines
+# ---------- per-judge fan-out (opt-in; delimited on purpose) ----------
+def per_judge_note(pj):
+    # The adjusted column always names its method and family — and says it is
+    # a different family from the composite's.
+    corr=CORR_LABELS.get(pj.get("correction"),str(pj.get("correction")))
+    return (f"{corr}-corrected across one family of {pj.get('family_size','?')} "
+            "(judge, term) test(s); screening only — the composite ANOVA keeps "
+            "its own correction family.")
+def per_judge_md_lines(d):
+    pj=d.get("per_judge") or {}
+    judges=pj.get("judges") or {};excluded=pj.get("excluded") or []
+    if not judges and not excluded:
+        return []
+    L=["","## Per-judge effects (screening)",""]
+    if judges:
+        L+=["| Judge | Term | p (raw) | p (adj) | Result | n cases |","|---|---|---|---|---|---|"]
+        for name in sorted(judges):
+            e=judges[name] or {}
+            for term,cell in (e.get("terms") or {}).items():
+                res="SIGNIFICANT" if cell.get("significant") else "not significant"
+                L.append(f"| {name} | {term} | {fnum(cell.get('p_raw'),4)} | "
+                         f"{fnum(cell.get('p_adjusted'),4)} | {res} | {e.get('n_cases','?')} |")
+        L+=["",f"*{per_judge_note(pj)}*"]
+    if excluded:
+        L.append("")
+    for ex in excluded:
+        L.append(f"- Excluded from the family: {ex.get('judge','?')} — {ex.get('reason','')}")
+    return L
+def per_judge_html(d):
+    pj=d.get("per_judge") or {}
+    judges=pj.get("judges") or {};excluded=pj.get("excluded") or []
+    if not judges and not excluded:
+        return ""
+    rows=""
+    for name in sorted(judges):
+        e=judges[name] or {}
+        for term,cell in (e.get("terms") or {}).items():
+            res="SIGNIFICANT" if cell.get("significant") else "not significant"
+            rows+=(f"<tr><td>{esc(name)}</td><td>{esc(term)}</td>"
+                   f"<td class=num>{fnum(cell.get('p_raw'),4)}</td>"
+                   f"<td class=num>{fnum(cell.get('p_adjusted'),4)}</td>"
+                   f"<td>{res}</td><td class=num>{esc(e.get('n_cases','?'))}</td></tr>")
+    table=(f"<table><thead><tr><th>Judge</th><th>Term</th><th class=num>p (raw)</th>"
+           f"<th class=num>p (adj)</th><th>Result</th><th class=num>n cases</th></tr></thead>"
+           f"<tbody>{rows}</tbody></table>") if rows else ""
+    note=f"<div class=sub style='margin-top:8px'>{esc(per_judge_note(pj))}</div>" if rows else ""
+    exc="".join(f"<div class=sub>Excluded from the family: {esc(x.get('judge','?'))} — "
+                f"{esc(x.get('reason',''))}</div>" for x in excluded)
+    return f"<div class=card><h2>Per-judge effects (screening)</h2>{table}{note}{exc}</div>"
+# ---------- end per-judge fan-out ----------
+
 def factor_p_table(an):
     if "p_values" not in an:
         return ""
@@ -163,6 +214,7 @@ def render_md(rid,d):
     for i,c in enumerate(sorted(conds,key=lambda x:-x.get("mean",0)),1):
         L.append(f"| {i} | {cmodel(c)} | {fnum(c.get('mean'))} | {fnum(c.get('std'))} | {c.get('n','?')} |")
     L+=anova_md_lines(an)
+    L+=per_judge_md_lines(d)  # opt-in fan-out; empty unless per_judge present
     if per and cases:
         ms=order_models(list(per.keys()))
         L+=["","## Per-case scores","","| Case | "+" | ".join(m for m in ms)+" |","|---"*(len(ms)+1)+"|"]
@@ -222,7 +274,7 @@ def render_html(rid,d):
     body=(f"<h1>ANOVA — {esc(rid)}</h1><div class=sub>{badge}</div>"
           f"<div class=card><h2>Experiment</h2>{meta}</div>"
           f"<div class=card><h2>Condition means (ranked)</h2>{means}</div>"
-          f"<div class=card><h2>ANOVA</h2>{anova}</div>{matrix}"
+          f"<div class=card><h2>ANOVA</h2>{anova}</div>{per_judge_html(d)}{matrix}"
           f"<footer>Generated {NOW} from <code>anova.json</code> · composite scores in [0,1].</footer>")
     return page(f"ANOVA — {rid}",body)
 

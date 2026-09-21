@@ -32,6 +32,10 @@ class MatrixConfig:
     # matrix.analysis.correction — multiple-comparison correction across the
     # ANOVA term family (holm | bh | none). None = not configured (holm).
     correction: str | None = None
+    # matrix.analysis.per_judge — opt-in per-judge ANOVA fan-out, BH-corrected
+    # across the judges×terms family. Off by default: extra model fits and
+    # report rows; the composite ANOVA stays the headline.
+    per_judge: bool = False
 
 
 class MatrixBuilder:
@@ -76,10 +80,12 @@ class MatrixBuilder:
                 )
 
         replications = _parse_replications(matrix.get("replications", 1))
+        analysis = _parse_analysis(matrix.get("analysis"))
         return MatrixConfig(
             factors=dict(factors),
             replications=replications,
-            correction=_parse_correction(matrix.get("analysis")),
+            correction=_parse_correction(analysis),
+            per_judge=_parse_per_judge(analysis),
         )
 
     @staticmethod
@@ -130,16 +136,21 @@ def _parse_replications(value: Any) -> int:
     return value
 
 
-def _parse_correction(analysis: Any) -> str | None:
+def _parse_analysis(analysis: Any) -> Mapping:
+    """The matrix.analysis block as a mapping ({} when absent)."""
+    if analysis is None:
+        return {}
+    if not isinstance(analysis, Mapping):
+        raise ValueError("matrix.analysis must be a mapping")
+    return analysis
+
+
+def _parse_correction(analysis: Mapping) -> str | None:
     """matrix.analysis.correction, canonicalised — or None when unset.
 
     A typo has to fail here, at config parse, not after the matrix has already
     burned its budget executing runs.
     """
-    if analysis is None:
-        return None
-    if not isinstance(analysis, Mapping):
-        raise ValueError("matrix.analysis must be a mapping")
     correction = analysis.get("correction")
     if correction is None:
         return None
@@ -147,6 +158,20 @@ def _parse_correction(analysis: Any) -> str | None:
         return normalize_correction(correction)
     except ValueError as exc:
         raise ValueError(f"matrix.analysis.correction: {exc}") from None
+
+
+def _parse_per_judge(analysis: Mapping) -> bool:
+    """matrix.analysis.per_judge as a strict boolean (default off).
+
+    Same rationale as correction: a mistyped value must fail at config parse,
+    not surface as a silently-missing per_judge block after the runs.
+    """
+    value = analysis.get("per_judge", False)
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"matrix.analysis.per_judge must be a boolean "
+            f"(got {type(value).__name__})")
+    return value
 
 
 def _safe_id_segment(value: Any) -> str:

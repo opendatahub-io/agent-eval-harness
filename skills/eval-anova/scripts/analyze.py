@@ -42,6 +42,32 @@ from agent_eval.harbor.reward import compose_reward, judge_ranges
 
 logger = logging.getLogger(__name__)
 
+# Per-judge observations travel in the same rows as the composite, under
+# prefixed column names. The prefix keeps a judge called e.g. "model" from
+# colliding with a factor or fixed column of the same name.
+_JUDGE_PREFIX = "judge:"
+
+
+def _judge_columns(per_judge: dict[str, Any]) -> dict[str, float]:
+    """Per-judge observation columns for one case, prefixed ``judge:``.
+
+    Numeric judges pass through as-is and booleans coerce to 0/1 (a pass/fail
+    judge is analysable as a rate). Pairwise verdicts and error/None samples
+    yield no observation — the column stays NaN for that row rather than an
+    invented 0 that would drag the judge's mean.
+    """
+    cols: dict[str, float] = {}
+    for name, rec in per_judge.items():
+        if not isinstance(rec, dict) or rec.get("judge_type") == "pairwise" \
+                or name == "pairwise":
+            continue
+        value = rec.get("value")
+        if isinstance(value, bool):
+            cols[f"{_JUDGE_PREFIX}{name}"] = 1.0 if value else 0.0
+        elif isinstance(value, (int, float)):
+            cols[f"{_JUDGE_PREFIX}{name}"] = float(value)
+    return cols
+
 
 def build_results_dataframe(
     run_results: list[Any],
@@ -56,6 +82,9 @@ def build_results_dataframe(
             "condition_id": r.condition.condition_id,
         }
         row.update(r.condition.levels)
+        judge_results = getattr(r, "judge_results", None)
+        if isinstance(judge_results, dict):
+            row.update(_judge_columns(judge_results))
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -66,6 +95,7 @@ def analyze_experiment(
     *,
     alpha: float = 0.05,
     correction: str = DEFAULT_CORRECTION,
+    per_judge: bool = False,
 ) -> dict[str, Any]:
     """Run statistical analysis on in-memory RunResult objects.
 
@@ -74,7 +104,7 @@ def analyze_experiment(
     """
     df = build_results_dataframe(run_results)
     return _analyze_df(df, factors, alpha=alpha, correction=correction,
-                       n_runs=len(run_results))
+                       n_runs=len(run_results), per_judge=per_judge)
 
 
 def analyze_runs(
@@ -83,6 +113,7 @@ def analyze_runs(
     *,
     alpha: float = 0.05,
     correction: str = DEFAULT_CORRECTION,
+    per_judge: bool = False,
     write_to: Path | str | None = None,
 ) -> tuple[dict[str, Any], Path]:
     """Analyse a directory of standard eval-run runs and write ``anova.json``.
@@ -105,7 +136,7 @@ def analyze_runs(
     n_runs = int(df[["condition_id", "replication"]].drop_duplicates().shape[0])
     analysis = _analyze_df(
         df, factors, alpha=alpha, correction=correction, n_runs=n_runs,
-        cost_by_condition=cost_by_condition,
+        cost_by_condition=cost_by_condition, per_judge=per_judge,
     )
     analysis["generated_at"] = datetime.datetime.now(
         datetime.timezone.utc
@@ -125,13 +156,15 @@ def _analyze_df(
     correction: str = DEFAULT_CORRECTION,
     n_runs: int | None = None,
     cost_by_condition: dict[str, float] | None = None,
+    per_judge: bool = False,
 ) -> dict[str, Any]:
     """Core statistical analysis over a results DataFrame.
 
     Columns required: ``case_id``, ``composite``, ``condition_id`` and one
     column per factor. ``replication`` is optional. ``correction`` is the
     multiple-comparison correction applied across the ANOVA's term family
-    (holm | bh | none).
+    (holm | bh | none). ``per_judge`` opts into the per-judge fan-out over
+    any ``judge:``-prefixed observation columns (see ``_per_judge_analysis``).
     """
     if not ANOVA_AVAILABLE:
         raise ImportError(missing_deps_message())
@@ -226,7 +259,7 @@ def _analyze_df(
         design["excluded_cases"] = excluded_cases
     per_case = _build_per_case(df, factors)
 
-    return {
+    analysis = {
         "anova": anova_result,
         "condition_summaries": condition_summaries,
         "pareto_frontier": frontier,
@@ -235,6 +268,143 @@ def _analyze_df(
         "excluded_cases": excluded_cases,
         "n_runs": n_runs if n_runs is not None else int(len(df)),
         "n_conditions": len(condition_summaries),
+    }
+    # Opt-in fan-out over the same (common-case restricted) frame. Off by
+    # default: it multiplies model fits and report rows, and the composite
+    # above stays the headline either way.
+    if per_judge:
+        analysis["per_judge"] = _per_judge_analysis(df, factors, alpha=alpha)
+    return analysis
+
+
+def _per_judge_analysis(
+    df: pd.DataFrame,
+    factors: list[str],
+    *,
+    alpha: float = 0.05,
+) -> dict[str, Any]:
+    """Per-judge ANOVA fan-out — a screening companion to the composite.
+
+    Runs the same single/multi-factor analysis the composite gets, once per
+    judge over that judge's own per-case values, then applies one
+    Benjamini-Hochberg correction across the whole judges×terms family of raw
+    p-values. FDR is the right control here: the fan-out multiplies tests and
+    per-judge effects are a screening question ("which judge moves?"), while
+    the composite ANOVA keeps its own separate (Holm by default) family.
+
+    A judge with a degenerate design — values under fewer than 2 conditions,
+    fewer than 2 cases scored under every condition, a constant response, or a
+    failed model fit — is excluded with an explicit reason and contributes no
+    fabricated p to the family, so ``family_size`` counts only real tests.
+    """
+    from agent_eval.anova.stats.anova import (
+        adjust_term_p_values, mixed_effects_anova, repeated_measures_anova)
+
+    judges: dict[str, dict[str, Any]] = {}
+    excluded: list[dict[str, str]] = []
+    family: dict[tuple[str, str], float | None] = {}
+
+    judge_cols = sorted(c for c in df.columns
+                        if isinstance(c, str) and c.startswith(_JUDGE_PREFIX))
+    has_keys = {"condition_id", "case_id"}.issubset(df.columns)
+    for col in judge_cols if has_keys else []:
+        name = col[len(_JUDGE_PREFIX):]
+        sub = df[df[col].notna()]
+        if sub.empty:
+            excluded.append({"judge": name,
+                             "reason": "no scored samples (every value was an "
+                                       "error/None or non-numeric)"})
+            continue
+        n_conditions = int(sub["condition_id"].nunique())
+        if n_conditions < 2:
+            excluded.append({"judge": name,
+                             "reason": f"values under only {n_conditions} "
+                                       "condition(s) — nothing to compare"})
+            continue
+        # The same crossed-design restriction the composite gets, but on this
+        # judge's own coverage: only cases it scored under every condition.
+        case_sets = [set(g["case_id"]) for _, g in sub.groupby("condition_id")]
+        common = set(case_sets[0]).intersection(*case_sets[1:])
+        if len(common) < 2:
+            excluded.append({"judge": name,
+                             "reason": f"only {len(common)} case(s) scored "
+                                       "under every condition (need >= 2)"})
+            continue
+        sub = sub[sub["case_id"].isin(common)]
+        agg_spec: dict[str, Any] = {col: "mean"}
+        for f in factors:
+            if f in sub.columns:
+                agg_spec[f] = "first"
+        jdf = sub.groupby(["condition_id", "case_id"],
+                          as_index=False, dropna=False).agg(agg_spec)
+        if jdf[col].nunique() <= 1:
+            excluded.append({"judge": name,
+                             "reason": "constant value — no variance to analyse"})
+            continue
+        effective = [f for f in factors
+                     if f in jdf.columns and jdf[f].nunique() >= 2]
+        if not effective:
+            excluded.append({"judge": name,
+                             "reason": "no factor with >= 2 levels among its "
+                                       "scored rows"})
+            continue
+        # The prefixed column name would read as an interaction in a patsy
+        # formula ("judge:x" -> judge × x), so fit under a plain alias.
+        jdf = jdf.rename(columns={col: "judge_value"})
+        # correction="none" here means RAW per-term p-values: the multiplicity
+        # correction happens once, below, across the whole judges×terms family.
+        try:
+            if len(effective) == 1:
+                result = repeated_measures_anova(
+                    jdf, factor=effective[0], response="judge_value",
+                    alpha=alpha, correction="none")
+            else:
+                result = mixed_effects_anova(
+                    jdf, factors=effective, response="judge_value",
+                    alpha=alpha, correction="none")
+        except Exception as exc:  # noqa: BLE001 — one judge must not sink the fan-out
+            excluded.append({"judge": name,
+                             "reason": f"model fit failed: {exc}"})
+            continue
+        raw = (result["p_values"] if isinstance(result.get("p_values"), dict)
+               else {str(result.get("factor") or "effect"): result.get("p_value")})
+        if all(p is None for p in raw.values()):
+            excluded.append({"judge": name,
+                             "reason": str(result.get("note")
+                                           or "degenerate design — no finite "
+                                              "p-value produced")})
+            continue
+        entry: dict[str, Any] = {
+            "method": result.get("method"),
+            "terms": {term: {"p_raw": p} for term, p in raw.items()},
+            "n_cases": int(jdf["case_id"].nunique()),
+            "n_conditions": n_conditions,
+        }
+        if result.get("note"):
+            entry["note"] = str(result["note"])
+        judges[name] = entry
+        for term, p in raw.items():
+            family[(name, term)] = p
+
+    # One BH family across every real (judge, term) test. A term whose p is
+    # None stays out of the family (p_adjusted None, not significant).
+    p_adjusted, significant, family_size = adjust_term_p_values(
+        family, correction="bh", alpha=alpha)
+    for key in family:
+        name, term = key
+        cell = judges[name]["terms"][term]
+        cell["p_adjusted"] = p_adjusted[key]
+        cell["significant"] = significant[key]
+
+    return {
+        "correction": "bh",
+        "family_size": family_size,
+        "alpha": alpha,
+        "judges": judges,
+        "excluded": excluded,
+        "note": ("Benjamini-Hochberg (FDR) across the one family of "
+                 f"{family_size} (judge, term) test(s); screening only — the "
+                 "composite ANOVA keeps its own separate correction family."),
     }
 
 
@@ -249,8 +419,11 @@ def load_conditions_from_runs(
     """Build analysis rows from a directory of standard eval-run runs.
 
     Returns ``(rows, factors, cost_by_condition)`` where each row is
-    ``{case_id, replication, composite, condition_id, **levels}``. Runs sharing
-    the same factor levels are treated as replications of one condition.
+    ``{case_id, replication, composite, condition_id, **levels}`` plus one
+    ``judge:<name>`` column per non-pairwise judge that produced a value
+    (bools as 0/1 — see ``_judge_columns``), feeding the opt-in per-judge
+    fan-out. Runs sharing the same factor levels are treated as replications
+    of one condition.
     """
     runs_dir = Path(runs_dir)
     reward_cfg = getattr(eval_config, "reward", None)
@@ -300,6 +473,9 @@ def load_conditions_from_runs(
                 "condition_id": condition_id,
             }
             row.update(levels)
+            # After the levels: the "judge:" prefix guarantees these never
+            # shadow a factor column.
+            row.update(_judge_columns(judges))
             rows.append(row)
 
     factors = sorted(factor_keys)
