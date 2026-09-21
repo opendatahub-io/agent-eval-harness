@@ -174,8 +174,10 @@ def safe_out(path):
 # Environment forwarded to the `claude` subprocess: an explicit allowlist of what Claude Code
 # and the probe need (PATH/HOME/locale/TLS/proxy settings). Nothing else from the operator's
 # shell — in particular no unrelated credentials — reaches the CLI or its descendants.
+# NODE_OPTIONS is deliberately excluded: `--require=<payload.js>` would run inside a Node-based
+# Claude Code before it processes --settings (CWE-94).
 CLI_ENV_ALLOWLIST = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE",
-                     "TERM", "TZ", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CLAUDE_CONFIG_DIR", "NODE_OPTIONS",
+                     "TERM", "TZ", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CLAUDE_CONFIG_DIR",
                      "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE",
                      "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy")
 
