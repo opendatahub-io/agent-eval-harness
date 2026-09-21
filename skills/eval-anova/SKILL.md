@@ -55,7 +55,12 @@ git repo (a per-user temp dir is used as a fallback when unset).
 2. **Execute**: For each condition × replication, drive `/eval-run` (workspace → execute → collect
    → score) → one standard run + `summary.yaml`, tagged with `condition.json`.
 3. **Analyze**: Repeated-measures / mixed-effects ANOVA + cost/quality Pareto over the runs →
-   `anova.json` (`--analyze-only` runs just this over existing runs).
+   `anova.json` (`--analyze-only` runs just this over existing runs). Multi-factor designs get
+   one joint Wald test per model term — main effects *and* interactions — and the whole term
+   family is then corrected for multiplicity: Holm by default, Benjamini-Hochberg via
+   `--correction fdr_bh` (or `matrix.analysis.correction`), or `none` to skip. Raw and adjusted
+   p-values are both reported; `significant` is judged on the adjusted value. Degenerate terms
+   (no finite p) are excluded from the family and listed, never given a fabricated p-value.
 4. **Report**: `/eval-compare` renders the cross-condition comparison, including the statistics
    section, from the runs + `anova.json`.
 
@@ -94,7 +99,7 @@ See `references/matrix-schema.md` for the full schema.
 ## Statistical Methods
 
 - **Repeated-measures ANOVA** (default): Accounts for case difficulty as a blocking factor. Correct when the same cases are evaluated under all conditions.
-- **Mixed-effects model**: For multi-factor designs with crossed random effects.
+- **Mixed-effects model**: For multi-factor designs with crossed random effects. Reports one joint Wald test per term (main effects and interactions), Holm/BH-corrected across the term family.
 - **One-way ANOVA**: available in the stats library for independent samples (cases NOT reused), but rarely appropriate — the orchestrator does not auto-select it.
 
 See `prompts/interpret-anova.md` for guidance on interpreting results.

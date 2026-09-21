@@ -55,6 +55,22 @@ def multi_factor_analysis():
     }
 
 
+def corrected_analysis():
+    """A post-correction artifact: per-term raw + adjusted p, interaction row."""
+    d = multi_factor_analysis()
+    d["anova"] = {
+        "p_values": {"model": 0.01, "effort": 0.2, "model:effort": 0.7},
+        "p_adjusted": {"model": 0.03, "effort": 0.4, "model:effort": 0.7},
+        "significant": {"model": True, "effort": False, "model:effort": False},
+        "correction": "holm",
+        "family_size": 3,
+        "method": "Mixed-effects model (statsmodels mixedlm, per-term Wald tests)",
+        "alpha": 0.05,
+        "factors": ["model", "effort"],
+    }
+    return d
+
+
 def test_mixed_effects_render_markdown_factor_p_values():
     report = load_report_module()
     markdown = report.render_md("anova-test", multi_factor_analysis())
@@ -63,6 +79,8 @@ def test_mixed_effects_render_markdown_factor_p_values():
     assert "- model: p: 0.0100 — SIGNIFICANT" in markdown
     assert "- effort: p: 0.2000 — not significant" in markdown
     assert "model=claude-opus-4-6, effort=low" in markdown
+    # legacy artifact (no correction fields) — no unlabelled adjusted value
+    assert "p-adj" not in markdown
 
 
 def test_mixed_effects_render_html_factor_p_values():
@@ -73,6 +91,26 @@ def test_mixed_effects_render_html_factor_p_values():
     assert "<td>model</td><td class=num>0.0100</td>" in rendered
     assert "<td>effort</td><td class=num>0.2000</td>" in rendered
     assert "model, effort" in rendered
+    assert "p (adj)" not in rendered  # no correction fields → no adjusted column
+
+
+def test_corrected_render_markdown_shows_raw_adjusted_and_method():
+    report = load_report_module()
+    markdown = report.render_md("anova-test", corrected_analysis())
+
+    assert "- model: p: 0.0100 · p-adj (Holm): 0.0300 — SIGNIFICANT" in markdown
+    assert "- model:effort: p: 0.7000 · p-adj (Holm): 0.7000 — not significant" in markdown
+    assert "family of 3 term test(s)" in markdown
+
+
+def test_corrected_render_html_shows_raw_adjusted_and_method():
+    report = load_report_module()
+    rendered = report.render_html("anova-test", corrected_analysis())
+
+    assert "p (raw)" in rendered and "p (adj)" in rendered
+    assert "<td>model</td><td class=num>0.0100</td><td class=num>0.0300</td>" in rendered
+    assert "<td>model:effort</td>" in rendered  # interaction row
+    assert "Holm" in rendered  # the adjusted column names its method
 
 
 def test_render_html_escapes_user_controlled_ids():
