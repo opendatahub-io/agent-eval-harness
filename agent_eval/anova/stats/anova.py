@@ -154,6 +154,29 @@ def _finite_p_or_none(value: Any) -> float | None:
     return p if math.isfinite(p) and 0.0 <= p <= 1.0 else None
 
 
+def _term_slices(fit: Any) -> dict[str, slice]:
+    """Term name -> design-column slice, across statsmodels versions.
+
+    statsmodels <= 0.14 exposes the patsy DesignInfo as
+    ``fit.model.data.design_info``; 0.15 renamed the attribute to
+    ``model_spec`` (still a patsy DesignInfo when patsy is installed, a
+    formulaic ModelSpec otherwise). Patsy carries string-keyed
+    ``term_name_slices``; formulaic only ``term_slices`` keyed by Term
+    objects, so keys are stringified there.
+    """
+    spec = (getattr(fit.model.data, "design_info", None)
+            or getattr(fit.model.data, "model_spec", None))
+    if spec is None:
+        return {}
+    named = getattr(spec, "term_name_slices", None)
+    if named:
+        return dict(named)
+    slices = getattr(spec, "term_slices", None)
+    if slices:
+        return {str(k): v for k, v in dict(slices).items()}
+    return {}
+
+
 def _term_wald_p_values(fit: Any) -> dict[str, float | None]:
     """One joint Wald p-value per fixed-effect model term (Intercept dropped).
 
@@ -176,14 +199,14 @@ def _term_wald_p_values(fit: Any) -> dict[str, float | None]:
     except Exception:  # noqa: BLE001 — degrade to per-term contrasts
         pass
 
-    design_info = getattr(fit.model.data, "design_info", None)
-    if design_info is None:
+    term_slices = _term_slices(fit)
+    if not term_slices:
         return {}
     # Contrast rows select a term's design columns; padding to len(params)
     # zeroes the trailing random-effect variance parameters mixedlm appends.
     n_params = len(fit.params)
     p_by_term: dict[str, float | None] = {}
-    for term, slc in design_info.term_name_slices.items():
+    for term, slc in term_slices.items():
         if term == "Intercept":
             continue
         contrast = np.zeros((slc.stop - slc.start, n_params))
