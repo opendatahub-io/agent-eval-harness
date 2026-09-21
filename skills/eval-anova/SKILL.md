@@ -61,6 +61,12 @@ git repo (a per-user temp dir is used as a fallback when unset).
    `--correction fdr_bh` (or `matrix.analysis.correction`), or `none` to skip. Raw and adjusted
    p-values are both reported; `significant` is judged on the adjusted value. Degenerate terms
    (no finite p) are excluded from the family and listed, never given a fabricated p-value.
+   Optionally fan the same ANOVA out **per judge** (`--per-judge` or
+   `matrix.analysis.per_judge: true`): each judge's per-case values (booleans as 0/1; pairwise
+   and errored samples skipped) get the same analysis, and every (judge, term) p-value is
+   Benjamini-Hochberg-corrected as *one* family — a screen for which judge moves, while the
+   composite keeps its own separate correction family and stays the headline. Judges with
+   degenerate designs (constant values, too few crossed cases) are excluded with a reason.
 4. **Report**: `/eval-compare` renders the cross-condition comparison, including the statistics
    section, from the runs + `anova.json`.
 

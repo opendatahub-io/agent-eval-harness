@@ -19,6 +19,7 @@ matrix:
   replications: <int>  # default: 1
   analysis:            # optional
     correction: holm   # holm (default) | fdr_bh | none
+    per_judge: false   # opt-in per-judge ANOVA fan-out (default: false)
 ```
 
 ## Fields
@@ -81,6 +82,27 @@ Both raw and adjusted p-values are always reported in `anova.json`;
 whose test is degenerate (no finite p) are excluded from the family and listed
 under `excluded_terms`. The `--correction` CLI flag on `orchestrate.py`
 overrides this key.
+
+### `analysis.per_judge` (optional, default: `false`)
+
+Opt-in per-judge ANOVA fan-out: the same single/multi-factor analysis the
+composite gets is run once **per judge** over that judge's per-case values
+(numeric judges as-is, booleans as 0/1; pairwise verdicts and error/None
+samples are skipped), and all resulting (judge, term) raw p-values are
+corrected as **one Benjamini–Hochberg family** — FDR control is what a
+screening fan-out wants. The composite ANOVA is *not* part of this family and
+keeps its own `correction` (Holm by default); it stays the headline result.
+
+`anova.json` gains a `per_judge` block: `judges.<name>.terms.<term>` with
+`p_raw` / `p_adjusted` / `significant`, per-judge `method` / `n_cases` /
+`n_conditions`, plus family metadata (`correction: bh`, `family_size`,
+`excluded`). A judge with a degenerate design — constant values, fewer than 2
+conditions or fewer than 2 cases scored under every condition — is listed under
+`excluded` with an explicit reason and contributes no test to the family
+(`family_size` counts only real tests; a p-value is never fabricated).
+
+Enable with this key or the `--per-judge` CLI flag on `orchestrate.py` (either
+turns it on). Default off: it multiplies model fits and report rows.
 
 ## Full Factorial Expansion
 

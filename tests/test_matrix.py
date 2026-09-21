@@ -128,6 +128,32 @@ class TestFromYaml:
         with pytest.raises(ValueError, match="analysis must be a mapping"):
             MatrixBuilder.from_yaml(p)
 
+    def test_parses_analysis_per_judge(self, tmp_path):
+        config = {"matrix": {"factors": {"model": ["a", "b"]},
+                             "analysis": {"per_judge": True}}}
+        p = tmp_path / "eval.yaml"
+        p.write_text(yaml.dump(config))
+        result = MatrixBuilder.from_yaml(p)
+        assert result is not None
+        assert result.per_judge is True
+
+    def test_per_judge_defaults_off(self, tmp_path):
+        p = tmp_path / "eval.yaml"
+        p.write_text(yaml.dump({"matrix": {"factors": {"model": ["a", "b"]}}}))
+        result = MatrixBuilder.from_yaml(p)
+        assert result is not None
+        assert result.per_judge is False
+
+    def test_per_judge_must_be_boolean(self, tmp_path):
+        # A mistyped value must fail at config parse, not surface as a
+        # silently-missing per_judge block after the runs.
+        config = {"matrix": {"factors": {"model": ["a"]},
+                             "analysis": {"per_judge": "yes please"}}}
+        p = tmp_path / "eval.yaml"
+        p.write_text(yaml.dump(config))
+        with pytest.raises(ValueError, match="per_judge must be a boolean"):
+            MatrixBuilder.from_yaml(p)
+
 
 class TestExpandFullFactorial:
     """Full factorial expansion of factor levels."""
