@@ -89,8 +89,9 @@ Passes when execution cost is at or below the budget.
 
 | | |
 | --- | --- |
-| **Required fields** | `cost_usd` |
-| **Fails when** | `cost_usd` is missing, or it exceeds `max_cost_usd` |
+| **Required fields** | `cost_usd` (+ optional `cost_source`) |
+| **Fails when** | `cost_usd` exceeds `max_cost_usd` |
+| **Abstains when** | `cost_usd` is absent, or `cost_source` is `unavailable` — the judge returns `None`, so the case is skipped for this judge rather than failed |
 
 | Argument | Type | Default | Effect |
 | --- | --- | --- | --- |
@@ -106,7 +107,10 @@ judges:
 
 !!! warning "Cost data must be captured"
     `cost_usd` comes from run metrics. If [`traces.metrics`](config/traces.md) is off (or
-    the runner reports no cost), the judge returns `False` with `"No cost data available"`.
+    the runner reports no cost), the judge abstains: it returns `None` with a
+    `"cost unavailable"` rationale, so the case is skipped for this judge rather than
+    failed. A cost the runner only estimated (`cost_source` `runner-estimate` /
+    `runner:*`) is still judged, with the rationale saying so.
     For the claude-code runner, `cost_usd` is the *billed* cost — it can exceed the
     conversation total the CLI prints when background agents burned tokens after the
     final turn. Budget against billed spend, not the CLI final-cost line.
