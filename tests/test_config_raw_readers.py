@@ -192,6 +192,20 @@ def test_ensure_deps_follows_extends_on_both_paths(tmp_path, monkeypatch):
     fallback_specs = specs(tmp_path / "eval" / "openrouter-x.yaml")
     assert any(s.startswith("openai") for s in fallback_specs), fallback_specs
 
+    # The fallback accepts `!replace` (a plain SafeLoader would reject the tag
+    # and drop to the lossy minimal parser) and honours its meaning: the
+    # overlay's judge list replaces the base's.
+    (tmp_path / "eval" / "openrouter-replace.yaml").write_text(
+        "extends: ../eval.yaml\nmodels:\n  judge: openrouter:/z-ai/glm-5.2\n"
+        "judges: !replace\n  - {name: q, prompt: rate it}\n")
+    replaced = ensure_deps._load_config_following_extends(
+        tmp_path / "eval" / "openrouter-replace.yaml")
+    assert [j["name"] for j in replaced["judges"]] == ["q"]
+    assert replaced["models"]["judge"] == "openrouter:/z-ai/glm-5.2"
+    replace_specs = specs(tmp_path / "eval" / "openrouter-replace.yaml")
+    assert any(s.startswith("openai") for s in replace_specs), replace_specs
+    assert any(s.startswith("anthropic") for s in replace_specs)
+
     # Discovery for the dependency scan includes profiles.
     monkeypatch.chdir(tmp_path)
     monkeypatch.delitem(sys.modules, "agent_eval.config", raising=False)

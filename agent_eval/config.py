@@ -31,7 +31,10 @@ from agent_eval.providers.openrouter.routing import RoutingSpec, RoutingTable
 # (`dedupe=False`: plain extend) through the same function.
 
 MAX_EXTENDS_DEPTH = 8
-_LIST_MERGE_KEYS = ("name", "id")
+# `id` first: `execution.steps` entries carry BOTH `id` and `name`, and `id`
+# is the identity (the uniqueness constraint and the path component). Judges
+# declare no `id`, so they fall through to `name`.
+_LIST_MERGE_KEYS = ("id", "name")
 
 
 class _ReplaceList(list):

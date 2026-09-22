@@ -62,11 +62,14 @@ routing declaration merges the other way round — lists replace, because
 - Chains nest (`extends: glm.yaml` inside a profile is fine) up to 8 levels;
   cycles and missing bases are load errors. `extends` must be a relative path,
   so a chain stays portable across checkouts and containers.
-- A file that contains `extends` is not a standalone eval: config discovery
-  skips it (it would otherwise register as an eval named after its stem) and the
-  `eval-profiles/` and `eval/profiles/` directories are the conventional homes.
-  Harbor task packages built from a profile record the chain in `task.toml`
-  and are not reused by a run of a different chain.
+- A file that contains `extends` is a profile, not a standalone eval. Config
+  discovery skips it **by default** (it would otherwise register as an eval named
+  after its stem); callers that ask for profiles
+  (`discover_configs(root, include_profiles=True)`, which the dependency scan
+  does) get it back with `profile_of` pointing at its base and the base's eval
+  name. `eval-profiles/` and `eval/profiles/` are the conventional homes and are
+  part of the scan. Harbor task packages built from a profile record the chain in
+  `task.toml` and are not reused by a run of a different chain.
 
 ## Inspecting the merged config
 

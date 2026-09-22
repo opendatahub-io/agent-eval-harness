@@ -88,11 +88,27 @@ def _load_config_following_extends(eval_yaml):
     except Exception:
         pass
 
+    class _Replaced(list):
+        """A `!replace`-tagged list: replaces the base value instead of merging."""
+
     def _read(path):
         text = path.read_text()
         try:
             import yaml
-            data = yaml.safe_load(text) or {}
+
+            # A plain SafeLoader rejects the harness's `!replace` tag and would
+            # push the file onto the lossy minimal parser; accept the tag here
+            # with the same meaning (list values only).
+            class _Loader(yaml.SafeLoader):
+                pass
+
+            def _replace(loader, node):
+                if not isinstance(node, yaml.SequenceNode):
+                    raise ValueError("!replace applies to list values only")
+                return _Replaced(loader.construct_sequence(node, deep=True))
+
+            _Loader.add_constructor("!replace", _replace)
+            data = yaml.load(text, Loader=_Loader) or {}
         except Exception:
             data = _parse_yaml_minimal(text)
         return data if isinstance(data, dict) else {}
@@ -119,7 +135,9 @@ def _load_config_following_extends(eval_yaml):
             for key, value in layer.items():
                 if key == "extends":
                     continue
-                if key == "judges" and isinstance(value, list) and isinstance(merged.get(key), list):
+                if isinstance(value, _Replaced):
+                    merged[key] = list(value)
+                elif key == "judges" and isinstance(value, list) and isinstance(merged.get(key), list):
                     merged[key] = merged[key] + value
                 elif isinstance(value, dict) and isinstance(merged.get(key), dict):
                     merged[key] = {**merged[key], **value}

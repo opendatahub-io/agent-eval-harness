@@ -1000,6 +1000,27 @@ def test_steps_merge_by_id(tmp_path):
     assert [s.id for s in cfg.execution.steps] == ["create", "assess", "report"]
 
 
+def test_steps_with_both_id_and_name_merge_by_id(tmp_path):
+    """`id` is a step's identity; a renamed step is the same step, and two
+    steps that share a display name stay two steps."""
+    (tmp_path / "eval.yaml").write_text(
+        "name: t\nexecution:\n  steps:\n"
+        "    - {id: create, name: Create, prompt: create it}\n"
+        "    - {id: assess, name: Assess, prompt: assess it}\n")
+    (tmp_path / "p.yaml").write_text(
+        "extends: eval.yaml\nexecution:\n  steps:\n"
+        "    - {id: assess, name: Assess deeply, timeout: 99}\n"
+        "    - {id: recheck, name: Assess, prompt: assess again}\n")
+    raw, _ = load_raw(tmp_path / "p.yaml")
+    steps = raw["execution"]["steps"]
+    assert [s["id"] for s in steps] == ["create", "assess", "recheck"]
+    assert steps[1] == {"id": "assess", "name": "Assess deeply", "prompt": "assess it",
+                        "timeout": 99}
+    assert steps[2]["name"] == "Assess" and steps[2]["prompt"] == "assess again"
+    cfg = EvalConfig.from_yaml(tmp_path / "p.yaml")
+    assert [s.id for s in cfg.execution.steps] == ["create", "assess", "recheck"]
+
+
 def test_from_yaml_takes_paths_and_name_from_the_root_of_the_chain(tmp_path, monkeypatch):
     profile = _overlay_project(tmp_path)
     monkeypatch.chdir(tmp_path)
