@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
 
 
 @dataclass(frozen=True)
@@ -38,8 +37,11 @@ class MatrixBuilder:
         if not path.exists():
             return None
 
-        with open(path) as f:
-            raw = yaml.safe_load(f)
+        # A matrix lives in an eval config, so it goes through the single
+        # raw loader (an `extends:` overlay may add or override factors).
+        from agent_eval.config import load_raw
+
+        raw, _chain = load_raw(path)
 
         if not isinstance(raw, dict) or "matrix" not in raw:
             return None

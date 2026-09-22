@@ -194,3 +194,28 @@ class TestEstimateCost:
         assert "n_conditions" in result
         assert "n_cases" in result
         assert "replications" in result
+
+
+class TestMatrixExtends:
+    """A matrix lives in an eval config, so an `extends:` overlay can add or
+    override factors — MatrixBuilder reads through the single raw loader."""
+
+    def test_overlay_extends_factors(self, tmp_path):
+        (tmp_path / "eval.yaml").write_text(yaml.safe_dump({
+            "name": "t", "execution": {"skill": "s"},
+            "matrix": {"factors": {"model": ["a", "b"]}, "replications": 1}}))
+        (tmp_path / "wide.yaml").write_text(
+            "extends: eval.yaml\nmatrix:\n  factors:\n    model: [c]\n    effort: [low, high]\n"
+            "  replications: 3\n")
+        result = MatrixBuilder.from_yaml(tmp_path / "wide.yaml")
+        assert result.factors["model"] == ["a", "b", "c"]
+        assert result.factors["effort"] == ["low", "high"]
+        assert result.replications == 3
+
+    def test_overlay_can_replace_a_factor_list(self, tmp_path):
+        (tmp_path / "eval.yaml").write_text(yaml.safe_dump({
+            "name": "t", "execution": {"skill": "s"},
+            "matrix": {"factors": {"model": ["a", "b"]}}}))
+        (tmp_path / "narrow.yaml").write_text(
+            "extends: eval.yaml\nmatrix:\n  factors:\n    model: !replace [c]\n")
+        assert MatrixBuilder.from_yaml(tmp_path / "narrow.yaml").factors["model"] == ["c"]

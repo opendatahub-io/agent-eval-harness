@@ -43,7 +43,7 @@ from pathlib import Path
 
 import yaml
 
-from agent_eval.config import EvalConfig, resolve_arguments
+from agent_eval.config import EvalConfig, load_raw, resolve_arguments
 from agent_eval.judges import BuiltinJudgeRegistry
 from agent_eval.tools.interception import generate_interception
 from agent_eval.workspace_provisioning import materialize_shared_files
@@ -95,8 +95,13 @@ def _find_input_file(case_dir: Path):
 
 def _bundle_eval_config(config_path: Path, judge_model: str | None = None,
                         no_llm_judges: bool = False) -> dict:
-    """Load the eval.yaml and sanitize it for in-container verification."""
-    raw = yaml.safe_load(config_path.read_text()) or {}
+    """Load the eval.yaml and sanitize it for in-container verification.
+
+    Goes through the single raw loader, so an `extends:` overlay is bundled
+    as its MERGED mapping (no `extends` key): the in-container engine never
+    resolves a path relative to the container.
+    """
+    raw, _chain = load_raw(config_path)
     if "dataset" in raw and isinstance(raw["dataset"], dict):
         raw["dataset"] = {**raw["dataset"], "path": ""}
     if judge_model:
@@ -250,7 +255,8 @@ def _instruction_text(system_prompt, command: str) -> str:
 
 def _render_multistep_task_toml(*, task_name, task_desc, eval_name, case_id,
                                 image, workdir, step_specs,
-                                reward_strategy="final", judge_mode="full"):
+                                reward_strategy="final", judge_mode="full",
+                                config_chain=None):
     """Build a schema 1.4 multi-step task.toml (variable-length [[steps]]).
 
     ``step_specs`` is a list of ``(name, agent_timeout, verifier_timeout)``.
@@ -274,6 +280,9 @@ def _render_multistep_task_toml(*, task_name, task_desc, eval_name, case_id,
         f'eval_name = {_toml_string(eval_name)}',
         f'case_id = {_toml_string(case_id)}',
         f'judge_mode = {_toml_string(judge_mode)}',
+        # Which config file(s) produced the bundle (root first); the reuse check
+        # refuses a package built from a different chain.
+        "config_chain = [" + ", ".join(_toml_string(c) for c in (config_chain or [])) + "]",
         "",
         "[environment]",
         f'docker_image = {_toml_string(image)}',
@@ -381,7 +390,8 @@ def _write_multi_step_case_package(config, config_path, bundled_cfg, case_dir,
         task_desc=_task_label(config),
         eval_name=config.name, case_id=case_id, image=image, workdir=workdir,
         step_specs=step_specs,
-        judge_mode="deterministic-only" if no_llm_judges else "full"),
+        judge_mode="deterministic-only" if no_llm_judges else "full",
+        config_chain=list(getattr(config, "config_chain", None) or [])),
         encoding="utf-8")
 
     # environment/ — auto-uploaded to the workspace by Harbor.
@@ -495,6 +505,9 @@ def generate_tasks(
             "CASE_ID": _toml_string(case_id),
             "JUDGE_MODE": _toml_string(
                 "deterministic-only" if no_llm_judges else "full"),
+            # Which config file(s) produced the bundle (root first).
+            "CONFIG_CHAIN": "[" + ", ".join(
+                _toml_string(c) for c in (getattr(config, "config_chain", None) or [])) + "]",
             "IMAGE": _toml_string(image),
             "WORKDIR": _toml_string(workdir),
             "VERIFIER_TIMEOUT": verifier_timeout,

@@ -401,3 +401,63 @@ def test_generate_tasks_shared_file_outside_project_skipped(
     )
     assert not (out / "case-001" / "environment" / "leak.txt").exists()
     assert "WARNING" in capsys.readouterr().err
+
+
+# --- extends: overlays bundle merged (spec 014 PR-3a) -------------------------
+
+def _make_profile(tmp_path):
+    cfg_path, _ = _make_eval(tmp_path)
+    profiles = tmp_path / "eval-profiles"
+    profiles.mkdir()
+    profile = profiles / "glm.yaml"
+    profile.write_text(
+        "extends: ../eval.yaml\n"
+        "models:\n  skill: openrouter:/z-ai/glm-5.2\n  judge: openrouter:/z-ai/glm-5.2\n"
+        "  providers:\n    openrouter:\n      routing:\n        models:\n"
+        "          z-ai/glm-5.2: {order: [z-ai], allow_fallbacks: false}\n"
+        "      judge: {inherit_pins: true}\n"
+        "judges:\n  - {name: quality, prompt: Rate it, score_range: [1, 5]}\n")
+    return profile, EvalConfig.from_yaml(profile)
+
+
+def test_overlay_bundle_is_the_merged_config_without_extends(tmp_path):
+    profile, _ = _make_profile(tmp_path)
+    bundled = gen._bundle_eval_config(profile)
+    assert "extends" not in bundled
+    # base judges + overlay judge, base dataset (blanked for the container)
+    assert [j["name"] for j in bundled["judges"]] == ["files_exist", "quality"]
+    assert bundled["dataset"]["path"] == ""
+    assert bundled["execution"]["skill"] == "rfe.speedrun"
+    # provider block and pins travel with the bundle
+    assert bundled["models"]["judge"] == "openrouter:/z-ai/glm-5.2"
+    assert bundled["models"]["providers"]["openrouter"]["judge"] == {"inherit_pins": True}
+    assert bundled["models"]["providers"]["openrouter"]["routing"]["models"]["z-ai/glm-5.2"]["order"] == ["z-ai"]
+    # the bundle is self-contained: it loads on its own
+    bundled_path = tmp_path / "bundled.yaml"
+    bundled_path.write_text(yaml.safe_dump(bundled, sort_keys=False))
+    assert [j.name for j in EvalConfig.from_yaml(bundled_path).judges] == ["files_exist", "quality"]
+
+
+def test_task_toml_metadata_records_the_config_chain(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    profile, config = _make_profile(tmp_path)
+    out = tmp_path / "harbor-tasks"
+    gen.generate_tasks(config, profile, out, image="quay.io/test/img:latest",
+                       arguments='--headless "{prompt}"', skill="rfe.speedrun",
+                       workdir="/workspace")
+    task = tomllib.loads((out / "case-001" / "task.toml").read_text())
+    assert task["metadata"]["config_chain"] == ["eval.yaml", "eval-profiles/glm.yaml"]
+    bundled = yaml.safe_load((out / "case-001" / "tests" / "eval.yaml").read_text())
+    assert "extends" not in bundled
+    assert [j["name"] for j in bundled["judges"]] == ["files_exist", "quality"]
+
+
+def test_task_toml_config_chain_for_a_plain_config(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg_path, config = _make_eval(tmp_path)
+    out = tmp_path / "harbor-tasks"
+    gen.generate_tasks(config, cfg_path, out, image="quay.io/test/img:latest",
+                       arguments='--headless "{prompt}"', skill="rfe.speedrun",
+                       workdir="/workspace")
+    task = tomllib.loads((out / "case-001" / "task.toml").read_text())
+    assert task["metadata"]["config_chain"] == ["eval.yaml"]

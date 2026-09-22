@@ -398,3 +398,42 @@ judges:
                              plugin_dirs=["plugins/does-not-exist"])
         _, out = self._run(repo, monkeypatch, capsys)
         assert "none of the configured runner.plugin_dirs" not in out, out
+
+
+class TestExtendsOverlay:
+    """validate_eval checks the MERGED config of an `extends:` profile and
+    reports the chain; a broken chain is a clear error, not a schema puzzle."""
+
+    BASE = ("name: base\nexecution:\n  skill: my-skill\n"
+            "dataset:\n  path: cases\n  schema: input.yaml has a prompt\n"
+            "outputs:\n  - {path: out, schema: files}\n"
+            "judges:\n  - {name: q, prompt: rate it, score_range: [1, 5]}\n")
+
+    def _project(self, tmp_path, profile):
+        (tmp_path / "eval.yaml").write_text(self.BASE)
+        (tmp_path / "cases").mkdir()
+        (tmp_path / "eval-profiles").mkdir()
+        (tmp_path / "eval-profiles" / "p.yaml").write_text(profile)
+        return tmp_path
+
+    def _run(self, repo, monkeypatch, capsys, path="eval-profiles/p.yaml"):
+        monkeypatch.chdir(repo)
+        try:
+            validate_eval.validate_config(path)
+        except SystemExit as exc:
+            return exc.code, capsys.readouterr().out
+        return 0, capsys.readouterr().out
+
+    def test_profile_validates_against_the_merged_config(self, tmp_path, monkeypatch, capsys):
+        repo = self._project(tmp_path, "extends: ../eval.yaml\nmodels:\n  skill: openrouter:/z-ai/glm-5.2\n")
+        code, out = self._run(repo, monkeypatch, capsys)
+        assert "CONFIG_CHAIN: eval.yaml <- eval-profiles/p.yaml" in out
+        assert "Missing 'name' field" not in out
+        assert "execution.skill or execution.prompt" not in out
+        assert code in (0, None), out
+
+    def test_broken_chain_is_reported(self, tmp_path, monkeypatch, capsys):
+        repo = self._project(tmp_path, "extends: ../missing.yaml\n")
+        code, out = self._run(repo, monkeypatch, capsys)
+        assert code == 1
+        assert "CONFIG_CHAIN_ERROR" in out and "does not exist" in out

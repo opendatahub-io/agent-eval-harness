@@ -29,7 +29,7 @@ from pathlib import Path
 
 import yaml
 
-from agent_eval.config import EvalConfig
+from agent_eval.config import EvalConfig, load_raw
 
 log = logging.getLogger(__name__)
 
@@ -203,7 +203,7 @@ def _run_with_client(client, url, config, config_path, ns, provider_id,
 
     # 5. Report
     try:
-        raw_cfg = yaml.safe_load(Path(config_path).read_text()) or {}
+        raw_cfg, _chain = load_raw(Path(config_path))
         report = _load_report_module()
         html = report.generate_report(
             config=raw_cfg, summary=summary, run_result=run_meta,

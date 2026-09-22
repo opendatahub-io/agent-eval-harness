@@ -7,7 +7,7 @@ from typing import Optional
 
 import yaml
 
-from agent_eval.config import _is_valid_eval_name
+from agent_eval.config import _is_valid_eval_name, load_raw
 
 
 @dataclass
@@ -41,11 +41,13 @@ def reorganize_root_config(project_root: Path, eval_name: str) -> Reorganization
 
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    with open(source_config) as f:
-        raw = yaml.safe_load(f) or {}
-
-    if not isinstance(raw, dict):
-        raise ValueError(f"Invalid eval config (not a YAML mapping): {source_config}")
+    raw, chain = load_raw(source_config)
+    if len(chain) > 1:
+        # Moving a profile would inline its base into the new file and lose
+        # the `extends:` link; the base is what belongs under eval/<name>/.
+        raise ValueError(
+            f"{source_config} is a profile (extends: {chain[0]}); move the base "
+            "config instead and update the profile's 'extends' path")
 
     old_dataset_path = (raw.get("dataset") or {}).get("path", "")
 

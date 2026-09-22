@@ -3022,9 +3022,12 @@ def main():
     config_obj = EvalConfig.from_yaml(Path(args.config))
     eval_name = config_obj.eval_name()
 
-    # Also load as dict for backward compat with report template
-    config = _load_yaml(Path(args.config))
-    config_dir = Path(args.config).resolve().parent
+    # Also load as dict for backward compat with report template — through
+    # the single raw loader, so an `extends:` overlay renders merged and paths
+    # resolve against the root of the chain (the base config's directory).
+    from agent_eval.config import load_raw
+    config, config_chain = load_raw(Path(args.config))
+    config_dir = Path(config_chain[0]).parent
 
     # Resolve dataset.path relative to config file location so downstream
     # functions get an absolute path (not CWD-relative).

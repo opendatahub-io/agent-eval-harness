@@ -112,3 +112,14 @@ def test_reorganize_nonexistent_dataset_rewrites_path(tmp_path):
         new_config = yaml.safe_load(f)
     resolved = (result.target_config.parent / new_config["dataset"]["path"]).resolve()
     assert resolved == (tmp_path / "cases").resolve()
+
+
+def test_reorganize_refuses_a_profile_root_config(tmp_path):
+    """A root eval.yaml that `extends:` another file is a profile; moving it
+    would inline the base and lose the link, so it is refused."""
+    (tmp_path / "base.yaml").write_text(yaml.safe_dump(
+        {"skill": "my-skill", "name": "my-eval", "dataset": {"path": "cases/"}}))
+    (tmp_path / "eval.yaml").write_text("extends: base.yaml\nexecution:\n  timeout: 5\n")
+    with pytest.raises(ValueError, match="is a profile"):
+        reorganize_root_config(tmp_path, "my-skill")
+    assert (tmp_path / "eval.yaml").exists()

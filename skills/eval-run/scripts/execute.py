@@ -683,6 +683,11 @@ def _build_eval_params(args, config, skill_args, max_budget, timeout_s, effort=N
         "max_budget_usd": max_budget,
         "timeout_s": timeout_s,
     }
+    # Which config file(s) defined the run (root first) — one entry for a
+    # plain eval.yaml, more when an `extends:` profile was used.
+    chain = list(getattr(config, "config_chain", None) or [])
+    if chain:
+        params["config_chain"] = chain
     # skill is optional for prompt mode
     target = args.skill or config.resolve_skill()
     if target:

@@ -199,6 +199,7 @@ nav:
     - reference/index.md
     - "The eval.yaml schema":
       - reference/eval-yaml.md
+      - "extends": reference/config/extends.md
       - "execution": reference/config/execution.md
       - "runner": reference/config/runner.md
       - "models": reference/config/models.md

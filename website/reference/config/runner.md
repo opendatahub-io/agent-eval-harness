@@ -131,7 +131,8 @@ A `dict` whose meaning depends on the runner:
     Merged into each case workspace's generated `.claude/settings.json` (after the
     harness defaults, so your scalars win and lists are extended). Use it to add
     Claude Code settings — model defaults, `env`, MCP servers — without forking the
-    harness.
+    harness. The same merge implementation backs the [`extends`](extends.md)
+    config overlay, where lists additionally dedupe and `judges`/`steps` merge by key.
 
     ```yaml
     runner:

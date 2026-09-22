@@ -1,5 +1,6 @@
 """Config schema parsing tests."""
 
+import copy
 import json
 import sys
 from pathlib import Path
@@ -913,3 +914,237 @@ def test_agent_judge_with_other_providers_still_loads(tmp_path):
     body = ("name: t\nexecution:\n  skill: s\njudges:\n"
             "  - {name: j, prompt: rate it, model: 'gemini:/x', agent: {allowed_tools: [Read]}}\n")
     assert EvalConfig.from_yaml(_write(tmp_path, body)).judges[0].model == "gemini:/x"
+
+
+# --- extends: config overlay (spec 014 PR-3a) --------------------------------
+
+import subprocess  # noqa: E402
+
+from agent_eval.config import deep_merge, dump_with_provenance, load_raw  # noqa: E402
+
+_BASE_YAML = """\
+name: base
+execution:
+  skill: rfe.speedrun
+  timeout: 100
+dataset:
+  path: eval/dataset/cases
+permissions:
+  allow: ["Skill", "Agent", "Edit(tmp/**)"]
+models:
+  judge: claude-opus-4-8
+judges:
+  - {name: a, prompt: rate a, score_range: [1, 5]}
+  - {name: b, prompt: rate b, score_range: [1, 5]}
+hooks:
+  before_all:
+    - {command: "echo base"}
+"""
+
+_PROFILE_YAML = """\
+extends: ../eval.yaml
+models:
+  skill: openrouter:/z-ai/glm-5.2
+execution:
+  timeout: 36000
+permissions:
+  allow: ["Bash(python3 *)", "Skill"]
+judges:
+  - {name: a, model: "openrouter:/z-ai/glm-5.2"}
+  - {name: c, prompt: rate c, score_range: [1, 5]}
+hooks:
+  before_all:
+    - {command: "echo profile"}
+    - {command: "echo base"}
+"""
+
+
+def _overlay_project(tmp_path, profile=_PROFILE_YAML, base=_BASE_YAML):
+    (tmp_path / "eval.yaml").write_text(base)
+    (tmp_path / "eval-profiles").mkdir()
+    (tmp_path / "eval-profiles" / "glm.yaml").write_text(profile)
+    return tmp_path / "eval-profiles" / "glm.yaml"
+
+
+def test_load_raw_merges_overlay_over_base(tmp_path):
+    profile = _overlay_project(tmp_path)
+    raw, chain = load_raw(profile)
+    assert [Path(c).name for c in chain] == ["eval.yaml", "glm.yaml"]
+    assert "extends" not in raw
+    # scalars override, untouched keys survive
+    assert raw["execution"]["timeout"] == 36000
+    assert raw["execution"]["skill"] == "rfe.speedrun"
+    assert raw["models"] == {"judge": "claude-opus-4-8", "skill": "openrouter:/z-ai/glm-5.2"}
+    # scalar lists extend with dedupe, base first
+    assert raw["permissions"]["allow"] == ["Skill", "Agent", "Edit(tmp/**)", "Bash(python3 *)"]
+    # judges merge by name: same key deep-merges, new keys append
+    assert [j["name"] for j in raw["judges"]] == ["a", "b", "c"]
+    assert raw["judges"][0] == {"name": "a", "prompt": "rate a", "score_range": [1, 5],
+                                "model": "openrouter:/z-ai/glm-5.2"}
+    # lists of unkeyed mappings extend by equality
+    assert raw["hooks"]["before_all"] == [{"command": "echo base"}, {"command": "echo profile"}]
+
+
+def test_steps_merge_by_id(tmp_path):
+    (tmp_path / "eval.yaml").write_text(
+        "name: t\nexecution:\n  steps:\n    - {id: create, prompt: create it}\n"
+        "    - {id: assess, prompt: assess it, timeout: 10}\n")
+    (tmp_path / "p.yaml").write_text(
+        "extends: eval.yaml\nexecution:\n  steps:\n    - {id: assess, timeout: 99}\n"
+        "    - {id: report, prompt: report it}\n")
+    raw, _ = load_raw(tmp_path / "p.yaml")
+    steps = raw["execution"]["steps"]
+    assert [s["id"] for s in steps] == ["create", "assess", "report"]
+    assert steps[1] == {"id": "assess", "prompt": "assess it", "timeout": 99}
+    cfg = EvalConfig.from_yaml(tmp_path / "p.yaml")
+    assert [s.id for s in cfg.execution.steps] == ["create", "assess", "report"]
+
+
+def test_from_yaml_takes_paths_and_name_from_the_root_of_the_chain(tmp_path, monkeypatch):
+    profile = _overlay_project(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    cfg = EvalConfig.from_yaml(profile)
+    assert cfg.config_chain == ["eval.yaml", "eval-profiles/glm.yaml"]
+    assert cfg.config_path == (tmp_path / "eval.yaml").resolve()
+    assert cfg.config_dir == tmp_path.resolve()
+    assert cfg.resolve_path(cfg.dataset.path) == (tmp_path / "eval/dataset/cases").resolve()
+    assert cfg.eval_name() == "rfe.speedrun"
+    assert cfg.name == "base"
+    assert cfg.models.skill == "openrouter:/z-ai/glm-5.2"
+    assert [j.name for j in cfg.judges] == ["a", "b", "c"]
+    assert cfg.judges[0].model == "openrouter:/z-ai/glm-5.2"
+
+
+def test_plain_config_has_a_one_entry_chain(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg = EvalConfig.from_yaml(_write(tmp_path, _BASE_YAML))
+    assert cfg.config_chain == ["eval.yaml"]
+    assert cfg.name == "base"
+
+
+def test_profile_without_name_defaults_to_the_root_stem(tmp_path):
+    profile = _overlay_project(tmp_path, base=_BASE_YAML.replace("name: base\n", ""))
+    cfg = EvalConfig.from_yaml(profile)
+    assert cfg.name == "eval"           # root stem, not "glm"
+    assert cfg.eval_name() == "rfe.speedrun"
+
+
+def test_replace_tag_replaces_a_list_outright(tmp_path):
+    profile = _overlay_project(tmp_path, profile=(
+        "extends: ../eval.yaml\n"
+        "permissions:\n  allow: !replace [\"Bash(python3 *)\"]\n"
+        "judges: !replace\n  - {name: only, prompt: p, score_range: [1, 5]}\n"))
+    raw, _ = load_raw(profile)
+    assert raw["permissions"]["allow"] == ["Bash(python3 *)"]
+    assert [j["name"] for j in raw["judges"]] == ["only"]
+    assert type(raw["judges"]) is list      # marker stripped
+
+
+def test_replace_tag_on_a_mapping_is_rejected(tmp_path):
+    profile = _overlay_project(tmp_path, profile="extends: ../eval.yaml\nmodels: !replace {judge: x}\n")
+    with pytest.raises(Exception, match="list values only"):
+        load_raw(profile)
+
+
+def test_three_level_chain(tmp_path):
+    _overlay_project(tmp_path)
+    (tmp_path / "eval-profiles" / "glm-fast.yaml").write_text(
+        "extends: glm.yaml\nexecution:\n  timeout: 5\npermissions:\n  allow: [Read]\n")
+    raw, chain = load_raw(tmp_path / "eval-profiles" / "glm-fast.yaml")
+    assert [Path(c).name for c in chain] == ["eval.yaml", "glm.yaml", "glm-fast.yaml"]
+    assert raw["execution"]["timeout"] == 5
+    assert raw["permissions"]["allow"][-2:] == ["Bash(python3 *)", "Read"]
+    assert [j["name"] for j in raw["judges"]] == ["a", "b", "c"]
+
+
+@pytest.mark.parametrize("profile, match", [
+    ("extends: ../missing.yaml\n", "does not exist"),
+    ("extends: 3\n", "path string"),
+    ("extends: ''\n", "path string"),
+    ("extends: /etc/eval.yaml\n", "must be relative"),
+])
+def test_extends_rejections(tmp_path, profile, match):
+    path = _overlay_project(tmp_path, profile=profile)
+    with pytest.raises((ValueError, FileNotFoundError), match=match):
+        load_raw(path)
+
+
+def test_extends_cycle_is_detected(tmp_path):
+    (tmp_path / "a.yaml").write_text("extends: b.yaml\nname: a\n")
+    (tmp_path / "b.yaml").write_text("extends: a.yaml\nname: b\n")
+    with pytest.raises(ValueError, match="cycle"):
+        load_raw(tmp_path / "a.yaml")
+
+
+def test_extends_depth_limit(tmp_path):
+    (tmp_path / "c0.yaml").write_text("name: root\nexecution:\n  skill: s\n")
+    for i in range(1, 11):
+        (tmp_path / f"c{i}.yaml").write_text(f"extends: c{i - 1}.yaml\n")
+    with pytest.raises(ValueError, match="deeper than 8"):
+        load_raw(tmp_path / "c10.yaml")
+    raw, chain = load_raw(tmp_path / "c8.yaml")
+    assert len(chain) == 9 and raw["name"] == "root"
+
+
+def test_deep_merge_policies():
+    base = {"a": [1, 2], "d": {"x": 1, "l": ["p"]}, "s": "old",
+            "j": [{"name": "k", "v": 1}], "h": [{"cmd": "x"}]}
+    over = {"a": [2, 3], "d": {"y": 2, "l": ["p", "q"]}, "s": "new",
+            "j": [{"name": "k", "w": 2}, {"name": "n"}], "h": [{"cmd": "x"}, {"cmd": "y"}]}
+    plain = deep_merge(copy.deepcopy(base), copy.deepcopy(over))
+    assert plain["a"] == [1, 2, 2, 3]                       # runner.settings: plain extend
+    assert plain["j"] == [{"name": "k", "v": 1}, {"name": "k", "w": 2}, {"name": "n"}]
+    deduped = deep_merge(copy.deepcopy(base), copy.deepcopy(over), dedupe=True)
+    assert deduped["a"] == [1, 2, 3]
+    assert deduped["d"] == {"x": 1, "y": 2, "l": ["p", "q"]}
+    assert deduped["s"] == "new"
+    assert deduped["j"] == [{"name": "k", "v": 1, "w": 2}, {"name": "n"}]
+    assert deduped["h"] == [{"cmd": "x"}, {"cmd": "y"}]
+
+
+def test_dump_with_provenance_annotates_and_round_trips(tmp_path, monkeypatch):
+    profile = _overlay_project(tmp_path, profile=_PROFILE_YAML.replace(
+        "hooks:\n  before_all:\n", "hooks:\n  before_all: !replace\n"))
+    monkeypatch.chdir(tmp_path)
+    text = dump_with_provenance(profile)
+    assert "# chain (root first): eval.yaml <- eval-profiles/glm.yaml" in text
+    assert "- Skill  # from: eval.yaml, eval-profiles/glm.yaml" in text
+    assert "- Bash(python3 *)  # from: eval-profiles/glm.yaml" in text
+    assert "before_all:  # !replace from: eval-profiles/glm.yaml" in text
+    import yaml as _yaml
+    assert _yaml.safe_load(text) == load_raw(profile)[0]
+
+
+def test_config_module_print_entry_point(tmp_path):
+    profile = _overlay_project(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, "-m", "agent_eval.config", "--print", str(profile)],
+        cwd=Path(__file__).resolve().parent.parent, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    import yaml as _yaml
+    assert _yaml.safe_load(proc.stdout)["execution"]["timeout"] == 36000
+    bad = subprocess.run(
+        [sys.executable, "-m", "agent_eval.config", "--print", str(tmp_path / "nope.yaml")],
+        cwd=Path(__file__).resolve().parent.parent, capture_output=True, text=True)
+    assert bad.returncode == 1 and "ERROR" in bad.stderr
+
+
+def test_eval_params_record_the_config_chain(tmp_path, monkeypatch):
+    """execute.py's run_result.eval_params carries the chain that defined the run."""
+    import importlib.util
+    from types import SimpleNamespace
+
+    execute_path = Path(__file__).resolve().parent.parent / "skills" / "eval-run" / "scripts" / "execute.py"
+    sys.path.insert(0, str(execute_path.parent))
+    spec = importlib.util.spec_from_file_location("_execute_under_test", execute_path)
+    execute = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(execute)
+
+    profile = _overlay_project(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    config = EvalConfig.from_yaml(profile)
+    args = SimpleNamespace(skill=None, mlflow_experiment=None)
+    params = execute._build_eval_params(args, config, "", 1.0, 10)
+    assert params["config_chain"] == ["eval.yaml", "eval-profiles/glm.yaml"]
+    plain = EvalConfig.from_yaml(_write(tmp_path, _BASE_YAML))
+    assert execute._build_eval_params(args, plain, "", 1.0, 10)["config_chain"] == ["eval.yaml"]

@@ -67,19 +67,76 @@ def _resolve_deps(plugin_root):
     return deps
 
 
-def _deps_for_config(eval_yaml):
-    """Optional deps implied by one eval.yaml. Never raises — an unparseable or
-    unreadable config contributes nothing rather than sinking the whole scan."""
-    deps = []
+_EXTENDS_MAX_DEPTH = 8
+
+
+def _load_config_following_extends(eval_yaml):
+    """The config mapping with its `extends:` chain resolved.
+
+    Prefers the harness loader (`agent_eval.config.load_raw`, the single raw
+    reader). Before the venv exists that import can fail, so a stdlib-only
+    follow of the `extends` key takes over: it merges only the keys this
+    script inspects (`judges` concatenated, `models`/`mlflow` overlaid) — an
+    overlay that *adds* an `openrouter:/` judge still pulls `openai` even when
+    its base does not. Never raises on a broken file: returns {}.
+    """
+    try:
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from agent_eval.config import load_raw
+        config, _chain = load_raw(eval_yaml)
+        return config if isinstance(config, dict) else {}
+    except Exception:
+        pass
+
+    def _read(path):
+        text = path.read_text()
+        try:
+            import yaml
+            data = yaml.safe_load(text) or {}
+        except Exception:
+            data = _parse_yaml_minimal(text)
+        return data if isinstance(data, dict) else {}
 
     try:
-        import yaml
-        config = yaml.safe_load(eval_yaml.read_text()) or {}
+        merged = {}
+        path = Path(eval_yaml)
+        seen = set()
+        layers = []
+        for _ in range(_EXTENDS_MAX_DEPTH + 1):
+            resolved = path.resolve()
+            if resolved in seen:
+                break
+            seen.add(resolved)
+            layer = _read(resolved)
+            layers.append(layer)
+            base = layer.get("extends")
+            if not isinstance(base, str) or not base.strip():
+                break
+            path = resolved.parent / base.strip()
+            if not path.exists():
+                break
+        for layer in reversed(layers):        # root first, overlay wins
+            for key, value in layer.items():
+                if key == "extends":
+                    continue
+                if key == "judges" and isinstance(value, list) and isinstance(merged.get(key), list):
+                    merged[key] = merged[key] + value
+                elif isinstance(value, dict) and isinstance(merged.get(key), dict):
+                    merged[key] = {**merged[key], **value}
+                else:
+                    merged[key] = value
+        return merged
     except Exception:
-        try:
-            config = _parse_yaml_minimal(eval_yaml.read_text())
-        except Exception:
-            return deps
+        return {}
+
+
+def _deps_for_config(eval_yaml):
+    """Optional deps implied by one eval.yaml (its `extends:` chain resolved).
+    Never raises — an unparseable or unreadable config contributes nothing
+    rather than sinking the whole scan."""
+    deps = []
+
+    config = _load_config_following_extends(Path(eval_yaml))
 
     if not isinstance(config, dict):
         return deps
@@ -242,7 +299,9 @@ def _find_eval_yamls(plugin_root):
     try:
         sys.path.insert(0, str(Path(__file__).parent.parent))
         from agent_eval.config import discover_configs
-        configs = discover_configs(cwd)
+        # Profiles (`extends:` overlays) count too: an overlay may add a judge
+        # whose SDK the base never needed.
+        configs = discover_configs(cwd, include_profiles=True)
         if configs:
             return [c.path for c in configs]
     except Exception as exc:  # noqa: BLE001 - SessionStart must never hard-fail

@@ -458,6 +458,22 @@ def validate_config(path="eval.yaml"):
     errors = []
     warnings = []
 
+    # Resolve `extends:` (the syntax pass above only read this one file); the
+    # structural checks below run on the merged mapping, with paths taken
+    # from the root of the chain, exactly as the harness loads it.
+    try:
+        from agent_eval.config import config_chain_display, load_raw
+        config, chain = load_raw(p)
+        config_dir = Path(chain[0]).parent
+        if len(chain) > 1:
+            print("CONFIG_CHAIN: " + " <- ".join(config_chain_display(chain)))
+    except ImportError as e:
+        warnings.append(f"Could not import the config loader (extends: not resolved): {e}")
+    except (ValueError, FileNotFoundError) as e:
+        print(f"CONFIG_CHAIN_ERROR: {path}")
+        print(f"  {e}")
+        sys.exit(1)
+
     # Second, validate schema with EvalConfig
     try:
         from agent_eval.config import EvalConfig

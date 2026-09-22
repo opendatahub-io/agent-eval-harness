@@ -29,7 +29,10 @@ import yaml
 from agent_eval.agent.claude_code import CLAUDE_CODE_EFFORTS
 from agent_eval.agent.codex import CODEX_EFFORTS
 from agent_eval.config import (
-    EvalConfig, resolve_plugin_dir, resolve_plugin_skill_roots,
+    EvalConfig,
+    load_raw,
+    resolve_plugin_dir,
+    resolve_plugin_skill_roots,
 )
 from agent_eval.harbor import results as results_mod
 from agent_eval.harbor import tasks as tasks_mod
@@ -372,11 +375,32 @@ def _validate_task_package_reuse(tasks_dir: Path, config: EvalConfig, *,
                 "reusing it with --no-llm-judges would still run them. Pass "
                 "--regenerate --image IMAGE to rebuild deterministic-only "
                 "packages")
+        # Provenance: a package built from a different config chain (another
+        # profile, or the base when this run is a profile) bundles other
+        # judges/models. Packages predating the field are accepted only when
+        # the current config is not an overlay.
+        current_chain = list(getattr(config, "config_chain", None) or [])
+        built_from = metadata.get("config_chain")
+        if built_from is not None and not isinstance(built_from, list):
+            raise ValueError(
+                f"Pre-generated Harbor task {task_dir} has invalid "
+                "metadata.config_chain; regenerate it with --regenerate --image IMAGE")
+        if built_from is None:
+            if len(current_chain) > 1:
+                raise ValueError(
+                    f"Pre-generated Harbor task {task_dir} predates config "
+                    f"chains and cannot be reused for the overlay "
+                    f"{current_chain[-1]}; pass --regenerate --image IMAGE")
+        elif current_chain and list(built_from) != current_chain:
+            raise ValueError(
+                f"Pre-generated Harbor task {task_dir} was built from "
+                f"{built_from}, not {current_chain}; point --tasks-dir at "
+                "that config's packages or pass --regenerate --image IMAGE")
         bundled_judges = set()
         for bundled_path in task_dir.rglob("eval.yaml"):
             try:
-                bundled = yaml.safe_load(bundled_path.read_text()) or {}
-            except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+                bundled, _ = load_raw(bundled_path)
+            except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError) as exc:
                 raise ValueError(
                     f"Cannot validate bundled config {bundled_path}: {exc}") from exc
             bundled_judges.update(
@@ -458,11 +482,12 @@ def _write_report(config_path: Path, output_dir: Path, summary: dict,
                   run_meta: dict) -> None:
     """Render report.html with the same generator the local path uses."""
     try:
-        raw_cfg = yaml.safe_load(Path(config_path).read_text()) or {}
-        # Resolve dataset.path to absolute (report renders case inputs from it).
+        raw_cfg, chain = load_raw(Path(config_path))
+        # Resolve dataset.path to absolute (report renders case inputs from
+        # it) against the ROOT of the chain — the base config's directory.
         ds = raw_cfg.get("dataset")
         if isinstance(ds, dict) and ds.get("path") and not Path(ds["path"]).is_absolute():
-            ds["path"] = str((Path(config_path).resolve().parent / ds["path"]).resolve())
+            ds["path"] = str((Path(chain[0]).parent / ds["path"]).resolve())
         report = _load_report_module()
         html = report.generate_report(
             config=raw_cfg, summary=summary, run_result=run_meta,
@@ -655,6 +680,7 @@ def run_eval_on_harbor(
         "agent_version": parsed.get("agent_version"),
         "model": model,
         "num_cases": parsed["n_completed"],
+        "config_chain": list(getattr(config, "config_chain", None) or []),
         "num_turns": parsed.get("num_turns"),
         "duration_s": parsed.get("duration_s"),
         "mean_reward": parsed["mean_reward"],

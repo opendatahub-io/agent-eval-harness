@@ -1,5 +1,8 @@
 """Evaluation suite configuration loaded from eval.yaml files."""
 
+import agent_eval._bootstrap  # noqa: F401 — auto-activate venv (module doubles as `-m` entry point)
+
+import copy
 import json
 import math
 import os
@@ -12,6 +15,174 @@ import sys
 import yaml
 
 from agent_eval.providers.openrouter.routing import RoutingSpec, RoutingTable
+
+
+# --- Config overlay: `extends:` and the single raw loader (spec 014 PR-3a) -----
+#
+# `extends: <path relative to the file>` layers an eval config (a *profile*)
+# over a base config. `load_raw` is the ONLY place that resolves it, so every
+# reader — execute/score/report, Harbor task bundling, EvalHub, validate,
+# discovery — sees the merged mapping and the same chain. Merge policy
+# (`deep_merge(dedupe=True)`): dicts merge, scalars override, scalar lists
+# extend with dedupe (base first, order kept), lists of mappings keyed by
+# `name` (judges) or `id` (execution.steps) merge by key, other lists of
+# mappings extend by equality, and a `!replace`-tagged list replaces the base
+# list outright. `runner.settings` keeps its historical policy
+# (`dedupe=False`: plain extend) through the same function.
+
+MAX_EXTENDS_DEPTH = 8
+_LIST_MERGE_KEYS = ("name", "id")
+
+
+class _ReplaceList(list):
+    """A list tagged `!replace` in YAML: replaces the base value instead of
+    merging with it. Stripped back to a plain list once the merge is done."""
+
+
+class _ConfigLoader(yaml.SafeLoader):
+    """SafeLoader plus the `!replace` tag (list values only)."""
+
+
+def _construct_replace(loader, node):
+    if not isinstance(node, yaml.SequenceNode):
+        raise yaml.constructor.ConstructorError(
+            None, None, "!replace applies to list values only", node.start_mark)
+    return _ReplaceList(loader.construct_sequence(node, deep=True))
+
+
+_ConfigLoader.add_constructor("!replace", _construct_replace)
+
+
+def _read_config_mapping(path: Path) -> dict:
+    with open(path) as f:
+        raw = yaml.load(f, Loader=_ConfigLoader) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid eval config (not a YAML mapping): {path}")
+    return raw
+
+
+def _strip_replace_markers(value):
+    if isinstance(value, _ReplaceList):
+        return [_strip_replace_markers(v) for v in value]
+    if isinstance(value, list):
+        return [_strip_replace_markers(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _strip_replace_markers(v) for k, v in value.items()}
+    return value
+
+
+def _list_merge_key(items):
+    """`name`/`id` when every item is a mapping carrying that non-empty string key."""
+    if not items or not all(isinstance(i, dict) for i in items):
+        return None
+    for key in _LIST_MERGE_KEYS:
+        if all(isinstance(i.get(key), str) and i.get(key) for i in items):
+            return key
+    return None
+
+
+def _merge_lists_dedupe(base, overlay):
+    key = _list_merge_key([*base, *overlay])
+    if key:
+        out = [copy.deepcopy(item) for item in base]
+        index = {item[key]: i for i, item in enumerate(out)}
+        for item in overlay:
+            if item[key] in index:
+                deep_merge(out[index[item[key]]], item, dedupe=True)
+            else:
+                index[item[key]] = len(out)
+                out.append(copy.deepcopy(item))
+        return out
+    out = list(base)
+    for item in overlay:
+        if item not in out:
+            out.append(item)
+    return out
+
+
+def deep_merge(dst, src, *, dedupe=False):
+    """Recursively merge ``src`` into ``dst`` (in place; returns ``dst``).
+
+    Dicts merge and scalars override on both policies. Lists: ``dedupe=False``
+    extends in place (the ``runner.settings`` policy — see runner.md);
+    ``dedupe=True`` is the ``extends:`` overlay policy — scalar lists extend
+    with dedupe, lists of mappings keyed by ``name``/``id`` merge by key (a
+    same-keyed entry deep-merges over the base, new keys append), other lists
+    of mappings extend by equality. A ``!replace``-tagged list replaces the
+    base value whole on either policy. Note the contrast with a provider
+    ``RoutingSpec`` merge, where lists always replace.
+    """
+    for k, v in src.items():
+        cur = dst.get(k)
+        if isinstance(v, _ReplaceList):
+            dst[k] = _strip_replace_markers(v)
+        elif isinstance(v, dict) and isinstance(cur, dict):
+            deep_merge(cur, v, dedupe=dedupe)
+        elif isinstance(v, list) and isinstance(cur, list):
+            if dedupe:
+                dst[k] = _merge_lists_dedupe(cur, v)
+            else:
+                cur.extend(v)
+        else:
+            dst[k] = v
+    return dst
+
+
+def load_raw(path) -> tuple[dict, list[str]]:
+    """The single raw eval-config loader.
+
+    Resolves ``extends:`` against the file's own directory (recursively, cycle
+    detection, depth <= MAX_EXTENDS_DEPTH), deep-merges the overlay over its
+    base with the ``extends:`` policy and returns ``(merged_mapping, chain)``:
+    the mapping has no ``extends`` key and no ``!replace`` markers; ``chain``
+    lists the resolved file paths root first (the base, then each overlay).
+    Every reader of an eval config goes through here (pinned by
+    tests/test_config_raw_readers.py).
+    """
+    return _load_chain(Path(path), (), 0)
+
+
+def _load_chain(path: Path, seen: tuple, depth: int) -> tuple[dict, list[str]]:
+    resolved = path.resolve()
+    if resolved in seen:
+        cycle = " -> ".join(str(p) for p in (*seen, resolved))
+        raise ValueError(f"extends: cycle detected: {cycle}")
+    if depth > MAX_EXTENDS_DEPTH:
+        raise ValueError(
+            f"extends: chain deeper than {MAX_EXTENDS_DEPTH} at {path}")
+    if not resolved.exists():
+        raise FileNotFoundError(f"Config not found: {path}")
+    raw = _read_config_mapping(resolved)
+    base_ref = raw.pop("extends", None)
+    if base_ref is None:
+        return _strip_replace_markers(raw), [str(resolved)]
+    if not isinstance(base_ref, str) or not base_ref.strip():
+        raise ValueError(f"{path}: 'extends' must be a path string relative to the file")
+    if Path(base_ref).is_absolute():
+        raise ValueError(
+            f"{path}: 'extends' must be relative to the file, not an absolute "
+            f"path (keeps the chain portable across checkouts and containers)")
+    base_path = resolved.parent / base_ref.strip()
+    if not base_path.exists():
+        raise FileNotFoundError(
+            f"{path}: 'extends: {base_ref}' → {base_path} does not exist")
+    base, chain = _load_chain(base_path, (*seen, resolved), depth + 1)
+    merged = deep_merge(base, raw, dedupe=True)
+    return _strip_replace_markers(merged), [*chain, str(resolved)]
+
+
+def project_relative(path) -> str:
+    """``path`` relative to the project root (CWD) when it lies inside it,
+    else absolute — the form recorded in ``config_chain``."""
+    resolved = Path(path).resolve()
+    try:
+        return str(resolved.relative_to(Path.cwd().resolve()))
+    except ValueError:
+        return str(resolved)
+
+
+def config_chain_display(chain) -> list[str]:
+    return [project_relative(p) for p in chain]
 
 
 def resolve_arguments(
@@ -287,6 +458,9 @@ class DiscoveryResult:
     path: Path
     eval_name: str
     is_root: bool
+    # Set when the file is a profile (`extends:`): the root config it layers
+    # over. Profiles are returned only with `include_profiles=True`.
+    profile_of: Optional[Path] = None
 
 
 @dataclass
@@ -1291,8 +1465,16 @@ class EvalConfig:
     config_dir: Optional[Path] = None
 
     # Full path to the eval.yaml file (for eval_name derivation).
-    # None when constructed programmatically.
+    # None when constructed programmatically. With `extends:` this is the ROOT
+    # of the chain (the base file), so dataset.path and eval_name resolve as
+    # they would for the base.
     config_path: Optional[Path] = None
+
+    # Files that produced this config, root first, project-relative
+    # (`["eval.yaml"]` for a plain config, `["eval.yaml",
+    # "eval-profiles/x.yaml"]` for an overlay). Surfaced in
+    # run_result.eval_params.config_chain and Harbor task.toml metadata.
+    config_chain: list = field(default_factory=list)
 
     # Runtime overrides (set by CLI or skill, not config file)
     model: str = ""
@@ -1384,8 +1566,10 @@ class EvalConfig:
         if not path.exists():
             raise FileNotFoundError(f"Config not found: {path}")
 
-        with open(path) as f:
-            raw = yaml.safe_load(f) or {}
+        # The single raw loader resolves `extends:`; paths below (dataset,
+        # eval_name) are taken from the ROOT of the chain, the base config.
+        raw, chain = load_raw(path)
+        root_path = Path(chain[0])
 
         # Deprecation: top-level `skill:` is auto-normalized into
         # execution.skill (below) but the canonical home is the execution
@@ -1604,7 +1788,7 @@ class EvalConfig:
         )
 
         config = cls(
-            name=raw.get("name", path.stem),
+            name=raw.get("name", root_path.stem),
             description=raw.get("description", ""),
             skill=raw.get("skill") or None,  # Convert empty string to None
             permissions=raw.get("permissions", {}),
@@ -1612,8 +1796,9 @@ class EvalConfig:
             runner=runner,
             models=models,
             mlflow=mlflow,
-            config_dir=path.resolve().parent,
-            config_path=path.resolve(),
+            config_dir=root_path.parent,
+            config_path=root_path,
+            config_chain=config_chain_display(chain),
             dataset=dataset_config,
             generation=generation_config,
         )
@@ -2069,11 +2254,19 @@ def _is_valid_eval_name(name: object) -> bool:
     return all(ord(c) >= 32 for c in name)
 
 
-def discover_configs(project_root: Path) -> list[DiscoveryResult]:
+def discover_configs(project_root: Path,
+                     include_profiles: bool = False) -> list[DiscoveryResult]:
     """Scan the project for eval.yaml files across all supported layouts.
 
-    Scan order: eval/*/eval.yaml (nested), eval/*.yaml (flat), root eval.yaml.
+    Scan order: eval/*/eval.yaml (nested), eval/*.yaml (flat), profiles
+    (eval-profiles/*.yaml, eval/profiles/*.yaml), root eval.yaml.
     Files that fail YAML parsing are skipped.
+
+    A file with a top-level ``extends:`` is a *profile* layered over a base
+    config, not a standalone eval: it is skipped by default (it must not
+    register as an eval named after its stem) and returned with
+    ``profile_of=<root config>`` when ``include_profiles`` is set. Its
+    ``eval_name`` is the merged config's, i.e. the base's.
 
     Eval names use backward-compatible fallback chain:
     1. skill field (preserves existing skill-based evals)
@@ -2091,14 +2284,22 @@ def discover_configs(project_root: Path) -> list[DiscoveryResult]:
         if resolved in seen:
             return
         try:
-            with open(resolved) as f:
-                raw = yaml.safe_load(f) or {}
+            head = _read_config_mapping(resolved)
         except Exception as exc:
             print(f"Warning: skipping {yaml_path}: {exc}", file=sys.stderr)
             return
-        if not isinstance(raw, dict):
-            print(f"Warning: skipping {yaml_path}: not a YAML dictionary", file=sys.stderr)
-            return
+        profile_of = None
+        if "extends" in head:
+            if not include_profiles:
+                return
+            try:
+                raw, chain = load_raw(resolved)
+            except Exception as exc:
+                print(f"Warning: skipping profile {yaml_path}: {exc}", file=sys.stderr)
+                return
+            profile_of = Path(chain[0])
+        else:
+            raw = head
 
         # Derive eval_name using fallback chain (same as EvalConfig.eval_name())
         eval_name = None
@@ -2130,16 +2331,19 @@ def discover_configs(project_root: Path) -> list[DiscoveryResult]:
             print(f"Warning: skipping {yaml_path}: invalid eval name {eval_name!r}",
                   file=sys.stderr)
             return
-        if eval_name in seen_names:
-            print(f"Warning: duplicate eval name {eval_name!r} in "
-                  f"{yaml_path} (already seen in {seen_names[eval_name]})",
-                  file=sys.stderr)
-        seen_names[eval_name] = resolved
+        # A profile shares its base's eval name by design — not a duplicate.
+        if profile_of is None:
+            if eval_name in seen_names:
+                print(f"Warning: duplicate eval name {eval_name!r} in "
+                      f"{yaml_path} (already seen in {seen_names[eval_name]})",
+                      file=sys.stderr)
+            seen_names[eval_name] = resolved
         seen.add(resolved)
         results.append(DiscoveryResult(
             path=resolved,
             eval_name=eval_name,
             is_root=is_root,
+            profile_of=profile_of,
         ))
 
     eval_dir = project_root / "eval"
@@ -2157,6 +2361,13 @@ def discover_configs(project_root: Path) -> list[DiscoveryResult]:
             if (candidate.is_file() and candidate.name != "eval.yaml"
                     and not candidate.name.startswith(".")):
                 _try_add(candidate, is_root=False)
+
+    # Profiles (`extends:` overlays) live next to the configs they layer over.
+    for profiles_dir in (project_root / "eval-profiles", eval_dir / "profiles"):
+        if profiles_dir.is_dir():
+            for candidate in sorted(profiles_dir.glob("*.yaml")):
+                if candidate.is_file() and not candidate.name.startswith("."):
+                    _try_add(candidate, is_root=False)
 
     root_config = project_root / "eval.yaml"
     if root_config.is_file():
@@ -2208,3 +2419,114 @@ def infer_layout(configs: list[DiscoveryResult]) -> str:
     if has_flat:
         return "flat"
     return "root"
+
+
+# --- `python3 -m agent_eval.config --print <path>` ----------------------------
+
+def _scalar_yaml(value) -> str:
+    text = yaml.safe_dump(value, default_flow_style=True, allow_unicode=True,
+                          width=10 ** 6).strip()
+    # A bare scalar document ends with the `...` end marker; drop it.
+    if text.endswith("\n..."):
+        text = text[:-4].rstrip()
+    return text
+
+
+def _item_sources(item, key, per_file, path):
+    """Display names of the chain files whose list at ``path`` carries ``item``
+    (by merge key when the list merges by key, else by equality)."""
+    names = []
+    for display, raw in per_file:
+        node = raw
+        for part in path:
+            node = node.get(part) if isinstance(node, dict) else None
+        if not isinstance(node, list):
+            continue
+        if key and any(isinstance(i, dict) and i.get(key) == item.get(key) for i in node):
+            names.append(display)
+        elif not key and item in node:
+            names.append(display)
+    return names
+
+
+def _list_replaced_by(per_file, path):
+    for display, raw in per_file:
+        node = raw
+        for part in path:
+            node = node.get(part) if isinstance(node, dict) else None
+        if isinstance(node, _ReplaceList):
+            return display
+    return None
+
+
+def _emit_merged(node, per_file, path=(), indent=0, out=None):
+    out = [] if out is None else out
+    pad = " " * indent
+    for k, v in node.items():
+        key_text = _scalar_yaml(k)
+        if isinstance(v, dict) and v:
+            out.append(f"{pad}{key_text}:")
+            _emit_merged(v, per_file, (*path, k), indent + 2, out)
+        elif isinstance(v, list) and v:
+            replaced = _list_replaced_by(per_file, (*path, k))
+            note = f"  # !replace from: {replaced}" if replaced else ""
+            out.append(f"{pad}{key_text}:{note}")
+            merge_key = _list_merge_key(v)
+            for item in v:
+                sources = _item_sources(item, merge_key, per_file, (*path, k))
+                comment = f"  # from: {', '.join(sources)}" if sources else ""
+                if isinstance(item, dict):
+                    out.append(f"{pad}-{comment or ''}".rstrip() if not comment
+                               else f"{pad}- #{comment[3:]}")
+                    dumped = yaml.safe_dump(item, default_flow_style=False,
+                                            allow_unicode=True, sort_keys=False,
+                                            width=10 ** 6).rstrip("\n")
+                    out.extend(f"{pad}  {line}" for line in dumped.splitlines())
+                else:
+                    out.append(f"{pad}- {_scalar_yaml(item)}{comment}")
+        else:
+            dumped = yaml.safe_dump({k: v}, default_flow_style=False,
+                                    allow_unicode=True, sort_keys=False,
+                                    width=10 ** 6).rstrip("\n")
+            out.extend(f"{pad}{line}" for line in dumped.splitlines())
+    return out
+
+
+def dump_with_provenance(path) -> str:
+    """Merged YAML of ``path`` with a `# from:` comment per list item naming
+    the chain file(s) that contributed it (and `# !replace from:` on a list
+    an overlay replaced). Scalars are not annotated: the last file wins."""
+    merged, chain = load_raw(path)
+    per_file = []
+    for file in chain:
+        raw = _read_config_mapping(Path(file))
+        raw.pop("extends", None)
+        per_file.append((project_relative(file), raw))
+    header = ["# merged config", "# chain (root first): "
+              + " <- ".join(display for display, _ in per_file)]
+    return "\n".join([*header, *_emit_merged(merged, per_file)]) + "\n"
+
+
+def main(argv=None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="python3 -m agent_eval.config",
+        description="Inspect an eval config as the harness loads it.")
+    parser.add_argument("--print", dest="print_path", metavar="PATH",
+                        help="dump the merged config (extends: resolved) with "
+                             "per-list provenance comments")
+    args = parser.parse_args(argv)
+    if not args.print_path:
+        parser.print_help()
+        return 2
+    try:
+        sys.stdout.write(dump_with_provenance(args.print_path))
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

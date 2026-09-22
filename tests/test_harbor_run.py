@@ -594,3 +594,67 @@ def test_build_summary_carries_judge_usage(tmp_path):
 def test_build_summary_without_usage_has_no_judge_usage(tmp_path):
     summary = run_mod.build_summary(_parsed_job(), _config(tmp_path))
     assert "judge_usage" not in summary
+
+
+# --- config_chain reuse refusal (spec 014 PR-3a) ------------------------------
+
+def _write_task_with_chain(tasks_dir, chain, case_id="case-1"):
+    task = tasks_dir / case_id
+    (task / "tests").mkdir(parents=True)
+    chain_toml = ("" if chain is None
+                  else "config_chain = [" + ", ".join(json.dumps(c) for c in chain) + "]\n")
+    (task / "task.toml").write_text(
+        '[metadata]\njudge_mode = "full"\n' + chain_toml)
+    (task / "tests" / "eval.yaml").write_text(yaml.safe_dump({
+        "judges": [{"name": "rfe_quality", "check": "return True"}]}))
+    return task
+
+
+def _overlay_config(tmp_path):
+    base = tmp_path / "eval.yaml"
+    base.write_text(yaml.safe_dump({
+        "name": "t", "execution": {"skill": "rfe.speedrun"}, "dataset": {"path": ""},
+        "judges": [{"name": "rfe_quality", "prompt": "score it"}],
+        "thresholds": {"rfe_quality": {"min_mean": 4.0}}}, sort_keys=False))
+    (tmp_path / "eval-profiles").mkdir()
+    profile = tmp_path / "eval-profiles" / "glm.yaml"
+    profile.write_text("extends: ../eval.yaml\nmodels:\n  skill: openrouter:/z-ai/glm-5.2\n")
+    return EvalConfig.from_yaml(profile)
+
+
+def test_reuse_accepts_a_matching_chain(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config = _overlay_config(tmp_path)
+    tasks = tmp_path / "tasks"
+    _write_task_with_chain(tasks, ["eval.yaml", "eval-profiles/glm.yaml"])
+    run_mod._validate_task_package_reuse(tasks, config)
+
+
+def test_reuse_refuses_a_package_from_another_chain(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config = _overlay_config(tmp_path)
+    tasks = tmp_path / "tasks"
+    _write_task_with_chain(tasks, ["eval.yaml"])
+    with pytest.raises(ValueError, match=r"was built from \['eval.yaml'\]"):
+        run_mod._validate_task_package_reuse(tasks, config)
+
+
+def test_reuse_refuses_a_pre_chain_package_for_an_overlay(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config = _overlay_config(tmp_path)
+    tasks = tmp_path / "tasks"
+    _write_task_with_chain(tasks, None)
+    with pytest.raises(ValueError, match="predates config chains"):
+        run_mod._validate_task_package_reuse(tasks, config)
+
+
+def test_reuse_accepts_a_pre_chain_package_for_a_plain_config(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config = _config(tmp_path)
+    tasks = tmp_path / "tasks"
+    _write_task_with_chain(tasks, None)
+    run_mod._validate_task_package_reuse(tasks, config)
+    # ... but not one built from a profile
+    _write_task_with_chain(tasks, ["eval.yaml", "eval-profiles/glm.yaml"], case_id="case-2")
+    with pytest.raises(ValueError, match="was built from"):
+        run_mod._validate_task_package_reuse(tasks, config)

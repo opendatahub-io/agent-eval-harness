@@ -209,6 +209,7 @@ one `judge`.
 | `name` | Experiment / run name (defaults to the file stem) | *(inline)* |
 | `description` | Human-readable description | *(inline)* |
 | `title` | HTML report heading (default: `Agent Eval Report`; `--title` overrides) | *(inline)* |
+| `extends` | Layer this file over a base config (a *profile*) | [extends](config/extends.md) |
 | `execution` | What to run and how cases are processed | [execution](config/execution.md) |
 | `runner` | Agent runtime + runtime-specific knobs | [runner](config/runner.md) |
 | `models` | Model per role: skill, subagent, judge, hook | [models](config/models.md) |
@@ -350,6 +351,9 @@ thresholds:
 - **Load-time validation is strict.** Mutually-exclusive keys (`skill` + `prompt`),
   invalid enums (`execution.mode`), and malformed reward formulas fail at load, not
   mid-run.
+- **One loader.** Every reader of an eval config goes through the same loader, so a
+  profile that [`extends`](config/extends.md) a base is merged identically for
+  execution, scoring, reporting, Harbor bundling and validation.
 
 ## Per-key reference
 

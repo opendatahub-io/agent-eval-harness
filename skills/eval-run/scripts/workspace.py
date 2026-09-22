@@ -26,7 +26,7 @@ from pathlib import Path
 
 import yaml
 
-from agent_eval.config import EvalConfig
+from agent_eval.config import EvalConfig, deep_merge
 from agent_eval.tools.interception import extract_tool_patterns
 from agent_eval.workspace_provisioning import materialize_shared_files
 from workspace_files import _copy_input_files
@@ -707,15 +707,13 @@ def _merge_harness_permissions(settings, config):
 
 
 def _deep_merge(dst, src):
-    """Recursively merge src into dst. Lists are extended, dicts merged."""
-    for k, v in src.items():
-        if isinstance(v, dict) and isinstance(dst.get(k), dict):
-            _deep_merge(dst[k], v)
-        elif isinstance(v, list) and isinstance(dst.get(k), list):
-            dst[k].extend(v)
-        else:
-            dst[k] = v
-    return dst
+    """Recursively merge src into dst. Lists are extended, dicts merged.
+
+    One implementation shared with the `extends:` config overlay
+    (`agent_eval.config.deep_merge`); `runner.settings` keeps the plain-extend
+    list policy (`dedupe=False`), byte-identical to the historical behaviour.
+    """
+    return deep_merge(dst, src, dedupe=False)
 
 
 def _apply_runner_settings(settings, config):

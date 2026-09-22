@@ -188,6 +188,17 @@ python -m agent_eval.evalhub.runner \
     Harbor. See the [EvalHub guide](../guides/evalhub.md) and
     [backends](../concepts/backends.md).
 
+### `agent_eval.config` — inspect a merged config
+
+```bash
+python3 -m agent_eval.config --print eval-profiles/openrouter-glm-5.2.yaml
+```
+
+Prints the config as the harness loads it: the [`extends`](config/extends.md)
+chain resolved (root first), every list item annotated with `# from: <file>`,
+and `# !replace from: <file>` on a list a profile replaced. Exit `1` with the
+loader's message on a broken chain (missing base, cycle, absolute path).
+
 ## `state.py` — the context-safe state store
 
 `agent_eval/state.py` is a small YAML/JSON key-value utility the skills use to persist
