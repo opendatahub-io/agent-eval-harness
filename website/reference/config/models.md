@@ -140,7 +140,7 @@ models:
   providers:
     openrouter:
       api_key_env: OPENROUTER_API_KEY            # default
-      base_url: https://openrouter.ai/api        # default; no /v1 (the harness appends it)
+      base_url: https://openrouter.ai/api        # default; no /v1 (the harness appends it); https unless loopback
       attribution: { title: agent-eval-harness } # X-OpenRouter-Title (+ HTTP-Referer via `referer`)
       routing:
         defaults: { allow_fallbacks: true, sort: throughput }

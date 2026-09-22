@@ -775,6 +775,19 @@ def test_openrouter_base_url_env_indirection(tmp_path, monkeypatch):
                       "    openrouter: {base_url: $OR_BASE}\n"))
 
 
+@pytest.mark.parametrize("url, expected", [
+    ("http://localhost:8080/api/", "http://localhost:8080/api"),
+    ("http://127.0.0.1:4000", "http://127.0.0.1:4000"),
+    ("http://[::1]:4000", "http://[::1]:4000"),
+    ("https://gw.example.test/api", "https://gw.example.test/api"),
+])
+def test_openrouter_base_url_cleartext_only_on_loopback(tmp_path, url, expected):
+    cfg = EvalConfig.from_yaml(_or_yaml(
+        tmp_path, "  judge: openrouter:/z-ai/glm-5.2\n  providers:\n"
+                  f"    openrouter: {{base_url: '{url}'}}\n"))
+    assert cfg.models.providers.openrouter.base_url == expected
+
+
 def test_top_level_providers_key_is_rejected(tmp_path):
     body = _OR_BASE + "providers:\n  openrouter: {}\n"
     with pytest.raises(ValueError, match=r"models\.providers.*Decision 17"):
@@ -790,6 +803,8 @@ def test_top_level_providers_key_is_rejected(tmp_path):
     ("    openrouter: {api_key_env: ''}\n", "must name an environment variable"),
     ("    openrouter: {base_url: https://openrouter.ai/api/v1}\n", r"/v1"),
     ("    openrouter: {base_url: openrouter.ai}\n", r"http\(s\) URL"),
+    ("    openrouter: {base_url: http://gw.example.test/api}\n", "must use https"),
+    ("    openrouter: {base_url: http://10.0.0.5:8080}\n", "must use https"),
     ("    openrouter: {judge: {inherit_pins: true}}\n", "nothing to inherit"),
     ("    openrouter: {judge: {inherit_pins: false}}\n", "nothing to inherit"),
     ("    openrouter: {routing: {defaults: {}}, judge: {inherit_pins: 'yes'}}\n", "must be a boolean"),

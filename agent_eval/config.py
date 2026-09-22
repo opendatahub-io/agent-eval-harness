@@ -761,6 +761,10 @@ def _env_var_name(value, context):
     return name
 
 
+def _is_loopback_host(host):
+    return host == "localhost" or host == "::1" or host.startswith("127.")
+
+
 def _resolve_base_url(value, context):
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{context} must be a URL string")
@@ -774,6 +778,17 @@ def _resolve_base_url(value, context):
     url = url.rstrip("/")
     if not url.startswith(("http://", "https://")):
         raise ValueError(f"{context} must be an http(s) URL")
+    if url.startswith("http://"):
+        # The judge client sends the key named by api_key_env (and the judged
+        # material) to this host: cleartext is acceptable only for a gateway
+        # on the loopback interface, never across a network.
+        from urllib.parse import urlsplit
+        host = (urlsplit(url).hostname or "").lower()
+        if not _is_loopback_host(host):
+            raise ValueError(
+                f"{context} must use https — the judge client sends the key "
+                "named by api_key_env to this host; plain http is allowed only "
+                "for a loopback gateway (localhost, 127.0.0.0/8, ::1)")
     if url.endswith("/v1") or url.endswith("/v1/messages"):
         raise ValueError(
             f"{context} must not include the /v1 path — the harness appends "
