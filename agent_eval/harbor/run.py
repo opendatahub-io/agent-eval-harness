@@ -285,6 +285,11 @@ def build_summary(parsed_job: dict, config: EvalConfig) -> dict:
                 "rationale": rec.get("rationale", "") or rec.get("error", ""),
                 "judge_type": types.get(name) or rec.get("judge_type", "check"),
             }
+            # Judge usage side channel (spec 014): the in-container engine
+            # records tokens/cost per judge call; carry it into the summary.
+            for extra in ("usage", "tool_choice_mode"):
+                if rec.get(extra):
+                    case_judges[name][extra] = rec[extra]
             if value is not None:
                 agg_values.setdefault(name, []).append(value)
         per_case[trial["case_id"]] = case_judges
@@ -299,7 +304,11 @@ def build_summary(parsed_job: dict, config: EvalConfig) -> dict:
         else:
             judges[name] = {"mean": None, "pass_rate": None}
 
-    return {"judges": judges, "per_case": per_case}
+    summary = {"judges": judges, "per_case": per_case}
+    judge_usage = _load_score_module().aggregate_judge_usage(per_case)
+    if judge_usage:
+        summary["judge_usage"] = judge_usage
+    return summary
 
 
 def _purge_task_packages(tasks_dir: Path) -> None:
@@ -661,6 +670,13 @@ def run_eval_on_harbor(
         "unjudged_steps": parsed.get("unjudged_steps", []),
     }
     (output_dir / "run_result.json").write_text(json.dumps(run_meta, indent=2) + "\n")
+    # Total cost under the null-cost arithmetic (judge spend stays out of
+    # run_result.cost_usd, Decision 15).
+    total_cost, total_source = _load_score_module().compute_total_cost(
+        run_meta.get("cost_usd"), (summary.get("judge_usage") or {}).get("judge_cost_usd"))
+    if total_source != "none":
+        summary["total_cost_usd"] = total_cost
+        summary["total_cost_source"] = total_source
     (output_dir / "summary.yaml").write_text(
         yaml.safe_dump({"run_id": output_dir.name, **summary},
                        sort_keys=False, allow_unicode=True))

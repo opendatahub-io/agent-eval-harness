@@ -940,7 +940,52 @@ def _render_header(config, run_id, run_result, baseline_id=None, title=None):
     )
 
 
-def _render_run_config(run_result, baseline_result=None):
+def _fmt_judge_cost(summary):
+    """`Judge cost` cell from summary.yaml `judge_usage` (spec 014), or None
+    when the run recorded no judge usage."""
+    usage = (summary or {}).get("judge_usage") or {}
+    if not usage:
+        return None
+    cost = usage.get("judge_cost_usd")
+    requests = usage.get("requests") or 0
+    unpriced = usage.get("requests_missing_cost") or 0
+    text = f"${cost:.2f}" if isinstance(cost, (int, float)) else "n/a"
+    detail = f"{requests} calls" + (f", {unpriced} unpriced" if unpriced else "")
+    return f"{text} ({detail})"
+
+
+def _fmt_total_cost(summary):
+    """`Total cost` cell: agent + judge spend under the null-cost arithmetic —
+    a null total is shown as such with the source that was numeric."""
+    summary = summary or {}
+    source = summary.get("total_cost_source")
+    if not source or source == "none":
+        return None
+    total = summary.get("total_cost_usd")
+    if isinstance(total, (int, float)):
+        return f"${total:.2f} ({source})"
+    return f"n/a ({source})"
+
+
+def _render_cost_rows(summary, baseline_summary, has_bl):
+    """Judge-cost and total-cost rows of the run configuration grid."""
+    html = ""
+    for label, fmt in (("Judge Cost", _fmt_judge_cost), ("Total Cost", _fmt_total_cost)):
+        cur = fmt(summary)
+        bl = fmt(baseline_summary) if has_bl else None
+        if cur is None and bl is None:
+            continue
+        html += '<div class="kv">'
+        html += f'<dt>{label}</dt>'
+        html += f'<dd>{_esc(cur or "—")}</dd>'
+        if has_bl and (bl or "—") != (cur or "—"):
+            html += f'<dd class="bl">{_esc(bl or "—")}</dd>'
+        html += '</div>\n'
+    return html
+
+
+def _render_run_config(run_result, baseline_result=None, summary=None,
+                       baseline_summary=None):
     has_bl = baseline_result is not None
     fields = [
         ("Model", "model"),
@@ -1022,6 +1067,7 @@ def _render_run_config(run_result, baseline_result=None):
                               if d else "")
                 html += f'<dd class="bl">{_esc(bl)}{delta_html}</dd>'
         html += '</div>\n'
+    html += _render_cost_rows(summary, baseline_summary, has_bl)
     html += "</dl>\n"
     html += _render_model_usage(run_result, baseline_result)
     html += _render_eval_params(run_result)
@@ -2933,7 +2979,9 @@ def generate_report(config, summary, run_result, run_dir,
     if not baseline_id and baseline_dir:
         baseline_id = baseline_dir.name
     html += _render_header(config, run_id, run_result, baseline_id, title=report_title)
-    html += _wrap_section(_render_run_config(run_result, baseline_result))
+    html += _wrap_section(_render_run_config(run_result, baseline_result,
+                                             summary=summary,
+                                             baseline_summary=baseline_summary))
     html += _render_analysis(run_dir, summary, run_result, baseline_summary)
     html += _wrap_section(_render_scoring_summary(summary, config, baseline_summary))
     html += _wrap_section(_render_regressions(summary, config))

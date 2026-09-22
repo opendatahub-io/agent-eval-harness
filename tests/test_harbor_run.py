@@ -565,3 +565,32 @@ def test_build_summary_regression_detectable(tmp_path):
     score = run_mod._load_score_module()
     regressions = score.detect_regressions(summary["judges"], config.thresholds)
     assert any(r.judge_name == "rfe_quality" for r in regressions)
+
+
+def test_build_summary_carries_judge_usage(tmp_path):
+    """The in-container judge engine records usage per judge call (spec 014);
+    build_summary keeps it on the per-case record and aggregates
+    summary.judge_usage exactly like the local scorer."""
+    job = _parsed_job()
+    usage = {"model": "z-ai/glm-5.2", "provider": "Z.AI", "id": "gen-1",
+             "prompt_tokens": 100, "completion_tokens": 10, "reasoning_tokens": None,
+             "cost_usd": 0.01, "cost_source": "provider-inline"}
+    job["trials"][0]["per_judge"]["rfe_quality"]["usage"] = usage
+    job["trials"][0]["per_judge"]["rfe_quality"]["tool_choice_mode"] = "required"
+    job["trials"][1]["per_judge"]["rfe_quality"]["usage"] = {**usage, "id": "gen-2",
+                                                             "cost_usd": 0.02}
+
+    summary = run_mod.build_summary(job, _config(tmp_path))
+
+    assert summary["per_case"]["case-001"]["rfe_quality"]["usage"] == usage
+    assert summary["per_case"]["case-001"]["rfe_quality"]["tool_choice_mode"] == "required"
+    assert "usage" not in summary["per_case"]["case-001"]["files_exist"]
+    assert summary["judge_usage"]["judge_cost_usd"] == pytest.approx(0.03)
+    assert summary["judge_usage"]["requests"] == 2
+    assert summary["judge_usage"]["by_judge"]["rfe_quality"]["prompt_tokens"] == 200
+    assert summary["judge_usage"]["by_model"]["z-ai/glm-5.2"]["requests"] == 2
+
+
+def test_build_summary_without_usage_has_no_judge_usage(tmp_path):
+    summary = run_mod.build_summary(_parsed_job(), _config(tmp_path))
+    assert "judge_usage" not in summary

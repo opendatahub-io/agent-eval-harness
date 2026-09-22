@@ -40,6 +40,7 @@ $AGENT_EVAL_RUNS_DIR/<run-id>/
 ├── report.html         # scored HTML report
 ├── summary.yaml        # judge results: judges (mean, pass_rate, scored_cases,
 │                       #   errored_cases, stability) + per_case + run_metrics
+│                       #   + judge_usage / total_cost_usd (judge spend, see below)
 └── cases/
     └── <case-id>/
         ├── artifacts/          # files collected from outputs[].path
@@ -56,6 +57,23 @@ $AGENT_EVAL_RUNS_DIR/<run-id>/
     **batch mode** they live at the run root (one invocation for all cases) and judges
     fall back to the run-level files. See the
     [execution model](../concepts/execution-model.md).
+
+### `summary.yaml`
+
+Written by `score.py judges` (and by the Harbor runner in the same shape). Besides
+`judges`, `per_case`, `pairwise` and `run_metrics` it carries the **judge usage side
+channel**: what the LLM judges themselves consumed, kept apart from the agent's cost.
+
+| Field | Meaning |
+| --- | --- |
+| `per_case.<case>.<judge>.usage` | The judge call's usage record: `model`, `provider`, `id`, `prompt_tokens`, `completion_tokens`, `reasoning_tokens`, `cost_usd`, `cost_source` (`provider-inline` when the provider priced the request in its reply, e.g. OpenRouter; `runner-estimate` for a runner/agent judge's CLI estimate; `none` when only tokens are known). Sampled judges (`samples: N`) store the sum over all attempts, failed ones included, with `requests` / `requests_missing_cost`. |
+| `per_case.<case>.<judge>.tool_choice_mode` | Present only when an OpenRouter judge had to fall back from a forced tool call (`required` or `auto`). |
+| `judge_usage` | Run-level aggregate: `judge_cost_usd` (`null` when no call was priced — never a partial sum), `requests`, `requests_missing_cost`, token totals, `cost_sources` (count per source), `by_judge`, `by_model`, and `tool_choice_fallbacks` when any happened. Absent when no judge produced usage (deterministic-only runs). |
+| `total_cost_usd` / `total_cost_source` | Agent `cost_usd` + `judge_cost_usd`, written only when at least one addend is known. The sum is computed only when **both** are numeric; otherwise `total_cost_usd` is `null` and `total_cost_source` says which side was numeric (`complete`, `agent-only`, `judge-only`). An estimate is never used to fill a null. |
+
+Judge spend never enters `run_result.json` `cost_usd`, so `run_metrics`
+(`cost_per_turn_usd`, `cost_per_mtok_usd`) stay agent-only and comparable with older runs.
+The pairwise section carries its own `judge_usage` for the comparison judge's calls.
 
 ### `run_result.json`
 

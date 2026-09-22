@@ -63,3 +63,50 @@ def test_paragraph_stops_at_fenced_code():
     assert "<p>Some prose that wraps.</p>" in html
     assert "code line" in html
     assert html.count("<p>") == 1
+
+
+# --- run-configuration cost rows (spec 014 judge usage) ----------------------
+
+from report import _render_run_config  # noqa: E402
+
+_RUN = {"model": "m", "cost_usd": 1.5, "duration_s": 10, "num_turns": 3, "exit_code": 0}
+
+
+def _summary(judge_cost=0.25, requests=8, unpriced=0, total=1.75, source="complete"):
+    return {"judge_usage": {"judge_cost_usd": judge_cost, "requests": requests,
+                            "requests_missing_cost": unpriced},
+            "total_cost_usd": total, "total_cost_source": source}
+
+
+def test_run_config_renders_judge_and_total_cost_rows():
+    html = _render_run_config(_RUN, summary=_summary())
+    assert "<dt>Judge Cost</dt>" in html and "$0.25 (8 calls)" in html
+    assert "<dt>Total Cost</dt>" in html and "$1.75 (complete)" in html
+    # The agent cost row is untouched — judge spend is not folded into it.
+    assert "<dt>Cost</dt><dd>$1.50</dd>" in html
+
+
+def test_run_config_shows_null_total_with_its_source():
+    """Null-cost arithmetic: a judge-only or agent-only total is shown as
+    n/a with the source, never re-derived from an estimate."""
+    html = _render_run_config(_RUN, summary=_summary(
+        judge_cost=None, requests=4, unpriced=4, total=None, source="agent-only"))
+    assert "n/a (4 calls, 4 unpriced)" in html
+    assert "n/a (agent-only)" in html
+
+
+def test_run_config_without_judge_usage_has_no_cost_rows():
+    html = _render_run_config(_RUN, summary={"judges": {}})
+    assert "Judge Cost" not in html and "Total Cost" not in html
+    assert "Judge Cost" not in _render_run_config(_RUN)
+
+
+def test_run_config_cost_rows_show_the_baseline_column():
+    html = _render_run_config(_RUN, baseline_result=_RUN, summary=_summary(),
+                              baseline_summary=_summary(judge_cost=0.10, total=1.60))
+    assert '<dd class="bl">$0.10 (8 calls)</dd>' in html
+    assert '<dd class="bl">$1.60 (complete)</dd>' in html
+    # A baseline that recorded no judge usage still gets the row (with a dash).
+    html = _render_run_config(_RUN, baseline_result=_RUN, summary=_summary(),
+                              baseline_summary={"judges": {}})
+    assert "<dt>Judge Cost</dt>" in html and '<dd class="bl">—</dd>' in html

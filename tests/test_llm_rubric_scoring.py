@@ -447,3 +447,37 @@ def test_openrouter_judge_model_binds_its_client_config():
     assert kwargs["client_cfg"].name == "openrouter"
     assert kwargs["token_param"] == "max_tokens"
     assert kwargs["extra_body"] == {"models": ["z-ai/glm-5.2", "deepseek/deepseek-v4"]}
+
+
+def test_anthropic_judge_returns_usage_side_channel():
+    """The Anthropic path hands back a JudgeOutcome: the verdict tuple every
+    caller already unpacks, plus the token usage (no cost — Anthropic prices
+    nothing inline) for summary.judge_usage."""
+    import score
+    from agent_eval.config import EvalConfig, JudgeConfig, ModelsConfig
+
+    block = SimpleNamespace(type="tool_use", name="submit_score",
+                            input={"rationale": "fine", "score": 4})
+    response = SimpleNamespace(
+        id="msg_01", model="claude-opus-4-8", content=[block],
+        usage=SimpleNamespace(input_tokens=120, output_tokens=15,
+                              cache_creation_input_tokens=0,
+                              cache_read_input_tokens=80))
+    client = Mock()
+    client.messages.create.return_value = response
+    config = EvalConfig(name="t", skill="s")
+    config.models = ModelsConfig(judge="claude-opus-4-8")
+    jc = JudgeConfig(name="j", llm_rubric="Response is helpful")
+    config.judges = [jc]
+
+    with patch("score._get_anthropic_client", return_value=client):
+        scorer = score._load_llm_judge(jc, config)
+        outcome = scorer(outputs={"files": {"output.txt": "test"}})
+
+    value, rationale = outcome
+    assert (value, rationale) == (4, "fine")
+    assert outcome.usage == {"model": "claude-opus-4-8", "provider": "anthropic",
+                             "id": "msg_01", "prompt_tokens": 200,
+                             "completion_tokens": 15, "reasoning_tokens": None,
+                             "cost_usd": None, "cost_source": "none"}
+    assert score._normalize_result(outcome) == (4, "fine", outcome.usage)

@@ -327,6 +327,11 @@ def load_case_record(case_dir, config, run_id=None, runs_dir=None):
                     "token_usage", meta.get("token_usage"))
                 record["cost_usd"] = per_case.get(
                     "cost_usd", meta.get("cost_usd"))
+                # Cost provenance (spec 014): only when the run recorded one,
+                # so older run_result.json files keep their record shape.
+                if "cost_source" in per_case or "cost_source" in meta:
+                    record["cost_source"] = per_case.get(
+                        "cost_source", meta.get("cost_source"))
                 record["num_turns"] = per_case.get(
                     "num_turns", meta.get("num_turns"))
             except (json.JSONDecodeError, OSError):
@@ -1264,23 +1269,30 @@ def _call_structured_judge(prompt, model, feedback_type, images=None,
         tool_choice={"type": "tool", "name": tool["name"]},
         messages=[{"role": "user", "content": _judge_user_message(prompt, images)}],
     )
+    usage = _usage_from_anthropic_response(response, model)
+    _record_judge_usage(usage)
+    verdict = None
     for block in response.content:
         if getattr(block, "type", None) == "tool_use" and block.name == tool["name"]:
             data = dict(block.input)
             rationale = str(data.get("rationale") or "").strip()
             if is_bool:
                 if isinstance(data.get("passed"), bool):
-                    return (data["passed"], rationale or "(no rationale provided)")
+                    verdict = (data["passed"], rationale or "(no rationale provided)")
+                    break
             else:
                 try:
-                    return (_coerce_number(data["score"], bounds[2]),
-                            rationale or "(no rationale provided)")
+                    verdict = (_coerce_number(data["score"], bounds[2]),
+                               rationale or "(no rationale provided)")
+                    break
                 except (KeyError, TypeError, ValueError):
                     pass
-    # Fallback: model emitted text instead of a tool call (rare with tool_choice).
-    text = "".join(getattr(b, "text", "") for b in response.content
-                   if getattr(b, "type", None) == "text").strip()
-    return parser(text)
+    if verdict is None:
+        # Fallback: model emitted text instead of a tool call (rare with tool_choice).
+        text = "".join(getattr(b, "text", "") for b in response.content
+                       if getattr(b, "type", None) == "text").strip()
+        verdict = parser(text)
+    return JudgeOutcome(verdict[0], verdict[1], usage=usage)
 
 
 def _get_openai_client():
@@ -1382,6 +1394,7 @@ def _judge_semaphore(cfg):
 
 def _reset_judge_call_meta():
     _JUDGE_CALL_META.tool_choice_mode = None
+    _JUDGE_CALL_META.usage = None
 
 
 def _pop_judge_call_meta():
@@ -1406,6 +1419,244 @@ def _tool_choice_fallback_count():
 def _reset_tool_choice_fallbacks():
     with _JUDGE_STATE_LOCK:
         _TOOL_CHOICE_FALLBACKS["count"] = 0
+
+
+# --- Judge usage side channel (spec 014) --------------------------------------
+#
+# Every LLM-backed judge call yields a usage record next to its verdict:
+# `{"model", "provider", "id", "prompt_tokens", "completion_tokens",
+# "reasoning_tokens", "cost_usd", "cost_source"}`. `cost_source` is
+# "provider-inline" when the provider priced the request in its response
+# (OpenRouter's `usage.cost`), "runner-estimate" for a runner/agent judge's CLI
+# estimate, and "none" when no cost is known (Anthropic/OpenAI SDK judges:
+# tokens only, `cost_usd: null`). Judge spend never enters `run_result.cost_usd`
+# (Decision 15): it is aggregated into `summary.yaml` `judge_usage`, and
+# `total_cost_usd` follows the null-cost arithmetic in `compute_total_cost`.
+
+_USAGE_TOKEN_KEYS = ("prompt_tokens", "completion_tokens", "reasoning_tokens")
+
+
+class JudgeOutcome(tuple):
+    """A scorer verdict `(value, rationale)` with a `usage` side channel.
+
+    Behaves exactly like the 2-tuple every scorer has always returned
+    (equality, unpacking, `len() == 2`), so external `module`/`function` judges
+    keep returning plain tuples; the built-in LLM paths return this so
+    `_normalize_result` can lift the usage record onto the per-case record.
+    """
+
+    def __new__(cls, value, rationale="", usage=None):
+        self = super().__new__(cls, (value, rationale))
+        self.usage = usage
+        return self
+
+    @property
+    def value(self):
+        return self[0]
+
+    @property
+    def rationale(self):
+        return self[1]
+
+
+def _num(value):
+    """`value` when it is a real number (bool excluded), else None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value
+
+
+def _dump_get(obj, key):
+    """`getattr` first, then a `model_dump()` lookup: pydantic models expose
+    `extra="allow"` fields as attributes on recent SDKs and only in the dump on
+    older ones; plain fakes have neither."""
+    if obj is None:
+        return None
+    value = getattr(obj, key, None)
+    if value is None and hasattr(obj, "model_dump"):
+        try:
+            value = obj.model_dump().get(key)
+        except Exception:
+            value = None
+    return value
+
+
+def _usage_from_openai_response(response, model):
+    """Usage record of an OpenAI-shaped chat completion (OpenAI or OpenRouter)."""
+    usage = getattr(response, "usage", None)
+    details = getattr(usage, "completion_tokens_details", None) if usage else None
+    cost = _num(_dump_get(usage, "cost"))
+    return {
+        "model": getattr(response, "model", None) or model,
+        "provider": _dump_get(response, "provider"),
+        "id": getattr(response, "id", None),
+        "prompt_tokens": _num(getattr(usage, "prompt_tokens", None)),
+        "completion_tokens": _num(getattr(usage, "completion_tokens", None)),
+        "reasoning_tokens": _num(getattr(details, "reasoning_tokens", None)),
+        "cost_usd": cost,
+        "cost_source": "provider-inline" if cost is not None else "none",
+    }
+
+
+def _usage_from_anthropic_response(response, model):
+    """Usage record of an Anthropic Messages response (tokens only)."""
+    usage = getattr(response, "usage", None)
+    prompt = _num(getattr(usage, "input_tokens", None))
+    # Cache reads/writes are billed input on Anthropic; fold them into the
+    # prompt count so the record is comparable across providers.
+    for key in ("cache_creation_input_tokens", "cache_read_input_tokens"):
+        extra = _num(getattr(usage, key, None))
+        if extra:
+            prompt = (prompt or 0) + extra
+    return {
+        "model": getattr(response, "model", None) or model,
+        "provider": "anthropic",
+        "id": getattr(response, "id", None),
+        "prompt_tokens": prompt,
+        "completion_tokens": _num(getattr(usage, "output_tokens", None)),
+        "reasoning_tokens": None,
+        "cost_usd": None,
+        "cost_source": "none",
+    }
+
+
+def _usage_from_run_result(result, model):
+    """Usage record of a runner/agent judge (`RunResult`): the CLI's own token
+    counts and its cost *estimate* (labelled as such, never billed spend)."""
+    tokens = getattr(result, "token_usage", None) or {}
+    cost = _num(getattr(result, "cost_usd", None))
+    prompt = _num(tokens.get("input"))
+    for key in ("cache_read", "cache_create"):
+        extra = _num(tokens.get(key))
+        if extra:
+            prompt = (prompt or 0) + extra
+    return {
+        "model": getattr(result, "resolved_model", None) or model,
+        "provider": "runner",
+        "id": None,
+        "prompt_tokens": prompt,
+        "completion_tokens": _num(tokens.get("output")),
+        "reasoning_tokens": None,
+        "cost_usd": cost,
+        "cost_source": "runner-estimate" if cost is not None else "none",
+    }
+
+
+def _record_judge_usage(usage):
+    """Thread-local copy of the last judge call's usage, so a call that fails
+    after the provider answered (strict parse, off-scale value) still counts."""
+    _JUDGE_CALL_META.usage = usage
+
+
+def _pop_judge_usage():
+    usage = getattr(_JUDGE_CALL_META, "usage", None)
+    _JUDGE_CALL_META.usage = None
+    return usage
+
+
+def _sum_usage(records):
+    """Fold usage records into one per-case record: tokens summed, `cost_usd`
+    summed over the priced records or `null` when none was priced,
+    `requests`/`requests_missing_cost` counted."""
+    records = [r for r in records if isinstance(r, dict)]
+    if not records:
+        return None
+    total = {"requests": sum(int(r.get("requests") or 1) for r in records)}
+    for key in _USAGE_TOKEN_KEYS:
+        vals = [r[key] for r in records if _num(r.get(key)) is not None]
+        total[key] = sum(vals) if vals else None
+    costs = [r["cost_usd"] for r in records if _num(r.get("cost_usd")) is not None]
+    total["cost_usd"] = round(sum(costs), 8) if costs else None
+    total["requests_missing_cost"] = sum(
+        int(r["requests_missing_cost"]) if r.get("requests_missing_cost") is not None
+        else (0 if _num(r.get("cost_usd")) is not None else int(r.get("requests") or 1))
+        for r in records)
+    models = {r.get("model") for r in records if r.get("model")}
+    providers = {r.get("provider") for r in records if r.get("provider")}
+    if len(models) == 1:
+        total["model"] = models.pop()
+    if len(providers) == 1:
+        total["provider"] = providers.pop()
+    sources = sorted({r.get("cost_source") or "none" for r in records})
+    total["cost_source"] = sources[0] if len(sources) == 1 else "mixed"
+    return total
+
+
+def _usage_bucket():
+    return {"requests": 0, "requests_missing_cost": 0, "cost_usd": None,
+            "prompt_tokens": None, "completion_tokens": None,
+            "reasoning_tokens": None}
+
+
+def _add_usage(bucket, usage):
+    requests = int(usage.get("requests") or 1)
+    cost = _num(usage.get("cost_usd"))
+    missing = usage.get("requests_missing_cost")
+    if missing is None:
+        missing = 0 if cost is not None else requests
+    bucket["requests"] += requests
+    bucket["requests_missing_cost"] += int(missing)
+    if cost is not None:
+        bucket["cost_usd"] = round((bucket["cost_usd"] or 0.0) + cost, 8)
+    for key in _USAGE_TOKEN_KEYS:
+        val = _num(usage.get(key))
+        if val is not None:
+            bucket[key] = (bucket[key] or 0) + val
+
+
+def aggregate_judge_usage(per_case, tool_choice_fallbacks=0):
+    """`summary.yaml` `judge_usage` from the per-case judge records.
+
+    `{judge_cost_usd, requests, requests_missing_cost, prompt_tokens,
+    completion_tokens, reasoning_tokens, cost_sources, by_judge, by_model,
+    tool_choice_fallbacks}`. `judge_cost_usd` is `null` when no call was priced
+    — a partial sum is never presented as spend; `requests_missing_cost` says
+    how much is unpriced. Returns None when no judge produced usage and no
+    Decision 25 fallback happened, so deterministic-only runs keep their
+    summary shape.
+    """
+    totals = _usage_bucket()
+    by_judge, by_model, sources = {}, {}, {}
+    for case_results in (per_case or {}).values():
+        if not isinstance(case_results, dict):
+            continue
+        for judge_name, rec in case_results.items():
+            usage = rec.get("usage") if isinstance(rec, dict) else None
+            if not isinstance(usage, dict):
+                continue
+            _add_usage(totals, usage)
+            _add_usage(by_judge.setdefault(judge_name, _usage_bucket()), usage)
+            _add_usage(by_model.setdefault(usage.get("model") or "unknown",
+                                           _usage_bucket()), usage)
+            source = usage.get("cost_source") or "none"
+            sources[source] = sources.get(source, 0) + int(usage.get("requests") or 1)
+    if totals["requests"] == 0 and not tool_choice_fallbacks:
+        return None
+    out = {"judge_cost_usd": totals["cost_usd"]}
+    out.update({k: v for k, v in totals.items() if k != "cost_usd"})
+    out["cost_sources"] = sources
+    out["by_judge"] = by_judge
+    out["by_model"] = by_model
+    if tool_choice_fallbacks:
+        out["tool_choice_fallbacks"] = int(tool_choice_fallbacks)
+    return out
+
+
+def compute_total_cost(agent_cost, judge_cost):
+    """Null-cost arithmetic (spec 014): `(total_cost_usd, total_cost_source)`.
+
+    `cost_usd + judge_cost_usd` only when both addends are numeric, else
+    `null`; the source names the numeric addends (`complete | agent-only |
+    judge-only | none`). A null is never re-inflated from an estimate.
+    """
+    agent, judge = _num(agent_cost), _num(judge_cost)
+    if agent is not None and judge is not None:
+        return round(agent + judge, 6), "complete"
+    if agent is not None:
+        return None, "agent-only"
+    if judge is not None:
+        return None, "judge-only"
+    return None, "none"
 
 
 def _retry_after_seconds(exc):
@@ -1565,6 +1816,7 @@ def _openai_judge_request(client, cfg, *, model, messages, tool, max_tokens,
             last_404 = exc
             continue
         _record_tool_choice_mode(mode)
+        _record_judge_usage(_usage_from_openai_response(response, model))
         return response, mode
     pins = (extra_body or {}).get("provider") or {}
     pinned = list(pins.get("order") or pins.get("only") or [])
@@ -1722,15 +1974,19 @@ def _call_structured_judge_openai(prompt, model, feedback_type, images=None,
             {"role": "user", "content": _openai_user_message(prompt, images)},
         ])
     message = response.choices[0].message
+    usage = _usage_from_openai_response(response, model)
     for data in _judge_tool_calls(message, judge_tool["name"], mode=mode):
         rationale = str(data.get("rationale") or "").strip()
         if is_bool:
             if isinstance(data.get("passed"), bool):
-                return (data["passed"], rationale or "(no rationale provided)")
+                return JudgeOutcome(data["passed"],
+                                    rationale or "(no rationale provided)",
+                                    usage=usage)
         else:
             try:
-                return (_coerce_number(data["score"], bounds[2]),
-                        rationale or "(no rationale provided)")
+                return JudgeOutcome(_coerce_number(data["score"], bounds[2]),
+                                    rationale or "(no rationale provided)",
+                                    usage=usage)
             except (KeyError, TypeError, ValueError):
                 pass
         if mode != "function":
@@ -1740,7 +1996,8 @@ def _call_structured_judge_openai(prompt, model, feedback_type, images=None,
                 error_type="bad_tool_call", tool_choice_mode=mode)
     # Fallback: model emitted text instead of a tool call (forced mode only —
     # a degraded mode raised above rather than parse prose).
-    return parser((message.content or "").strip())
+    verdict = parser((message.content or "").strip())
+    return JudgeOutcome(verdict[0], verdict[1], usage=usage)
 
 
 def _call_structured_judge_via_runner(prompt, model, feedback_type, config, jc,
@@ -1791,6 +2048,8 @@ def _call_structured_judge_via_runner(prompt, model, feedback_type, config, jc,
         staged_files=staged_images,
     )
     try:
+        usage = _usage_from_run_result(result, model)
+        _record_judge_usage(usage)
         if result.exit_code != 0:
             snippet = (result.stderr or result.stdout or extracted_text or "").strip()
             snippet = snippet.replace("\n", " ")[:200]
@@ -1803,7 +2062,8 @@ def _call_structured_judge_via_runner(prompt, model, feedback_type, config, jc,
             snippet = snippet.replace("\n", " ")[:200]
             raise RuntimeError(
                 f"LLM judge '{jc.name}' produced no parseable verdict: {snippet}")
-        return _interpret_agent_verdict(verdict, is_bool, jc)
+        value, rationale = _interpret_agent_verdict(verdict, is_bool, jc)
+        return JudgeOutcome(value, rationale, usage=usage)
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
 
@@ -1915,12 +2175,16 @@ def _loads_json_object(text):
 
 
 def _normalize_result(result):
-    """Extract (value, rationale) from a scorer return (tuple/Feedback/primitive)."""
+    """Extract `(value, rationale, usage)` from a scorer return: a
+    `JudgeOutcome`, a plain `(value, rationale)` tuple, a Feedback-like object
+    with `.value`, or a bare primitive. `usage` is None unless the scorer
+    supplied a usage record (spec 014 judge usage side channel)."""
     if isinstance(result, tuple) and len(result) == 2:
-        return result[0], result[1]
+        return result[0], result[1], getattr(result, "usage", None)
     if hasattr(result, "value"):
-        return result.value, getattr(result, "rationale", "")
-    return result, ""
+        return (result.value, getattr(result, "rationale", ""),
+                getattr(result, "usage", None))
+    return result, "", None
 
 
 def _aggregate_samples(runs, judge_type):
@@ -2316,13 +2580,26 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
                 n = 1
             bounds = judge_bounds.get(name)
             modes = []
+            usages = []
 
             def _run_scorer():
-                # Capture the Decision 25 tool_choice mode the OpenAI-shaped
-                # judge call ended up in (thread-local, set by the call).
+                # One judge call → (value, rationale). The usage record comes
+                # from the returned JudgeOutcome or, when the call raised after
+                # the provider answered, from the thread-local copy — a failed
+                # attempt still consumed tokens. The Decision 25 tool_choice
+                # mode travels the same thread-local way.
                 _reset_judge_call_meta()
                 try:
-                    return scorer(outputs=rec)
+                    v, rat, usage = _normalize_result(scorer(outputs=rec))
+                    usage = usage or _pop_judge_usage()
+                    if usage:
+                        usages.append(usage)
+                    return v, rat
+                except Exception:
+                    usage = _pop_judge_usage()
+                    if usage:
+                        usages.append(usage)
+                    raise
                 finally:
                     mode = _pop_judge_call_meta()
                     if mode and mode != "function":
@@ -2333,7 +2610,7 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
                     runs = []
                     for _ in range(n):
                         try:
-                            v, rat = _normalize_result(_run_scorer())
+                            v, rat = _run_scorer()
                             v = _enforce_bounds(v, bounds, name)
                             runs.append({"value": v, "rationale": rat})
                         except Exception as e:
@@ -2341,7 +2618,7 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
                             runs.append({"value": None, "error": str(e)})
                     case_results[name] = _aggregate_samples(runs, judge_type)
                 else:
-                    v, rat = _normalize_result(_run_scorer())
+                    v, rat = _run_scorer()
                     v = _enforce_bounds(v, bounds, name)
                     case_results[name] = {"value": v, "rationale": rat,
                                           "judge_type": judge_type}
@@ -2351,6 +2628,9 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
                                       "judge_type": judge_type}
             if modes and isinstance(case_results.get(name), dict):
                 case_results[name]["tool_choice_mode"] = modes[-1]
+            if usages and isinstance(case_results.get(name), dict):
+                case_results[name]["usage"] = (usages[0] if len(usages) == 1
+                                               else _sum_usage(usages))
         # Annotate step-scoped judges so the summary/report shows the step.
         for jn, sid in judge_steps.items():
             if isinstance(case_results.get(jn), dict):
@@ -2427,11 +2707,11 @@ def score_cases(judges, case_dirs, config, run_id=None, samples_override=None):
                 }
 
     result = {"per_case": per_case, "aggregated": aggregated}
-    # Judge-side usage (spec 014). Only the Decision 25 fallback counter exists
-    # yet; the full usage side channel (tokens, cost) is a later PR.
-    fallbacks = _tool_choice_fallback_count()
-    if fallbacks:
-        result["judge_usage"] = {"tool_choice_fallbacks": fallbacks}
+    # Judge-side usage (spec 014 Decision 15): tokens/cost per judge call,
+    # aggregated here and written to summary.yaml — never into run_result.
+    judge_usage = aggregate_judge_usage(per_case, _tool_choice_fallback_count())
+    if judge_usage:
+        result["judge_usage"] = judge_usage
     return result
 
 
@@ -2926,6 +3206,8 @@ def _load_agent_judge(jc, config, project_root=None):
                 max_budget_usd=max_budget,
                 timeout_s=timeout_s,
             )
+            usage = _usage_from_run_result(result, judge_model)
+            _record_judge_usage(usage)
             if result.exit_code != 0:
                 snippet = (result.stderr or result.stdout or "").strip()
                 snippet = snippet.replace("\n", " ")[:200]
@@ -2939,7 +3221,8 @@ def _load_agent_judge(jc, config, project_root=None):
                 raise RuntimeError(
                     f"Agent judge '{jc.name}' produced no parseable verdict "
                     f"(no output/score.json, none in stdout): {snippet}")
-            return _interpret_agent_verdict(verdict, is_bool, jc)
+            value, rationale = _interpret_agent_verdict(verdict, is_bool, jc)
+            return JudgeOutcome(value, rationale, usage=usage)
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
 
@@ -3028,6 +3311,8 @@ class PairwiseResult:
     error: Optional[str] = None
     reasoning_ab: Optional[dict] = None
     reasoning_ba: Optional[dict] = None
+    # Usage records of the two judge calls (spec 014 side channel).
+    usage: list = field(default_factory=list)
 
     @property
     def winner(self) -> str:
@@ -3118,6 +3403,7 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
         msg_ab = f"## Output A\n\n{output_a}\n\n## Output B\n\n{output_b}"
         pref_ab, err = _call_judge(backend, client, comparison_prompt, msg_ab,
                                    model_arg, **judge_kwargs)
+        _take_pairwise_usage(pref_ab, result)
         if pref_ab:
             result.pref_ab = pref_ab.get("preferred")
             result.reasoning_ab = pref_ab
@@ -3128,6 +3414,7 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
         msg_ba = f"## Output A\n\n{output_b}\n\n## Output B\n\n{output_a}"
         pref_ba, err = _call_judge(backend, client, comparison_prompt, msg_ba,
                                    model_arg, **judge_kwargs)
+        _take_pairwise_usage(pref_ba, result)
         if pref_ba:
             result.pref_ba = pref_ba.get("preferred")
             result.reasoning_ba = pref_ba
@@ -3156,7 +3443,7 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
     ties = sum(1 for r in results if r.winner == "tie")
     errors = sum(1 for r in results if r.winner == "error")
 
-    return {
+    out = {
         "run_a": run_a_dir.name, "run_b": run_b_dir.name,
         "cases_compared": len(results),
         "wins_a": wins_a, "wins_b": wins_b,
@@ -3165,6 +3452,20 @@ def compare_runs(run_a_dir, run_b_dir, config, case_ids,
                       "reasoning": r.reasoning}
                      for r in results],
     }
+    pairwise_usage = _sum_usage([u for r in results for u in r.usage])
+    if pairwise_usage:
+        out["judge_usage"] = {"judge_cost_usd": pairwise_usage.pop("cost_usd"),
+                              **pairwise_usage}
+    return out
+
+
+def _take_pairwise_usage(verdict, result):
+    """Move a pairwise verdict's `_usage` record onto the PairwiseResult so the
+    stored reasoning stays the judge's own fields."""
+    if isinstance(verdict, dict):
+        usage = verdict.pop("_usage", None)
+        if usage:
+            result.usage.append(usage)
 
 
 def _compute_pairwise_stability(runs):
@@ -3343,17 +3644,18 @@ def _call_judge(backend, client, system_prompt, user_message, model,
                 {"role": "user", "content": f"{system_prompt}\n\n{user_message}"},
             ],
         )
+        usage = _usage_from_anthropic_response(response, model)
         # Preferred path: read the forced tool_use block directly — no text
         # parsing, no improvised keys.
         for block in response.content:
             if getattr(block, "type", None) == "tool_use" and block.name == "submit_comparison":
-                return dict(block.input), None
+                return {**dict(block.input), "_usage": usage}, None
         # Fallback: model emitted text despite tool_choice (rare) — parse it.
         text = "".join(getattr(b, "text", "") for b in response.content
                        if getattr(b, "type", None) == "text")
         parsed = _extract_judge_json(text) if text else None
         if parsed is not None:
-            return parsed, None
+            return {**parsed, "_usage": usage}, None
         # Retry once with a larger budget if the response was truncated.
         if response.stop_reason == "max_tokens" and max_tokens < 32768:
             return _call_judge(backend, client, system_prompt, user_message, model,
@@ -3382,12 +3684,13 @@ def _call_pairwise_openai(client, system_prompt, user_message, model,
                 {"role": "user", "content": f"{system_prompt}\n\n{user_message}"},
             ])
         message = response.choices[0].message
+        usage = _usage_from_openai_response(response, model)
         for data in _judge_tool_calls(message, "submit_comparison", mode=mode):
-            return data, None
+            return {**data, "_usage": usage}, None
         text = message.content or ""
         parsed = _extract_judge_json(text) if text else None
         if parsed is not None:
-            return parsed, None
+            return {**parsed, "_usage": usage}, None
         finish = response.choices[0].finish_reason
         if finish == "length" and max_tokens < 32768:
             return _call_pairwise_openai(client, system_prompt, user_message,
@@ -3734,14 +4037,32 @@ def cmd_judges(args):
         for name, agg in judge_results.get("aggregated", {}).items()
     }, runs_dir)
     _merge_summary(args.run_id, "per_case", judge_results.get("per_case", {}), runs_dir)
-    if judge_results.get("judge_usage"):
-        _merge_summary(args.run_id, "judge_usage", judge_results["judge_usage"], runs_dir)
+    judge_usage = judge_results.get("judge_usage") or {}
+    if judge_usage:
+        _merge_summary(args.run_id, "judge_usage", judge_usage, runs_dir)
+        judge_cost = judge_usage.get("judge_cost_usd")
+        unpriced = judge_usage.get("requests_missing_cost", 0)
+        print(f"  judge_cost_usd: "
+              + (f"${judge_cost:.4f}" if judge_cost is not None else "n/a")
+              + f" ({judge_usage.get('requests', 0)} judge calls"
+              + (f", {unpriced} unpriced" if unpriced else "") + ")")
 
     # Workload-agnostic run metrics for cross-run / cross-model comparison
     rr_path = runs_dir / args.run_id / "run_result.json"
+    run_result = {}
     if rr_path.exists():
         with open(rr_path) as f:
             run_result = json.load(f)
+    # Total cost = agent + judge spend under the null-cost arithmetic; the
+    # judge share never touches run_result.cost_usd (Decision 15).
+    total_cost, total_source = compute_total_cost(
+        run_result.get("cost_usd"), judge_usage.get("judge_cost_usd"))
+    if total_source != "none":
+        _merge_summary(args.run_id, "total_cost_usd", total_cost, runs_dir)
+        _merge_summary(args.run_id, "total_cost_source", total_source, runs_dir)
+        if total_cost is not None:
+            print(f"  total_cost_usd: ${total_cost:.4f} ({total_source})")
+    if run_result:
         run_metrics = compute_run_metrics(run_result)
         if run_metrics:
             _merge_summary(args.run_id, "run_metrics", run_metrics, runs_dir)

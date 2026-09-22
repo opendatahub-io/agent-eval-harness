@@ -209,3 +209,63 @@ def test_scored_cases_survives_into_the_summary(tmp_path):
     assert agg["scored_cases"] == 1
     # What cmd_judges actually persists — no `values` key.
     assert "scored_cases" in {k: v for k, v in agg.items() if k != "values"}
+
+
+def test_legacy_scorer_shapes_still_normalise_and_carry_no_usage(tmp_path):
+    """3-tuple `_normalize_result`: a plain (value, rationale) tuple, a bare
+    primitive and a Feedback-like `.value` object all score as before and add
+    no `usage` to the per-case record."""
+    from types import SimpleNamespace
+
+    from agent_eval.config import EvalConfig, JudgeConfig, OutputConfig
+
+    config = EvalConfig(name="t", skill="t")
+    config.outputs = [OutputConfig(path="artifacts")]
+    config.judges = [JudgeConfig(name="tup", check="return (0.75, 'r')"),
+                     JudgeConfig(name="prim", check="return True"),
+                     JudgeConfig(name="fb", check="return True")]
+    judges = sc.load_judges(config)
+    feedback = SimpleNamespace(value=2, rationale="fb")
+    judges[2] = ("fb", lambda outputs=None, **kw: feedback, "", "code", 1)
+
+    result = sc.score_cases(judges, [_case(tmp_path)], config)
+
+    per_case = result["per_case"]["case-1"]
+    assert per_case["tup"]["value"] == 0.75 and per_case["tup"]["rationale"] == "r"
+    assert per_case["prim"]["value"] is True
+    assert per_case["fb"]["value"] == 2 and per_case["fb"]["rationale"] == "fb"
+    assert all("usage" not in rec for rec in per_case.values())
+    assert "judge_usage" not in result
+
+
+def test_off_scale_openai_verdict_still_counts_its_usage(monkeypatch, tmp_path):
+    """A judge answer that fails the declared scale is an error sample, but the
+    provider still billed it: the usage is kept on the record."""
+    from types import SimpleNamespace
+
+    from agent_eval.config import EvalConfig, JudgeConfig, ModelsConfig, OutputConfig
+
+    def fake_create(**kwargs):
+        call = SimpleNamespace(function=SimpleNamespace(
+            name="submit_score", arguments=json.dumps({"rationale": "r", "score": 9})))
+        message = SimpleNamespace(tool_calls=[call], content=None)
+        return SimpleNamespace(id="chatcmpl-9", model="gpt-4o",
+                               choices=[SimpleNamespace(message=message)],
+                               usage=SimpleNamespace(prompt_tokens=40, completion_tokens=4))
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(
+        completions=SimpleNamespace(create=fake_create)))
+    monkeypatch.setattr(sc, "_get_openai_client", lambda: fake_client)
+    config = EvalConfig(name="t", skill="t")
+    config.outputs = [OutputConfig(path="artifacts")]
+    config.models = ModelsConfig(judge="openai:/gpt-4o")
+    config.judges = [JudgeConfig(name="j", prompt="rate it", feedback_type="int",
+                                 score_range=[0, 2])]
+
+    result = sc.score_cases(sc.load_judges(config), [_case(tmp_path)], config)
+
+    rec = result["per_case"]["case-1"]["j"]
+    assert rec["value"] is None and "error" in rec
+    assert rec["usage"]["prompt_tokens"] == 40 and rec["usage"]["cost_source"] == "none"
+    assert result["judge_usage"]["requests"] == 1
+    assert result["judge_usage"]["judge_cost_usd"] is None

@@ -215,6 +215,33 @@ def _harbor_step_run_result(case_dir, step_name, base, transcript):
 
 # ── Main ─────────────────────────────────────────────────────────────
 
+def _cost_metrics_from_summary(summary):
+    """MLflow metrics/tags for judge-side spend from summary.yaml (spec 014).
+
+    `judge_cost_usd`, `judge/requests`, `judge/requests_missing_cost`,
+    `judge/tool_choice_fallbacks` and `total_cost_usd` are logged only when
+    numeric — a null total is never re-derived from an estimate — and
+    `total_cost_source` is tagged so a `judge-only`/`agent-only` run is not
+    read as a complete cost. Judge spend stays out of `cost_usd`.
+    """
+    metrics, tags = {}, {}
+    usage = (summary or {}).get("judge_usage") or {}
+    judge_cost = usage.get("judge_cost_usd")
+    if isinstance(judge_cost, (int, float)) and not isinstance(judge_cost, bool):
+        metrics["judge_cost_usd"] = float(judge_cost)
+    for key in ("requests", "requests_missing_cost", "tool_choice_fallbacks"):
+        value = usage.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            metrics[f"judge/{key}"] = value
+    total = (summary or {}).get("total_cost_usd")
+    if isinstance(total, (int, float)) and not isinstance(total, bool):
+        metrics["total_cost_usd"] = float(total)
+    source = (summary or {}).get("total_cost_source")
+    if source:
+        tags["total_cost_source"] = str(source)
+    return metrics, tags
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -305,6 +332,13 @@ def main():
                     val = stats.get(key)
                     if val is not None:
                         mlflow.log_metric(f"{prefix}/tokens/{key}", val)
+
+        # ── Judge-side cost (spec 014 Decision 15) ───────────────
+        cost_metrics, cost_tags = _cost_metrics_from_summary(summary)
+        for key, value in cost_metrics.items():
+            mlflow.log_metric(key, value)
+        for key, value in cost_tags.items():
+            mlflow.set_tag(key, value)
 
         # ── Judge metrics ────────────────────────────────────────
         judges = summary.get("judges", {})

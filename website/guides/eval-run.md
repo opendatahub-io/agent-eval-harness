@@ -215,7 +215,7 @@ The run directory (`$AGENT_EVAL_RUNS_DIR/<eval-name>/<run-id>/`) contains:
 ```text
 run_result.json     # exit_code, durations, token usage, cost, permission denials, per_case breakdown
 collection.json     # per-case artifact counts
-summary.yaml        # judges (mean/pass_rate), per_case, pairwise
+summary.yaml        # judges (mean/pass_rate), per_case, pairwise, judge_usage / total_cost_usd
 analysis.md         # LLM interpretation, leading with a Recommendation
 report.html         # scoring summary, per-case detail, diffs, cost/tokens
 cases/<case-id>/    # per-case artifacts, logs, and traces

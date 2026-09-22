@@ -8,6 +8,8 @@ hand the raw prefixed id to the Anthropic Messages API.
 import json
 import sys
 from pathlib import Path
+
+import pytest
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -240,3 +242,86 @@ def test_call_pairwise_openai_passes_extra_body_and_token_param():
     sent = client.calls[0]
     assert sent["extra_body"] == {"provider": {"sort": "price"}}
     assert "max_tokens" in sent and "max_completion_tokens" not in sent
+
+
+# --- pairwise judge usage (spec 014 PR-2) ------------------------------------
+
+def _priced_pw_response(arguments, cost=None, model="z-ai/glm-5.2"):
+    response = _pw_response(arguments=arguments)
+    response.id = "gen-pw"
+    response.model = model
+    response.usage = SimpleNamespace(prompt_tokens=50, completion_tokens=5,
+                                     **({"cost": cost} if cost is not None else {}))
+    return response
+
+
+def test_call_pairwise_openai_attaches_the_usage_record():
+    client = _raw_client(_priced_pw_response({"reasoning": "r", "preferred": "A"}, cost=0.002))
+    verdict, err = score._call_pairwise_openai(client, "compare", "A vs B", "z-ai/glm-5.2")
+    assert err is None and verdict["preferred"] == "A"
+    assert verdict["_usage"]["cost_usd"] == 0.002
+    assert verdict["_usage"]["cost_source"] == "provider-inline"
+    assert verdict["_usage"]["prompt_tokens"] == 50
+
+
+def test_call_judge_anthropic_attaches_the_usage_record():
+    block = SimpleNamespace(type="tool_use", name="submit_comparison",
+                            input={"reasoning": "r", "preferred": "B"})
+    response = SimpleNamespace(id="msg_pw", model="claude-opus-4-8", content=[block],
+                               stop_reason="tool_use",
+                               usage=SimpleNamespace(input_tokens=30, output_tokens=3))
+    client = SimpleNamespace(messages=SimpleNamespace(create=lambda **kw: response))
+    verdict, err = score._call_judge("anthropic", client, "sys", "msg", "claude-opus-4-8")
+    assert err is None and verdict["preferred"] == "B"
+    assert verdict["_usage"]["provider"] == "anthropic"
+    assert verdict["_usage"]["prompt_tokens"] == 30 and verdict["_usage"]["cost_usd"] is None
+
+
+def test_compare_runs_aggregates_pairwise_usage_and_keeps_reasoning_clean():
+    calls = []
+
+    def fake_call_judge(backend, client, system_prompt, user_message, m,
+                        max_tokens=16384, **kw):
+        calls.append(1)
+        return {"reasoning": "r", "preferred": "A",
+                "_usage": {"model": m, "provider": "Z.AI", "id": f"gen-{len(calls)}",
+                           "prompt_tokens": 10, "completion_tokens": 1,
+                           "reasoning_tokens": None, "cost_usd": 0.01,
+                           "cost_source": "provider-inline"}}, None
+
+    with patch("score.load_case_record", return_value={"files": {}}), \
+            patch("score._format_outputs_for_pairwise", return_value="output"), \
+            patch("score._call_judge", side_effect=fake_call_judge), \
+            patch("score._get_openai_client", return_value=object()):
+        result = score.compare_runs(Path("a"), Path("b"), EvalConfig(name="t", skill="s"),
+                                    ["case-1", "case-2"], model="openai:/gpt-4o")
+
+    assert result["cases_compared"] == 2 and result["errors"] == 0
+    usage = result["judge_usage"]
+    assert usage["requests"] == 4                      # two positions × two cases
+    assert usage["judge_cost_usd"] == pytest.approx(0.04)
+    assert usage["requests_missing_cost"] == 0
+    assert usage["prompt_tokens"] == 40
+    # The stored reasoning is the judge's own field; the usage record was
+    # moved off the verdict before it was kept.
+    assert [case["reasoning"] for case in result["per_case"]] == ["r", "r"]
+
+
+def test_take_pairwise_usage_moves_the_record_off_the_verdict():
+    verdict = {"preferred": "A", "_usage": {"cost_usd": 0.5}}
+    result = score.PairwiseResult(case_id="c")
+    score._take_pairwise_usage(verdict, result)
+    assert verdict == {"preferred": "A"} and result.usage == [{"cost_usd": 0.5}]
+    score._take_pairwise_usage(None, result)          # a failed call adds nothing
+    assert len(result.usage) == 1
+
+
+def test_compare_runs_without_usage_has_no_judge_usage_block():
+    with patch("score.load_case_record", return_value={"files": {}}), \
+            patch("score._format_outputs_for_pairwise", return_value="output"), \
+            patch("score._call_judge",
+                  return_value=({"reasoning": "r", "preferred": "tie"}, None)), \
+            patch("score._get_openai_client", return_value=object()):
+        result = score.compare_runs(Path("a"), Path("b"), EvalConfig(name="t", skill="s"),
+                                    ["case-1"], model="openai:/gpt-4o")
+    assert "judge_usage" not in result

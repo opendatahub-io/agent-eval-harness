@@ -23,7 +23,7 @@ graph LR
 
 | Name | Category | Kind | Checks | Required output fields |
 | --- | --- | --- | --- | --- |
-| `cost_budget` | efficiency | python | Execution cost stays within budget | `cost_usd` |
+| `cost_budget` | efficiency | python | Execution cost stays within budget; abstains (case skipped, not failed) when the cost is unavailable, and labels a runner *estimate* as such | `cost_usd` (+ optional `cost_source`) |
 | `consulted_docs` | process | python | Agent read the expected docs | `events`, `annotations.expected_files` |
 | `tool_call_validation` | process | python | Tool calls completed without errors | `tool_calls` |
 | `output_completeness` | quality | LLM | Output addresses all aspects of the task | `conversation`, `files` |

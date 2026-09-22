@@ -95,3 +95,40 @@ class TestIsWithin:
         root = tmp_path / "root"
         root.mkdir()
         assert _is_within(root / "missing.txt", root) is False
+
+
+@pytest.mark.skipif(not _has_mlflow, reason="mlflow not installed")
+class TestCostMetricsFromSummary:
+    """Judge-side spend reaches MLflow as its own metrics (spec 014 Decision
+    15): never folded into `cost_usd`, never re-derived from an estimate."""
+
+    def test_logs_judge_and_total_cost_when_numeric(self):
+        from log_results import _cost_metrics_from_summary
+
+        summary = {"judge_usage": {"judge_cost_usd": 0.25, "requests": 8,
+                                   "requests_missing_cost": 0,
+                                   "tool_choice_fallbacks": 1},
+                   "total_cost_usd": 1.75, "total_cost_source": "complete"}
+        metrics, tags = _cost_metrics_from_summary(summary)
+        assert metrics == {"judge_cost_usd": 0.25, "judge/requests": 8,
+                           "judge/requests_missing_cost": 0,
+                           "judge/tool_choice_fallbacks": 1,
+                           "total_cost_usd": 1.75}
+        assert tags == {"total_cost_source": "complete"}
+
+    def test_null_costs_are_not_logged_but_the_source_is_tagged(self):
+        from log_results import _cost_metrics_from_summary
+
+        summary = {"judge_usage": {"judge_cost_usd": None, "requests": 4,
+                                   "requests_missing_cost": 4},
+                   "total_cost_usd": None, "total_cost_source": "agent-only"}
+        metrics, tags = _cost_metrics_from_summary(summary)
+        assert "judge_cost_usd" not in metrics and "total_cost_usd" not in metrics
+        assert metrics["judge/requests_missing_cost"] == 4
+        assert tags == {"total_cost_source": "agent-only"}
+
+    def test_summary_without_judge_usage_logs_nothing(self):
+        from log_results import _cost_metrics_from_summary
+
+        assert _cost_metrics_from_summary({"judges": {}}) == ({}, {})
+        assert _cost_metrics_from_summary({}) == ({}, {})

@@ -202,6 +202,13 @@ first tool call (a non-verdict answer is an error, never a prose fallback),
 records the mode as `tool_choice_mode` on the per-case record and counts it in
 `summary.yaml` under `judge_usage.tool_choice_fallbacks`.
 
+Every LLM judge call (Anthropic, OpenAI, OpenRouter, runner) also records what it
+consumed: tokens for all of them, and the billed `cost_usd` when the provider
+prices the reply inline (OpenRouter's `usage.cost`). The per-case record carries
+it as `usage`, and `summary.yaml` aggregates `judge_usage` and `total_cost_usd` —
+see [runs directory → summary.yaml](../runs-directory.md#summaryyaml). Judge
+spend is never added to the agent's `run_result.json` cost.
+
 Per-judge `provider_options` (only valid with an `openrouter:/` model):
 
 ```yaml

@@ -329,9 +329,15 @@ class TestSampleAggregation:
         assert "boom" in out["error"]
 
     def test_normalize_result_shapes(self):
+        """`(value, rationale, usage)`: legacy tuples and primitives carry no
+        usage; a JudgeOutcome or a `.value`/`.usage` object does."""
         import score
-        assert score._normalize_result((4, "why")) == (4, "why")
-        assert score._normalize_result(True) == (True, "")
+        assert score._normalize_result((4, "why")) == (4, "why", None)
+        assert score._normalize_result(True) == (True, "", None)
+        outcome = score.JudgeOutcome(3, "ok", usage={"cost_usd": 0.01})
+        assert score._normalize_result(outcome) == (3, "ok", {"cost_usd": 0.01})
+        feedback = SimpleNamespace(value=2, rationale="fb")
+        assert score._normalize_result(feedback) == (2, "fb", None)
 
 
 class TestOutputsProxy:
@@ -1747,9 +1753,10 @@ class TestOpenRouterJudge:
         record = result["per_case"]["case-001"]["j"]
         assert record["value"] is True
         assert record["tool_choice_mode"] == "required"
-        assert result["judge_usage"] == {"tool_choice_fallbacks": 1}
+        assert result["judge_usage"]["tool_choice_fallbacks"] == 1
+        assert result["judge_usage"]["requests"] == 1
 
-    def test_no_fallback_leaves_summary_shape_unchanged(
+    def test_no_fallback_records_no_mode_and_no_fallback_counter(
             self, or_env, monkeypatch, tmp_path):
         import score
 
@@ -1762,8 +1769,9 @@ class TestOpenRouterJudge:
 
         result = score_cases(load_judges(config), [case_dir], config)
 
-        assert "judge_usage" not in result
         assert "tool_choice_mode" not in result["per_case"]["case-001"]["j"]
+        assert "tool_choice_fallbacks" not in result["judge_usage"]
+        assert result["judge_usage"]["requests"] == 1
 
     # -- the client itself ---------------------------------------------------
 
@@ -1811,3 +1819,266 @@ class TestOpenRouterJudge:
         with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY") as exc:
             score._client_for(cfg)
         assert "leaked-if-used" not in str(exc.value)
+
+
+# --- judge usage side channel (spec 014 PR-2) --------------------------------
+
+class TestJudgeUsageSideChannel:
+    """Every LLM-backed judge call yields a usage record next to its verdict;
+    score_cases lifts it onto the per-case record and aggregates
+    `judge_usage`; judge spend never enters run_result.cost_usd."""
+
+    def test_judge_outcome_is_a_plain_two_tuple_with_usage(self):
+        import score
+
+        outcome = score.JudgeOutcome(True, "solid", usage={"cost_usd": 0.01})
+        assert outcome == (True, "solid")
+        value, rationale = outcome
+        assert (value, rationale) == (True, "solid")
+        assert len(outcome) == 2
+        assert outcome.value is True and outcome.rationale == "solid"
+        assert outcome.usage == {"cost_usd": 0.01}
+        assert score.JudgeOutcome(3).usage is None
+
+    def test_usage_from_openai_response_inline_cost(self):
+        import score
+
+        details = SimpleNamespace(reasoning_tokens=7)
+        usage = SimpleNamespace(prompt_tokens=100, completion_tokens=20,
+                                completion_tokens_details=details, cost=0.0042)
+        response = SimpleNamespace(id="gen-abc", model="z-ai/glm-5.2",
+                                   provider="Z.AI", usage=usage)
+        rec = score._usage_from_openai_response(response, "requested")
+        assert rec == {"model": "z-ai/glm-5.2", "provider": "Z.AI", "id": "gen-abc",
+                       "prompt_tokens": 100, "completion_tokens": 20,
+                       "reasoning_tokens": 7, "cost_usd": 0.0042,
+                       "cost_source": "provider-inline"}
+
+    def test_usage_from_openai_response_without_cost_or_provider(self):
+        import score
+
+        usage = SimpleNamespace(prompt_tokens=10, completion_tokens=2)
+        response = SimpleNamespace(id="chatcmpl-1", model=None, usage=usage)
+        rec = score._usage_from_openai_response(response, "gpt-4o")
+        assert rec["model"] == "gpt-4o" and rec["provider"] is None
+        assert rec["cost_usd"] is None and rec["cost_source"] == "none"
+        assert rec["reasoning_tokens"] is None
+
+    def test_usage_from_openai_response_model_dump_fallback(self):
+        """Older SDKs keep `extra="allow"` fields only in model_dump()."""
+        import score
+
+        class _Usage:
+            prompt_tokens = 5
+            completion_tokens = 1
+
+            def model_dump(self):
+                return {"prompt_tokens": 5, "completion_tokens": 1, "cost": 0.5}
+
+        class _Response:
+            id = "gen-x"
+            model = "m"
+            usage = _Usage()
+
+            def model_dump(self):
+                return {"provider": "Novita"}
+
+        rec = score._usage_from_openai_response(_Response(), "m")
+        assert rec["cost_usd"] == 0.5 and rec["provider"] == "Novita"
+        assert rec["cost_source"] == "provider-inline"
+
+    def test_usage_from_anthropic_response_folds_cache_tokens(self):
+        import score
+
+        usage = SimpleNamespace(input_tokens=100, output_tokens=30,
+                                cache_creation_input_tokens=200,
+                                cache_read_input_tokens=1000)
+        response = SimpleNamespace(id="msg_1", model="claude-opus-4-8", usage=usage)
+        rec = score._usage_from_anthropic_response(response, "opus")
+        assert rec["prompt_tokens"] == 1300 and rec["completion_tokens"] == 30
+        assert rec["provider"] == "anthropic" and rec["cost_usd"] is None
+        assert rec["cost_source"] == "none"
+
+    def test_usage_from_run_result_is_a_labelled_estimate(self):
+        import score
+
+        result = SimpleNamespace(token_usage={"input": 10, "output": 5,
+                                              "cache_read": 100, "cache_create": 0},
+                                 cost_usd=0.25, resolved_model="claude-sonnet-4-6")
+        rec = score._usage_from_run_result(result, "sonnet")
+        assert rec["model"] == "claude-sonnet-4-6" and rec["provider"] == "runner"
+        assert rec["prompt_tokens"] == 110 and rec["completion_tokens"] == 5
+        assert rec["cost_usd"] == 0.25 and rec["cost_source"] == "runner-estimate"
+        no_cost = score._usage_from_run_result(SimpleNamespace(), "m")
+        assert no_cost["cost_source"] == "none" and no_cost["cost_usd"] is None
+
+    def test_sum_usage_folds_records(self):
+        import score
+
+        a = {"model": "m", "provider": "p", "prompt_tokens": 10,
+             "completion_tokens": 1, "reasoning_tokens": None,
+             "cost_usd": 0.001, "cost_source": "provider-inline"}
+        b = {"model": "m", "provider": "p", "prompt_tokens": 20,
+             "completion_tokens": 2, "reasoning_tokens": 3,
+             "cost_usd": None, "cost_source": "none"}
+        total = score._sum_usage([a, b])
+        assert total["requests"] == 2 and total["requests_missing_cost"] == 1
+        assert total["prompt_tokens"] == 30 and total["completion_tokens"] == 3
+        assert total["reasoning_tokens"] == 3
+        assert total["cost_usd"] == 0.001
+        assert total["model"] == "m" and total["cost_source"] == "mixed"
+        assert score._sum_usage([]) is None
+
+    def test_aggregate_judge_usage_totals_by_judge_and_model(self):
+        import score
+
+        per_case = {
+            "c1": {"j1": {"value": 4, "usage": {
+                        "model": "z-ai/glm-5.2", "cost_usd": 0.01,
+                        "prompt_tokens": 100, "completion_tokens": 10,
+                        "reasoning_tokens": None, "cost_source": "provider-inline"}},
+                   "j2": {"value": True, "usage": {
+                        "model": "claude-opus-4-8", "cost_usd": None,
+                        "prompt_tokens": 50, "completion_tokens": 5,
+                        "reasoning_tokens": None, "cost_source": "none"}},
+                   "chk": {"value": True}},
+            "c2": {"j1": {"value": 3, "usage": {
+                        "model": "z-ai/glm-5.2", "cost_usd": 0.02,
+                        "prompt_tokens": 100, "completion_tokens": 10,
+                        "reasoning_tokens": 4, "cost_source": "provider-inline",
+                        "requests": 2, "requests_missing_cost": 0}}},
+        }
+        agg = score.aggregate_judge_usage(per_case, tool_choice_fallbacks=1)
+        assert agg["judge_cost_usd"] == 0.03
+        assert agg["requests"] == 4 and agg["requests_missing_cost"] == 1
+        assert agg["prompt_tokens"] == 250 and agg["completion_tokens"] == 25
+        assert agg["reasoning_tokens"] == 4
+        assert agg["cost_sources"] == {"provider-inline": 3, "none": 1}
+        assert agg["by_judge"]["j1"]["cost_usd"] == 0.03
+        assert agg["by_judge"]["j1"]["requests"] == 3
+        assert agg["by_judge"]["j2"]["cost_usd"] is None
+        assert agg["by_model"]["claude-opus-4-8"]["requests"] == 1
+        assert agg["tool_choice_fallbacks"] == 1
+        assert "chk" not in agg["by_judge"]
+
+    def test_aggregate_judge_usage_is_none_for_deterministic_runs(self):
+        import score
+
+        assert score.aggregate_judge_usage({"c1": {"chk": {"value": True}}}) is None
+        assert score.aggregate_judge_usage({}) is None
+        only_fallbacks = score.aggregate_judge_usage({}, tool_choice_fallbacks=2)
+        assert only_fallbacks["judge_cost_usd"] is None
+        assert only_fallbacks["tool_choice_fallbacks"] == 2
+
+    def test_aggregate_judge_usage_null_cost_when_nothing_priced(self):
+        import score
+
+        per_case = {"c1": {"j": {"value": 1, "usage": {
+            "model": "m", "cost_usd": None, "prompt_tokens": 1,
+            "completion_tokens": 1, "cost_source": "none"}}}}
+        agg = score.aggregate_judge_usage(per_case)
+        assert agg["judge_cost_usd"] is None
+        assert agg["requests_missing_cost"] == 1
+
+    @pytest.mark.parametrize("agent, judge, expected", [
+        (1.0, 0.25, (1.25, "complete")),
+        (1.0, None, (None, "agent-only")),
+        (None, 0.25, (None, "judge-only")),
+        (None, None, (None, "none")),
+        (True, 0.25, (None, "judge-only")),   # bool is not a cost
+    ])
+    def test_compute_total_cost_null_arithmetic(self, agent, judge, expected):
+        import score
+
+        assert score.compute_total_cost(agent, judge) == expected
+
+    # -- through score_cases -------------------------------------------------
+
+    def _case(self, tmp_path):
+        case_dir = tmp_path / "case-001"
+        (case_dir / "artifacts").mkdir(parents=True)
+        (case_dir / "artifacts" / "out.md").write_text("body")
+        return case_dir
+
+    def test_single_sample_record_carries_the_raw_usage_record(
+            self, or_env, monkeypatch, tmp_path):
+        import score
+
+        response = _or_response(arguments='{"passed": true, "rationale": "solid"}')
+        response.id = "gen-1"
+        response.model = _OR_SLUG
+        response.provider = "Z.AI"
+        response.usage = SimpleNamespace(prompt_tokens=100, completion_tokens=10,
+                                         cost=0.003)
+        config = _or_config()
+        config.outputs = [OutputConfig(path="artifacts")]
+        monkeypatch.setattr(score, "_client_for", lambda cfg: _or_client(response))
+
+        result = score_cases(load_judges(config), [self._case(tmp_path)], config)
+
+        rec = result["per_case"]["case-001"]["j"]
+        assert rec["value"] is True
+        assert rec["usage"]["id"] == "gen-1" and rec["usage"]["provider"] == "Z.AI"
+        assert rec["usage"]["cost_usd"] == 0.003
+        assert rec["usage"]["cost_source"] == "provider-inline"
+        usage = result["judge_usage"]
+        assert usage["judge_cost_usd"] == 0.003 and usage["requests"] == 1
+        assert usage["requests_missing_cost"] == 0
+        assert usage["by_judge"]["j"]["prompt_tokens"] == 100
+        assert usage["by_model"][_OR_SLUG]["requests"] == 1
+
+    def test_samples_sum_usage_including_a_failed_attempt(
+            self, or_env, monkeypatch, tmp_path):
+        """Three samples: two verdicts and one answer that fails the strict
+        parse after the provider billed it — all three are counted."""
+        import score
+
+        def _priced(arguments, cost):
+            r = _or_response(arguments=arguments)
+            r.model = _OR_SLUG
+            r.usage = SimpleNamespace(prompt_tokens=10, completion_tokens=1, cost=cost)
+            return r
+
+        good = _priced('{"passed": true, "rationale": "ok"}', 0.001)
+        # Degraded mode (routing 404 → required) + a wrong tool → JudgeProviderError,
+        # but the response still carried usage.
+        bad = _priced("{}", 0.002)
+        bad.choices[0].message.tool_calls[0].function.name = "other"
+        client = _or_client(good, _routing_404(), bad, good)
+        judge = JudgeConfig(name="j", prompt="rate it", feedback_type="bool", samples=3)
+        config = _or_config(judge=judge, inherit_pins=True)
+        config.outputs = [OutputConfig(path="artifacts")]
+        monkeypatch.setattr(score, "_client_for", lambda cfg: client)
+
+        result = score_cases(load_judges(config), [self._case(tmp_path)], config)
+
+        rec = result["per_case"]["case-001"]["j"]
+        assert rec["value"] is True
+        assert rec["stability"]["error_count"] == 1
+        assert rec["usage"]["requests"] == 3
+        assert rec["usage"]["cost_usd"] == pytest.approx(0.004)
+        assert rec["usage"]["prompt_tokens"] == 30
+        assert result["judge_usage"]["requests"] == 3
+        assert result["judge_usage"]["judge_cost_usd"] == pytest.approx(0.004)
+        assert result["judge_usage"]["tool_choice_fallbacks"] == 1
+
+    def test_external_scorer_may_return_a_judge_outcome(self, tmp_path):
+        """A module/function judge can hand back usage too; a legacy tuple
+        simply carries none."""
+        import score
+
+        config = EvalConfig(name="t", skill="t")
+        config.outputs = [OutputConfig(path="artifacts")]
+        config.judges = [JudgeConfig(name="with", check="return (True, 'ok')"),
+                         JudgeConfig(name="without", check="return (True, 'ok')")]
+        judges = load_judges(config)
+        outcome = score.JudgeOutcome(4, "why", usage={"model": "m", "cost_usd": 0.5,
+                                                       "cost_source": "provider-inline"})
+        judges[0] = ("with", lambda outputs=None, **kw: outcome, "", "code", 1)
+
+        result = score_cases(judges, [self._case(tmp_path)], config)
+
+        assert result["per_case"]["case-001"]["with"]["usage"]["cost_usd"] == 0.5
+        assert "usage" not in result["per_case"]["case-001"]["without"]
+        assert result["judge_usage"]["judge_cost_usd"] == 0.5
+        assert result["judge_usage"]["requests"] == 1

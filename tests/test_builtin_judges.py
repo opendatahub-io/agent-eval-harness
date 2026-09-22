@@ -85,17 +85,39 @@ class TestCostBudget:
         passed, rationale = cost_budget_judge(outputs, max_cost_usd=0.50)
         assert passed is True
 
-    def test_missing_cost_data(self):
+    def test_missing_cost_data_abstains(self):
+        """An unknown cost is not an overspend: the judge abstains (value
+        None → the case is skipped for this judge, not failed)."""
         outputs = {}
         passed, rationale = cost_budget_judge(outputs)
-        assert passed is False
-        assert "No cost data" in rationale
+        assert passed is None
+        assert "cost unavailable" in rationale and "abstained" in rationale
 
-    def test_none_cost_data(self):
+    def test_none_cost_data_abstains(self):
         outputs = {"cost_usd": None}
         passed, rationale = cost_budget_judge(outputs)
+        assert passed is None
+        assert "cost_source: missing" in rationale
+
+    def test_unavailable_cost_source_abstains_even_with_a_number(self):
+        outputs = {"cost_usd": 0.10, "cost_source": "unavailable"}
+        passed, rationale = cost_budget_judge(outputs)
+        assert passed is None
+        assert "cost_source: unavailable" in rationale
+
+    def test_estimated_cost_is_judged_and_labelled(self):
+        outputs = {"cost_usd": 1.50, "cost_source": "runner-estimate"}
+        passed, rationale = cost_budget_judge(outputs)
         assert passed is False
-        assert "No cost data" in rationale
+        assert "exceeds" in rationale and "estimate, not billed spend" in rationale
+        outputs = {"cost_usd": 0.10, "cost_source": "runner:claude-code"}
+        passed, rationale = cost_budget_judge(outputs)
+        assert passed is True and "estimate" in rationale
+
+    def test_billed_cost_carries_no_estimate_label(self):
+        outputs = {"cost_usd": 0.10, "cost_source": "openrouter:generation"}
+        passed, rationale = cost_budget_judge(outputs)
+        assert passed is True and "estimate" not in rationale
 
     def test_exact_budget(self):
         outputs = {"cost_usd": 1.0}
