@@ -818,10 +818,23 @@ def test_top_level_providers_key_is_rejected(tmp_path):
     ("    openrouter: {attribution: {run_id_header: 'yes'}}\n", "boolean"),
     ("    openrouter: {routing: {defaults: {quantizations: [q4]}}}\n", "quantization"),
     ("    openrouter: {routing: {models: {glm: {}}}}\n", "<author>/<slug>"),
-    ("    openrouter: {routing: {enforcement: audit}}\n", "not implemented yet"),
-    ("    openrouter: {routing: {policy: warn}}\n", "not implemented yet"),
-    ("    openrouter: {preflight: strict}\n", "not implemented yet"),
-    ("    openrouter: {budget: {run_usd: 5}}\n", "not implemented yet"),
+    ("    openrouter: {routing: {enforcement: proxy}}\n", "enforcement must be one of"),
+    ("    openrouter: {routing: {policy: ignore}}\n", "policy must be one of"),
+    ("    openrouter: {preflight: maybe}\n", "preflight must be one of"),
+    ("    openrouter: {budget: {run_usd: 0}}\n", "run_usd must be a number > 0"),
+    ("    openrouter: {budget: {dedicated_key: 'yes'}}\n", "dedicated_key must be a boolean"),
+    ("    openrouter: {budget: {max_unpriced: 3}}\n", "Decision 1"),
+    ("    openrouter: {cli_budget_inflation: 0.5}\n", "cli_budget_inflation must be a number >= 1"),
+    ("    openrouter: {background_model: haiku}\n", "background_model must be an OpenRouter"),
+    ("    openrouter: {management_key_env: 'sk-or-v1-abc'}\n", "must name an environment variable"),
+    ("    openrouter: {routing: {guardrail: {providers: []}}}\n", "non-empty list"),
+    ("    openrouter: {routing: {guardrail: {providers: all}}}\n", "'pinned' or an explicit list"),
+    ("    openrouter: {routing: {guardrail: {revoke_on_exit: false}}}\n", "not supported in this release"),
+    ("    openrouter: {routing: {guardrail: {settle_s: -1}}}\n", "settle_s must be a number >= 0"),
+    ("    openrouter: {routing: {guardrail: {foo: 1}}}\n", "unknown key"),
+    ("    openrouter: {routing: {enforcement: key-guardrail}}\n", "run_usd must be set"),
+    ("    openrouter: {budget: {run_usd: 5}, routing: {enforcement: key-guardrail}}\n",
+     "explicit list or some routing key must carry pins"),
     ("    openrouter: {transport: proxy}\n", "Decision 1"),
     ("    openrouter: {direct: {}}\n", "Decision 1"),
     ("    openrouter: {foo: 1}\n", "unknown key"),
@@ -1169,3 +1182,222 @@ def test_eval_params_record_the_config_chain(tmp_path, monkeypatch):
     assert params["config_chain"] == ["eval.yaml", "eval-profiles/glm.yaml"]
     plain = EvalConfig.from_yaml(_write(tmp_path, _BASE_YAML))
     assert execute._build_eval_params(args, plain, "", 1.0, 10)["config_chain"] == ["eval.yaml"]
+
+
+# --- models.providers.openrouter: full block (spec 014 PR-3b) ----------------
+
+import warnings as _warnings  # noqa: E402
+
+_OR_AGENT = """  skill: openrouter:/z-ai/glm-5.2:exacto
+  providers:
+    openrouter:
+      routing:
+        models:
+          z-ai/glm-5.2: {order: [z-ai, novita], allow_fallbacks: false}
+"""
+
+
+def _load_with_warnings(path):
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        cfg = EvalConfig.from_yaml(path)
+    return cfg, [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
+
+
+def test_openrouter_later_keys_defaults(tmp_path):
+    cfg = EvalConfig.from_yaml(_or_yaml(
+        tmp_path, "  judge: openrouter:/z-ai/glm-5.2\n  providers:\n    openrouter: {}\n"))
+    orc = cfg.models.providers.openrouter
+    assert orc.management_key_env == "OPENROUTER_MANAGEMENT_KEY"
+    assert orc.background_model is None
+    assert orc.preflight == "strict"
+    assert orc.cli_budget_inflation == 50
+    assert (orc.budget.run_usd, orc.budget.dedicated_key) == (None, False)
+    assert (orc.routing.policy, orc.routing.enforcement) == ("strict", "audit")
+    g = orc.routing.guardrail
+    assert (g.key_name, g.providers, g.revoke_on_exit, g.settle_s) == (
+        "agent-eval {run_id}", "pinned", True, 20.0)
+
+
+def test_openrouter_full_block_parses_and_warns_where_documented(tmp_path):
+    path = _or_yaml(tmp_path, """  skill: openrouter:/z-ai/glm-5.2:exacto
+  providers:
+    openrouter:
+      management_key_env: $MY_MGMT
+      background_model: qwen/qwen3-8b
+      preflight: warn
+      cli_budget_inflation: 1
+      budget: {run_usd: 12.5, dedicated_key: true}
+      routing:
+        defaults: {allow_fallbacks: true, sort: throughput}
+        models:
+          z-ai/glm-5.2: {order: [Z.AI, novita], allow_fallbacks: false, quantizations: [fp8]}
+        policy: warn
+        enforcement: key-guardrail
+        guardrail: {key_name: "eval {run_id}", providers: [Z.AI, novita], settle_s: 5}
+""")
+    cfg, warned = _load_with_warnings(path)
+    orc = cfg.models.providers.openrouter
+    assert orc.management_key_env == "MY_MGMT"
+    assert orc.background_model == "qwen/qwen3-8b"
+    assert (orc.preflight, orc.cli_budget_inflation) == ("warn", 1)
+    assert (orc.budget.run_usd, orc.budget.dedicated_key) == (12.5, True)
+    assert (orc.routing.policy, orc.routing.enforcement) == ("warn", "key-guardrail")
+    assert orc.routing.guardrail.providers == ("z-ai", "novita")
+    assert orc.routing.guardrail.key_name == "eval {run_id}"
+    assert orc.routing.pinned_keys() == ["z-ai/glm-5.2"]
+    joined = "\n".join(warned)
+    assert "cli_budget_inflation is 1" in joined
+    assert "settle_s is 5" in joined
+    assert "'Z.AI' is a display name" in joined
+    assert "sort not sendable from Claude Code" in joined     # agent-path routing intent
+
+
+def test_reserved_keys_are_listed_together_with_the_decision_pointer(tmp_path):
+    with pytest.raises(ValueError) as exc:
+        EvalConfig.from_yaml(_or_yaml(
+            tmp_path, "  judge: openrouter:/z-ai/glm-5.2\n  providers:\n"
+                      "    openrouter: {transport: proxy, direct: {}, key_exposure_ack: true}\n"))
+    message = str(exc.value)
+    for key in ("transport", "direct", "key_exposure_ack"):
+        assert f"models.providers.openrouter.{key}" in message
+    assert "Decision 1" in message
+
+
+def test_key_guardrail_accepted_with_run_usd_and_pins(tmp_path):
+    cfg = EvalConfig.from_yaml(_or_yaml(tmp_path, """  judge: openrouter:/z-ai/glm-5.2
+  providers:
+    openrouter:
+      budget: {run_usd: 5}
+      routing:
+        models:
+          z-ai/glm-5.2: {order: [z-ai]}
+        enforcement: key-guardrail
+"""))
+    assert cfg.models.providers.openrouter.routing.enforcement == "key-guardrail"
+
+
+# -- agent roles under a plan --------------------------------------------------
+
+def test_agent_plan_config_loads_and_declares_the_chain_of_roles(tmp_path):
+    cfg, warned = _load_with_warnings(_or_yaml(tmp_path, _OR_AGENT))
+    assert cfg.models.skill == "openrouter:/z-ai/glm-5.2:exacto"
+    # A clean plan config raises no provider warning (the judge's score_range
+    # advisory is unrelated).
+    assert not [w for w in warned if "models.providers" in w or "ANTHROPIC" in w]
+
+
+def test_inert_block_with_anthropic_roles_loads(tmp_path):
+    body = _OR_AGENT.replace("skill: openrouter:/z-ai/glm-5.2:exacto", "skill: sonnet\n  subagent: haiku")
+    cfg = EvalConfig.from_yaml(_or_yaml(tmp_path, body))
+    assert cfg.models.providers.openrouter is not None and cfg.models.skill == "sonnet"
+
+
+@pytest.mark.parametrize("models, match", [
+    ("  skill: openrouter:/\n", r"models\.skill: model id missing"),
+    ("  skill: openrouter:/glm-5.2\n", r"models\.skill: openrouter model needs"),
+    ("  skill: gemini:/x\n", r"models\.skill: Unsupported agent model provider 'gemini'"),
+    ("  skill: openrouter:/z-ai/glm-5.2\n  subagent: sonnet\n", "agent roles must share the plan's provider kind"),
+    ("  skill: openrouter:/z-ai/glm-5.2\n  hook: anthropic:/claude-haiku-4-5\n", r"models\.hook: 'anthropic:/claude-haiku-4-5'"),
+    ("  skill: z-ai/glm-5.2\n  providers:\n    openrouter:\n      routing:\n        models:\n          z-ai/glm-5.2: {order: [z-ai]}\n",
+     "bare model id next to models.providers.openrouter"),
+    ("  skill: gpt-5.2\n  providers:\n    openrouter: {}\n", "bare model id next to models.providers.openrouter"),
+])
+def test_agent_role_rejections(tmp_path, models, match):
+    with pytest.raises(ValueError, match=match):
+        EvalConfig.from_yaml(_or_yaml(tmp_path, models))
+
+
+def test_bare_anthropic_roles_next_to_an_unmatched_block_are_fine(tmp_path):
+    cfg = EvalConfig.from_yaml(_or_yaml(
+        tmp_path, "  skill: claude-opus-4-8\n  providers:\n    openrouter:\n"
+                  "      routing:\n        models:\n          z-ai/glm-5.2: {order: [z-ai]}\n"))
+    assert cfg.models.skill == "claude-opus-4-8"
+
+
+@pytest.mark.parametrize("runner, match", [
+    ("runner:\n  type: cursor\n", "cursor has no base-URL knob"),
+    ("runner:\n  type: codex\n", "implemented for 'claude-code'"),
+])
+def test_agent_plan_requires_the_claude_code_runner(tmp_path, runner, match):
+    body = "name: t\nexecution:\n  skill: s\n" + runner + "models:\n" + _OR_AGENT + \
+           "judges:\n  - {name: j, prompt: rate it}\n"
+    with pytest.raises(ValueError, match=match):
+        EvalConfig.from_yaml(_write(tmp_path, body))
+
+
+def _plan_body(exec_env="", runner_block="", steps=None):
+    execution = "execution:\n"
+    if steps is None:
+        execution += "  skill: s\n"
+    else:
+        execution += "  steps:\n" + steps
+    if exec_env:
+        execution += "  env:\n" + exec_env
+    return ("name: t\n" + execution + runner_block + "models:\n" + _OR_AGENT
+            + "judges:\n  - {name: j, prompt: rate it}\n")
+
+
+def test_managed_dynamic_keys_are_rejected_on_presence(tmp_path):
+    body = _plan_body(exec_env="    ANTHROPIC_BASE_URL: https://api.anthropic.com\n",
+                      runner_block="runner:\n  type: claude-code\n  env:\n"
+                                   "    ANTHROPIC_AUTH_TOKEN: $ANTHROPIC_AUTH_TOKEN\n"
+                                   "  settings:\n    env:\n      ANTHROPIC_CUSTOM_HEADERS: 'x: y'\n")
+    with pytest.raises(ValueError) as exc:
+        EvalConfig.from_yaml(_write(tmp_path, body))
+    message = str(exc.value)
+    assert message.startswith("remove ")
+    for surface in ("execution.env.ANTHROPIC_BASE_URL", "runner.env.ANTHROPIC_AUTH_TOKEN",
+                    "runner.settings.env.ANTHROPIC_CUSTOM_HEADERS"):
+        assert surface in message
+    assert "enforcement=audit" in message
+
+
+def test_managed_static_keys_load_when_identical_and_fail_when_different(tmp_path):
+    ok = _plan_body(exec_env="    CLAUDE_CODE_USE_VERTEX: ''\n    ANTHROPIC_VERTEX_PROJECT_ID: ''\n"
+                             "    ANTHROPIC_DEFAULT_OPUS_MODEL: z-ai/glm-5.2:exacto\n")
+    cfg = EvalConfig.from_yaml(_write(tmp_path, ok))
+    assert cfg.execution.env["CLAUDE_CODE_USE_VERTEX"] == ""
+    bad = _plan_body(exec_env="    CLAUDE_CODE_USE_VERTEX: '1'\n    ANTHROPIC_DEFAULT_OPUS_MODEL: opus\n")
+    with pytest.raises(ValueError, match=r"remove execution\.env\.ANTHROPIC_DEFAULT_OPUS_MODEL, execution\.env\.CLAUDE_CODE_USE_VERTEX"):
+        EvalConfig.from_yaml(_write(tmp_path, bad))
+
+
+def test_managed_keys_are_checked_on_step_surfaces(tmp_path):
+    steps = ("    - id: a\n      prompt: p\n      env: {ANTHROPIC_BASE_URL: x}\n"
+             "    - id: b\n      prompt: q\n      runner:\n        type: claude-code\n"
+             "        settings: {env: {ANTHROPIC_AUTH_TOKEN: t}}\n")
+    with pytest.raises(ValueError) as exc:
+        EvalConfig.from_yaml(_write(tmp_path, _plan_body(steps=steps)))
+    message = str(exc.value)
+    assert "execution.steps[0].env.ANTHROPIC_BASE_URL" in message
+    assert "execution.steps[1].runner.settings.env.ANTHROPIC_AUTH_TOKEN" in message
+
+
+def test_non_empty_anthropic_api_key_under_a_plan_warns(tmp_path):
+    cfg, warned = _load_with_warnings(_write(
+        tmp_path, _plan_body(exec_env="    ANTHROPIC_API_KEY: sk-ant-stale\n")))
+    assert cfg.models.skill.startswith("openrouter:/")
+    assert any("ANTHROPIC_API_KEY is non-empty" in w for w in warned)
+    _, quiet = _load_with_warnings(_write(
+        tmp_path, _plan_body(exec_env="    ANTHROPIC_API_KEY: ''\n")))
+    assert not any("ANTHROPIC_API_KEY" in w for w in quiet)
+
+
+@pytest.mark.parametrize("models, env", [
+    ("  skill: sonnet\n", "    OPENROUTER_API_KEY: $OPENROUTER_API_KEY\n"),   # no plan at all
+    (_OR_AGENT, "    MY_KEY: $OPENROUTER_MANAGEMENT_KEY\n"),
+    ("  skill: sonnet\n  providers:\n    openrouter: {api_key_env: OR_KEY}\n", "    OR_KEY: literal\n"),
+])
+def test_openrouter_keys_are_env_only_on_every_surface(tmp_path, models, env):
+    body = ("name: t\nexecution:\n  skill: s\n  env:\n" + env + "models:\n" + models
+            + "judges:\n  - {name: j, prompt: rate it}\n")
+    with pytest.raises(ValueError, match=r"remove execution\.env\.\w+; owned by models\.providers\.openrouter"):
+        EvalConfig.from_yaml(_write(tmp_path, body))
+
+
+def test_quantizations_without_pins_warn_for_agent_roles(tmp_path):
+    body = _OR_AGENT.replace("{order: [z-ai, novita], allow_fallbacks: false}", "{quantizations: [fp8]}")
+    _, warned = _load_with_warnings(_or_yaml(tmp_path, body))
+    assert any("quantizations without order/only" in w for w in warned)
+

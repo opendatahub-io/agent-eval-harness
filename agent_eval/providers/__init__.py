@@ -11,6 +11,17 @@ The package is deliberately stdlib-only: no HTTP client dependency is pulled in
 for a provider declaration.
 """
 
-from agent_eval.providers.base import ERROR_CLASSES, JudgeProviderError, routing_key
+from agent_eval.providers.base import (
+    ERROR_CLASSES,
+    AgentModel,
+    ConfigError,
+    ErrorClass,
+    JudgeProviderError,
+    ProviderKind,
+    ProviderPlan,
+    parse_agent_model,
+    routing_key,
+)
 
-__all__ = ["ERROR_CLASSES", "JudgeProviderError", "routing_key"]
+__all__ = ["ERROR_CLASSES", "AgentModel", "ConfigError", "ErrorClass", "JudgeProviderError",
+           "ProviderKind", "ProviderPlan", "parse_agent_model", "routing_key"]

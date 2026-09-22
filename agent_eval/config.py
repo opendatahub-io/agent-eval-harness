@@ -851,12 +851,23 @@ class MlflowConfig:
 
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _OPENROUTER_DEFAULT_BASE_URL = "https://openrouter.ai/api"
-_OPENROUTER_KEYS = ("kind", "api_key_env", "base_url", "attribution", "routing", "judge")
-_OPENROUTER_LATER_KEYS = ("management_key_env", "background_model", "preflight",
-                          "cli_budget_inflation", "budget")
-_OPENROUTER_ROUTING_LATER_KEYS = ("policy", "enforcement", "guardrail")
+_OPENROUTER_KEYS = ("kind", "api_key_env", "management_key_env", "base_url", "attribution",
+                    "background_model", "preflight", "cli_budget_inflation", "budget",
+                    "routing", "judge")
+_OPENROUTER_ROUTING_KEYS = ("defaults", "models", "policy", "enforcement", "guardrail")
+_OPENROUTER_BUDGET_KEYS = ("run_usd", "dedicated_key")
+_OPENROUTER_GUARDRAIL_KEYS = ("key_name", "providers", "revoke_on_exit", "settle_s")
+# Reserved: there is one transport and no in-flight gate (spec 014 Decision 1).
 _OPENROUTER_RESERVED_KEYS = ("transport", "direct", "proxy", "gateway",
-                             "generation_backfill")
+                             "generation_backfill", "key_exposure_ack")
+_OPENROUTER_BUDGET_RESERVED_KEYS = ("max_unpriced", "max_unpriced_ratio")
+_PREFLIGHT_LEVELS = ("strict", "warn", "off")
+_ROUTING_POLICIES = ("strict", "warn")
+_ENFORCEMENT_LEVELS = ("audit", "key-guardrail")
+_GUARDRAIL_SETTLE_MIN_S = 20
+# Agent-role routing keys Claude Code cannot carry in a request (judge-only).
+_AGENT_UNSENDABLE_ROUTING_KEYS = ("require_parameters", "sort", "data_collection",
+                                  "zdr", "max_price")
 _OPENROUTER_JUDGE_OPTION_KEYS = ("routing", "fallbacks", "max_tokens")
 
 
@@ -883,21 +894,61 @@ class JudgeClientOptions:
 
 
 @dataclass(frozen=True)
+class GuardrailOptions:
+    """``routing.guardrail``: the per-run key at ``enforcement: key-guardrail``.
+    ``providers`` is ``"pinned"`` (the union of every routing key's pinned
+    providers) or an explicit list of provider slugs."""
+
+    key_name: str = "agent-eval {run_id}"
+    providers: object = "pinned"
+    revoke_on_exit: bool = True
+    settle_s: float = 20.0
+
+
+@dataclass(frozen=True)
 class RoutingConfig(RoutingTable):
     """``models.providers.openrouter.routing``: ``defaults`` plus per-model
-    entries. Audit policy / enforcement / guardrail options are added by the
-    PRs that consume them and rejected by name until then."""
+    entries, and what the harness does about them on the agent path —
+    ``policy`` (what a failed post-hoc audit does to the run), ``enforcement``
+    (``audit``: preflight + audit; ``key-guardrail``: a per-run key with a
+    provider allow-list and a real-cost limit) and the guardrail options."""
+
+    policy: str = "strict"
+    enforcement: str = "audit"
+    guardrail: GuardrailOptions = field(default_factory=GuardrailOptions)
+
+    def pinned_keys(self) -> list:
+        """Routing-table keys whose effective declaration carries pins."""
+        return [key for key in self.models if self.for_model(key).is_pinned]
+
+
+@dataclass
+class BudgetOptions:
+    """``models.providers.openrouter.budget``: ``run_usd`` is the whole-run
+    real-dollar pool (post hoc at ``audit``, the per-run key's ``limit_usd``
+    at ``key-guardrail``); ``dedicated_key`` asserts nothing else spends on the
+    operator key during the run."""
+
+    run_usd: Optional[float] = None
+    dedicated_key: bool = False
 
 
 @dataclass
 class OpenRouterConfig:
     """``models.providers.openrouter`` (spec 014). Secrets are env-only:
-    ``api_key_env`` names the variable holding the key, never the key."""
+    ``api_key_env`` / ``management_key_env`` name the variables holding the
+    keys, never the keys. A declared block is inert until an effective role
+    URI names it (Decision 21)."""
 
     kind: str = "openrouter"
     api_key_env: str = "OPENROUTER_API_KEY"
+    management_key_env: str = "OPENROUTER_MANAGEMENT_KEY"
     base_url: str = _OPENROUTER_DEFAULT_BASE_URL
     attribution: Attribution = field(default_factory=Attribution)
+    background_model: Optional[str] = None
+    preflight: str = "strict"
+    cli_budget_inflation: float = 50
+    budget: BudgetOptions = field(default_factory=BudgetOptions)
     routing: RoutingConfig = field(default_factory=RoutingConfig)
     judge: JudgeClientOptions = field(default_factory=JudgeClientOptions)
 
@@ -918,19 +969,29 @@ def _require_mapping(value, context):
 
 
 def _check_keys(raw, context, allowed, *, later=(), reserved=()):
+    """Unknown sub-keys are errors. Reserved keys (transport modes, in-flight
+    gates) are named together with the Decision 1 pointer: they are never
+    silently ignored, and one message lists every offender."""
+    offenders = [f"{context}.{key}" for key in raw if key in reserved]
+    if offenders:
+        raise ValueError(
+            f"not supported: {', '.join(offenders)} — there is a single OpenRouter "
+            "transport and no in-flight gate (spec 014 Decision 1)")
     for key in raw:
         if key in allowed:
             continue
-        if key in reserved:
-            raise ValueError(
-                f"{context}.{key}: no such option — there is a single OpenRouter "
-                "transport (spec 014 Decision 1)")
         if key in later:
             raise ValueError(
                 f"{context}.{key} is not implemented yet (spec 014 rollout); "
                 "remove it for now")
         raise ValueError(
             f"{context} has unknown key(s): {key} (allowed: {', '.join(allowed)})")
+
+
+def _warn(message):
+    import warnings
+
+    warnings.warn(message, UserWarning, stacklevel=3)
 
 
 def _env_var_name(value, context):
@@ -981,13 +1042,50 @@ def _resolve_base_url(value, context):
 
 def _parse_openrouter_config(raw, context):
     raw = _require_mapping(raw, context)
-    _check_keys(raw, context, _OPENROUTER_KEYS, later=_OPENROUTER_LATER_KEYS,
-                reserved=_OPENROUTER_RESERVED_KEYS)
+    _check_keys(raw, context, _OPENROUTER_KEYS, reserved=_OPENROUTER_RESERVED_KEYS)
     cfg = OpenRouterConfig()
     if "api_key_env" in raw:
         cfg.api_key_env = _env_var_name(raw["api_key_env"], f"{context}.api_key_env")
+    if "management_key_env" in raw:
+        cfg.management_key_env = _env_var_name(
+            raw["management_key_env"], f"{context}.management_key_env")
     if "base_url" in raw:
         cfg.base_url = _resolve_base_url(raw["base_url"], f"{context}.base_url")
+    if "background_model" in raw and raw["background_model"] is not None:
+        v = raw["background_model"]
+        if not isinstance(v, str) or not v.strip() or "/" not in v.split(":", 1)[0]:
+            raise ValueError(
+                f"{context}.background_model must be an OpenRouter '<author>/<slug>' "
+                "id (the model behind the haiku slot)")
+        cfg.background_model = v.strip()
+    if "preflight" in raw:
+        if raw["preflight"] not in _PREFLIGHT_LEVELS:
+            raise ValueError(f"{context}.preflight must be one of {list(_PREFLIGHT_LEVELS)}")
+        cfg.preflight = raw["preflight"]
+    if "cli_budget_inflation" in raw:
+        v = raw["cli_budget_inflation"]
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 1:
+            raise ValueError(f"{context}.cli_budget_inflation must be a number >= 1")
+        if v == 1:
+            _warn(f"{context}.cli_budget_inflation is 1: Claude Code prices a "
+                  "non-Anthropic model 2-60x high, so execution.max_budget_usd will "
+                  "cut runs off well before the real spend reaches it")
+        cfg.cli_budget_inflation = v
+
+    budget_raw = _require_mapping(raw.get("budget"), f"{context}.budget")
+    _check_keys(budget_raw, f"{context}.budget", _OPENROUTER_BUDGET_KEYS,
+                reserved=_OPENROUTER_BUDGET_RESERVED_KEYS)
+    budget = BudgetOptions()
+    if budget_raw.get("run_usd") is not None:
+        v = budget_raw["run_usd"]
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
+            raise ValueError(f"{context}.budget.run_usd must be a number > 0")
+        budget.run_usd = float(v)
+    if "dedicated_key" in budget_raw:
+        if not isinstance(budget_raw["dedicated_key"], bool):
+            raise ValueError(f"{context}.budget.dedicated_key must be a boolean")
+        budget.dedicated_key = budget_raw["dedicated_key"]
+    cfg.budget = budget
 
     attr = _require_mapping(raw.get("attribution"), f"{context}.attribution")
     _check_keys(attr, f"{context}.attribution", ("referer", "title", "run_id_header"))
@@ -1005,11 +1103,35 @@ def _parse_openrouter_config(raw, context):
 
     routing_raw = raw.get("routing")
     if routing_raw is not None:
-        routing_raw = _require_mapping(routing_raw, f"{context}.routing")
-        _check_keys(routing_raw, f"{context}.routing", ("defaults", "models"),
-                    later=_OPENROUTER_ROUTING_LATER_KEYS)
-        table = RoutingTable.from_dict(routing_raw, context=f"{context}.routing")
-        cfg.routing = RoutingConfig(defaults=table.defaults, models=table.models)
+        rctx = f"{context}.routing"
+        routing_raw = _require_mapping(routing_raw, rctx)
+        _check_keys(routing_raw, rctx, _OPENROUTER_ROUTING_KEYS)
+        table = RoutingTable.from_dict(
+            {k: routing_raw.get(k) for k in ("defaults", "models") if k in routing_raw},
+            context=rctx)
+        policy = routing_raw.get("policy", "strict")
+        if policy not in _ROUTING_POLICIES:
+            raise ValueError(f"{rctx}.policy must be one of {list(_ROUTING_POLICIES)}")
+        enforcement = routing_raw.get("enforcement", "audit")
+        if enforcement not in _ENFORCEMENT_LEVELS:
+            raise ValueError(f"{rctx}.enforcement must be one of {list(_ENFORCEMENT_LEVELS)}")
+        guardrail = _parse_guardrail(routing_raw.get("guardrail"), f"{rctx}.guardrail")
+        cfg.routing = RoutingConfig(defaults=table.defaults, models=table.models,
+                                    policy=policy, enforcement=enforcement,
+                                    guardrail=guardrail)
+        if enforcement == "key-guardrail":
+            problems = []
+            if cfg.budget.run_usd is None:
+                problems.append(f"{context}.budget.run_usd must be set (> 0): it becomes "
+                                "the per-run key's limit_usd — there is no unlimited per-run key")
+            explicit = isinstance(guardrail.providers, (list, tuple)) and guardrail.providers
+            if not explicit and not cfg.routing.pinned_keys() and not table.defaults.is_pinned:
+                problems.append(f"{rctx}.guardrail.providers must be an explicit list or "
+                                "some routing key must carry pins (order/only): a guardrail "
+                                "with no provider restriction is not supported — use "
+                                "'audit' if only the budget is wanted")
+            if problems:
+                raise ValueError(f"{rctx}.enforcement: key-guardrail — " + "; ".join(problems))
 
     judge_raw = _require_mapping(raw.get("judge"), f"{context}.judge")
     jctx = f"{context}.judge"
@@ -1047,6 +1169,206 @@ def _parse_openrouter_config(raw, context):
         opts.inherit_pins = v
     cfg.judge = opts
     return cfg
+
+
+def _parse_guardrail(raw, context):
+    raw = _require_mapping(raw, context)
+    _check_keys(raw, context, _OPENROUTER_GUARDRAIL_KEYS)
+    opts = GuardrailOptions()
+    key_name = raw.get("key_name", opts.key_name)
+    if not isinstance(key_name, str) or not key_name.strip():
+        raise ValueError(f"{context}.key_name must be a non-empty string")
+    providers = raw.get("providers", opts.providers)
+    if isinstance(providers, str):
+        if providers != "pinned":
+            raise ValueError(
+                f"{context}.providers must be 'pinned' or an explicit list of provider slugs")
+    elif isinstance(providers, list):
+        if not providers or not all(isinstance(p, str) and p.strip() for p in providers):
+            raise ValueError(f"{context}.providers must be a non-empty list of provider slugs")
+        from agent_eval.providers.openrouter.routing import normalize_provider
+
+        normalised = []
+        for name in providers:
+            slug = normalize_provider(name)
+            if slug != name:
+                _warn(f"{context}.providers: {name!r} is a display name; using the slug {slug!r}")
+            normalised.append(slug)
+        providers = tuple(normalised)
+    else:
+        raise ValueError(
+            f"{context}.providers must be 'pinned' or an explicit list of provider slugs")
+    revoke = raw.get("revoke_on_exit", True)
+    if not isinstance(revoke, bool):
+        raise ValueError(f"{context}.revoke_on_exit must be a boolean")
+    if revoke is False:
+        raise ValueError(
+            f"{context}.revoke_on_exit: false is not supported in this release — the "
+            "per-run key is always revoked at run end")
+    settle = raw.get("settle_s", opts.settle_s)
+    if isinstance(settle, bool) or not isinstance(settle, (int, float)) or settle < 0:
+        raise ValueError(f"{context}.settle_s must be a number >= 0")
+    if settle < _GUARDRAIL_SETTLE_MIN_S:
+        _warn(f"{context}.settle_s is {settle}: OpenRouter's key-usage counter settles "
+              f"in about {_GUARDRAIL_SETTLE_MIN_S} s (verified); a shorter wait reads a "
+              "partial total")
+    return GuardrailOptions(key_name=key_name.strip(), providers=providers,
+                            revoke_on_exit=True, settle_s=float(settle))
+
+
+def _env_surfaces(config):
+    """Every authored env mapping that can reach settings.json or the process
+    env, labelled by its config path."""
+    surfaces = [("execution.env", config.execution.env or {}),
+                ("runner.env", getattr(config.runner, "env", None) or {}),
+                ("runner.settings.env", (getattr(config.runner, "settings", None) or {}).get("env") or {})]
+    for i, step in enumerate(config.execution.steps or []):
+        surfaces.append((f"execution.steps[{i}].env", step.env or {}))
+        if step.runner is not None:
+            surfaces.append((f"execution.steps[{i}].runner.env", step.runner.env or {}))
+            surfaces.append((f"execution.steps[{i}].runner.settings.env",
+                             (step.runner.settings or {}).get("env") or {}))
+    return [(label, env) for label, env in surfaces if isinstance(env, dict)]
+
+
+def validate_openrouter_roles(config):
+    """Load-time checks for the agent roles under `models.providers.openrouter`
+    (spec 014 Config validation): role URI shapes, one provider kind across the
+    agent roles, runner support, the bare-id footgun, managed-key ownership on
+    every env surface while a plan is active, env-only secrets, and the
+    agent-path routing keys Claude Code cannot send. Errors are consolidated per
+    category; advisory findings are warnings."""
+    from agent_eval.prompt_backends import is_anthropic_model
+    from agent_eval.providers.base import parse_agent_model
+    from agent_eval.providers.env import DYNAMIC_MANAGED_KEYS, MANAGED_ENV_KEYS, settings_env_block
+    from agent_eval.providers.openrouter.plan import build_plan
+
+    orc = config.models.providers.openrouter
+    declared = orc is not None
+    roles = {"skill": config.models.skill, "subagent": config.models.subagent,
+             "hook": config.models.hook}
+    parsed = {}
+    for role, uri in roles.items():
+        if not uri:
+            continue
+        try:
+            model = parse_agent_model(uri)
+        except ValueError as exc:
+            raise ValueError(f"models.{role}: {exc}") from exc
+        if model.provider not in (None, "anthropic", "openrouter"):
+            raise ValueError(
+                f"models.{role}: Unsupported agent model provider {model.provider!r} in "
+                f"{uri!r}. Agent roles take a bare id, 'anthropic:/…' or "
+                "'openrouter:/<author>/<slug>'")
+        parsed[role] = model
+
+    skill = parsed.get("skill")
+    active = skill is not None and skill.provider == "openrouter"
+
+    # Secrets are env-only, plan or no plan: the key variables never appear as
+    # authored env entries (they would be baked into task packages/settings).
+    effective = orc or OpenRouterConfig()
+    secret_names = {effective.api_key_env, effective.management_key_env}
+    secret_refs = {f"${name}" for name in secret_names}
+    leaks = []
+    for label, env in _env_surfaces(config):
+        for key, value in env.items():
+            if key in secret_names or (isinstance(value, str) and value.strip() in secret_refs):
+                leaks.append(f"{label}.{key}")
+    if leaks:
+        level = effective.routing.enforcement
+        raise ValueError(
+            "remove " + ", ".join(sorted(leaks)) + f"; owned by models.providers.openrouter "
+            f"(enforcement={level}) — OpenRouter keys are env-only and never authored")
+
+    if declared and not active:
+        # Bare-id footgun: pins declared for a slug that a role names bare (or a
+        # bare non-Anthropic id) would silently run without the plan.
+        offenders = []
+        for role, model in parsed.items():
+            if model.provider is not None:
+                continue
+            if orc.routing.has_entry(model.id) or not is_anthropic_model(model.id):
+                offenders.append(f"models.{role}: {model.id!r}")
+        if offenders:
+            raise ValueError(
+                "bare model id next to models.providers.openrouter — "
+                + "; ".join(offenders)
+                + " — use 'openrouter:/<id>' or drop the pins")
+
+    if not active:
+        return
+
+    # One provider kind across the agent roles: the agent's env routes every
+    # request to OpenRouter, so a bare or Anthropic subagent/hook id would be
+    # sent to OpenRouter as-is and 404 (hook children inherit the env too).
+    mixed = [f"models.{role}: {model.uri!r}" for role, model in parsed.items()
+             if role != "skill" and model.provider != "openrouter"]
+    if mixed:
+        raise ValueError(
+            "agent roles must share the plan's provider kind while models.skill is "
+            f"'openrouter:/…' — {'; '.join(mixed)} — write 'openrouter:/<author>/<slug>' "
+            "(or drop the role to inherit the skill model)")
+
+    # Runner support: the direct OpenRouter transport is implemented for
+    # claude-code (local, Harbor podman, Harbor Kubernetes).
+    runner_types = [("runner.type", config.runner.type)]
+    runner_types += [(f"execution.steps[{i}].runner.type", step.runner.type)
+                     for i, step in enumerate(config.execution.steps or [])
+                     if step.runner is not None]
+    for label, rtype in runner_types:
+        if rtype == "cursor":
+            raise ValueError(
+                f"{label}: cursor has no base-URL knob, so it cannot run "
+                f"{skill.uri!r} (models.skill) through OpenRouter")
+        if rtype != "claude-code":
+            raise ValueError(
+                f"{label}: the direct OpenRouter transport is implemented for "
+                f"'claude-code' (local, Harbor podman, Harbor Kubernetes); "
+                f"{rtype!r} cannot run {skill.uri!r} (models.skill)")
+
+    # Managed-key ownership: the plan owns MANAGED_ENV_KEYS on every surface.
+    plan = build_plan(config, runner="claude-code", require_key=False)
+    static = settings_env_block(plan, secrets="omit")
+    errors = []
+    for label, env in _env_surfaces(config):
+        for key, value in env.items():
+            if key not in MANAGED_ENV_KEYS:
+                continue
+            if key in DYNAMIC_MANAGED_KEYS:
+                errors.append(f"{label}.{key}")
+            elif key == "ANTHROPIC_API_KEY":
+                if value not in (None, ""):
+                    _warn(f"{label}.ANTHROPIC_API_KEY is non-empty; it would be sent to "
+                          "OpenRouter as x-api-key (which works) — the plan blanks it so a "
+                          "stale Anthropic key or cached OAuth state never reaches the wire; "
+                          "remove it")
+            elif str(value if value is not None else "") != static.get(key, ""):
+                errors.append(f"{label}.{key}")
+    if errors:
+        raise ValueError(
+            "remove " + ", ".join(sorted(errors)) + "; owned by "
+            f"models.providers.openrouter (enforcement={plan.enforcement}) — the plan's "
+            "env block sets these keys for the agent, its subagents and its hooks")
+
+    # Agent-path routing intent: keys Claude Code cannot carry in a request.
+    seen_keys = set()
+    for model in parsed.values():
+        if model.key in seen_keys:
+            continue
+        seen_keys.add(model.key)
+        spec = effective.routing.for_model(model.id)
+        unsendable = [k for k in _AGENT_UNSENDABLE_ROUTING_KEYS if getattr(spec, k) is not None]
+        if unsendable:
+            _warn(f"models.providers.openrouter.routing for {model.key!r}: "
+                  f"{', '.join(unsendable)} not sendable from Claude Code and ignored on "
+                  "the agent path (audited keys use order/only/ignore/quantizations; sort → "
+                  "the :nitro/:floor variant; data policy → account settings); judges that "
+                  "inherit pins still receive the full spec")
+        if spec.quantizations and not spec.is_pinned:
+            _warn(f"models.providers.openrouter.routing for {model.key!r}: quantizations "
+                  "without order/only — quantization is pinned indirectly through "
+                  "providers; nothing to audit")
 
 
 def _parse_providers(raw, context="models.providers"):
@@ -2245,6 +2567,9 @@ class EvalConfig:
                     "rollout); use a Claude model or 'runner:/<model>'")
             jc.provider_options = validate_judge_provider_options(
                 jc.provider_options, static_model, jc.name)
+
+        # Agent roles under an OpenRouter plan (spec 014 Config validation).
+        validate_openrouter_roles(config)
 
         return config
 

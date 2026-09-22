@@ -268,6 +268,15 @@ runner:
     `execution.env` — `runner.env` is a no-op there. See
     [environment variables](../environment-variables.md).
 
+!!! note "Managed keys under an OpenRouter plan"
+    When `models.skill` is `openrouter:/…`, the provider plan owns the agent's
+    routing env on `runner.env`, `runner.settings.env`, `execution.env` and the
+    per-step variants: `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` and
+    `ANTHROPIC_CUSTOM_HEADERS` are rejected on presence, the Vertex/Bedrock
+    blanks and the model aliases load only when identical to the plan's values,
+    and `OPENROUTER_API_KEY` / `OPENROUTER_MANAGEMENT_KEY` may never be authored
+    anywhere. See [models → providers](models.md#providers-openrouter).
+
 ### `system_prompt`
 
 Extra system-prompt text prepended to the agent's context.

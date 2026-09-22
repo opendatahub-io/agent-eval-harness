@@ -1,8 +1,17 @@
-"""Provider-neutral building blocks: error classes and the routing key."""
+"""Provider-neutral building blocks: model ids, error classes, the plan.
+
+This package never imports ``agent_eval.agent`` or ``agent_eval.config``
+(one-way dependency rule): ``config`` and the runners import providers, not
+the other way round.
+"""
 
 from __future__ import annotations
 
-from typing import Optional
+import hashlib
+import re
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Optional, Protocol
 
 # How a failure is attributed in run/judge records. ``config`` = the eval
 # author has to change something (unroutable pins, unknown slug); ``infra`` =
@@ -11,16 +20,176 @@ from typing import Optional
 ERROR_CLASSES = ("config", "infra", "provider", "agent")
 
 
+class ErrorClass(str, Enum):
+    CONFIG = "config"
+    INFRA = "infra"
+    PROVIDER = "provider"
+    AGENT = "agent"
+
+
+class ProviderKind(str, Enum):
+    """Declared provider kinds. One in this release (spec 014 Decision 1)."""
+
+    OPENROUTER = "openrouter"
+
+
+class ConfigError(ValueError):
+    """An eval-config problem surfaced after load (plan build, preflight):
+    the run stops before any spend (exit 2); never a judge or agent failure."""
+
+
+# ``<author>/<slug>`` [``[suffix]``] [``:variant`` ...] — the bracket suffix
+# (e.g. ``[1m]``) and the colon variants (``:exacto``, ``:nitro``) both ride
+# on the id sent to the provider; neither is part of the routing key.
+_MODEL_ID_RE = re.compile(
+    r"^(?P<slug>[^:\[\]\s]+)(?P<suffix>\[[^\]]+\])?(?P<variants>(?::[A-Za-z0-9_.-]+)*)$")
+
+
 def routing_key(model: Optional[str]) -> str:
     """Routing-table key for a provider model id.
 
-    The bare slug without its ``:variant`` suffix, lowercased —
-    ``z-ai/glm-5.2:exacto`` and ``Z-AI/glm-5.2`` both key ``z-ai/glm-5.2`` —
-    so one ``routing.models`` entry covers every variant of a model.
+    The bare slug without its ``[suffix]`` and ``:variant`` parts, lowercased
+    — ``z-ai/glm-5.2:exacto``, ``Z-AI/glm-5.2`` and ``z-ai/glm-5.2[1m]`` all
+    key ``z-ai/glm-5.2`` — so one ``routing.models`` entry covers every
+    variant of a model.
     """
     value = (model or "").strip()
     slug, _, _variant = value.partition(":")
+    slug = slug.split("[", 1)[0]
     return slug.strip().lower()
+
+
+@dataclass(frozen=True)
+class AgentModel:
+    """A role model id as written on ``models.*`` / ``--model``.
+
+    ``id`` is exactly what goes on the wire (``z-ai/glm-5.2:exacto``,
+    ``anthropic/claude-opus-4-8[1m]``); ``slug`` drops suffix and variants;
+    ``key`` is the routing-table key. ``provider`` is the URI scheme
+    (``openrouter``, ``anthropic``) or ``None`` for a bare id.
+    """
+
+    provider: Optional[str]
+    id: str
+    slug: str
+    variants: tuple = ()
+    suffix: str = ""
+
+    @property
+    def key(self) -> str:
+        return routing_key(self.slug)
+
+    @property
+    def uri(self) -> str:
+        return f"{self.provider}:/{self.id}" if self.provider else self.id
+
+
+def parse_agent_model(uri: Optional[str]) -> AgentModel:
+    """Parse ``[<provider>:/]<id>`` into an :class:`AgentModel`.
+
+    Same URI grammar as ``split_model_uri`` (provider lowercased, leading
+    slashes on the id stripped). An ``openrouter:/`` id must be
+    ``<author>/<slug>``; an empty id is an error on any provider.
+    """
+    value = (uri or "").strip()
+    provider = None
+    if ":/" in value:
+        head, _, rest = value.partition(":/")
+        provider = head.strip().lower() or None
+        value = rest.lstrip("/").strip()
+    if not value:
+        raise ValueError(
+            f"model id missing in {uri!r}"
+            + (" — openrouter models are written 'openrouter:/<author>/<slug>'"
+               if provider == "openrouter" else ""))
+    match = _MODEL_ID_RE.match(value)
+    if not match:
+        raise ValueError(f"unparseable model id {uri!r}")
+    slug = match.group("slug").strip()
+    if provider == "openrouter" and "/" not in slug:
+        raise ValueError(
+            f"openrouter model needs '<author>/<slug>', e.g. "
+            f"'openrouter:/z-ai/glm-5.2' (got {uri!r})")
+    variants = tuple(v for v in match.group("variants").split(":") if v)
+    return AgentModel(provider=provider, id=value, slug=slug, variants=variants,
+                      suffix=match.group("suffix") or "")
+
+
+class RoutingTableProtocol(Protocol):
+    """What a plan needs from a provider's routing table."""
+
+    def for_model(self, model: str): ...
+
+    def has_entry(self, model: str) -> bool: ...
+
+
+# Runner → env target: the only thing the runner changes about a plan is HOW
+# the env block is delivered (spec 014 Decision 1).
+PLAN_RUNNERS = {
+    "claude-code": "overlay",
+    "harbor-podman": "harbor_carrier",
+    "harbor-k8s": "k8s_pod",
+    "evalhub": "k8s_pod",
+}
+
+
+@dataclass(frozen=True, repr=False)
+class ProviderPlan:
+    """The agent-side plan for one run: which provider, which key scope, which
+    role ids, how the env block is delivered. Built by
+    ``agent_eval.providers.openrouter.plan.build_plan``.
+
+    The inference ``key`` is never repr'd: ``__repr__`` prints ``key_hash``.
+    ``agent_env()`` renders the Direct transport env template for this plan's
+    target; ``close()`` is the run-end hook (a no-op until the cost substrate
+    and per-run keys land).
+    """
+
+    kind: str
+    base_url: str
+    key_scope: str                      # "operator" | "per-run"
+    key: Optional[str]
+    key_env: str                        # variable the key is read from
+    skill: AgentModel
+    subagent: AgentModel
+    hook: Optional[AgentModel]
+    background_model: Optional[str]
+    routing: Any                        # RoutingTableProtocol
+    enforcement: str                    # "audit" | "key-guardrail"
+    run_id: Optional[str]
+    runner: str
+    attribution: Any                    # .referer / .title / .run_id_header
+    cli_budget_inflation: float
+    budget_run_usd: Optional[float]
+    transport: str = "direct"
+
+    @property
+    def key_hash(self) -> Optional[str]:
+        if not self.key:
+            return None
+        return hashlib.sha256(self.key.encode("utf-8")).hexdigest()[:8]
+
+    @property
+    def target(self) -> str:
+        return PLAN_RUNNERS[self.runner]
+
+    def agent_env(self, *, secrets: Optional[str] = None) -> dict:
+        """The Direct transport env block for this plan's runner target."""
+        from agent_eval.providers.env import settings_env_block
+
+        return settings_env_block(self, secrets=secrets, target=self.target)
+
+    def close(self) -> None:
+        """Run-end hook: backfill retry, key-usage settle and per-run key
+        revoke land with the cost substrate and the key guardrail; nothing to
+        do yet."""
+        return None
+
+    def __repr__(self) -> str:
+        return (f"ProviderPlan(kind={self.kind!r}, transport={self.transport!r}, "
+                f"runner={self.runner!r}, key_scope={self.key_scope!r}, "
+                f"key_hash={self.key_hash!r}, skill={self.skill.id!r}, "
+                f"subagent={self.subagent.id!r}, enforcement={self.enforcement!r})")
 
 
 class JudgeProviderError(RuntimeError):

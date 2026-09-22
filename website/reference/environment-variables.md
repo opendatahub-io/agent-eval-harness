@@ -48,6 +48,8 @@ Bedrock).
 | `ANTHROPIC_VERTEX_REGION` | Vertex region for **synthetic dataset generation** (`/eval-dataset`), which builds an `AnthropicVertex` client directly. Defaults to `us-east5`. |
 | `ANTHROPIC_MODEL` | Default model hint forwarded to Harbor containers. |
 | `ANTHROPIC_DEFAULT_OPUS_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL` | Map the `opus`/`sonnet`/`haiku` aliases to specific model IDs. |
+| `OPENROUTER_API_KEY` | OpenRouter inference key for `openrouter:/…` judges and, once the direct agent transport lands, the agent-under-test. **Env-only**: the variable name is configurable (`models.providers.openrouter.api_key_env`) but the key may never appear in an eval config or any `env:` surface — such entries fail at load. |
+| `OPENROUTER_MANAGEMENT_KEY` | OpenRouter management key, read only at `routing.enforcement: key-guardrail` to provision a per-run key. Env-only, same rule as above. |
 | `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT` | Standard GCP credential/project vars, forwarded when set. |
 | `OPENAI_API_KEY` (and other `OPENAI_*`) | OpenAI credentials for `runner.type: codex`; forwarded to the `codex exec` subprocess and into Harbor containers running the Codex agent. |
 | `CODEX_HOME` | Codex CLI state directory, forwarded when set. |
@@ -90,7 +92,7 @@ General harness knobs, read by the skills and runner directly.
 | --- | --- | --- |
 | `AGENT_EVAL_RUNS_DIR` | `eval/runs` | Base directory where each run's workspace, artifacts, scores, and `report.html` are written. See [the runs directory](runs-directory.md). |
 | `EVAL_JUDGE_MODEL` | *(none)* | Fallback model for LLM and pairwise judges. Resolution order: per-judge `model:` **>** `models.judge` **>** this variable. |
-| `CLAUDE_CODE_SUBAGENT_MODEL` | *(none)* | Model used for subagents spawned by the skill under test. Set automatically from `models.subagent` when configured. |
+| `CLAUDE_CODE_SUBAGENT_MODEL` | *(none)* | Model used for subagents spawned by the skill under test. Set automatically from `models.subagent` when configured. Under an OpenRouter plan it is one of the managed keys the plan sets (see [models → providers](config/models.md#providers-openrouter)). |
 | `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` | `600000` | How long the Claude Code CLI waits for background tasks that outlive the final turn before terminating them (`0` = wait indefinitely). Tasks killed at this ceiling fail the case (exit 1) since their artifacts may be half-written — raise it for long-running pipeline skills, via export (on the env allowlist) or `runner.env:`. |
 
 !!! note "Workspace env allowlist"

@@ -651,6 +651,10 @@ def _inject_env(settings, config):
         return
     env_block = settings.setdefault("env", {})
     for key, value in config.execution.env.items():
+        if value is None:
+            # A YAML null is "unset", not the string "None" (parity with the
+            # runner env, interception and Harbor carriers).
+            continue
         if isinstance(value, str) and value.startswith("$"):
             resolved = os.environ.get(value[1:])
             if resolved is not None:

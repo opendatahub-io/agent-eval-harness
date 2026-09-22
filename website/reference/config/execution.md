@@ -214,6 +214,17 @@ execution:
     [`runner.env`](runner.md) targets the **runner subprocess** itself. Both support the
     `$VAR` syntax.
 
+!!! note "Managed keys under an OpenRouter plan"
+    When `models.skill` is `openrouter:/…`, the agent's routing env is derived by
+    the provider plan and owned by it on `execution.env`, the step `env:` blocks,
+    `runner.env` and `runner.settings.env`: `ANTHROPIC_BASE_URL`,
+    `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_CUSTOM_HEADERS` fail at load, static
+    keys (Vertex/Bedrock blanks, model aliases) must match the plan, a non-empty
+    `ANTHROPIC_API_KEY` warns, and the OpenRouter key variables are env-only.
+    `max_budget_usd` keeps its per-invocation meaning; the run-wide pool is
+    `models.providers.openrouter.budget.run_usd`. See
+    [models → providers](models.md#providers-openrouter).
+
 ## Precedence
 
 CLI flags on `/eval-run` (and `execute.py`) always override the config:

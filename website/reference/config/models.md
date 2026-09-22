@@ -131,21 +131,42 @@ export EVAL_JUDGE_MODEL=claude-opus-4-6   # last-resort default across runs
 `models.providers` is the registry behind `<provider>:/<model>` URIs. One
 provider kind exists, `openrouter`, and the block is optional — an
 `openrouter:/…` judge works with the defaults and `OPENROUTER_API_KEY`
-exported. Secrets are env-only: `api_key_env` names the variable, never a
-value. A top-level `providers:` key is rejected (it lives under `models`).
+exported. A declared block is **inert until a role names it**: the base
+`eval.yaml` can hold the shared routing table while its roles stay on
+Anthropic, and a [profile](extends.md) flips `models.skill` to
+`openrouter:/…` to activate it. Secrets are env-only: `api_key_env` and
+`management_key_env` name variables, never values, and those variables may not
+appear on any `env:` surface. A top-level `providers:` key is rejected (it
+lives under `models`).
 
 ```yaml
 models:
-  judge: openrouter:/z-ai/glm-5.2
+  skill:    openrouter:/z-ai/glm-5.2:exacto   # the :variant is the only in-request routing control
+  subagent: openrouter:/z-ai/glm-5.2          # defaults to the skill model; must share its provider kind
+  judge:    openrouter:/z-ai/glm-5.2
   providers:
     openrouter:
-      api_key_env: OPENROUTER_API_KEY            # default
+      api_key_env: OPENROUTER_API_KEY            # default; the inference key (never the value)
+      management_key_env: OPENROUTER_MANAGEMENT_KEY  # read only at enforcement: key-guardrail
       base_url: https://openrouter.ai/api        # default; no /v1 (the harness appends it); https unless loopback
-      attribution: { title: agent-eval-harness } # X-OpenRouter-Title (+ HTTP-Referer via `referer`)
+      attribution: { title: agent-eval-harness } # X-OpenRouter-Title (+ HTTP-Referer via `referer`, + x-eval-run-id via `run_id_header: true`)
+      background_model: null                    # the haiku slot; null = the model under test (recorded when set)
+      preflight: strict                          # strict | warn | off — catalog checks before any spend
+      cli_budget_inflation: 50                   # execution.max_budget_usd × this → --max-budget-usd (the CLI prices open models 2-60× high)
+      budget:
+        run_usd: null                            # whole-run real-dollar pool (required, > 0, at key-guardrail)
+        dedicated_key: false                     # nothing else spends on the key during the run
       routing:
-        defaults: { allow_fallbacks: true, sort: throughput }
+        defaults: { allow_fallbacks: true }
         models:
           z-ai/glm-5.2: { order: [z-ai, novita], allow_fallbacks: false, quantizations: [fp8] }
+        policy: strict                           # strict | warn — what a failed post-hoc audit does to the run
+        enforcement: audit                       # audit | key-guardrail (a per-run key with a provider allow-list and limit_usd)
+        guardrail:
+          key_name: "agent-eval {run_id}"
+          providers: pinned                      # pinned (union of the routing keys' pins) | [slug, ...]
+          revoke_on_exit: true                   # always true in this release
+          settle_s: 20                           # key-usage settle before the run-end read (a shorter value warns)
       judge:
         concurrency: 4        # concurrent OpenRouter judge requests
         max_retries: 3        # 429 (Retry-After), 502/503 and provider-unavailable replies
@@ -158,11 +179,31 @@ models:
 `ignore`, `allow_fallbacks`, `require_parameters`, `quantizations`, `sort`,
 `data_collection`, `zdr`, `max_price`, plus `fallbacks` for the `models`
 array). Entries in `routing.models` are keyed by the bare slug, so one entry
-covers every `:variant`. The agent-side options the spec documents
-(`preflight`, `budget`, `routing.enforcement`, …) are rejected by name until
-the release that consumes them, so nothing is silently ignored. See
+covers every `:variant`. On the **agent path** only `order`, `only`, `ignore`,
+`quantizations` and `fallbacks` mean anything — Claude Code cannot put a
+`provider` object in its requests, so pins are checked by preflight and audited
+after the run; `require_parameters`, `sort`, `data_collection`, `zdr` and
+`max_price` on a key an agent role uses raise a load-time warning and are
+ignored there (`sort` → the `:nitro`/`:floor` variant). Judges that inherit pins
+still receive the full spec. See
 [judges → OpenRouter judges](judges.md#openrouter-judges) for what a judge
 sends and the `tool_choice` fallback rule.
+
+!!! warning "What the plan owns"
+    When `models.skill` is `openrouter:/…` the harness derives the agent's env
+    (base URL, bearer key, blanked Vertex/Bedrock variables, the
+    `ANTHROPIC_DEFAULT_*` / `CLAUDE_CODE_SUBAGENT_MODEL` aliases, custom
+    headers). Those keys are then owned by the plan on every env surface —
+    `execution.env`, `runner.env`, `runner.settings.env` and the per-step
+    variants: `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` and
+    `ANTHROPIC_CUSTOM_HEADERS` are rejected on presence, a static key (the
+    Vertex/Bedrock blanks, the aliases) loads only when it equals the plan's
+    value, and a non-empty `ANTHROPIC_API_KEY` warns. `subagent` and `hook`
+    must share the skill's provider kind (their requests go to OpenRouter too),
+    and a bare non-Anthropic id next to a routing entry for it is an error —
+    write `openrouter:/<id>` or drop the pins. `runner.type` must be
+    `claude-code`. Load-time rules only: the transport that consumes the plan
+    lands in a later release.
 
 ## hook
 
