@@ -29,6 +29,14 @@ def main():
     venv_dir = plugin_root / VENV_DIR_NAME
     venv_python = venv_dir / "bin" / "python3"
 
+    if _import_yaml(plugin_root) is None:
+        # First run on a host without PyYAML: install it before the scan so the
+        # scan reads real YAML. The stdlib minimal parser would flatten nested
+        # keys (models.judge, judges[].model) and under-install — e.g. miss the
+        # OpenAI SDK an `openrouter:/` judge needs.
+        _ensure_venv(venv_dir)
+        _install_deps(venv_dir, ["pyyaml>=6.0"])
+        _import_yaml(plugin_root)
     deps = _resolve_deps(plugin_root)
     stamp = _compute_stamp(deps)
 
@@ -70,6 +78,29 @@ def _resolve_deps(plugin_root):
 _EXTENDS_MAX_DEPTH = 8
 
 
+def _venv_site_packages(plugin_root):
+    return sorted((plugin_root / VENV_DIR_NAME).glob("lib/python*/site-packages"))
+
+
+def _import_yaml(plugin_root):
+    """PyYAML, reaching into .eval-venv's site-packages when the host
+    interpreter lacks it (the venv is built from this interpreter, so its
+    packages import here). None when it is nowhere to be found."""
+    try:
+        import yaml
+        return yaml
+    except ImportError:
+        pass
+    for site in _venv_site_packages(plugin_root):
+        if str(site) not in sys.path:
+            sys.path.append(str(site))
+    try:
+        import yaml
+        return yaml
+    except ImportError:
+        return None
+
+
 def _load_config_following_extends(eval_yaml):
     """The config mapping with its `extends:` chain resolved.
 
@@ -108,7 +139,11 @@ def _load_config_following_extends(eval_yaml):
                 return _Replaced(loader.construct_sequence(node, deep=True))
 
             _Loader.add_constructor("!replace", _replace)
-            data = yaml.load(text, Loader=_Loader) or {}
+            loader = _Loader(text)       # SafeLoader subclass: safe_load semantics
+            try:
+                data = loader.get_single_data() or {}
+            finally:
+                loader.dispose()
         except Exception:
             data = _parse_yaml_minimal(text)
         return data if isinstance(data, dict) else {}

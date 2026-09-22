@@ -58,7 +58,13 @@ _ConfigLoader.add_constructor("!replace", _construct_replace)
 
 def _read_config_mapping(path: Path) -> dict:
     with open(path) as f:
-        raw = yaml.load(f, Loader=_ConfigLoader) or {}
+        # SafeLoader subclass (safe_load semantics + the `!replace` tag),
+        # driven explicitly rather than through yaml.load().
+        loader = _ConfigLoader(f)
+        try:
+            raw = loader.get_single_data() or {}
+        finally:
+            loader.dispose()
     if not isinstance(raw, dict):
         raise ValueError(f"Invalid eval config (not a YAML mapping): {path}")
     return raw

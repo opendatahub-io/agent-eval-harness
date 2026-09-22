@@ -236,3 +236,47 @@ class TestOpenAIBackendClassifier:
         proc = subprocess.run([sys.executable, "-c", code], cwd=REPO_ROOT,
                               capture_output=True, text=True, timeout=60)
         assert proc.returncode == 0 and proc.stdout.strip() == "ok", proc.stderr
+
+
+class TestPyYAMLBootstrap:
+    """The config scan must read real YAML: on a host without PyYAML the
+    first run installs it into .eval-venv before resolving dependencies, and
+    the venv's site-packages are made importable for that scan."""
+
+    def test_import_yaml_reaches_into_the_venv(self, tmp_path, monkeypatch):
+        site = tmp_path / ensure_deps.VENV_DIR_NAME / "lib" / "python3.99" / "site-packages"
+        site.mkdir(parents=True)
+        monkeypatch.setitem(sys.modules, "yaml", None)       # host has no PyYAML
+        monkeypatch.setattr(sys, "path", list(sys.path))
+        assert ensure_deps._import_yaml(tmp_path) is None     # nothing there either
+        assert str(site) in sys.path                          # but the venv was tried
+
+    def test_first_run_installs_pyyaml_before_the_scan(self, tmp_path, monkeypatch):
+        calls = []
+        state = {"yaml": None}
+        monkeypatch.setattr(ensure_deps, "_import_yaml", lambda root: state["yaml"])
+        monkeypatch.setattr(ensure_deps, "_ensure_venv", lambda d: calls.append("venv"))
+
+        def fake_install(venv_dir, specs):
+            calls.append(("install", tuple(specs)))
+            state["yaml"] = object()                          # now importable
+
+        monkeypatch.setattr(ensure_deps, "_install_deps", fake_install)
+        monkeypatch.setattr(ensure_deps, "_resolve_deps",
+                            lambda root: (calls.append("resolve") or [("pyyaml>=6.0", "yaml")]))
+        monkeypatch.setattr(ensure_deps, "_all_importable", lambda py, deps: False)
+        monkeypatch.setattr(sys, "argv", ["ensure_deps.py"])
+        ensure_deps.main()
+        assert calls[:3] == ["venv", ("install", ("pyyaml>=6.0",)), "resolve"]
+
+    def test_host_with_pyyaml_scans_immediately(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(ensure_deps, "_import_yaml", lambda root: object())
+        monkeypatch.setattr(ensure_deps, "_ensure_venv", lambda d: calls.append("venv"))
+        monkeypatch.setattr(ensure_deps, "_install_deps",
+                            lambda d, specs: calls.append(("install", tuple(specs))))
+        monkeypatch.setattr(ensure_deps, "_resolve_deps",
+                            lambda root: (calls.append("resolve") or [("pyyaml>=6.0", "yaml")]))
+        monkeypatch.setattr(sys, "argv", ["ensure_deps.py"])
+        ensure_deps.main()
+        assert calls[0] == "resolve"

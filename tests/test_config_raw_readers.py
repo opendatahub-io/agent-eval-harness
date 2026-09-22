@@ -20,7 +20,9 @@ from agent_eval.config import discover_configs  # noqa: E402
 
 # file -> {enclosing function: what the call reads}. Everything here parses
 # something other than an eval config (datasets, summaries, frontmatter,
-# state files, handler manifests) — or is the loader itself.
+# state files, handler manifests) — or is the loader itself. Both
+# `yaml.safe_load(...)`-style calls and explicitly driven Loaders
+# (`Loader(stream).get_single_data()`) count as reads.
 ALLOWED_YAML_READERS = {
     "agent_eval/config.py": {"_read_config_mapping": "the single raw loader"},
     "agent_eval/agent/cli_runner.py": {"execute": "case input.yaml"},
@@ -81,10 +83,15 @@ def _yaml_call_sites():
             for child in ast.iter_child_nodes(node):
                 parents[child] = node
         for node in ast.walk(tree):
-            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                    and node.func.attr in ("safe_load", "load", "safe_load_all", "load_all")
-                    and isinstance(node.func.value, ast.Name)
-                    and node.func.value.id in ("yaml", "_yaml")):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            is_module_call = (node.func.attr in ("safe_load", "load", "safe_load_all", "load_all")
+                              and isinstance(node.func.value, ast.Name)
+                              and node.func.value.id in ("yaml", "_yaml"))
+            # A Loader driven explicitly (`Loader(stream).get_single_data()`)
+            # is a YAML read too — the form the two extends-aware readers use.
+            is_loader_call = node.func.attr in ("get_single_data", "get_data")
+            if not (is_module_call or is_loader_call):
                 continue
             fn = node
             while fn in parents and not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
