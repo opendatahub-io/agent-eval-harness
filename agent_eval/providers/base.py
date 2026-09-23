@@ -106,10 +106,12 @@ def parse_agent_model(uri: Optional[str]) -> AgentModel:
     if not match:
         raise ValueError(f"unparseable model id {uri!r}")
     slug = match.group("slug").strip()
-    if provider == "openrouter" and "/" not in slug:
-        raise ValueError(
-            f"openrouter model needs '<author>/<slug>', e.g. "
-            f"'openrouter:/z-ai/glm-5.2' (got {uri!r})")
+    if provider == "openrouter":
+        author, sep, name = slug.partition("/")
+        if not (sep and author and name and "/" not in name):
+            raise ValueError(
+                f"openrouter model needs '<author>/<slug>', e.g. "
+                f"'openrouter:/z-ai/glm-5.2' (got {uri!r})")
     variants = tuple(v for v in match.group("variants").split(":") if v)
     return AgentModel(provider=provider, id=value, slug=slug, variants=variants,
                       suffix=match.group("suffix") or "")

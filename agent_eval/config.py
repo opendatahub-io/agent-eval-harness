@@ -1096,6 +1096,11 @@ def _parse_openrouter_config(raw, context):
         raise ValueError(f"{context}.attribution.referer must be a string")
     if title is not None and not isinstance(title, str):
         raise ValueError(f"{context}.attribution.title must be a string")
+    # Each value becomes one HTTP header line (ANTHROPIC_CUSTOM_HEADERS is
+    # split on newlines): a CR/LF would smuggle an extra header.
+    for name, value in (("referer", referer), ("title", title)):
+        if isinstance(value, str) and any(c in value for c in "\r\n\x00"):
+            raise ValueError(f"{context}.attribution.{name} must be a single line")
     if not isinstance(run_id_header, bool):
         raise ValueError(f"{context}.attribution.run_id_header must be a boolean")
     cfg.attribution = Attribution(referer=referer or None, title=title or None,
@@ -1216,9 +1221,11 @@ def _parse_guardrail(raw, context):
                             revoke_on_exit=True, settle_s=float(settle))
 
 
-def _env_surfaces(config):
-    """Every authored env mapping that can reach settings.json or the process
-    env, labelled by its config path."""
+def _env_surfaces(config, *, include_judges=False):
+    """Authored env mappings that can reach settings.json or a subprocess env,
+    labelled by their config path. The agent surfaces (execution, runner,
+    steps) are what a plan owns; ``include_judges`` adds the agent judges'
+    runner env, which the env-only secret rule covers too."""
     surfaces = [("execution.env", config.execution.env or {}),
                 ("runner.env", getattr(config.runner, "env", None) or {}),
                 ("runner.settings.env", (getattr(config.runner, "settings", None) or {}).get("env") or {})]
@@ -1228,6 +1235,15 @@ def _env_surfaces(config):
             surfaces.append((f"execution.steps[{i}].runner.env", step.runner.env or {}))
             surfaces.append((f"execution.steps[{i}].runner.settings.env",
                              (step.runner.settings or {}).get("env") or {}))
+    if include_judges:
+        for jc in config.judges or []:
+            runner = (getattr(jc, "agent", None) or {}).get("runner")
+            if runner is None:
+                continue
+            label = f"judges[{jc.name}].agent.runner"
+            surfaces.append((f"{label}.env", getattr(runner, "env", None) or {}))
+            surfaces.append((f"{label}.settings.env",
+                             (getattr(runner, "settings", None) or {}).get("env") or {}))
     return [(label, env) for label, env in surfaces if isinstance(env, dict)]
 
 
@@ -1271,7 +1287,7 @@ def validate_openrouter_roles(config):
     secret_names = {effective.api_key_env, effective.management_key_env}
     secret_refs = {f"${name}" for name in secret_names}
     leaks = []
-    for label, env in _env_surfaces(config):
+    for label, env in _env_surfaces(config, include_judges=True):
         for key, value in env.items():
             if key in secret_names or (isinstance(value, str) and value.strip() in secret_refs):
                 leaks.append(f"{label}.{key}")

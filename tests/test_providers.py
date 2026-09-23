@@ -17,7 +17,7 @@ from agent_eval.providers import (  # noqa: E402
 from agent_eval.providers.env import (  # noqa: E402
     BLANKED_KEYS, DYNAMIC_MANAGED_KEYS, MANAGED_ENV_KEYS, TARGETS, custom_headers, settings_env_block)
 from agent_eval.providers.openrouter.plan import (  # noqa: E402
-    build_plan, effective_roles, plan_is_active)
+    build_plan, effective_roles, hook_model_for, plan_is_active)
 from agent_eval.providers.openrouter.routing import RoutingTable  # noqa: E402
 
 
@@ -46,6 +46,9 @@ def test_parse_agent_model(uri, provider, id_, slug, variants, suffix, key):
     ("", "model id missing"),
     (None, "model id missing"),
     ("openrouter:/glm-5.2", "<author>/<slug>"),
+    ("openrouter:/z-ai/", "<author>/<slug>"),
+    ("openrouter://glm", "<author>/<slug>"),
+    ("openrouter:/z-ai//glm", "<author>/<slug>"),
     ("openrouter:/z-ai/glm 5.2", "unparseable"),
 ])
 def test_parse_agent_model_rejections(uri, match):
@@ -274,3 +277,35 @@ def test_inject_env_skips_yaml_nulls(monkeypatch):
     workspace._inject_env(settings, config)
     assert settings["env"] == {"LITERAL": "x", "REF": "value", "NUM": "3"}
     assert "NULL" not in settings["env"]
+
+
+def test_custom_headers_reject_crlf_values():
+    with pytest.raises(ValueError, match="single lines"):
+        custom_headers(SimpleNamespace(referer=None, title="x\nAuthorization: Bearer y",
+                                       run_id_header=False), None)
+    with pytest.raises(ValueError, match="single lines"):
+        custom_headers(SimpleNamespace(referer=None, title="t", run_id_header=True), "r\r\nX: y")
+
+
+def test_hook_model_defaults_to_the_plan_model_under_an_active_plan(tmp_path):
+    routed = _config(tmp_path, "  skill: openrouter:/z-ai/glm-5.2:exacto\n")
+    assert hook_model_for(routed) == "z-ai/glm-5.2:exacto"
+    cheap = _config(tmp_path, _ROUTED)                       # declares background_model
+    assert hook_model_for(cheap) == "qwen/qwen3-8b"
+    explicit = _config(tmp_path, "  skill: openrouter:/z-ai/glm-5.2\n  hook: openrouter:/z-ai/glm-5.2:nitro\n")
+    assert hook_model_for(explicit) == "openrouter:/z-ai/glm-5.2:nitro"
+    anthropic = _config(tmp_path, "  skill: sonnet\n")
+    assert hook_model_for(anthropic) is None                # caller keeps its built-in default
+    assert hook_model_for(anthropic, {"skill": "openrouter:/z-ai/glm-5.2"}) == "z-ai/glm-5.2"
+
+
+def test_interception_handlers_carry_the_plan_hook_model(tmp_path):
+    from agent_eval.tools.interception import build_handlers
+
+    handler_data, _ = build_handlers(_config(tmp_path, _ROUTED))
+    assert handler_data["hook_model"] == "qwen/qwen3-8b"
+    handler_data, _ = build_handlers(_config(tmp_path, "  skill: sonnet\n"))
+    assert "hook_model" not in handler_data
+    handler_data, _ = build_handlers(_config(tmp_path, "  skill: sonnet\n  hook: claude-haiku-4-5\n"))
+    assert handler_data["hook_model"] == "claude-haiku-4-5"
+

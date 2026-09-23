@@ -60,6 +60,12 @@ def custom_headers(attribution, run_id: Optional[str]) -> Optional[str]:
         lines.append(f"X-OpenRouter-Title: {title}")
     if getattr(attribution, "run_id_header", False) and run_id:
         lines.append(f"x-eval-run-id: {run_id}")
+    # Defence in depth: config parsing already rejects multi-line attribution
+    # values; a run id comes from the CLI. A CR/LF in any value would smuggle
+    # an extra header line.
+    for line in lines:
+        if any(c in line for c in "\r\n\x00"):
+            raise ValueError("custom header values must be single lines (CR/LF found)")
     return "\n".join(lines) or None
 
 

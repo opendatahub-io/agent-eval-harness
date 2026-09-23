@@ -529,8 +529,11 @@ def _setup_in_repo_tool_hooks(case_ws, config, settings):
 
     # Write tool_handlers.yaml to case workspace
     handler_data = {"handlers": handlers}
-    if config.models.hook:
-        handler_data["hook_model"] = config.models.hook
+    from agent_eval.providers.openrouter.plan import hook_model_for
+
+    hook_model = hook_model_for(config)
+    if hook_model:
+        handler_data["hook_model"] = hook_model
     with open(case_ws / "tool_handlers.yaml", "w") as f:
         yaml.dump(handler_data, f, default_flow_style=False)
 

@@ -75,8 +75,11 @@ def build_handlers(config: "EvalConfig") -> tuple[dict, set[str]]:
         hook_matchers.update(patterns)
 
     handler_data: dict = {"handlers": handlers}
-    if config.models.hook:
-        handler_data["hook_model"] = config.models.hook
+    from agent_eval.providers.openrouter.plan import hook_model_for
+
+    hook_model = hook_model_for(config)
+    if hook_model:
+        handler_data["hook_model"] = hook_model
     return handler_data, hook_matchers
 
 

@@ -41,6 +41,25 @@ def plan_is_active(roles: dict) -> bool:
         return False
 
 
+def hook_model_for(config, overrides: Optional[dict] = None) -> Optional[str]:
+    """The model the harness's own hook (tool interception answers) uses.
+
+    ``models.hook`` when set. Under an active plan the hook subprocess inherits
+    the agent's OpenRouter env, so an unset hook must not fall back to the
+    built-in Claude default (a ``claude-haiku-*`` slug 404s on OpenRouter): it
+    follows the ``background_model`` if one is declared, else the skill model.
+    ``None`` otherwise (the caller keeps its own default).
+    """
+    roles = effective_roles(config, overrides)
+    if roles.get("hook"):
+        return roles["hook"]
+    if not plan_is_active(roles):
+        return None
+    orc = getattr(getattr(config.models, "providers", None), "openrouter", None)
+    background = getattr(orc, "background_model", None) if orc is not None else None
+    return background or parse_agent_model(roles["skill"]).id
+
+
 def role_models(roles: dict) -> dict:
     """``AgentModel`` per agent role (``None`` where the role is unset); the
     subagent defaults to the skill model."""

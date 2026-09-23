@@ -150,7 +150,7 @@ models:
       management_key_env: OPENROUTER_MANAGEMENT_KEY  # read only at enforcement: key-guardrail
       base_url: https://openrouter.ai/api        # default; no /v1 (the harness appends it); https unless loopback
       attribution: { title: agent-eval-harness } # X-OpenRouter-Title (+ HTTP-Referer via `referer`, + x-eval-run-id via `run_id_header: true`)
-      background_model: null                    # the haiku slot; null = the model under test (recorded when set)
+      background_model: null                    # the haiku slot and the default hook model; null = the model under test
       preflight: strict                          # strict | warn | off — catalog checks before any spend
       cli_budget_inflation: 50                   # execution.max_budget_usd × this → --max-budget-usd (the CLI prices open models 2-60× high)
       budget:

@@ -1401,3 +1401,37 @@ def test_quantizations_without_pins_warn_for_agent_roles(tmp_path):
     _, warned = _load_with_warnings(_or_yaml(tmp_path, body))
     assert any("quantizations without order/only" in w for w in warned)
 
+
+def test_openrouter_keys_are_env_only_on_agent_judge_runner_surfaces(tmp_path):
+    """`judges[].agent.runner.env` / `.settings.env` reach a subprocess too:
+    the env-only rule covers them (the managed-key rule does not — agent
+    judges do not run under the plan)."""
+    body = ("name: t\nexecution:\n  skill: s\nmodels:\n  skill: sonnet\n"
+            "judges:\n  - name: j\n    prompt: rate it\n    model: sonnet\n"
+            "    agent:\n      allowed_tools: [Read]\n      runner:\n        type: claude-code\n"
+            "        env: {OR_MGMT: $OPENROUTER_MANAGEMENT_KEY}\n"
+            "        settings: {env: {OPENROUTER_API_KEY: literal}}\n")
+    with pytest.raises(ValueError) as exc:
+        EvalConfig.from_yaml(_write(tmp_path, body))
+    message = str(exc.value)
+    assert "judges[j].agent.runner.env.OR_MGMT" in message
+    assert "judges[j].agent.runner.settings.env.OPENROUTER_API_KEY" in message
+    assert "literal" not in message.split("owned by")[0].replace("OPENROUTER_API_KEY", "")
+
+
+def test_agent_judge_runner_env_is_not_subject_to_managed_key_ownership(tmp_path):
+    body = ("name: t\nexecution:\n  skill: s\nmodels:\n" + _OR_AGENT
+            + "judges:\n  - name: j\n    prompt: rate it\n    model: sonnet\n"
+            "    agent:\n      allowed_tools: [Read]\n      runner:\n        type: claude-code\n"
+            "        env: {ANTHROPIC_BASE_URL: https://api.anthropic.com}\n")
+    cfg = EvalConfig.from_yaml(_write(tmp_path, body))
+    assert cfg.judges[0].agent["runner"].env["ANTHROPIC_BASE_URL"] == "https://api.anthropic.com"
+
+
+@pytest.mark.parametrize("field", ["referer", "title"])
+def test_attribution_values_must_be_single_line(tmp_path, field):
+    body = ("  judge: openrouter:/z-ai/glm-5.2\n  providers:\n    openrouter:\n"
+            f"      attribution: {{{field}: \"x\\nAuthorization: Bearer y\"}}\n")
+    with pytest.raises(ValueError, match=f"attribution.{field} must be a single line"):
+        EvalConfig.from_yaml(_or_yaml(tmp_path, body))
+
