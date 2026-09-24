@@ -77,6 +77,12 @@ def test_child_env_scrub_set(tmp_path):
     excluded = run_mod._plan_child_env_exclusions(plan, keep_api_key=False)
     assert excluded == set(MANAGED_ENV_KEYS) | {"OPENROUTER_MANAGEMENT_KEY", "OPENROUTER_API_KEY"}
     assert "OPENROUTER_API_KEY" not in run_mod._plan_child_env_exclusions(plan, keep_api_key=True)
+    # a custom api_key_env: the default-named host variable is still kept out,
+    # only the configured name survives for the verifier
+    custom = make_plan(runner="harbor-podman", key_env="MY_OR_KEY")
+    kept = run_mod._plan_child_env_exclusions(custom, keep_api_key=True)
+    assert "OPENROUTER_API_KEY" in kept and "MY_OR_KEY" not in kept
+    assert "MY_OR_KEY" in run_mod._plan_child_env_exclusions(custom, keep_api_key=False)
     assert not run_mod._openrouter_judge_configured(_config(tmp_path))
     assert run_mod._openrouter_judge_configured(_config(tmp_path, judge="openrouter:/z-ai/glm-5.2"))
     assert run_mod._openrouter_judge_configured(_config(tmp_path), judge_model="openrouter:/x/y")

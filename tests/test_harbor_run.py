@@ -662,12 +662,14 @@ def test_reuse_accepts_a_pre_chain_package_for_a_plain_config(tmp_path, monkeypa
 
 # --- spec 014: the same plan on Harbor podman -----------------------------------------
 
-def _plan_config(tmp_path, base_url, *, judge=None):
+def _plan_config(tmp_path, base_url, *, judge=None, api_key_env=None):
     raw = yaml.safe_load((tmp_path / "eval.yaml").read_text())
     raw["runner"] = {"type": "claude-code"}
     raw["models"] = {"skill": "openrouter:/z-ai/glm-5.2:exacto",
                      "providers": {"openrouter": {"base_url": base_url, "routing": {
                          "models": {"z-ai/glm-5.2": {"order": ["novita"], "allow_fallbacks": False}}}}}}
+    if api_key_env:
+        raw["models"]["providers"]["openrouter"]["api_key_env"] = api_key_env
     if judge:
         raw["models"]["judge"] = judge
         raw["judges"] = [{"name": "rfe_quality", "prompt": "score it", "model": judge}]
@@ -688,13 +690,14 @@ class _FastSession:
         return ProviderSession(*a, **kw)
 
 
-def _harbor_plan_run(tmp_path, monkeypatch, *, judge=None, env="podman", returncode=17, fake_env=None):
+def _harbor_plan_run(tmp_path, monkeypatch, *, judge=None, env="podman", returncode=17, fake_env=None,
+                     api_key_env=None):
     from openrouter_fakes import FAKE_KEY, FakeOpenRouter
 
     _config(tmp_path)
     fake = FakeOpenRouter()
     base = fake.start()
-    config_path = _plan_config(tmp_path, base, judge=judge)
+    config_path = _plan_config(tmp_path, base, judge=judge, api_key_env=api_key_env)
     tasks_dir = tmp_path / "tasks"
     _write_pregenerated_task(tasks_dir, judge_mode="deterministic-only" if judge is None else "full",
                              judges=("files_exist",) if judge is None else ("rfe_quality",))
@@ -718,6 +721,7 @@ def _harbor_plan_run(tmp_path, monkeypatch, *, judge=None, env="podman", returnc
     monkeypatch.setattr(run_mod.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(run_mod, "SESSION_FACTORY", _FastSession)
     for k, v in {"OPENROUTER_API_KEY": FAKE_KEY, "OPENROUTER_MANAGEMENT_KEY": "sk-or-mgmt",
+                 **({api_key_env: FAKE_KEY} if api_key_env else {}),
                  "CLAUDE_CODE_USE_VERTEX": "1", "ANTHROPIC_VERTEX_PROJECT_ID": "p", "CLOUD_ML_REGION": "r",
                  "ANTHROPIC_API_KEY": "sk-ant-host", "ANTHROPIC_AUTH_TOKEN": "host-tok",
                  "ANTHROPIC_BASE_URL": "https://host.example", **(fake_env or {})}.items():
@@ -764,6 +768,17 @@ def test_harbor_keeps_the_verifier_key_only_for_an_openrouter_judge(tmp_path, mo
     env = captured["env"]
     assert env["OPENROUTER_API_KEY"] == FAKE_KEY and "OPENROUTER_MANAGEMENT_KEY" not in env
     assert "OPENROUTER_API_KEY" not in env["AGENT_EVAL_PODMAN_PLAN_EXCLUDE"]
+
+
+def test_harbor_custom_key_name_keeps_the_default_out_and_forwards_by_name(tmp_path, monkeypatch):
+    from openrouter_fakes import FAKE_KEY
+
+    _, captured, _, _ = _harbor_plan_run(tmp_path, monkeypatch, judge="openrouter:/z-ai/glm-5.2",
+                                         api_key_env="MY_OR_KEY", fake_env={"OPENROUTER_API_KEY": "sk-or-unrelated"})
+    env = captured["env"]
+    assert env["MY_OR_KEY"] == FAKE_KEY and "OPENROUTER_API_KEY" not in env
+    assert env["AGENT_EVAL_PODMAN_PLAN_FORWARD"] == "MY_OR_KEY"
+    assert "OPENROUTER_API_KEY" in env["AGENT_EVAL_PODMAN_PLAN_EXCLUDE"]
 
 
 def test_harbor_plan_refuses_kubernetes_for_now(tmp_path, monkeypatch):

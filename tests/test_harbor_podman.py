@@ -232,11 +232,19 @@ def test_podman_forward_excludes_under_plan(tmp_path, monkeypatch):
     run_args, child_env = calls[-1]
     forwarded = {run_args[i + 1] for i, a in enumerate(run_args) if a == "-e"}
     assert "OPENROUTER_API_KEY" in forwarded and "TASK_FLAG" in forwarded
+    assert "MY_OR_KEY" not in forwarded                                    # not on the static list
     assert not forwarded & {"CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION",
                             "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
                             "GOOGLE_APPLICATION_CREDENTIALS"}
     assert not any(str(creds) in a for a in run_args)
+    # a custom api_key_env is forwarded by name when run.py asks for it
+    monkeypatch.setenv("MY_OR_KEY", "sk-or-custom")
+    monkeypatch.setenv("AGENT_EVAL_PODMAN_PLAN_FORWARD", "MY_OR_KEY")
+    asyncio.run(PodmanEnvironment.start(env, force_build=False))
+    run_args, child_env = calls[-1]
+    assert "MY_OR_KEY" in run_args and child_env["MY_OR_KEY"] == "sk-or-custom"
     monkeypatch.delenv("AGENT_EVAL_PODMAN_PLAN_EXCLUDE")
+    monkeypatch.delenv("AGENT_EVAL_PODMAN_PLAN_FORWARD")
     asyncio.run(PodmanEnvironment.start(env, force_build=False))
     run_args, _ = calls[-1]
     assert "CLAUDE_CODE_USE_VERTEX" in run_args and "GOOGLE_APPLICATION_CREDENTIALS" in run_args

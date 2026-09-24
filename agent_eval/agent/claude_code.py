@@ -1,5 +1,6 @@
 """Claude Code CLI runner implementation."""
 
+import errno
 import json
 import os
 import re
@@ -695,11 +696,24 @@ class ClaudeCodeRunner(EvalRunner):
                      if v is not None}
             settings_config["env"] = {**existing_env, **block}
         data = json.dumps(settings_config, indent=2)
-        fd = os.open(overlay, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        # O_NOFOLLOW: the agent under test can write to the workspace (and a
+        # multi-step case shares it between steps), so a symlink planted at
+        # the overlay path must not be followed — the file holds the literal
+        # inference key and is truncated on every write (CWE-59 / CWE-367).
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            if overlay.is_symlink():
+                raise OSError(errno.ELOOP, "symbolic link")
+            fd = os.open(overlay, flags, 0o600)
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.EMLINK):
+                raise RuntimeError(
+                    f"refusing to write the settings overlay: {overlay} is a symlink") from exc
+            raise
         with os.fdopen(fd, "w") as f:
+            if plan is not None:
+                os.fchmod(fd, 0o600)      # O_CREAT's mode is umask-masked / ignored on reuse
             f.write(data)
-        if plan is not None:
-            os.chmod(overlay, 0o600)      # O_CREAT's mode is umask-masked / ignored on reuse
         return overlay
 
     def _staged_plugin_dirs(self, workspace: Path) -> list:
@@ -781,9 +795,6 @@ class ClaudeCodeRunner(EvalRunner):
         ``ANTHROPIC_AUTH_TOKEN`` in the overlay.
         """
         env = {k: v for k, v in os.environ.items() if k in self._SAFE_ENV_KEYS}
-        if self._plan is not None:
-            for k in MANAGED_ENV_KEYS:
-                env.pop(k, None)
         for k, v in self._env.items():
             if v is None:
                 continue
@@ -807,6 +818,12 @@ class ClaudeCodeRunner(EvalRunner):
             env["MLFLOW_EXPERIMENT_NAME"] = self._mlflow_experiment
         if self._mlflow_tracking_uri:
             env["MLFLOW_TRACKING_URI"] = self._mlflow_tracking_uri
+        if self._plan is not None:
+            # After every merge: runner.env is validated at load, but a hook's
+            # runtime `.hook-outputs.yaml` env (extra_env) is not — nothing may
+            # put a managed key back into the process env (CWE-15).
+            for k in MANAGED_ENV_KEYS:
+                env.pop(k, None)
         return env
 
 

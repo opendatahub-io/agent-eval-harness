@@ -102,7 +102,8 @@ def test_snapshot_catalog_is_used_offline(tmp_path):
     session = FastSession(plan, tmp_path, snapshot=pre.snapshot)     # server gone: frozen view answers
     assert session.snapshot_ref == pre.snapshot["ts"]
     assert session.catalog.provider_slug("Novita") == "novita"
-    assert session.catalog.quantization_for("z-ai/glm-5.2", "novita") == ("fp8", "novita/fp8")
+    assert session.catalog.quantization_for("z-ai/glm-5.2", "z-ai") == ("fp8", "z-ai")
+    assert session.catalog.quantization_for("z-ai/glm-5.2", "novita") == (None, None)   # two Novita endpoints: ambiguous
 
 
 def test_key_usage_failure_is_not_fatal(tmp_path):
