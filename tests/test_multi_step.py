@@ -642,3 +642,16 @@ judges:
         rec = sc.load_case_record(cd, cfg)
         conv = (rec["steps"].get("a") or {}).get("conversation", "")
         assert "TOPSECRET" not in conv
+
+
+def test_strict_exit_only_upgrades_a_successful_run():
+    """--strict-cost / --strict-routing turn a clean run into exit 2; a run
+    that already failed keeps its own code — a runner timeout's -1 is never
+    flattened to 0 or masked by 2."""
+    assert ex._apply_strict_exit(0, 2) == 2
+    assert ex._apply_strict_exit(0, None) == 0
+    assert ex._apply_strict_exit(0, 0) == 0
+    assert ex._apply_strict_exit(-1, 2) == -1
+    assert ex._apply_strict_exit(-1, 0) == -1
+    assert ex._apply_strict_exit(1, 2) == 1
+

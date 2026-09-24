@@ -803,6 +803,15 @@ def write_run_result(path, payload, *, plan=None, ledger=None, key_usage=None):
                              allow_estimate=_RECONCILE_OPTS["allow_estimate"])
 
 
+def _apply_strict_exit(exit_code, strict_exit):
+    """A strict-flag failure turns a *successful* run into exit 2; a run that
+    already failed keeps its own code (a runner timeout's -1 must not be
+    flattened to 0 or masked by 2)."""
+    if strict_exit and exit_code == 0:
+        return strict_exit
+    return exit_code
+
+
 def _strict_exit_code(run_meta):
     """Exit code the strict flags demand for the final run-level result: 2 when
     a plan is active and cost is unavailable, the run budget was exceeded post
@@ -1065,7 +1074,8 @@ def _run_single_case_in_repo(runner, skill_name, case_ws, output_dir,
     if repo_before != repo_after:
         status += " [REPO MODIFIED]"
     print(f"    → {case_id}: {status} | {result.duration_s:.0f}s | "
-          f"{_cost_label(result.cost_usd)}", file=sys.stderr)
+          f"{_cost_label(case_result.get('cost_usd'), case_result.get('cost_source'), case_result.get('cost_usd_estimate'))}",
+          file=sys.stderr)
 
     return case_id, case_result
 
@@ -1864,9 +1874,7 @@ def _execute_per_case(args, config, runner, runner_cls,
         run_meta["cost_usd_estimate"] = estimate_total
     # run_result write-site 7: case-mode aggregate
     run_meta = write_run_result(output_dir / "run_result.json", run_meta)
-    strict_exit = _strict_exit_code(run_meta)
-    if strict_exit:
-        worst_exit = max(worst_exit, strict_exit)
+    worst_exit = _apply_strict_exit(worst_exit, _strict_exit_code(run_meta))
     total_cost = run_meta.get("cost_usd")
 
     print(f"EXIT: {worst_exit}")
@@ -1949,7 +1957,7 @@ def _save_result(result, args, output_dir, runner, model, eval_params=None):
     with open(run_result_path) as f:
         json.load(f)
 
-    exit_code = max(result.exit_code, strict_exit)
+    exit_code = _apply_strict_exit(result.exit_code, strict_exit)
     print(f"EXIT: {exit_code}")
     print(f"DURATION: {result.duration_s:.0f}s")
     cost = run_meta.get("cost_usd")
