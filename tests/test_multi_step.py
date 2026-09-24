@@ -655,3 +655,40 @@ def test_strict_exit_only_upgrades_a_successful_run():
     assert ex._apply_strict_exit(-1, 0) == -1
     assert ex._apply_strict_exit(1, 2) == 1
 
+
+def test_finalize_strict_persists_the_final_exit_code(tmp_path, monkeypatch, capsys):
+    """A strict failure is written back into run_result.json (exit_code 2 and
+    the reasons), so readers never see a success the command reported as a
+    failure; without a failure nothing is rewritten."""
+    from types import SimpleNamespace
+
+    from agent_eval.providers.base import ProviderPlan, parse_agent_model
+    from agent_eval.providers.openrouter.routing import RoutingTable
+
+    plan = ProviderPlan(
+        kind="openrouter", base_url="https://openrouter.ai/api", key_scope="operator",
+        key="k", key_env="OPENROUTER_API_KEY",
+        skill=parse_agent_model("openrouter:/z-ai/glm-5.2"),
+        subagent=parse_agent_model("openrouter:/z-ai/glm-5.2"), hook=None, background_model=None,
+        routing=RoutingTable(), enforcement="audit", run_id="r", runner="claude-code",
+        attribution=SimpleNamespace(referer=None, title="t", run_id_header=False),
+        cli_budget_inflation=50, budget_run_usd=None)
+    path = tmp_path / "run_result.json"
+    monkeypatch.setattr(ex, "_PROVIDER_PLAN", plan)
+    monkeypatch.setitem(ex._RECONCILE_OPTS, "strict_cost", True)
+    run_meta = ex.write_run_result(path, {"exit_code": 0, "cost_usd": None, "cost_source": "unavailable"})
+    run_meta, code = ex._finalize_strict(path, run_meta, 0)
+    assert code == 2 and run_meta["exit_code"] == 2
+    assert run_meta["strict_failures"] == ["cost_source unavailable"]
+    on_disk = json.loads(path.read_text())
+    assert on_disk["exit_code"] == 2 and on_disk["strict_failures"] == ["cost_source unavailable"]
+    assert "STRICT: cost_source unavailable" in capsys.readouterr().err
+    # a run that already failed keeps its code, and the reasons are still recorded
+    _, code = ex._finalize_strict(path, dict(run_meta, exit_code=-1), -1)
+    assert code == -1
+    # nothing to fail: the file is left as written
+    monkeypatch.setitem(ex._RECONCILE_OPTS, "strict_cost", False)
+    clean = ex.write_run_result(path, {"exit_code": 0, "cost_usd": 1.0})
+    same, code = ex._finalize_strict(path, clean, 0)
+    assert code == 0 and same is clean and "strict_failures" not in json.loads(path.read_text())
+

@@ -812,12 +812,12 @@ def _apply_strict_exit(exit_code, strict_exit):
     return exit_code
 
 
-def _strict_exit_code(run_meta):
-    """Exit code the strict flags demand for the final run-level result: 2 when
-    a plan is active and cost is unavailable, the run budget was exceeded post
-    hoc, or the routing audit found violations / is incomplete."""
+def _strict_failures(run_meta):
+    """Why the strict flags fail the final run-level result: a plan is active
+    and cost is unavailable, the run budget was exceeded post hoc, or the
+    routing audit found violations / is incomplete. Empty when nothing fails."""
     if _PROVIDER_PLAN is None:
-        return None
+        return []
     reasons = []
     if _RECONCILE_OPTS["strict_cost"]:
         if run_meta.get("cost_source") == "unavailable":
@@ -831,10 +831,30 @@ def _strict_exit_code(run_meta):
             reasons.append(f"{len(routing['violations'])} routing violation(s)")
         if routing.get("audit_complete") is False:
             reasons.append("routing audit incomplete")
+    return reasons
+
+
+def _strict_exit_code(run_meta):
+    reasons = _strict_failures(run_meta)
     if not reasons:
         return None
     print("STRICT: " + "; ".join(reasons), file=sys.stderr)
     return 2
+
+
+def _finalize_strict(path, run_meta, exit_code):
+    """Apply the strict flags to the final run-level result AND persist the
+    outcome: when they turn a successful run into exit 2, run_result.json is
+    rewritten with the final exit_code and the reasons, so readers never see a
+    success the command itself reported as a failure. Returns (run_meta, code)."""
+    reasons = _strict_failures(run_meta)
+    final = _apply_strict_exit(exit_code, 2 if reasons else None)
+    if reasons:
+        print("STRICT: " + "; ".join(reasons), file=sys.stderr)
+    if final != run_meta.get("exit_code") or (reasons and not run_meta.get("strict_failures")):
+        run_meta = dict(run_meta, exit_code=final, strict_failures=reasons)
+        run_meta = write_run_result(path, run_meta)
+    return run_meta, final
 
 
 def _sum_reported_costs(case_results):
@@ -1874,7 +1894,7 @@ def _execute_per_case(args, config, runner, runner_cls,
         run_meta["cost_usd_estimate"] = estimate_total
     # run_result write-site 7: case-mode aggregate
     run_meta = write_run_result(output_dir / "run_result.json", run_meta)
-    worst_exit = _apply_strict_exit(worst_exit, _strict_exit_code(run_meta))
+    run_meta, worst_exit = _finalize_strict(output_dir / "run_result.json", run_meta, worst_exit)
     total_cost = run_meta.get("cost_usd")
 
     print(f"EXIT: {worst_exit}")
@@ -1950,14 +1970,13 @@ def _save_result(result, args, output_dir, runner, model, eval_params=None):
     run_result_path = output_dir / "run_result.json"
     # run_result write-site 8: batch mode result
     run_meta = write_run_result(run_result_path, run_meta)
-    strict_exit = _strict_exit_code(run_meta) or 0
+    run_meta, exit_code = _finalize_strict(run_result_path, run_meta, result.exit_code)
 
     # Verify the file is valid JSON.
 
     with open(run_result_path) as f:
         json.load(f)
 
-    exit_code = _apply_strict_exit(result.exit_code, strict_exit)
     print(f"EXIT: {exit_code}")
     print(f"DURATION: {result.duration_s:.0f}s")
     cost = run_meta.get("cost_usd")
