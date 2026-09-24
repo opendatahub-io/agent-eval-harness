@@ -56,9 +56,9 @@ def _error_from_body(status: int, body: bytes, headers, url: str) -> OpenRouterH
         err = payload.get("error") if isinstance(payload, dict) else None
         if isinstance(err, dict):
             message = str(err.get("message") or "")
-            meta = err.get("metadata") or {}
-            error_type = (err.get("type") or meta.get("type") or
-                          (meta.get("raw") or {}).get("type") if isinstance(meta, dict) else None)
+            meta = err.get("metadata") if isinstance(err.get("metadata"), dict) else {}
+            raw = meta.get("raw") if isinstance(meta.get("raw"), dict) else {}
+            error_type = err.get("type") or meta.get("type") or raw.get("type")
             if not error_type and isinstance(err.get("code"), str):
                 error_type = err["code"]
         elif isinstance(err, str):

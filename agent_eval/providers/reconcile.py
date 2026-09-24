@@ -58,6 +58,28 @@ def _sum(values):
     return round(sum(vals), 6) if vals else None
 
 
+def _latest_by_gen_id(rows):
+    """One row per generation id. The ledger is append-only, so a retried id
+    can carry a `backfill_failed` row and a later `ok` row (or two `ok` rows
+    from an offline pass): an ok row beats a failed one, otherwise the last
+    row wins. Rows without a generation id (key-usage) pass through."""
+    out, index = [], {}
+    for r in rows:
+        gid = r.get("gen_id") if r.get("source") == "generation" else None
+        if not gid:
+            out.append(r)
+            continue
+        if gid in index:
+            prev = out[index[gid]]
+            if prev.get("status") == "ok" and r.get("status") != "ok":
+                continue
+            out[index[gid]] = r
+        else:
+            index[gid] = len(out)
+            out.append(r)
+    return out
+
+
 def _generation_rows(rows, roles=("agent",)):
     return [r for r in rows if r.get("source") == "generation" and r.get("role") in roles]
 
@@ -202,7 +224,7 @@ def reconcile(run_result: dict, ledger_rows: Iterable[dict], plan=None, *, key_u
               case_id: Optional[str] = None, is_aggregate: bool = False) -> dict:
     """Return the reconciled payload (a new dict). Provider inactive and no
     rows → the payload unchanged."""
-    rows = list(ledger_rows or [])
+    rows = _latest_by_gen_id(list(ledger_rows or []))
     if plan is None and not rows:
         return run_result
     out = dict(run_result)
@@ -229,7 +251,30 @@ def reconcile(run_result: dict, ledger_rows: Iterable[dict], plan=None, *, key_u
     dedicated = bool(plan is not None and (plan.key_scope == "per-run"
                                            or getattr(getattr(plan, "budget", None), "dedicated_key", False)))
 
-    if coverage_ratio is not None and coverage_ratio >= COVERAGE_SOURCE_MIN and ledger_sum is not None:
+    per_case = out.get("per_case") if is_aggregate else None
+    if isinstance(per_case, dict) and per_case:
+        # The run aggregate follows the per-case arithmetic: every case must be
+        # priced for the sum to be spend; otherwise the run-level key-usage
+        # delta is the only number that covers the gaps, else null.
+        case_costs = [_num((c or {}).get("cost_usd")) for c in per_case.values()]
+        case_sources = {(c or {}).get("cost_source") for c in per_case.values()
+                        if isinstance(c, dict) and c.get("cost_source")}
+        if all(c is not None for c in case_costs):
+            out["cost_usd"] = round(sum(case_costs), 6)
+            out["cost_source"] = (case_sources.pop() if len(case_sources) == 1
+                                  else "openrouter:generation")
+        elif key_delta is not None:
+            out["cost_usd"], out["cost_source"] = key_delta, "openrouter:key-usage"
+        else:
+            out["cost_usd"] = None
+            out["cost_source"] = "runner:estimate" if (allow_estimate and estimate is not None) else "unavailable"
+            if out["cost_source"] == "runner:estimate":
+                out["cost_usd"] = estimate
+        unpriced = sum(1 for c in case_costs if c is None)
+        if unpriced:
+            warnings.append(f"{unpriced} of {len(case_costs)} cases are unpriced; the run total is "
+                            "not a sum of partial spend")
+    elif coverage_ratio is not None and coverage_ratio >= COVERAGE_SOURCE_MIN and ledger_sum is not None:
         out["cost_usd"], out["cost_source"] = ledger_sum, "openrouter:generation"
         if key_delta is not None and key_delta > 0 and not is_aggregate:
             deviation = abs(ledger_sum - key_delta) / key_delta

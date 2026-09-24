@@ -132,6 +132,27 @@ def test_http_error_body_is_parsed_without_leaking_headers(monkeypatch):
     assert "Authorization" not in str(err) and "Bearer" not in str(err)
 
 
+@pytest.mark.parametrize("error, expected_type", [
+    ({"code": 404, "message": "m", "type": "not_found", "metadata": "provider text"}, "not_found"),
+    ({"code": 502, "message": "m", "metadata": {"type": "provider_unavailable", "raw": "raw text"}},
+     "provider_unavailable"),
+    ({"code": 400, "message": "m", "metadata": {"raw": {"type": "invalid_request"}}}, "invalid_request"),
+    ({"code": "insufficient_credits", "message": "m"}, "insufficient_credits"),
+])
+def test_http_error_type_is_read_from_every_documented_place(monkeypatch, error, expected_type):
+    body = json.dumps({"error": error}).encode()
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, int(error["code"]) if isinstance(error["code"], int) else 402,
+                                     "err", {}, io.BytesIO(body))
+
+    monkeypatch.setattr(http_mod.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(OpenRouterHTTPError) as exc:
+        get_json("https://openrouter.ai/api/v1/generation")
+    assert exc.value.error_type == expected_type
+    assert exc.value.message.endswith("m") or exc.value.message == "m"
+
+
 def test_transport_errors_become_key_free_exceptions(monkeypatch):
     def fake_urlopen(req, timeout=None):
         raise urllib.error.URLError("name resolution failed")

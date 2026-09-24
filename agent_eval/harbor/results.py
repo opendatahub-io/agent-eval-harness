@@ -255,6 +255,7 @@ def _errored_trial_record(trial_dir: Path) -> dict:
         "cost_usd": None,
         "token_usage": None,
         "per_model_usage": None,
+        "message_ids": [],
         "num_turns": None,
         "duration_s": None,
         "agent_version": None,
@@ -381,6 +382,7 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
     step_dirs = sorted(d for d in steps_dir.iterdir() if d.is_dir())
     if not step_dirs:
         return None
+    message_ids: list = []          # cost-truth key set across the steps (spec 014)
 
     rewards = []
     per_judge: dict = {}
@@ -438,6 +440,9 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
             rewards.append(step_reward)
 
         extracted = _agent_transcript_metrics(step_dir / "agent")
+        for msg_id in extracted.get("message_ids") or []:
+            if msg_id not in message_ids:
+                message_ids.append(msg_id)
         harbor_step = harbor_steps.get(step_name, {})
         fallback = _agent_result_metrics(harbor_step.get("agent_result"))
         step_cost = extracted.get("cost_usd")
@@ -537,6 +542,7 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
         "num_turns": total_turns if total_turns > 0 else None,
         "duration_s": total_duration if total_duration > 0 else None,
         "agent_version": agent_version,
+        "message_ids": message_ids,
     }
 
 

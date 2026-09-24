@@ -491,3 +491,23 @@ def test_parse_trial_collects_assistant_message_ids(tmp_path):
     assert record is not None
     assert record["message_ids"] == ["gen-1", "gen-2"]
     assert record["cost_usd"] == 1.2
+
+
+def test_multi_step_trial_unions_message_ids_and_errored_trials_carry_the_field(tmp_path):
+    job = tmp_path / "job"
+    tdir = job / "trial__case-2"
+    for step, ids in (("create", ["gen-a", "gen-b"]), ("assess", ["gen-b", "gen-c"])):
+        sdir = tdir / "steps" / step
+        (sdir / "verifier").mkdir(parents=True)
+        (sdir / "verifier" / "reward.json").write_text(json.dumps({"reward": 1.0}))
+        (sdir / "agent").mkdir()
+        (sdir / "agent" / "claude-code.txt").write_text("\n".join(
+            json.dumps({"type": "assistant", "message": {"id": i}}) for i in ids) + "\n")
+    record = R.parse_trial(tdir)
+    assert record is not None and sorted(record["message_ids"]) == ["gen-a", "gen-b", "gen-c"]
+    assert len(record["message_ids"]) == 3                     # deduplicated across steps
+    errored = job / "trial__case-3"
+    errored.mkdir()
+    (errored / "exception.txt").write_text("RuntimeError: pod not ready\n")
+    assert R.parse_trial(errored)["message_ids"] == []
+

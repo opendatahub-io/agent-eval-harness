@@ -194,13 +194,45 @@ def test_drain_polls_until_empty(tmp_path):
 
 
 def test_error_messages_never_carry_the_key(tmp_path):
+    """An upstream error body may echo the request: the key is redacted before
+    the text reaches the ledger or the stats."""
     clock = _Clock()
     stub = _Stub(clock, errors={"gen-1": OpenRouterHTTPError(500, "boom sk-test leaked?")})
     bf = _backfill(tmp_path, clock, stub, give_up_s=1)
     bf.sight("gen-1"); clock.advance(5.0); bf.poll_once()
     row = Ledger.for_run(tmp_path).read()[0]
-    assert row["status"] == "backfill_failed" and "sk-test" in row["error_message"]  # message text only
-    assert "Authorization" not in str(row)
+    assert row["status"] == "backfill_failed"
+    assert "sk-test" not in row["error_message"] and "[REDACTED]" in row["error_message"]
+    assert "sk-test" not in str(bf.stats.errors) and "Authorization" not in str(row)
+
+
+def test_generation_ids_are_validated_and_url_encoded(tmp_path):
+    """Ids come from agent-writable transcripts: only OpenRouter's id shape is
+    ever placed in a request, and it goes through urlencode."""
+    assert is_generation_id("gen-1789569064-x4U6AC0qmu8wfpfIiCQ2")
+    for bad in ("gen-x&foo=bar", "gen-", "gen-" + "a" * 200, "gen-a b", "gen-a/b", "GEN-abc"):
+        assert not is_generation_id(bad), bad
+    clock = _Clock()
+    stub = _Stub(clock)
+    bf = _backfill(tmp_path, clock, stub)
+    assert bf.sight("gen-x&foo=bar") is False
+    bf.sight("gen-a_b-C"); clock.advance(5.0); bf.poll_once()
+    assert stub.calls[-1][1] == "gen-a_b-C"
+
+
+def test_due_sightings_are_claimed_once_across_concurrent_pollers(tmp_path):
+    """The worker thread and a drain() on the main thread must never fetch the
+    same id twice; a claimed sighting is invisible to a second _due()."""
+    clock = _Clock()
+    stub = _Stub(clock)
+    bf = _backfill(tmp_path, clock, stub)
+    bf.sight("gen-1"); clock.advance(5.0)
+    first = bf._due(clock.now)
+    assert [s.gen_id for s in first] == ["gen-1"] and first[0].in_flight
+    assert bf._due(clock.now) == []                     # claimed, not offered again
+    first[0].in_flight = False
+    assert bf.poll_once() == 1
+    assert len(Ledger.for_run(tmp_path).read()) == 1
 
 
 # --- key usage -------------------------------------------------------------------------

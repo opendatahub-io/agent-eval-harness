@@ -167,6 +167,24 @@ def test_medium_confidence_band_and_backfill_failed_accounting():
     assert any("unpriced" in w for w in out["cost_warnings"])
 
 
+def test_retried_generation_rows_are_collapsed_per_id():
+    """The ledger is append-only: a backfill_failed row followed by a later ok
+    row (run-end retry, offline pass) is one generation — counted once, never
+    unattributed, never double-billed."""
+    rows = [_row("gen-1", None, None, status="backfill_failed"),
+            _row("gen-1", 0.01, "novita"),
+            _row("gen-2", 0.02, "z-ai"), _row("gen-2", 0.02, "z-ai"),        # offline re-append
+            _row("gen-3", 0.03, "novita"), _row("gen-3", None, None, status="backfill_failed")]
+    out = reconcile(_payload(["gen-1", "gen-2", "gen-3"]), rows, _plan(), catalog=_catalog())
+    assert out["cost_usd"] == pytest.approx(0.06)
+    assert out["cost_coverage"]["requests_priced"] == 3
+    assert out["cost_coverage"]["requests_missing_cost"] == 0
+    assert out["routing"]["unattributed"] == 0 and out["routing"]["audit_complete"] is True
+    assert out["providers"] == {"novita": {"requests": 2, "cost_usd": 0.04},
+                                "z-ai": {"requests": 1, "cost_usd": 0.02}}
+    assert "unknown" not in out["providers"]
+
+
 # --- hook cost, providers, per-model join ------------------------------------------
 
 def test_hook_cost_is_separate_and_excluded_from_cost_usd():
@@ -293,11 +311,30 @@ def test_write_run_result_scopes_case_rows_and_reads_the_run_ledger(tmp_path, ca
                           {"cost_usd": 3.0, "message_ids": ["gen-9"]}, plan=plan)
     assert c3["cost_usd"] is None and c3["cost_source"] == "unavailable"
     assert "cost_source unavailable" in capsys.readouterr().err
-    # run-level aggregate: all rows, no key-usage read yet
+    # run-level aggregate follows the per-case arithmetic: c2 is unpriced, so
+    # the run total is not a partial sum — null (no key-usage delta landed).
     agg = write_run_result(tmp_path / "run_result.json",
-                           {"cost_usd": 9.0, "per_case": {"c1": c1, "c2": {}},
+                           {"cost_usd": None, "cost_usd_estimate": 9.0,
+                            "per_case": {"c1": c1, "c2": {"cost_usd": None}},
                             "message_ids": ["gen-1", "gen-2"]}, plan=plan)
-    assert agg["cost_usd"] == pytest.approx(0.03) and agg["cost_source"] == "openrouter:generation"
+    assert agg["cost_usd"] is None and agg["cost_source"] == "unavailable"
+    assert agg["cost_usd_estimate"] == 9.0                         # never derived from a reconciled value
+    assert any("1 of 2 cases are unpriced" in w for w in agg["cost_warnings"])
+    c2 = write_run_result(tmp_path / "cases" / "c2" / "run_result.json",
+                          {"cost_usd": 3.0, "message_ids": ["gen-2"]}, plan=plan)
+    priced = write_run_result(tmp_path / "run_result.json",
+                              {"cost_usd": None, "per_case": {"c1": c1, "c2": c2},
+                               "message_ids": ["gen-1", "gen-2"]}, plan=plan)
+    assert priced["cost_usd"] == pytest.approx(0.03) and priced["cost_source"] == "openrouter:generation"
+
+
+def test_aggregate_with_an_unpriced_case_falls_back_to_the_key_usage_delta():
+    per_case = {"c1": {"cost_usd": 0.01, "cost_source": "openrouter:generation"},
+                "c2": {"cost_usd": None, "cost_source": "unavailable"}}
+    out = reconcile({"cost_usd": None, "per_case": per_case, "message_ids": ["gen-1", "gen-2"]},
+                    [_row("gen-1", 0.01, "novita")], _plan(), key_usage=KeyUsageDelta(0.0, 0.05, 20.0),
+                    is_aggregate=True)
+    assert out["cost_usd"] == pytest.approx(0.05) and out["cost_source"] == "openrouter:key-usage"
 
 
 def test_write_run_result_with_a_ledger_but_no_plan_still_reconciles_cost(tmp_path):

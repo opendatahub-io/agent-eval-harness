@@ -95,6 +95,9 @@ breakdown; judges read it when `traces.metrics` is on.
 | `model` / `agent` / `agent_version` | Model, runner name, runner version |
 | `message_ids` | Every assistant message id of the run (root stream + subagent transcripts). On a direct OpenRouter connection these are `gen-…` generation ids: the cost-truth key set the backfill prices. |
 | `cost_source`, `cost_usd_estimate`, `cost_confidence`, `cost_coverage`, `cost_warnings`, `hook_cost_usd`, `providers`, `routing`, `provider`, `budget` | Cost provenance — see below. Absent on runs that never touched a provider. |
+| `permission_denials` | Tool calls denied by permissions, as `[{tool_name, tool_use_id, tool_input}]` from the CLI result event (`[]` when none). Per case inside `per_case` entries (and per step under a multi-step case's `steps`); the top level carries the concatenation across cases (batch/single-run mode: that run's own list) |
+| `execution_mode` | `case` or `batch` |
+| `per_case` | Per-case dict of the same metrics plus `permission_denials`, keyed by case ID |
 
 #### Cost provenance
 
@@ -129,9 +132,6 @@ exceeded run budget, `--strict-routing` on violations or an incomplete audit.
 `message_index`, the requested/echoed/served model ids, `provider`, `quantization`,
 `audit`, `status` (`ok`, `backfill_failed`, `partial`), `cost_usd`, native token
 counts, latency and `backfill_lag_s`. Never request bodies, headers or keys.
-| `permission_denials` | Tool calls denied by permissions, as `[{tool_name, tool_use_id, tool_input}]` from the CLI result event (`[]` when none). Per case inside `per_case` entries (and per step under a multi-step case's `steps`); the top level carries the concatenation across cases (batch/single-run mode: that run's own list) |
-| `execution_mode` | `case` or `batch` |
-| `per_case` | Per-case dict of the same metrics plus `permission_denials`, keyed by case ID |
 
 !!! note "Adjusted, not raw, per-case values"
     For the claude-code runner, per-case `exit_code` is `1` (not `0`) when the

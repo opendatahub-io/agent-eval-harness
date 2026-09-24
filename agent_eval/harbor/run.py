@@ -681,6 +681,9 @@ def run_eval_on_harbor(
         "model": model,
         "num_cases": parsed["n_completed"],
         "config_chain": list(getattr(config, "config_chain", None) or []),
+        # Cost-truth key set across the trials (reconcile's coverage denominator).
+        "message_ids": sorted({i for t in parsed.get("trials", [])
+                               for i in (t.get("message_ids") or [])}),
         "num_turns": parsed.get("num_turns"),
         "duration_s": parsed.get("duration_s"),
         "mean_reward": parsed["mean_reward"],

@@ -589,12 +589,12 @@ def main():
             extra_env=global_hook_outputs.get("env") or None,
         )
 
-        _save_result(result, args, output_dir, runner, model, eval_params=eval_params)
+        exit_code = _save_result(result, args, output_dir, runner, model, eval_params=eval_params)
 
         # Copy batch input files to output dir for MLflow artifact logging.
         _copy_input_files_batch(Path(args.workspace), output_dir)
 
-        sys.exit(result.exit_code)
+        sys.exit(exit_code)
     finally:
         if config.hooks.after_all:
             print("Running after_all hooks...", file=sys.stderr)
@@ -1796,8 +1796,14 @@ def _execute_per_case(args, config, runner, runner_cls,
     # values are reconciled (never the estimate) and a partial sum is not
     # spend: one unpriced case makes the run total null (null-cost arithmetic).
     total_duration = sum(r["duration_s"] for r in case_results.values())
+    estimate_total = None
     if _PROVIDER_PLAN is not None:
         total_cost, cases_priced = aggregate_case_costs(case_results)
+        # The runner's own per-case numbers stay visible as one run estimate;
+        # reconcile never derives it from an already-reconciled value.
+        estimates = [r.get("cost_usd_estimate") for r in case_results.values()
+                     if isinstance(r.get("cost_usd_estimate"), (int, float))]
+        estimate_total = round(sum(estimates), 4) if estimates else None
     else:
         total_cost, cases_priced = _sum_reported_costs(case_results), None
     total_turns = sum(r.get("num_turns") or 0 for r in case_results.values())
@@ -1854,15 +1860,18 @@ def _execute_per_case(args, config, runner, runner_cls,
     }
     if cases_priced is not None:
         run_meta["cases_priced"] = cases_priced
+    if estimate_total is not None:
+        run_meta["cost_usd_estimate"] = estimate_total
     # run_result write-site 7: case-mode aggregate
     run_meta = write_run_result(output_dir / "run_result.json", run_meta)
     strict_exit = _strict_exit_code(run_meta)
     if strict_exit:
         worst_exit = max(worst_exit, strict_exit)
+    total_cost = run_meta.get("cost_usd")
 
     print(f"EXIT: {worst_exit}")
     print(f"DURATION: {wall_clock_s:.0f}s wall-clock, {total_duration:.0f}s total")
-    print(f"COST: ${total_cost:.2f} total" if total_cost is not None
+    print(f"COST: ${total_cost:.2f} total" if isinstance(total_cost, (int, float))
           else "COST: unavailable")
     print(f"CASES: {len(case_results)} "
           f"({sum(1 for r in case_results.values() if r['exit_code'] == 0)} OK, "
@@ -1933,16 +1942,22 @@ def _save_result(result, args, output_dir, runner, model, eval_params=None):
     run_result_path = output_dir / "run_result.json"
     # run_result write-site 8: batch mode result
     run_meta = write_run_result(run_result_path, run_meta)
+    strict_exit = _strict_exit_code(run_meta) or 0
 
     # Verify the file is valid JSON.
 
     with open(run_result_path) as f:
         json.load(f)
 
-    print(f"EXIT: {result.exit_code}")
+    exit_code = max(result.exit_code, strict_exit)
+    print(f"EXIT: {exit_code}")
     print(f"DURATION: {result.duration_s:.0f}s")
-    if result.cost_usd:
-        print(f"COST: ${result.cost_usd:.2f}")
+    cost = run_meta.get("cost_usd")
+    if isinstance(cost, (int, float)):
+        print(f"COST: ${cost:.2f}")
+    elif result.cost_usd or run_meta.get("cost_source"):
+        print("COST: unavailable")
+    return exit_code
 
 
 if __name__ == "__main__":

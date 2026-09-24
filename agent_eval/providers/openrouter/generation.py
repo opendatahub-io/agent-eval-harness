@@ -13,8 +13,10 @@ ledger row; ``run_result.json`` is reconcile's business.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Optional
 
@@ -31,8 +33,13 @@ KEY_USAGE_MAX_S = 60.0
 KEY_USAGE_POLL_S = 5.0
 
 
+# A transcript is agent-influenced (subagent transcripts live in the workspace),
+# so only ids of OpenRouter's own shape are ever placed in a request.
+_GEN_ID_RE = re.compile(r"^gen-[A-Za-z0-9_-]{1,128}$")
+
+
 def is_generation_id(value) -> bool:
-    return isinstance(value, str) and value.startswith("gen-")
+    return isinstance(value, str) and bool(_GEN_ID_RE.fullmatch(value))
 
 
 def _num(value):
@@ -96,6 +103,7 @@ class Sighting:
     sighted_at: float = 0.0
     next_poll_at: float = 0.0
     attempts: int = 0
+    in_flight: bool = False
 
 
 @dataclass
@@ -174,10 +182,16 @@ class Backfill:
     # -- polling ------------------------------------------------------------------
 
     def _due(self, now: float) -> list:
+        """Due sightings, claimed for this poll so a concurrent poller (the
+        worker thread and a `drain()` on the main thread) never fetches the
+        same id twice."""
         with self._lock:
-            due = [s for s in self._pending.values() if s.next_poll_at <= now]
-        due.sort(key=lambda s: s.next_poll_at)
-        return due[: self.max_workers]
+            due = sorted((s for s in self._pending.values()
+                          if s.next_poll_at <= now and not s.in_flight),
+                         key=lambda s: s.next_poll_at)[: self.max_workers]
+            for s in due:
+                s.in_flight = True
+        return due
 
     def poll_once(self, now: Optional[float] = None) -> int:
         """Poll every due id once. Returns how many rows were written."""
@@ -185,20 +199,27 @@ class Backfill:
             return 0
         now = self._clock() if now is None else now
         written = 0
-        for sighting in self._due(now):
+        due = self._due(now)
+        for sighting in due:
             if self.stats.aborted:
                 break
             with self._lock:
                 still_pending = sighting.gen_id in self._pending
             if not still_pending:
                 continue
-            written += self._poll_one(sighting, now)
+            try:
+                written += self._poll_one(sighting, now)
+            finally:
+                sighting.in_flight = False
+        for sighting in due:
+            sighting.in_flight = False
         return written
 
     def _poll_one(self, s: Sighting, now: float) -> int:
         s.attempts += 1
         try:
-            payload = self._fetch(f"{self._base}/v1/generation?id={s.gen_id}")
+            payload = self._fetch(f"{self._base}/v1/generation?"
+                                  + urllib.parse.urlencode({"id": s.gen_id}))
         except OpenRouterHTTPError as exc:
             return self._handle_error(s, exc, now)
         except Exception as exc:  # transport surprises never kill the worker
@@ -253,12 +274,19 @@ class Backfill:
                 "not_found" if getattr(error, "status", None) == 404 else None)
             record["error_class"] = classify(record["error_type"], getattr(error, "status", None),
                                              getattr(error, "message", "")).value
-            record["error_message"] = describe(getattr(error, "status", None),
-                                               getattr(error, "message", str(error)))
+            record["error_message"] = self._redact(describe(
+                getattr(error, "status", None), getattr(error, "message", str(error))))
             if status == "backfill_failed":
                 self._failed[s.gen_id] = s
                 self.stats.errors.append(record["error_message"])
         self.ledger.append(record)
+
+    def _redact(self, text: str) -> str:
+        """An upstream error body may echo the request; the key never lands in
+        the ledger or the stats."""
+        if self.key and text and self.key in text:
+            return text.replace(self.key, "[REDACTED]")
+        return text
 
     # -- lifecycle ----------------------------------------------------------------
 
@@ -309,7 +337,9 @@ class Backfill:
         """Stop the thread, drain what is due, retry failed ids once, drain again."""
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=5)
+            # A poll in flight may sit in a 15 s fetch; wait it out so the
+            # drain below never races it on the same id.
+            self._thread.join(timeout=20)
             self._thread = None
         self.drain()
         if retry and self.retry_failed():
@@ -379,6 +409,9 @@ def coverage(message_ids: Iterable[str], rows: Iterable[dict]) -> dict:
     for r in rows:
         if r.get("source") != "generation" or not r.get("gen_id"):
             continue
+        prev = by_id.get(r["gen_id"])
+        if prev is not None and prev.get("status") == "ok" and r.get("status") != "ok":
+            continue                      # an ok row is never superseded by a failed one
         by_id[r["gen_id"]] = r
     priced = sum(1 for i in ids if by_id.get(i, {}).get("status") == "ok")
     missing = sum(1 for i in ids if by_id.get(i, {}).get("status") == "backfill_failed")
