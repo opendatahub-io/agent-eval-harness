@@ -52,7 +52,12 @@ def hook_model_for(config, overrides: Optional[dict] = None) -> Optional[str]:
     """
     roles = effective_roles(config, overrides)
     if roles.get("hook"):
-        return roles["hook"]
+        # The hook client takes a bare model id; strip a provider prefix
+        # (an unparseable gateway alias is passed through as written).
+        try:
+            return parse_agent_model(roles["hook"]).id
+        except ValueError:
+            return roles["hook"]
     if not plan_is_active(roles):
         return None
     orc = getattr(getattr(config.models, "providers", None), "openrouter", None)

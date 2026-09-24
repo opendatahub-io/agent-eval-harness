@@ -821,16 +821,25 @@ def test_top_level_providers_key_is_rejected(tmp_path):
     ("    openrouter: {routing: {enforcement: proxy}}\n", "enforcement must be one of"),
     ("    openrouter: {routing: {policy: ignore}}\n", "policy must be one of"),
     ("    openrouter: {preflight: maybe}\n", "preflight must be one of"),
-    ("    openrouter: {budget: {run_usd: 0}}\n", "run_usd must be a number > 0"),
+    ("    openrouter: {budget: {run_usd: 0}}\n", "run_usd must be a finite number > 0"),
     ("    openrouter: {budget: {dedicated_key: 'yes'}}\n", "dedicated_key must be a boolean"),
     ("    openrouter: {budget: {max_unpriced: 3}}\n", "Decision 1"),
-    ("    openrouter: {cli_budget_inflation: 0.5}\n", "cli_budget_inflation must be a number >= 1"),
+    ("    openrouter: {cli_budget_inflation: 0.5}\n", "cli_budget_inflation must be a finite number >= 1"),
     ("    openrouter: {background_model: haiku}\n", "background_model must be an OpenRouter"),
+    ("    openrouter: {background_model: 'z-ai/'}\n", "background_model must be an OpenRouter"),
+    ("    openrouter: {background_model: '/glm'}\n", "background_model must be an OpenRouter"),
+    ("    openrouter: {background_model: 'anthropic:/claude-haiku-4-5'}\n", "background_model must be an OpenRouter"),
+    ("    openrouter: {budget: {run_usd: .nan}}\n", "run_usd must be a finite number"),
+    ("    openrouter: {budget: {run_usd: .inf}}\n", "run_usd must be a finite number"),
+    ("    openrouter: {cli_budget_inflation: .inf}\n", "cli_budget_inflation must be a finite number"),
+    ("    openrouter: {routing: {guardrail: {settle_s: .nan}}}\n", "settle_s must be a finite number"),
+    ("    openrouter: {judge: {timeout_s: .inf}}\n", "timeout_s must be a finite number"),
+    ("    openrouter: {routing: {defaults: {max_price: {prompt: .inf}}}}\n", "finite non-negative"),
     ("    openrouter: {management_key_env: 'sk-or-v1-abc'}\n", "must name an environment variable"),
     ("    openrouter: {routing: {guardrail: {providers: []}}}\n", "non-empty list"),
     ("    openrouter: {routing: {guardrail: {providers: all}}}\n", "'pinned' or an explicit list"),
     ("    openrouter: {routing: {guardrail: {revoke_on_exit: false}}}\n", "not supported in this release"),
-    ("    openrouter: {routing: {guardrail: {settle_s: -1}}}\n", "settle_s must be a number >= 0"),
+    ("    openrouter: {routing: {guardrail: {settle_s: -1}}}\n", "settle_s must be a finite number >= 0"),
     ("    openrouter: {routing: {guardrail: {foo: 1}}}\n", "unknown key"),
     ("    openrouter: {routing: {enforcement: key-guardrail}}\n", "run_usd must be set"),
     ("    openrouter: {budget: {run_usd: 5}, routing: {enforcement: key-guardrail}}\n",
@@ -1434,4 +1443,13 @@ def test_attribution_values_must_be_single_line(tmp_path, field):
             f"      attribution: {{{field}: \"x\\nAuthorization: Bearer y\"}}\n")
     with pytest.raises(ValueError, match=f"attribution.{field} must be a single line"):
         EvalConfig.from_yaml(_or_yaml(tmp_path, body))
+
+
+def test_background_model_accepts_variants_and_a_uri_form(tmp_path):
+    for written, stored in (("qwen/qwen3-8b:nitro", "qwen/qwen3-8b:nitro"),
+                            ("openrouter:/qwen/qwen3-8b", "qwen/qwen3-8b")):
+        cfg = EvalConfig.from_yaml(_or_yaml(
+            tmp_path, "  judge: openrouter:/z-ai/glm-5.2\n  providers:\n"
+                      f"    openrouter: {{background_model: '{written}'}}\n"))
+        assert cfg.models.providers.openrouter.background_model == stored
 

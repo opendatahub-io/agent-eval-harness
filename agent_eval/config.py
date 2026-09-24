@@ -960,6 +960,12 @@ class ProvidersConfig:
     openrouter: Optional[OpenRouterConfig] = None
 
 
+def _finite_number(value) -> bool:
+    """A real, finite number — YAML's `.nan`/`.inf` and booleans are not."""
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value))
+
+
 def _require_mapping(value, context):
     if value is None:
         return {}
@@ -1053,19 +1059,28 @@ def _parse_openrouter_config(raw, context):
         cfg.base_url = _resolve_base_url(raw["base_url"], f"{context}.base_url")
     if "background_model" in raw and raw["background_model"] is not None:
         v = raw["background_model"]
-        if not isinstance(v, str) or not v.strip() or "/" not in v.split(":", 1)[0]:
+        from agent_eval.providers.base import parse_agent_model
+
+        try:
+            if not isinstance(v, str):
+                raise ValueError("not a string")
+            model = parse_agent_model(v if ":/" in v else f"openrouter:/{v.strip()}")
+            if model.provider != "openrouter":
+                raise ValueError(f"provider {model.provider!r} is not openrouter")
+        except ValueError as exc:
             raise ValueError(
                 f"{context}.background_model must be an OpenRouter '<author>/<slug>' "
-                "id (the model behind the haiku slot)")
-        cfg.background_model = v.strip()
+                f"id (the model behind the haiku slot and the default hook model): {exc}"
+            ) from exc
+        cfg.background_model = model.id
     if "preflight" in raw:
         if raw["preflight"] not in _PREFLIGHT_LEVELS:
             raise ValueError(f"{context}.preflight must be one of {list(_PREFLIGHT_LEVELS)}")
         cfg.preflight = raw["preflight"]
     if "cli_budget_inflation" in raw:
         v = raw["cli_budget_inflation"]
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 1:
-            raise ValueError(f"{context}.cli_budget_inflation must be a number >= 1")
+        if not _finite_number(v) or v < 1:
+            raise ValueError(f"{context}.cli_budget_inflation must be a finite number >= 1")
         if v == 1:
             _warn(f"{context}.cli_budget_inflation is 1: Claude Code prices a "
                   "non-Anthropic model 2-60x high, so execution.max_budget_usd will "
@@ -1078,8 +1093,8 @@ def _parse_openrouter_config(raw, context):
     budget = BudgetOptions()
     if budget_raw.get("run_usd") is not None:
         v = budget_raw["run_usd"]
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
-            raise ValueError(f"{context}.budget.run_usd must be a number > 0")
+        if not _finite_number(v) or v <= 0:
+            raise ValueError(f"{context}.budget.run_usd must be a finite number > 0")
         budget.run_usd = float(v)
     if "dedicated_key" in budget_raw:
         if not isinstance(budget_raw["dedicated_key"], bool):
@@ -1155,8 +1170,8 @@ def _parse_openrouter_config(raw, context):
         opts.max_retries = v
     if "timeout_s" in judge_raw:
         v = judge_raw["timeout_s"]
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
-            raise ValueError(f"{jctx}.timeout_s must be a number > 0")
+        if not _finite_number(v) or v <= 0:
+            raise ValueError(f"{jctx}.timeout_s must be a finite number > 0")
         opts.timeout_s = float(v)
     if "extra_body" in judge_raw:
         v = judge_raw["extra_body"]
@@ -1211,8 +1226,8 @@ def _parse_guardrail(raw, context):
             f"{context}.revoke_on_exit: false is not supported in this release — the "
             "per-run key is always revoked at run end")
     settle = raw.get("settle_s", opts.settle_s)
-    if isinstance(settle, bool) or not isinstance(settle, (int, float)) or settle < 0:
-        raise ValueError(f"{context}.settle_s must be a number >= 0")
+    if not _finite_number(settle) or settle < 0:
+        raise ValueError(f"{context}.settle_s must be a finite number >= 0")
     if settle < _GUARDRAIL_SETTLE_MIN_S:
         _warn(f"{context}.settle_s is {settle}: OpenRouter's key-usage counter settles "
               f"in about {_GUARDRAIL_SETTLE_MIN_S} s (verified); a shorter wait reads a "

@@ -293,7 +293,9 @@ def test_hook_model_defaults_to_the_plan_model_under_an_active_plan(tmp_path):
     cheap = _config(tmp_path, _ROUTED)                       # declares background_model
     assert hook_model_for(cheap) == "qwen/qwen3-8b"
     explicit = _config(tmp_path, "  skill: openrouter:/z-ai/glm-5.2\n  hook: openrouter:/z-ai/glm-5.2:nitro\n")
-    assert hook_model_for(explicit) == "openrouter:/z-ai/glm-5.2:nitro"
+    assert hook_model_for(explicit) == "z-ai/glm-5.2:nitro"       # the client takes the bare id
+    prefixed = _config(tmp_path, "  skill: sonnet\n  hook: anthropic:/claude-haiku-4-5\n")
+    assert hook_model_for(prefixed) == "claude-haiku-4-5"
     anthropic = _config(tmp_path, "  skill: sonnet\n")
     assert hook_model_for(anthropic) is None                # caller keeps its built-in default
     assert hook_model_for(anthropic, {"skill": "openrouter:/z-ai/glm-5.2"}) == "z-ai/glm-5.2"

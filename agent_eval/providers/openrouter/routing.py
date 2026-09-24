@@ -247,8 +247,9 @@ def _check_max_price(value, ctx):
     if unknown:
         raise ValueError(f"{ctx} has unknown key(s): {sorted(unknown)}")
     for k, v in value.items():
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
-            raise ValueError(f"{ctx}.{k} must be a non-negative number")
+        if (isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0
+                or v != v or v in (float("inf"), float("-inf"))):
+            raise ValueError(f"{ctx}.{k} must be a finite non-negative number")
     return dict(value)
 
 
