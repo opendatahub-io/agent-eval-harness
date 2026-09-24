@@ -52,6 +52,16 @@ _FORWARD_ENV = (
 
 _HARBOR_LOG_TARGETS = {"/logs/verifier", "/logs/agent", "/logs/artifacts"}
 
+
+def _plan_exclusions() -> set:
+    """Host keys not to forward while an OpenRouter plan is active
+    (``AGENT_EVAL_PODMAN_PLAN_EXCLUDE``, set by ``harbor/run.py`` — spec 014):
+    the plan's env block reaches the agent through ``--agent-env``, and no host
+    Vertex/Bedrock setting or Anthropic credential may enter the container.
+    Empty (nothing excluded) without a plan."""
+    raw = os.environ.get("AGENT_EVAL_PODMAN_PLAN_EXCLUDE", "")
+    return {k.strip() for k in raw.split(",") if k.strip()}
+
 # Where a mounted GCP credentials file lands inside the container.
 _CONTAINER_CREDS = "/var/creds/creds.json"
 
@@ -257,13 +267,17 @@ class PodmanEnvironment(BaseEnvironment):
             run_args += ["--security-opt", "label=disable"]
             run_args += external_mount_args
 
-        # Forward provider configuration and credentials needed by agent CLIs.
-        forwarded = {k: os.environ[k] for k in _FORWARD_ENV if os.environ.get(k)}
+        # Forward provider configuration and credentials needed by agent CLIs
+        # (minus what an active OpenRouter plan told us to keep out).
+        exclude = _plan_exclusions()
+        forwarded = {k: os.environ[k] for k in _FORWARD_ENV
+                     if os.environ.get(k) and k not in exclude}
 
         # Credentials: only via an explicitly provided file, read-only mounted —
         # never the host's personal ADC. AGENT_EVAL_PODMAN_GCP_CREDENTIALS_FILE should point at a
-        # service-account key (or a Workload-Identity credential config).
-        creds_file = os.environ.get("AGENT_EVAL_PODMAN_GCP_CREDENTIALS_FILE")
+        # service-account key (or a Workload-Identity credential config). Skipped
+        # under a plan: a Vertex credential inside an OpenRouter run is noise.
+        creds_file = None if exclude else os.environ.get("AGENT_EVAL_PODMAN_GCP_CREDENTIALS_FILE")
         if creds_file and Path(creds_file).is_file():
             run_args += ["-v", f"{Path(creds_file).resolve()}:{_CONTAINER_CREDS}:ro"]
             forwarded["GOOGLE_APPLICATION_CREDENTIALS"] = _CONTAINER_CREDS

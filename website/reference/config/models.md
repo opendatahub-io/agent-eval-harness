@@ -202,8 +202,41 @@ sends and the `tool_choice` fallback rule.
     must share the skill's provider kind (their requests go to OpenRouter too),
     and a bare non-Anthropic id next to a routing entry for it is an error —
     write `openrouter:/<id>` or drop the pins. `runner.type` must be
-    `claude-code`. Load-time rules only: the transport that consumes the plan
-    lands in a later release.
+    `claude-code`.
+
+### How the agent reaches OpenRouter
+
+There is no proxy. When the plan is active the harness derives one env block from the
+role URIs and hands it to Claude Code, which then talks to `https://openrouter.ai/api`
+directly (`/v1/messages`):
+
+- **Local `claude-code` runner** — the block is merged into a per-run settings overlay
+  (`<workspace>/.claude/.eval-overlay.json`, mode 0600, passed via `--settings`, removed
+  when the process exits). It is applied last, so it beats `execution.env`,
+  `runner.settings.env` and a user-level `~/.claude/settings.json` that forces Vertex;
+  subagents and hook children inherit it. Every managed key is also removed from the
+  CLI's process environment first, so a host `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`
+  never reaches the agent. `--model` receives the bare `slug:variants`, and
+  `--max-budget-usd` becomes `execution.max_budget_usd × cli_budget_inflation` (the CLI
+  enforces that cap on its Anthropic-priced estimate; a cap of 0 omits the flag).
+- **Harbor podman** (`--runner harbor --env podman`) — the same block travels as
+  value-free `--agent-env` carriers; Harbor merges it last into the agent's environment.
+  Host Vertex/Bedrock/Anthropic variables are not forwarded into the container while
+  the plan is active. Kubernetes/OpenShift and EvalHub land in a later release.
+
+Before any spend, **preflight** (`preflight: strict | warn | off`) checks against the
+public catalog that every agent-path slug exists and that each pinned provider serves
+it, that the key is valid (`GET /key`) and that the account can use the model
+(`GET /models/user`); it writes `provider/routing_snapshot.json`. A catalog fetch
+failure degrades to `warn`; the key, slug and eligibility checks stay strict.
+
+Cost is **per request**: the `gen-…` ids in Claude Code's own transcript are priced
+from `GET /generation` by a background worker as the stream is read, the key-usage
+delta cross-checks the sum, and the served provider of every generation is audited
+against the pins. See [runs directory → cost provenance](../runs-directory.md#cost-provenance)
+for the fields and the `--strict-cost` / `--strict-routing` flags. The agent holds the
+operator key at `enforcement: audit` (the startup line says so); `key-guardrail` is
+parsed but not available yet.
 
 ## hook
 

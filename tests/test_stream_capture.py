@@ -201,3 +201,29 @@ class TestMessageIds:
         (sub / "a.jsonl").write_text(json.dumps({"message": {"role": "assistant", "id": "gen-sub"}}) + "\n")
         assert message_ids_for_run({"gen-root", "gen-sub"}, sub) == ["gen-root", "gen-sub"]
         assert message_ids_for_run(None, tmp_path / "none") == []
+
+
+class TestProviderView:
+    """spec 014: ids sighted per event; the run's visible provider errors."""
+
+    def test_assistant_message_id(self):
+        from agent_eval.agent.stream_capture import assistant_message_id
+        assert assistant_message_id(make_assistant("gen-1", model="z-ai/glm-5.2")) == ("gen-1", "z-ai/glm-5.2")
+        assert assistant_message_id({"type": "result"}) == (None, None)
+        assert assistant_message_id({"type": "assistant", "message": {"id": ""}}) == (None, None)
+
+    def test_classify_stream_errors(self):
+        from agent_eval.agent.stream_capture import classify_stream_errors
+        ok = [json.dumps(make_assistant("gen-1")), json.dumps(make_result())]
+        assert classify_stream_errors(ok) == (None, None)
+        limit = [json.dumps({"type": "result", "is_error": True, "api_error_status": 402,
+                             "result": 'API Error: 402 {"error":{"message":"Key limit exceeded","code":402}}'})]
+        assert classify_stream_errors(limit) == ("config", {"exceeded": "run", "exceeded_reason": "limit_usd"})
+        routing = [json.dumps({"type": "assistant", "message": {"id": "x", "content": [
+            {"type": "text", "text": 'API Error: 404 {"error":{"message":"No endpoints found for z-ai/glm-5.3-flash.","type":"not_found"}}'}]}})]
+        assert classify_stream_errors(routing) == ("config", None)
+        overloaded = [json.dumps({"type": "result", "is_error": True, "api_error_status": 529, "result": "API Error: 529 overloaded"})]
+        assert classify_stream_errors(overloaded) == ("infra", None)
+        agent_side = [json.dumps({"type": "result", "is_error": True, "subtype": "error_max_turns", "result": "max turns"})]
+        assert classify_stream_errors(agent_side) == (None, None)
+

@@ -139,4 +139,5 @@ def build_plan(config, roles: Optional[dict] = None, *, runner: str = "claude-co
         attribution=orc.attribution,
         cli_budget_inflation=orc.cli_budget_inflation,
         budget_run_usd=orc.budget.run_usd,
+        management_key_env=orc.management_key_env,
     )

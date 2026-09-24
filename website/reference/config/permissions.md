@@ -157,7 +157,9 @@ flowchart TD
     `.eval-permissions.json` is written next to the case workspace's settings
     file (`case_ws/.claude/`) when one exists, otherwise into the workspace root.
     This avoids mutating the repository when the workspace *is* the repo root
-    (`runner.workspace_mode: repo`).
+    (`runner.workspace_mode: repo`). When an OpenRouter provider plan is active the
+    same file is named `.eval-overlay.json`, is written with mode 0600 and also
+    carries the plan's `env` block; it exists whether or not path-based rules do.
 
 The same compiler is used to emit valid rules for both the local runner and the
 Harbor task package, so path-based protection behaves identically across

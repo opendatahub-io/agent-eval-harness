@@ -200,8 +200,13 @@ def _provider_block(plan) -> dict:
 def _budget_block(run_result: dict, plan, cost_usd) -> dict:
     invocation = _num((run_result.get("eval_params") or {}).get("max_budget_usd"))
     existing = run_result.get("budget") if isinstance(run_result.get("budget"), dict) else {}
-    cli_cap = existing.get("cli_cap_usd")
-    if cli_cap is None and invocation is not None:
+    declared = (run_result.get("eval_params") or {}).get("budget")
+    declared = declared if isinstance(declared, dict) else {}
+    # The host records the cap it actually passed to the CLI (null = no flag,
+    # cap <= 0); derive it only for payloads written without that record.
+    cli_cap = existing.get("cli_cap_usd", declared.get("cli_cap_usd"))
+    if cli_cap is None and "cli_cap_usd" not in existing and "cli_cap_usd" not in declared \
+            and invocation is not None and invocation > 0:
         cli_cap = round(invocation * float(plan.cli_budget_inflation), 4)
     run_usd = plan.budget_run_usd
     block = {
@@ -250,6 +255,10 @@ def reconcile(run_result: dict, ledger_rows: Iterable[dict], plan=None, *, key_u
             key_delta = _num(key_rows[-1].get("cost_usd"))
     dedicated = bool(plan is not None and (plan.key_scope == "per-run"
                                            or getattr(getattr(plan, "budget", None), "dedicated_key", False)))
+    # A zero/negative delta while requests happened is inconsistent (read too
+    # early, or the counter never moved): a warning, never a small number
+    # standing in for spend.
+    usable_delta = key_delta if (key_delta is not None and key_delta > 0) else None
 
     per_case = out.get("per_case") if is_aggregate else None
     if isinstance(per_case, dict) and per_case:
@@ -259,12 +268,13 @@ def reconcile(run_result: dict, ledger_rows: Iterable[dict], plan=None, *, key_u
         case_costs = [_num((c or {}).get("cost_usd")) for c in per_case.values()]
         case_sources = {(c or {}).get("cost_source") for c in per_case.values()
                         if isinstance(c, dict) and c.get("cost_source")}
+        out["cases_priced"] = sum(1 for c in case_costs if c is not None)
         if all(c is not None for c in case_costs):
             out["cost_usd"] = round(sum(case_costs), 6)
             out["cost_source"] = (case_sources.pop() if len(case_sources) == 1
                                   else "openrouter:generation")
-        elif key_delta is not None:
-            out["cost_usd"], out["cost_source"] = key_delta, "openrouter:key-usage"
+        elif usable_delta is not None:
+            out["cost_usd"], out["cost_source"] = usable_delta, "openrouter:key-usage"
         else:
             out["cost_usd"] = None
             out["cost_source"] = "runner:estimate" if (allow_estimate and estimate is not None) else "unavailable"
@@ -281,10 +291,8 @@ def reconcile(run_result: dict, ledger_rows: Iterable[dict], plan=None, *, key_u
             if deviation > CROSS_CHECK_TOLERANCE:
                 warnings.append(f"ledger sum ${ledger_sum:.4f} differs from key-usage delta "
                                 f"${key_delta:.4f} by {deviation:.1%}")
-    elif key_delta is not None and not is_aggregate:
-        out["cost_usd"], out["cost_source"] = key_delta, "openrouter:key-usage"
-        if key_delta <= 0:
-            warnings.append("key-usage delta is not positive; the key saw no spend or was read too early")
+    elif usable_delta is not None and not is_aggregate:
+        out["cost_usd"], out["cost_source"] = usable_delta, "openrouter:key-usage"
     elif ledger_sum is not None and coverage_ratio is None:
         # No transcript ids to measure coverage against (offline re-reconcile);
         # the ledger is all there is.
@@ -294,6 +302,8 @@ def reconcile(run_result: dict, ledger_rows: Iterable[dict], plan=None, *, key_u
         out["cost_source"] = "runner:estimate" if (allow_estimate and estimate is not None) else "unavailable"
         if out["cost_source"] == "runner:estimate":
             out["cost_usd"] = estimate
+    if key_delta is not None and key_delta <= 0 and (cov.get("requests") or 0) > 0:
+        warnings.append("key-usage delta is not positive; the key saw no spend or was read too early")
     if out.get("cost_source") in ("openrouter:generation", "openrouter:key-usage") and coverage_ratio is not None \
             and coverage_ratio < 1.0:
         warnings.append(f"{cov['requests_missing_cost'] + cov.get('requests_pending', 0)} of "
@@ -338,6 +348,42 @@ def aggregate_case_costs(case_results: dict) -> tuple:
     return round(sum(values), 6), priced
 
 
+def _load_json(path: Path) -> Optional[dict]:
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def reconcile_run_dir(run_dir, *, plan=None, ledger=None, key_usage=None, catalog=None,
+                      allow_estimate: bool = False) -> Optional[dict]:
+    """The final reconcile pass over a run dir: every ``cases/<id>/run_result.json``
+    (rows that landed after the case was written), then the run-level file with
+    the refreshed per-case values and the key-usage delta. Stale ``cost_warnings``
+    are recomputed. Returns the run payload, or None without a run-level file."""
+    run_dir = Path(run_dir)
+    if ledger is None:
+        ledger = Ledger.for_run(run_dir)
+    cases: dict = {}
+    for case_file in sorted(run_dir.glob("cases/*/run_result.json")):
+        payload = _load_json(case_file)
+        if payload is None:
+            continue
+        payload.pop("cost_warnings", None)
+        cases[case_file.parent.name] = write_run_result(
+            case_file, payload, plan=plan, ledger=ledger, catalog=catalog, allow_estimate=allow_estimate)
+    run_file = run_dir / "run_result.json"
+    payload = _load_json(run_file)
+    if payload is None:
+        return None
+    payload.pop("cost_warnings", None)
+    if isinstance(payload.get("per_case"), dict):
+        payload["per_case"] = {cid: cases.get(cid, rec) for cid, rec in payload["per_case"].items()}
+    return write_run_result(run_file, payload, plan=plan, ledger=ledger, key_usage=key_usage,
+                            catalog=catalog, allow_estimate=allow_estimate)
+
+
 def write_run_result(path, payload: dict, *, plan=None, ledger=None, key_usage=None,
                      catalog=None, allow_estimate: bool = False) -> dict:
     """The one writer of ``run_result.json``: reconcile, then dump.
@@ -367,8 +413,14 @@ def write_run_result(path, payload: dict, *, plan=None, ledger=None, key_usage=N
                            allow_estimate=allow_estimate, case_id=case_id,
                            is_aggregate=is_aggregate)
     if plan is not None and reconciled.get("cost_source") == "unavailable":
-        print(f"WARNING: {path}: cost_source unavailable — no /generation row and no "
-              "key-usage delta landed for this write", file=sys.stderr)
+        cov = reconciled.get("cost_coverage") if isinstance(reconciled.get("cost_coverage"), dict) else {}
+        pending = ((cov.get("requests") or 0) - (cov.get("requests_priced") or 0)
+                   - (cov.get("requests_missing_cost") or 0))
+        # A per-case write normally lands inside the /generation lag: ids still
+        # pending are not a failure yet (the run-end pass converges them).
+        if pending <= 0:
+            print(f"WARNING: {path}: cost_source unavailable — no /generation row and no "
+                  "key-usage delta landed for this write", file=sys.stderr)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         json.dump(reconciled, f, indent=2)

@@ -310,6 +310,11 @@ def test_write_run_result_scopes_case_rows_and_reads_the_run_ledger(tmp_path, ca
     c3 = write_run_result(tmp_path / "cases" / "c3" / "run_result.json",
                           {"cost_usd": 3.0, "message_ids": ["gen-9"]}, plan=plan)
     assert c3["cost_usd"] is None and c3["cost_source"] == "unavailable"
+    # gen-9 has no row yet: still inside the backfill window, so no warning —
+    # the run-end pass converges it. A case with nothing pending does warn.
+    assert "cost_source unavailable" not in capsys.readouterr().err
+    write_run_result(tmp_path / "cases" / "c4" / "run_result.json",
+                     {"cost_usd": 3.0, "message_ids": []}, plan=plan)
     assert "cost_source unavailable" in capsys.readouterr().err
     # run-level aggregate follows the per-case arithmetic: c2 is unpriced, so
     # the run total is not a partial sum — null (no key-usage delta landed).

@@ -63,6 +63,12 @@ class EvalRunner(ABC):
     def name(self) -> str:
         """Short identifier for this runner (e.g. 'claude-code', 'agent-sdk')."""
 
+    def bind_provider(self, binding) -> None:
+        """Attach the provider-session binding for the next ``execute()``
+        (spec 014): a runner routed through a provider plan sights generation
+        ids through it. Default: no provider integration."""
+        return None
+
     @abstractmethod
     def execute(
         self,

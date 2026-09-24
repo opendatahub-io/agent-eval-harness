@@ -48,7 +48,7 @@ Bedrock).
 | `ANTHROPIC_VERTEX_REGION` | Vertex region for **synthetic dataset generation** (`/eval-dataset`), which builds an `AnthropicVertex` client directly. Defaults to `us-east5`. |
 | `ANTHROPIC_MODEL` | Default model hint forwarded to Harbor containers. |
 | `ANTHROPIC_DEFAULT_OPUS_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL` | Map the `opus`/`sonnet`/`haiku` aliases to specific model IDs. |
-| `OPENROUTER_API_KEY` | OpenRouter inference key for `openrouter:/…` judges and, once the direct agent transport lands, the agent-under-test. **Env-only**: the variable name is configurable (`models.providers.openrouter.api_key_env`) but the key may never appear in an eval config or any `env:` surface — such entries fail at load. |
+| `OPENROUTER_API_KEY` | OpenRouter inference key for `openrouter:/…` judges and for the agent-under-test when `models.skill` is `openrouter:/…` (the agent receives it as `ANTHROPIC_AUTH_TOKEN` through the run's settings overlay / `--agent-env`, never this variable). **Env-only**: the variable name is configurable (`models.providers.openrouter.api_key_env`) but the key may never appear in an eval config or any `env:` surface — such entries fail at load. |
 | `OPENROUTER_MANAGEMENT_KEY` | OpenRouter management key, read only at `routing.enforcement: key-guardrail` to provision a per-run key. Env-only, same rule as above. |
 | `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT` | Standard GCP credential/project vars, forwarded when set. |
 | `OPENAI_API_KEY` (and other `OPENAI_*`) | OpenAI credentials for `runner.type: codex`; forwarded to the `codex exec` subprocess and into Harbor containers running the Codex agent. |
@@ -114,7 +114,8 @@ Read by `agent_eval.harbor.podman` when running `/eval-run --runner harbor` (or
 | `AGENT_EVAL_PODMAN_KEEP_RUN` | *(off)* | Set to `1` to keep the trial container after the run for `podman logs` / `podman exec` debugging. |
 | `AGENT_EVAL_PODMAN_PROJECT_DIR` | *(none)* | Host directory of project resources (skills, scripts, CLAUDE.md) to bind-mount read-only — no project-specific image needed. |
 | `AGENT_EVAL_PODMAN_PROJECT_MOUNT` | `/opt/project` | Mount point inside the container for `AGENT_EVAL_PODMAN_PROJECT_DIR`. |
-| `AGENT_EVAL_PODMAN_GCP_CREDENTIALS_FILE` | *(none)* | Path to a GCP service-account key file, mounted read-only at `/var/creds/creds.json` and exported as `GOOGLE_APPLICATION_CREDENTIALS`. |
+| `AGENT_EVAL_PODMAN_GCP_CREDENTIALS_FILE` | *(none)* | Path to a GCP service-account key file, mounted read-only at `/var/creds/creds.json` and exported as `GOOGLE_APPLICATION_CREDENTIALS`. Skipped while an OpenRouter plan is active. |
+| `AGENT_EVAL_PODMAN_PLAN_EXCLUDE` | *(set by the harness)* | Comma-separated host variables the podman environment must not forward while an OpenRouter plan is active (the Vertex/Bedrock/Anthropic set and the provider key variables); `harbor/run.py` sets it, operators never do. |
 
 !!! warning "No security boundary on Podman"
     The Podman container runs on the host, so API keys (`ANTHROPIC_API_KEY`,

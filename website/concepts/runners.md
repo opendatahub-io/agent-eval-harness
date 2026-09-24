@@ -157,7 +157,9 @@ the cost the CLI printed.
 - **Permissions** — simple string patterns become `--allowed-tools` /
   `--disallowed-tools`; path-based rules are compiled into a temporary
   `.eval-permissions.json` merged with the workspace settings. See
-  [permissions](../reference/config/permissions.md).
+  [permissions](../reference/config/permissions.md). Under an OpenRouter plan the
+  same overlay (then named `.eval-overlay.json`, mode 0600) also carries the
+  agent's env block — see [models → providers](../reference/config/models.md#how-the-agent-reaches-openrouter).
 - **Subagents** — session persistence stays on so `SubagentStop` hooks can copy
   subagent transcripts; the session dir under `~/.claude/projects/` is cleaned up
   post-run.

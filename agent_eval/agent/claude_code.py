@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Optional
 
@@ -14,10 +15,14 @@ from .base import EvalRunner, RunResult
 from .stream_capture import (
     make_prompt_event, inject_timestamp, extract_usage,
     count_subagent_turns, count_subagent_turns_by_model, setup_subagent_hook,
+    assistant_message_id,
+    classify_stream_errors,
     message_ids_for_run,
 )
 from agent_eval.tools.permissions import compile_permission_rules
 from agent_eval.config import resolve_plugin_dir, resolve_plugin_skill_roots
+from agent_eval.providers.base import parse_agent_model
+from agent_eval.providers.env import MANAGED_ENV_KEYS, settings_env_block
 
 _print_lock = threading.Lock()
 
@@ -216,6 +221,8 @@ class ClaudeCodeRunner(EvalRunner):
             permission_mode=overrides.get(
                 "permission_mode", config.runner.permission_mode),
             log_prefix=log_prefix,
+            provider_plan=overrides.get("provider_plan"),
+            run_id=overrides.get("run_id"),
         )
 
     def __init__(
@@ -231,7 +238,15 @@ class ClaudeCodeRunner(EvalRunner):
         log_prefix: Optional[str] = None,
         effort: Optional[str] = None,
         permission_mode: Optional[str] = None,
+        provider_plan=None,
+        run_id: Optional[str] = None,
     ):
+        # spec 014: the plan (an OpenRouter-routed run) is a constructor
+        # argument — it decides the env the CLI starts with, the id on the
+        # wire and the budget flag; the per-case binding arrives per execute().
+        self._plan = provider_plan
+        self._run_id = run_id
+        self._binding = None
         self._permissions = permissions or {}
         self._subagent_model = subagent_model
         self._plugin_dirs = plugin_dirs or []
@@ -254,6 +269,11 @@ class ClaudeCodeRunner(EvalRunner):
                 f"Invalid permission_mode '{permission_mode}'. "
                 f"Must be one of: {sorted(self._VALID_PERMISSION_MODES)}")
         self._permission_mode = permission_mode
+
+    def bind_provider(self, binding) -> None:
+        """The provider session's per-case binding: generation ids are sighted
+        through it as the stream is read, the hook's ids after the run."""
+        self._binding = binding
 
     @property
     def name(self) -> str:
@@ -281,16 +301,19 @@ class ClaudeCodeRunner(EvalRunner):
         timeout_s: int = 600,
         extra_env: Optional[dict] = None,
     ) -> RunResult:
+        plan = self._plan
         cmd = [
             "claude",
             "--print",
-            "--model", model,
+            "--model", _wire_model(model, plan),
             "--output-format", "stream-json" if self._log_prefix else "json",
-            "--max-budget-usd", str(max_budget_usd),
             # Session persistence must stay ON so subagent transcript files
             # survive long enough for the SubagentStop hook to copy them.
             # The session directory is cleaned up post-run (see below).
         ]
+        cap_flag = _cli_budget_flag(max_budget_usd, plan)
+        if cap_flag is not None:
+            cmd.extend(["--max-budget-usd", cap_flag])
         if self._log_prefix:
             cmd.append("--verbose")
 
@@ -335,56 +358,17 @@ class ClaudeCodeRunner(EvalRunner):
             any(isinstance(item, dict) for item in allow) if allow else False
         )
 
-        if has_path_based:
-            # Generate temporary settings file with path-based permissions.
-            # Write to the same directory as settings_path (case workspace) to avoid
-            # modifying the repo when workspace is the repo root (in-repo mode).
-            if settings_path and Path(settings_path).exists():
-                # Write next to settings file in case workspace (case_ws/.claude/)
-                temp_settings_file = Path(settings_path).parent / ".eval-permissions.json"
-            else:
-                # No settings file - use workspace (safe when workspace != repo root)
-                temp_settings_file = workspace / ".eval-permissions.json"
-            settings_config = {}
-
-            # If there's an existing settings file, load it first
-            if settings_path and Path(settings_path).exists():
-                try:
-                    with open(settings_path) as f:
-                        settings_config = json.load(f)
-                except Exception:
-                    settings_config = {}
-
-            # Ensure permissions section exists
-            if "permissions" not in settings_config:
-                settings_config["permissions"] = {}
-
-            # Compile eval.yaml deny/allow rules into Claude Code patterns via the
-            # shared compiler (gitignore-recursive paths; Bash skipped as a no-op),
-            # merging with any rules already in the workspace settings (e.g. the
-            # repo-write protection). See agent_eval/tools/permissions.py.
-            if deny:
-                existing = settings_config["permissions"].get("deny")
-                merged = list(existing) if isinstance(existing, list) else []
-                for pattern in compile_permission_rules(deny, harden_bash=True):
-                    if pattern not in merged:
-                        merged.append(pattern)
-                settings_config["permissions"]["deny"] = merged
-
-            if allow:
-                existing = settings_config["permissions"].get("allow")
-                merged = list(existing) if isinstance(existing, list) else []
-                for pattern in compile_permission_rules(allow):
-                    if pattern not in merged:
-                        merged.append(pattern)
-                settings_config["permissions"]["allow"] = merged
-
-            # Write temporary settings file
-            temp_settings_file.write_text(json.dumps(settings_config, indent=2))
-
-            # Override with temporary settings file to ensure path-based rules apply
+        if has_path_based or plan is not None:
+            # One settings overlay carries what must beat every other layer:
+            # the path-based permission rules compiled from eval.yaml and,
+            # under a provider plan, the Direct transport env block (the plan
+            # wins for the managed keys; spec 014). It is applied last via
+            # --settings and removed in the finally below.
+            temp_settings_file = self._write_settings_overlay(
+                workspace, settings_path,
+                deny if has_path_based else [], allow if has_path_based else [], plan)
             settings_path = temp_settings_file
-        else:
+        if not has_path_based:
             # Simple format - use CLI flags directly
             if deny:
                 cmd.extend(["--disallowed-tools", ",".join(deny)])
@@ -411,7 +395,10 @@ class ClaudeCodeRunner(EvalRunner):
         timed_out = False
 
         # Track temp settings file for cleanup
-        cleanup_settings = temp_settings_file if has_path_based and temp_settings_file else None
+        cleanup_settings = temp_settings_file
+        env = self._build_env(extra_env=extra_env)
+        cost_source = _runner_cost_source(env, plan)
+        msg_index = 0
 
         try:
             proc = subprocess.Popen(
@@ -421,7 +408,7 @@ class ClaudeCodeRunner(EvalRunner):
                 stderr=subprocess.PIPE,
                 cwd=str(workspace),
                 text=True,
-                env=self._build_env(extra_env=extra_env),
+                env=env,
             )
 
             proc.stdin.write(prompt)
@@ -467,7 +454,15 @@ class ClaudeCodeRunner(EvalRunner):
                                 and obj.get("type") == "system"
                                 and obj.get("subtype") == "init"):
                             resolved_model = obj.get("model")
-                        msg = _extract_progress(obj)
+                        if self._binding is not None:
+                            # Sight generation ids as the stream is read, so
+                            # the backfill starts before the process exits.
+                            mid, mecho = assistant_message_id(obj)
+                            if mid:
+                                msg_index += 1
+                                self._binding.sight(mid, message_index=msg_index,
+                                                    model_echo=mecho)
+                        msg = _extract_progress(obj, estimate=plan is not None)
                         if msg:
                             if msg.startswith("PERMISSION DENIED"):
                                 permission_denials += 1
@@ -515,13 +510,7 @@ class ClaudeCodeRunner(EvalRunner):
             if denial_list:
                 timeout_stderr += (f"\nWARNING: {len(denial_list)} permission "
                                    f"denial(s) detected during execution")
-
-            # Clean up temporary settings file if created
-            if cleanup_settings and cleanup_settings.exists():
-                try:
-                    cleanup_settings.unlink()
-                except Exception:
-                    pass  # Best effort cleanup
+            message_ids = message_ids_for_run(stream_ids, workspace / "subagents")
 
             return RunResult(
                 exit_code=-1,
@@ -536,21 +525,22 @@ class ClaudeCodeRunner(EvalRunner):
                 per_model_usage=per_model_usage,
                 per_model_turns=per_model_turns,
                 permission_denials=denial_list,
-                message_ids=message_ids_for_run(stream_ids, workspace / "subagents"),
+                message_ids=message_ids,
+                **self._provenance(stdout_lines, message_ids, cost_usd, cost_source),
             )
         except Exception as e:
             duration = time.monotonic() - start
-
-            # Clean up temporary settings file if created
-            if cleanup_settings and cleanup_settings.exists():
-                try:
-                    cleanup_settings.unlink()
-                except Exception:
-                    pass  # Best effort cleanup
-
             return RunResult(
                 exit_code=-1, stdout="", stderr=str(e), duration_s=duration,
             )
+        finally:
+            # The overlay may hold the plan's literal key: gone on every path
+            # (normal, timeout, KeyboardInterrupt, post-processing errors).
+            if cleanup_settings is not None:
+                try:
+                    cleanup_settings.unlink()
+                except OSError:
+                    pass
 
         duration = time.monotonic() - start
         stdout_text = "\n".join(stdout_lines)
@@ -621,13 +611,7 @@ class ClaudeCodeRunner(EvalRunner):
                 f".claude/skills."
             )
 
-        # Clean up temporary settings file if created
-        if cleanup_settings and cleanup_settings.exists():
-            try:
-                cleanup_settings.unlink()
-            except Exception:
-                pass  # Best effort cleanup
-
+        message_ids = message_ids_for_run(stream_ids, workspace / "subagents")
         return RunResult(
             exit_code=exit_code,
             stdout=stdout_text,
@@ -642,8 +626,81 @@ class ClaudeCodeRunner(EvalRunner):
             per_model_turns=per_model_turns,
             permission_denials=denial_list,
             raw_output=raw_output,
-            message_ids=message_ids_for_run(stream_ids, workspace / "subagents"),
+            message_ids=message_ids,
+            **self._provenance(stdout_lines, message_ids, cost_usd, cost_source),
         )
+
+    def _provenance(self, stdout_lines, message_ids, cost_usd, cost_source) -> dict:
+        """The cost-provenance RunResult fields (spec 014): hand the binding
+        every id the stream did not show (subagent transcripts, the hook's own
+        ids), classify the run's visible provider errors, and label the CLI's
+        own number — an estimate under a plan (Claude Code prices at Anthropic
+        rates), ``runner:reported`` on Anthropic/Vertex."""
+        if self._binding is not None:
+            self._binding.after_run(message_ids)
+        error_class, budget = classify_stream_errors(stdout_lines)
+        return {
+            "cost_source": cost_source,
+            "cost_usd_estimate": cost_usd if self._plan is not None else None,
+            "error_class": error_class,
+            "budget": budget,
+        }
+
+    def _write_settings_overlay(self, workspace, settings_path, deny, allow, plan) -> Path:
+        """Write the per-run settings overlay and return its path.
+
+        Written next to the case settings file when there is one (the case
+        workspace, never the repo in in-repo mode), else in the workspace.
+        Path-based ``deny``/``allow`` rules are compiled and merged over the
+        existing rules; under a ``plan`` the ``env`` block becomes
+        ``{**existing_env, **settings_env_block(plan, secrets="literal")}`` —
+        the plan wins for the managed keys, everything else is kept — and the
+        file is 0600 because it holds the inference key.
+        """
+        base = Path(settings_path) if settings_path and Path(settings_path).exists() else None
+        target_dir = base.parent if base is not None else Path(workspace)
+        overlay = target_dir / (".eval-overlay.json" if plan is not None else ".eval-permissions.json")
+        settings_config: dict = {}
+        if base is not None:
+            try:
+                settings_config = json.loads(base.read_text())
+            except Exception:
+                settings_config = {}
+            if not isinstance(settings_config, dict):
+                settings_config = {}
+        if deny or allow:
+            # Compile eval.yaml deny/allow rules into Claude Code patterns via
+            # the shared compiler (gitignore-recursive paths; Bash skipped as
+            # a no-op), merging with any rules already in the workspace
+            # settings (e.g. the repo-write protection).
+            perms = settings_config.setdefault("permissions", {})
+            if deny:
+                existing = perms.get("deny")
+                merged = list(existing) if isinstance(existing, list) else []
+                for pattern in compile_permission_rules(deny, harden_bash=True):
+                    if pattern not in merged:
+                        merged.append(pattern)
+                perms["deny"] = merged
+            if allow:
+                existing = perms.get("allow")
+                merged = list(existing) if isinstance(existing, list) else []
+                for pattern in compile_permission_rules(allow):
+                    if pattern not in merged:
+                        merged.append(pattern)
+                perms["allow"] = merged
+        if plan is not None:
+            existing_env = settings_config.get("env")
+            existing_env = dict(existing_env) if isinstance(existing_env, dict) else {}
+            block = {k: v for k, v in settings_env_block(plan, secrets="literal").items()
+                     if v is not None}
+            settings_config["env"] = {**existing_env, **block}
+        data = json.dumps(settings_config, indent=2)
+        fd = os.open(overlay, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(data)
+        if plan is not None:
+            os.chmod(overlay, 0o600)      # O_CREAT's mode is umask-masked / ignored on reuse
+        return overlay
 
     def _staged_plugin_dirs(self, workspace: Path) -> list:
         """Stage every configured plugin into the workspace; return the copies.
@@ -713,8 +770,20 @@ class ClaudeCodeRunner(EvalRunner):
     }
 
     def _build_env(self, extra_env=None):
-        """Build subprocess environment with allowlisted keys only."""
+        """Build subprocess environment with allowlisted keys only.
+
+        Under a provider plan (spec 014) every managed key is removed from the
+        ambient copy first — routing must not depend on a settings-env empty
+        string overriding a non-empty process value, and the host's real
+        ``ANTHROPIC_API_KEY``/``ANTHROPIC_AUTH_TOKEN`` can never reach the CLI,
+        its subagents or its hook children. The provider key variables are
+        not in the allowlist: the agent sees the inference key only as
+        ``ANTHROPIC_AUTH_TOKEN`` in the overlay.
+        """
         env = {k: v for k, v in os.environ.items() if k in self._SAFE_ENV_KEYS}
+        if self._plan is not None:
+            for k in MANAGED_ENV_KEYS:
+                env.pop(k, None)
         for k, v in self._env.items():
             if v is None:
                 continue
@@ -727,13 +796,52 @@ class ClaudeCodeRunner(EvalRunner):
         if extra_env:
             for k, v in extra_env.items():
                 env[k] = str(v)
-        if self._subagent_model:
+        if self._subagent_model and self._plan is None:
+            # Under a plan the overlay owns the alias (bare id, plan wins).
             env["CLAUDE_CODE_SUBAGENT_MODEL"] = self._subagent_model
+        if self._binding is not None and getattr(self._binding, "hook_ids_path", None):
+            hook_ids = Path(self._binding.hook_ids_path)
+            hook_ids.parent.mkdir(parents=True, exist_ok=True)
+            env["AGENT_EVAL_HOOK_IDS"] = str(hook_ids)
         if self._mlflow_experiment:
             env["MLFLOW_EXPERIMENT_NAME"] = self._mlflow_experiment
         if self._mlflow_tracking_uri:
             env["MLFLOW_TRACKING_URI"] = self._mlflow_tracking_uri
         return env
+
+
+def _wire_model(model, plan):
+    """The id on the wire: the bare ``slug:variants`` under a plan (the URI
+    scheme is the harness's, not the CLI's); the value as given otherwise."""
+    if plan is None or not model:
+        return model
+    try:
+        return parse_agent_model(model).id
+    except ValueError:
+        return model
+
+
+def _cli_budget_flag(max_budget_usd, plan):
+    """``--max-budget-usd`` value. Without a plan: unchanged. Under a plan the
+    cap is multiplied by ``cli_budget_inflation`` (the CLI enforces it on its
+    Anthropic-priced estimate, 2–60× the real OpenRouter cost) and a cap
+    ``<= 0``/``None`` emits **no flag** — the CLI rejects ``0`` (probe #23)."""
+    if plan is None:
+        return str(max_budget_usd)
+    if max_budget_usd is None or max_budget_usd <= 0:
+        return None
+    return str(round(max_budget_usd * float(plan.cli_budget_inflation), 6))
+
+
+def _runner_cost_source(env, plan):
+    """What the CLI's ``total_cost_usd`` is: an estimate under a plan or behind
+    an operator endpoint (any ``ANTHROPIC_BASE_URL`` host other than
+    ``api.anthropic.com`` in the effective env), ``runner:reported`` otherwise."""
+    if plan is not None:
+        return "runner:estimate"
+    base = (env or {}).get("ANTHROPIC_BASE_URL") or ""
+    host = urllib.parse.urlsplit(base).hostname if base else None
+    return "runner:estimate" if host and host != "api.anthropic.com" else "runner:reported"
 
 
 def _billed_cost(cost_usd, per_model_usage):
@@ -846,8 +954,10 @@ def _is_permission_denial(text: str) -> bool:
     ))
 
 
-def _extract_progress(obj: dict) -> str:
-    """Extract a human-readable progress message from a stream-json event."""
+def _extract_progress(obj: dict, estimate: bool = False) -> str:
+    """Extract a human-readable progress message from a stream-json event.
+    ``estimate`` labels the result line's cost as the CLI's estimate (under a
+    provider plan nobody should read it as spend)."""
     t = obj.get("type")
 
     if t == "user":
@@ -897,6 +1007,6 @@ def _extract_progress(obj: dict) -> str:
     elif t == "result":
         cost = obj.get("total_cost_usd", 0)
         turns = obj.get("num_turns", 0)
-        return f"Done ({turns} turns, ${cost:.2f})"
+        return f"Done ({turns} turns, {'est. ' if estimate else ''}${cost:.2f})"
 
     return ""

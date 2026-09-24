@@ -311,3 +311,21 @@ def test_interception_handlers_carry_the_plan_hook_model(tmp_path):
     handler_data, _ = build_handlers(_config(tmp_path, "  skill: sonnet\n  hook: claude-haiku-4-5\n"))
     assert handler_data["hook_model"] == "claude-haiku-4-5"
 
+
+def test_plan_attach_and_close_delegate_to_the_session(tmp_path, monkeypatch):
+    class _Session:
+        closed = 0
+
+        def close(self):
+            self.closed += 1
+
+    plan = _plan()
+    plan.close()                                   # no session: a no-op
+    session = _Session()
+    assert plan.attach(session) is plan and plan.session is session
+    plan.close()
+    assert session.closed == 1
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    built = build_plan(_config(tmp_path, _ROUTED), run_id="r")
+    assert built.management_key_env == "OPENROUTER_MANAGEMENT_KEY" and built.session is None
+

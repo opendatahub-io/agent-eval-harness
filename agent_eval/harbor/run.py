@@ -37,6 +37,11 @@ from agent_eval.config import (
 from agent_eval.harbor import results as results_mod
 from agent_eval.harbor import tasks as tasks_mod
 from agent_eval.harbor.reward import _load_score_module
+from agent_eval.providers.base import ConfigError
+from agent_eval.providers.env import MANAGED_ENV_KEYS, settings_env_block
+from agent_eval.providers.openrouter.plan import build_plan, effective_roles, plan_is_active
+
+SESSION_FACTORY = None       # tests inject a ProviderSession subclass with fake timing
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -196,10 +201,19 @@ def _harbor_agent_kwargs(config: EvalConfig, agent_name: str) -> list[str]:
     return [f"reasoning_effort={effort}"] if effort else []
 
 
-def _resolve_harbor_agent_env(config: EvalConfig) -> dict[str, str]:
-    """Resolve eval/runner env for Harbor's agent process."""
+def _resolve_harbor_agent_env(config: EvalConfig, plan=None) -> dict[str, str]:
+    """Resolve eval/runner env for Harbor's agent process.
+
+    Under a provider ``plan`` (spec 014) the Direct transport env block is
+    merged **last** so it wins; its key travels as a ``$VAR`` reference that
+    the resolution below turns into a carrier value — never a literal in the
+    config or in argv. Harbor merges ``--agent-env`` last into the agent's
+    environment, so the container's Claude Code sees exactly this block.
+    """
     resolved: dict[str, str] = {}
     configured = {**config.execution.env, **config.runner.env}
+    if plan is not None:
+        configured.update(settings_env_block(plan, secrets="ref", target="harbor_carrier"))
     for key, value in configured.items():
         if value is None:
             continue
@@ -216,7 +230,7 @@ def _resolve_harbor_agent_env(config: EvalConfig) -> dict[str, str]:
 _ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def _harbor_agent_env_args(config: EvalConfig) -> tuple[list[str], dict[str, str]]:
+def _harbor_agent_env_args(config: EvalConfig, plan=None) -> tuple[list[str], dict[str, str]]:
     """Build value-free Harbor argv plus its process-environment carriers.
 
     Harbor resolves ``${NAME}`` templates in AgentConfig.env immediately before
@@ -228,13 +242,57 @@ def _harbor_agent_env_args(config: EvalConfig) -> tuple[list[str], dict[str, str
     """
     args: list[str] = []
     child_env: dict[str, str] = {}
-    for index, (key, value) in enumerate(_resolve_harbor_agent_env(config).items()):
+    for index, (key, value) in enumerate(_resolve_harbor_agent_env(config, plan).items()):
         if not _ENV_KEY.fullmatch(key):
             raise ValueError(f"Invalid agent environment variable name: {key!r}")
         carrier = f"AGENT_EVAL_HARBOR_AGENT_ENV_{index}"
         child_env[carrier] = value
         args += ["--agent-env", f"{key}=${{{carrier}}}"]
     return args, child_env
+
+
+def _openrouter_judge_configured(config: EvalConfig, judge_model: str | None = None) -> bool:
+    """Whether the in-container verifier runs an ``openrouter:/`` judge (then
+    the operator key must reach the container as ``OPENROUTER_API_KEY``)."""
+    models = [judge_model, getattr(config.models, "judge", None)]
+    models += [getattr(jc, "model", None) for jc in config.judges]
+    return any(isinstance(m, str) and m.startswith("openrouter:") for m in models)
+
+
+def _plan_child_env_exclusions(plan, *, keep_api_key: bool) -> set:
+    """Host variables that must not reach the harbor child (and, through it,
+    podman's forwarding) while a plan is active: every managed key — host
+    Vertex/Bedrock settings, ``ANTHROPIC_BASE_URL``/``ANTHROPIC_API_KEY``/
+    ``ANTHROPIC_AUTH_TOKEN`` — the management key, and the inference key
+    variable unless the in-container verifier needs it for an ``openrouter:/``
+    judge (the agent never reads it: its key is ``ANTHROPIC_AUTH_TOKEN``)."""
+    excluded = set(MANAGED_ENV_KEYS) | {plan.management_key_env or "OPENROUTER_MANAGEMENT_KEY"}
+    if not keep_api_key:
+        excluded.add(plan.key_env)
+    return excluded
+
+
+def _start_harbor_session(plan, config: EvalConfig, output_dir: Path, n_concurrent: int):
+    """Preflight before task generation (a failed strict preflight costs
+    nothing), then the run-scoped session. Harbor exposes no live stream, so
+    the backfill polls immediately once the job dir is parsed."""
+    from agent_eval.config import OpenRouterConfig
+    from agent_eval.providers.openrouter.preflight import run_preflight
+    from agent_eval.providers.openrouter.session import ProviderSession
+
+    orc = getattr(getattr(config.models, "providers", None), "openrouter", None) or OpenRouterConfig()
+    pre = run_preflight(plan, level=orc.preflight, run_dir=output_dir)
+    for warning in pre.warnings:
+        print(f"WARNING: preflight: {warning}", file=sys.stderr)
+    factory = SESSION_FACTORY or ProviderSession
+    session = factory(plan, output_dir, parallelism=n_concurrent, snapshot=pre.snapshot,
+                      first_poll_s=0.0).start()
+    plan.attach(session)
+    degraded = f" (degraded: {pre.degraded_reason})" if pre.degraded_reason else ""
+    print(f"Provider: openrouter direct | model: {plan.skill.id} | enforcement: {plan.enforcement} | "
+          f"preflight: {orc.preflight}{degraded} | key exposed to agent: operator key "
+          f"sha256:{plan.key_hash} (enforcement: {plan.enforcement})", file=sys.stderr)
+    return session
 
 
 def _display_command(cmd: list[str]) -> str:
@@ -545,6 +603,41 @@ def run_eval_on_harbor(
         else:
             agent_name = config.runner.type
 
+    # Provider plan (spec 014, Decision 23): the same plan as the local runner,
+    # delivered through --agent-env; podman only in this release.
+    plan = session = None
+    roles = effective_roles(config, {"skill": model})
+    if plan_is_active(roles):
+        if env_import_path != _ENV_IMPORT_PATHS["podman"]:
+            raise ConfigError(
+                "the direct OpenRouter transport runs on the podman Harbor environment in "
+                "this release (Kubernetes/OpenShift land in a later release); pass --env podman")
+        if agent_name != "claude-code":
+            raise ConfigError(f"the direct OpenRouter transport is implemented for the "
+                              f"claude-code Harbor agent; got {agent_name!r}")
+        plan = build_plan(config, roles, runner="harbor-podman", run_id=output_dir.name)
+        session = _start_harbor_session(plan, config, output_dir, n_concurrent)
+        model = plan.skill.id            # -m gets the bare slug:variants
+    try:
+        return _run_eval_on_harbor(
+            config, config_path, plan, session, image=image, model=model, output_dir=output_dir,
+            tasks_dir=tasks_dir, jobs_dir=jobs_dir, arguments=arguments, skill=skill,
+            judge_model=judge_model, cases=cases, n_concurrent=n_concurrent, workdir=workdir,
+            agent_name=agent_name, env_import_path=env_import_path, mounts=mounts,
+            no_llm_judges=no_llm_judges, cpus=cpus, memory_mb=memory_mb, harbor_bin=harbor_bin,
+            regenerate=regenerate)
+    finally:
+        if session is not None:
+            session.close()
+
+
+def _run_eval_on_harbor(
+    config: EvalConfig, config_path: Path, plan, session, *, image, model, output_dir: Path,
+    tasks_dir: Path, jobs_dir: Path, arguments, skill, judge_model, cases, n_concurrent: int,
+    workdir: str, agent_name: str, env_import_path, mounts, no_llm_judges: bool, cpus,
+    memory_mb, harbor_bin: str, regenerate: bool,
+) -> int:
+    """The Harbor run proper; ``run_eval_on_harbor`` owns the plan lifecycle."""
     if no_llm_judges:
         # A threshold naming a model judge cannot be satisfied by a
         # deterministic-only run, whether packages are generated or reused.
@@ -621,7 +714,7 @@ def run_eval_on_harbor(
         cmd += ["--skill", str(root)]
     for kwarg in _harbor_agent_kwargs(config, agent_name):
         cmd += ["--agent-kwarg", kwarg]
-    agent_env_args, harbor_env = _harbor_agent_env_args(config)
+    agent_env_args, harbor_env = _harbor_agent_env_args(config, plan)
     cmd += agent_env_args
     if mounts:
         if env_import_path != _ENV_IMPORT_PATHS["podman"]:
@@ -638,6 +731,14 @@ def run_eval_on_harbor(
     print(f"harbor: {_display_command(cmd)}", file=sys.stderr)
     import signal
     child_env = os.environ.copy()
+    if plan is not None:
+        # Host Vertex/Bedrock/Anthropic variables never enter the container:
+        # scrubbed here (podman's forwarding runs inside this child) and
+        # excluded again by podman.py from the same list — belt and braces.
+        excluded = _plan_child_env_exclusions(
+            plan, keep_api_key=_openrouter_judge_configured(config, judge_model))
+        child_env = {k: v for k, v in child_env.items() if k not in excluded}
+        child_env["AGENT_EVAL_PODMAN_PLAN_EXCLUDE"] = ",".join(sorted(excluded))
     child_env.update(harbor_env)
     proc = subprocess.Popen(cmd, env=child_env)
     def _forward_signal(signum, frame):
@@ -667,6 +768,13 @@ def run_eval_on_harbor(
         print(f"No Harbor job dir under {jobs_dir}", file=sys.stderr)
         return 1
     parsed = results_mod.parse_job(job_dirs[-1])
+    if session is not None:
+        # Gen ids come from the trials' captured stream-json (per trial, exact);
+        # the /generation lag has long passed, so the backfill takes seconds.
+        for trial in parsed.get("trials", []):
+            session.sight_trial(trial.get("message_ids") or [], case_id=trial.get("case_id"))
+        session.finish()
+        results_mod.price_trials(parsed["trials"], session.ledger.read())
 
     # 4. Map into the harness run-dir layout.
     summary = build_summary(parsed, config)
@@ -698,11 +806,21 @@ def run_eval_on_harbor(
         "n_unjudged_steps": parsed.get("n_unjudged_steps", 0),
         "unjudged_steps": parsed.get("unjudged_steps", []),
     }
+    if session is not None:
+        run_meta["trial_costs"] = results_mod.trial_costs(parsed["trials"])
+        if session.snapshot_ref:
+            run_meta["routing"] = {"snapshot": session.snapshot_ref}
     # run_result write-site 9: the Harbor run (the same reconciling writer as
     # execute.py; with no plan and no ledger file the payload is unchanged).
     from agent_eval.providers.reconcile import write_run_result
 
-    run_meta = write_run_result(output_dir / "run_result.json", run_meta)
+    run_meta = write_run_result(
+        output_dir / "run_result.json", run_meta, plan=plan,
+        ledger=session.ledger if session is not None else None,
+        key_usage=session.key_usage if session is not None else None,
+        catalog=session.catalog if session is not None else None)
+    if session is not None:
+        session.reconciled = True
     # Total cost under the null-cost arithmetic (judge spend stays out of
     # run_result.cost_usd, Decision 15).
     total_cost, total_source = _load_score_module().compute_total_cost(
@@ -805,20 +923,24 @@ def main() -> None:
     env_import = args.environment_import_path or _ENV_IMPORT_PATHS.get(args.env)
     mounts = [_parse_bind_mount(spec) for spec in args.mount]
 
-    code = run_eval_on_harbor(
-        Path(args.config), image=args.image, model=args.model,
-        output_dir=Path(args.output), tasks_dir=Path(args.tasks_dir),
-        jobs_dir=Path(args.jobs_dir), arguments=args.arguments, skill=args.skill,
-        judge_model=args.judge_model, cases=args.cases,
-        n_concurrent=args.n_concurrent, workdir=args.workdir,
-        agent_name=args.agent,
-        env_import_path=env_import,
-        mounts=mounts,
-        no_llm_judges=args.no_llm_judges,
-        cpus=args.cpus,
-        memory_mb=args.memory_mb,
-        regenerate=args.regenerate,
-    )
+    try:
+        code = run_eval_on_harbor(
+            Path(args.config), image=args.image, model=args.model,
+            output_dir=Path(args.output), tasks_dir=Path(args.tasks_dir),
+            jobs_dir=Path(args.jobs_dir), arguments=args.arguments, skill=args.skill,
+            judge_model=args.judge_model, cases=args.cases,
+            n_concurrent=args.n_concurrent, workdir=args.workdir,
+            agent_name=args.agent,
+            env_import_path=env_import,
+            mounts=mounts,
+            no_llm_judges=args.no_llm_judges,
+            cpus=args.cpus,
+            memory_mb=args.memory_mb,
+            regenerate=args.regenerate,
+        )
+    except ConfigError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(2)
     sys.exit(code)
 
 

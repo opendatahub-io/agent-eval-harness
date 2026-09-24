@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional, Protocol
 
@@ -164,6 +164,8 @@ class ProviderPlan:
     cli_budget_inflation: float
     budget_run_usd: Optional[float]
     transport: str = "direct"
+    management_key_env: Optional[str] = None   # never read by the plan; scrubbed from child envs
+    session: Any = field(default=None, compare=False, repr=False)
 
     @property
     def key_hash(self) -> Optional[str]:
@@ -181,11 +183,18 @@ class ProviderPlan:
 
         return settings_env_block(self, secrets=secrets, target=self.target)
 
+    def attach(self, session) -> "ProviderPlan":
+        """Bind the run-scoped session (backfill worker, key-usage reads) whose
+        ``close()`` this plan's ``close()`` delegates to."""
+        object.__setattr__(self, "session", session)
+        return self
+
     def close(self) -> None:
-        """Run-end hook: backfill retry, key-usage settle and per-run key
-        revoke land with the cost substrate and the key guardrail; nothing to
-        do yet."""
-        return None
+        """The single ``finally`` every host wraps around the run: run-end
+        backfill retry, key-usage settle/read and the last reconcile (the
+        per-run key revoke joins at ``key-guardrail``). A no-op with no session."""
+        if self.session is not None:
+            self.session.close()
 
     def __repr__(self) -> str:
         return (f"ProviderPlan(kind={self.kind!r}, transport={self.transport!r}, "

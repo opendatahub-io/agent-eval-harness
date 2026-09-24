@@ -248,6 +248,7 @@ Reply with ONLY the option label text, nothing else."""
             temperature=0,
             messages=[{"role": "user", "content": prompt}],
         )
+        _record_hook_id(response)
         answer = response.content[0].text.strip()
         # Verify the answer matches an option label
         if answer in option_labels:
@@ -265,6 +266,26 @@ Reply with ONLY the option label text, nothing else."""
         print(f"LLM answer failed: {e}", file=sys.stderr)
 
     return None
+
+
+def _record_hook_id(response):
+    """Append the answer's response id to ``$AGENT_EVAL_HOOK_IDS`` (spec 014).
+
+    Under a provider plan the hook inherits the agent's direct env, so this
+    call is real spend on the run's key: the id is a ``gen-…`` generation id
+    the harness backfills as ``role: hook`` (reported as ``hook_cost_usd``).
+    Absent variable = no plan = nothing to record.
+    """
+    path = os.environ.get("AGENT_EVAL_HOOK_IDS")
+    rid = getattr(response, "id", None)
+    if not path or not isinstance(rid, str):
+        return
+    try:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a") as f:
+            f.write(json.dumps({"id": rid, "model": getattr(response, "model", None)}) + "\n")
+    except OSError as e:
+        print(f"hook id not recorded: {e}", file=sys.stderr)
 
 
 def _deny(reason):
