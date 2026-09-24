@@ -171,3 +171,33 @@ class TestPlaceholderModel:
         per_model = count_subagent_turns_by_model(subdir)
         assert per_model == {"claude-opus-4-7": 1}
         assert "<synthetic>" not in per_model
+
+
+class TestMessageIds:
+    """The cost-truth key set (spec 014): root-stream ids merged with the
+    subagent transcripts' ids."""
+
+    def test_subagent_message_ids_dedupes_and_ignores_non_assistant(self, tmp_path):
+        from agent_eval.agent.stream_capture import subagent_message_ids
+
+        sub = tmp_path / "subagents"
+        sub.mkdir()
+        (sub / "a.jsonl").write_text("\n".join([
+            json.dumps({"message": {"role": "assistant", "id": "gen-a1"}}),
+            json.dumps({"message": {"role": "assistant", "id": "gen-a1"}}),   # second block
+            json.dumps({"message": {"role": "user", "id": "u1"}}),
+            "not json",
+            json.dumps({"message": {"role": "assistant", "id": "gen-a2"}}),
+        ]))
+        (sub / "notes.txt").write_text("ignored")
+        assert subagent_message_ids(sub) == {"gen-a1", "gen-a2"}
+        assert subagent_message_ids(tmp_path / "missing") == set()
+
+    def test_message_ids_for_run_merges_root_and_subagents(self, tmp_path):
+        from agent_eval.agent.stream_capture import message_ids_for_run
+
+        sub = tmp_path / "subagents"
+        sub.mkdir()
+        (sub / "a.jsonl").write_text(json.dumps({"message": {"role": "assistant", "id": "gen-sub"}}) + "\n")
+        assert message_ids_for_run({"gen-root", "gen-sub"}, sub) == ["gen-root", "gen-sub"]
+        assert message_ids_for_run(None, tmp_path / "none") == []

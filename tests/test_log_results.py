@@ -132,3 +132,29 @@ class TestCostMetricsFromSummary:
 
         assert _cost_metrics_from_summary({"judges": {}}) == ({}, {})
         assert _cost_metrics_from_summary({}) == ({}, {})
+
+
+@pytest.mark.skipif(not _has_mlflow, reason="mlflow not installed")
+class TestProvenanceTagsAndMetrics:
+    def test_tags_and_metrics_from_a_reconciled_run(self):
+        from log_results import _provenance_metrics, _provenance_tags
+
+        rr = {"cost_source": "openrouter:generation", "cost_confidence": "high",
+              "routing": {"enforcement": "audit", "sha": "9f3a", "violations": [], "audit_complete": True},
+              "provider": {"key_scope": "operator"}, "budget": {"enforcement": "cli-estimate"},
+              "hook_cost_usd": 0.004,
+              "providers": {"novita": {"requests": 3, "cost_usd": 0.03},
+                            "unknown": {"requests": 1, "cost_usd": None}}}
+        assert _provenance_tags(rr) == {
+            "cost_source": "openrouter:generation", "cost_confidence": "high",
+            "routing_enforcement": "audit", "routing_sha": "9f3a", "audit_violations": "0",
+            "audit_clean": "yes", "key_scope": "operator", "budget_enforcement": "cli-estimate"}
+        assert _provenance_metrics(rr) == {"hook_cost_usd": 0.004, "provider/novita/cost_usd": 0.03}
+
+    def test_legacy_run_yields_nothing(self):
+        from log_results import _provenance_metrics, _provenance_tags
+
+        assert _provenance_tags({"cost_usd": 1.0}) == {}
+        assert _provenance_metrics({"cost_usd": 1.0}) == {}
+        dirty = _provenance_tags({"routing": {"violations": [{"gen_id": "x"}], "audit_complete": False}})
+        assert dirty["audit_clean"] == "no" and dirty["audit_violations"] == "1"

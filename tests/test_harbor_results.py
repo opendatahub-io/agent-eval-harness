@@ -469,3 +469,25 @@ def test_malformed_result_event_fields_degrade_to_missing_metrics(tmp_path):
     assert metrics["per_model_usage"] == {
         "claude": {"input": 0, "output": 3, "cache_read": 0,
                    "cache_create": 0, "cost_usd": None}}
+
+
+def test_parse_trial_collects_assistant_message_ids(tmp_path):
+    """The trial transcript's assistant message ids are the cost-truth key set
+    for Harbor runs (spec 014); duplicates (one per content block) collapse."""
+    job = tmp_path / "job"
+    tdir = job / "trial__case-1"
+    (tdir / "verifier").mkdir(parents=True)
+    (tdir / "verifier" / "reward.json").write_text(json.dumps({"reward": 1.0, "metrics": {}}))
+    (tdir / "agent").mkdir()
+    (tdir / "agent" / "claude-code.txt").write_text("\n".join([
+        json.dumps({"type": "system", "subtype": "init", "claude_code_version": "2.1.280"}),
+        json.dumps({"type": "assistant", "message": {"id": "gen-1", "model": "z-ai/glm-5.2"}}),
+        json.dumps({"type": "assistant", "message": {"id": "gen-1", "model": "z-ai/glm-5.2"}}),
+        json.dumps({"type": "assistant", "message": {"id": "gen-2", "model": "z-ai/glm-5.2"}}),
+        json.dumps({"type": "result", "total_cost_usd": 1.2, "num_turns": 2, "duration_ms": 1000,
+                    "usage": {"input_tokens": 1, "output_tokens": 1}}),
+    ]))
+    record = R.parse_trial(tdir)
+    assert record is not None
+    assert record["message_ids"] == ["gen-1", "gen-2"]
+    assert record["cost_usd"] == 1.2

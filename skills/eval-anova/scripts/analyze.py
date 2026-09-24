@@ -80,6 +80,7 @@ def analyze_runs(
     *,
     alpha: float = 0.05,
     write_to: Path | str | None = None,
+    allow_unaudited: bool = False,
 ) -> tuple[dict[str, Any], Path]:
     """Analyse a directory of standard eval-run runs and write ``anova.json``.
 
@@ -91,7 +92,8 @@ def analyze_runs(
     the stats artifact. Returns ``(analysis, artifact_path)``.
     """
     runs_dir = Path(runs_dir)
-    rows, factors, cost_by_condition = load_conditions_from_runs(runs_dir, eval_config)
+    rows, factors, cost_by_condition = load_conditions_from_runs(
+        runs_dir, eval_config, allow_unaudited=allow_unaudited)
     if not rows:
         raise ValueError(
             f"No scored runs found under {runs_dir} "
@@ -231,6 +233,8 @@ def _analyze_df(
 def load_conditions_from_runs(
     runs_dir: Path | str,
     eval_config: Any,
+    *,
+    allow_unaudited: bool = False,
 ) -> tuple[list[dict[str, Any]], list[str], dict[str, float]]:
     """Build analysis rows from a directory of standard eval-run runs.
 
@@ -247,6 +251,7 @@ def load_conditions_from_runs(
     rep_counter: dict[str, int] = {}
     cost_sum: dict[str, float] = {}
     cost_n: dict[str, int] = {}
+    cost_sources: dict[str, set] = {}
 
     for run_dir in _discover_run_dirs(runs_dir):
         try:
@@ -269,10 +274,20 @@ def load_conditions_from_runs(
         rep = rep_counter.get(condition_id, 0)
         rep_counter[condition_id] = rep + 1
 
-        cost = _run_cost(run_dir)
+        cost_info = _run_cost_info(run_dir)
+        if cost_info["degraded"] and not allow_unaudited:
+            # A run whose served providers escaped the declared pins is a
+            # different condition, not a replication (spec 014 pooling rule).
+            logger.warning("Skipping %s: routing audit degraded (violations or unattributed "
+                           "generations under policy: strict); pass allow_unaudited to pool it.",
+                           run_dir)
+            rep_counter[condition_id] = rep
+            continue
+        cost = cost_info["cost"]
         if cost is not None:
             cost_sum[condition_id] = cost_sum.get(condition_id, 0.0) + cost
             cost_n[condition_id] = cost_n.get(condition_id, 0) + 1
+            cost_sources.setdefault(condition_id, set()).add(cost_info["source"])
 
         for case_id, judges in per_case.items():
             if not isinstance(judges, dict):
@@ -292,6 +307,11 @@ def load_conditions_from_runs(
     cost_by_condition = {
         cid: cost_sum[cid] / cost_n[cid] for cid in cost_sum if cost_n.get(cid)
     }
+    for cid, sources in cost_sources.items():
+        classes = {"real" if src.startswith("openrouter:") else src for src in sources}
+        if len(classes) > 1:
+            logger.warning("Condition %s pools runs with mixed cost sources %s — provider-priced "
+                           "spend and runner estimates are not comparable.", cid, sorted(sources))
     return rows, factors, cost_by_condition
 
 
@@ -326,16 +346,40 @@ def _condition_levels_for_run(run_dir: Path) -> dict[str, Any]:
     return {}
 
 
+_LEGACY_COST_SOURCES = {"openrouter-reconciled": "openrouter:generation",
+                        "runner-reported": "runner:reported", "harness-estimate": "harness:estimate"}
+
+
+def _run_cost_info(run_dir: Path) -> dict:
+    """Cost provenance of a run from ``run_result.json`` (spec 014): ``cost``
+    (USD or None), ``source`` (canonical; legacy literals normalised; missing =
+    runner:reported), ``degraded`` (routing audit failed under policy strict)
+    and ``audit_clean``."""
+    rr_path = run_dir / "run_result.json"
+    info = {"cost": None, "source": "runner:reported", "degraded": False, "audit_clean": True}
+    if not rr_path.is_file():
+        return info
+    try:
+        rr = json.loads(rr_path.read_text())
+    except (json.JSONDecodeError, OSError, TypeError, ValueError):
+        return info
+    if not isinstance(rr, dict):
+        return info
+    cost = rr.get("cost_usd")
+    info["cost"] = (float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool)
+                    else None)
+    source = rr.get("cost_source") or "runner:reported"
+    info["source"] = _LEGACY_COST_SOURCES.get(source, source)
+    routing = rr.get("routing") or {}
+    info["degraded"] = bool(routing.get("degraded"))
+    info["audit_clean"] = (not routing.get("violations")
+                           and routing.get("audit_complete") is not False)
+    return info
+
+
 def _run_cost(run_dir: Path) -> float | None:
     """Total USD cost for a run from ``run_result.json`` (``cost_usd``)."""
-    rr_path = run_dir / "run_result.json"
-    if not rr_path.is_file():
-        return None
-    try:
-        cost = json.loads(rr_path.read_text()).get("cost_usd")
-        return float(cost) if isinstance(cost, (int, float)) else None
-    except (json.JSONDecodeError, OSError, TypeError, ValueError):
-        return None
+    return _run_cost_info(run_dir)["cost"]
 
 
 def _levels_id(levels: dict[str, Any]) -> str:

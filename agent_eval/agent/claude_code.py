@@ -14,6 +14,7 @@ from .base import EvalRunner, RunResult
 from .stream_capture import (
     make_prompt_event, inject_timestamp, extract_usage,
     count_subagent_turns, count_subagent_turns_by_model, setup_subagent_hook,
+    message_ids_for_run,
 )
 from agent_eval.tools.permissions import compile_permission_rules
 from agent_eval.config import resolve_plugin_dir, resolve_plugin_skill_roots
@@ -535,6 +536,7 @@ class ClaudeCodeRunner(EvalRunner):
                 per_model_usage=per_model_usage,
                 per_model_turns=per_model_turns,
                 permission_denials=denial_list,
+                message_ids=message_ids_for_run(stream_ids, workspace / "subagents"),
             )
         except Exception as e:
             duration = time.monotonic() - start
@@ -640,6 +642,7 @@ class ClaudeCodeRunner(EvalRunner):
             per_model_turns=per_model_turns,
             permission_denials=denial_list,
             raw_output=raw_output,
+            message_ids=message_ids_for_run(stream_ids, workspace / "subagents"),
         )
 
     def _staged_plugin_dirs(self, workspace: Path) -> list:

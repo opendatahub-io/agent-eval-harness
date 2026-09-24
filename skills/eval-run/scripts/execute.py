@@ -199,6 +199,10 @@ if __name__ == "__main__":
     _early_pidfile(sys.argv[1:])
 
 from agent_eval.agent import RUNNERS  # noqa: E402 — after the early pidfile write
+from agent_eval.providers.reconcile import (  # noqa: E402
+    aggregate_case_costs,
+    write_run_result as _reconciled_write,
+)
 from agent_eval.hooks import (  # noqa: E402 — after the early pidfile write
     HookError, build_hook_env, collect_hook_outputs,
     run_hooks, run_hooks_safe, save_hook_data,
@@ -370,6 +374,15 @@ def main():
                         help="Max parallel case executions (default: from eval.yaml or sequential)")
     parser.add_argument("--run-id", default=None,
                         help="Run identifier (for hook env vars and log paths)")
+    parser.add_argument("--strict-cost", action="store_true",
+                        help="Exit 2 when a provider plan is active and the run's cost "
+                             "could not be reconciled (cost_source unavailable) or the "
+                             "run budget was exceeded post hoc")
+    parser.add_argument("--strict-routing", action="store_true",
+                        help="Exit 2 when the routing audit found violations or is incomplete")
+    parser.add_argument("--allow-estimate", action="store_true",
+                        help="Under a provider plan, write cost_source runner:estimate instead "
+                             "of unavailable when no truth source landed (offline development only)")
     parser.add_argument("--input-override", action="append", default=None,
                         metavar="KEY=VALUE",
                         help="Merge KEY=VALUE into every case's input.yaml before "
@@ -378,6 +391,8 @@ def main():
                              "{KEY} in a cli runner command or {{ input.KEY }} in "
                              "arguments. Case fields win only if not overridden.")
     args = parser.parse_args()
+    _RECONCILE_OPTS.update(strict_cost=args.strict_cost, strict_routing=args.strict_routing,
+                           allow_estimate=args.allow_estimate)
 
     from agent_eval.config import EvalConfig
     config = EvalConfig.from_yaml(args.config)
@@ -750,10 +765,67 @@ def _extract_last_assistant_text(stdout, limit=4000):
     return text[:limit]
 
 
-def _cost_label(cost):
-    """Render a per-case cost, honestly showing unknown as such."""
-    return (f"${cost:.2f}" if isinstance(cost, (int, float))
-            and not isinstance(cost, bool) else "cost n/a")
+def _cost_label(cost, source=None, estimate=None):
+    """Render a per-case cost, honestly showing unknown as such. Under a
+    provider plan the source is named (`$X (openrouter:generation)`), and an
+    unreconciled case shows the runner's estimate as such."""
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        return f"${cost:.2f} ({source})" if source and source != "runner:reported" else f"${cost:.2f}"
+    if isinstance(estimate, (int, float)) and not isinstance(estimate, bool):
+        return f"cost n/a (est. ${estimate:.2f}, unreconciled)"
+    return "cost n/a"
+
+
+# --- Reconcile-at-write (spec 014) --------------------------------------------
+#
+# `write_run_result` is the ONLY code in this file that opens run_result.json:
+# every write site below goes through it (guarded by
+# tests/test_execute_write_sites.py), so the cost-provenance fields are written
+# on the crash and step paths too — where the runner's estimate is most
+# misleading. The provider plan and the strict flags are process-wide state set
+# by main(); with no plan and no ledger file the payload is written unchanged.
+
+_PROVIDER_PLAN = None
+_RECONCILE_OPTS = {"strict_cost": False, "strict_routing": False, "allow_estimate": False}
+
+
+def set_provider_plan(plan):
+    global _PROVIDER_PLAN
+    _PROVIDER_PLAN = plan
+
+
+def write_run_result(path, payload, *, plan=None, ledger=None, key_usage=None):
+    """Reconcile ``payload`` against the run's ledger and write it. Delegates to
+    the shared helper so Harbor's writer and this one cannot drift."""
+    plan = plan if plan is not None else _PROVIDER_PLAN
+    return _reconciled_write(Path(path), payload, plan=plan, ledger=ledger,
+                             key_usage=key_usage,
+                             allow_estimate=_RECONCILE_OPTS["allow_estimate"])
+
+
+def _strict_exit_code(run_meta):
+    """Exit code the strict flags demand for the final run-level result: 2 when
+    a plan is active and cost is unavailable, the run budget was exceeded post
+    hoc, or the routing audit found violations / is incomplete."""
+    if _PROVIDER_PLAN is None:
+        return None
+    reasons = []
+    if _RECONCILE_OPTS["strict_cost"]:
+        if run_meta.get("cost_source") == "unavailable":
+            reasons.append("cost_source unavailable")
+        budget = run_meta.get("budget") or {}
+        if budget.get("exceeded") == "run":
+            reasons.append(f"run budget exceeded by ${budget.get('overshoot_usd')}")
+    if _RECONCILE_OPTS["strict_routing"]:
+        routing = run_meta.get("routing") or {}
+        if routing.get("violations"):
+            reasons.append(f"{len(routing['violations'])} routing violation(s)")
+        if routing.get("audit_complete") is False:
+            reasons.append("routing audit incomplete")
+    if not reasons:
+        return None
+    print("STRICT: " + "; ".join(reasons), file=sys.stderr)
+    return 2
 
 
 def _sum_reported_costs(case_results):
@@ -837,6 +909,7 @@ def _aggregate_step_metrics(step_metrics):
         "per_model_usage": agg_pm or None,
         "per_model_turns": agg_pmt or None,
         "permission_denials": agg_denials,
+        "message_ids": sorted({i for r in results for i in (r.get("message_ids") or [])}),
     }
 
 
@@ -982,11 +1055,11 @@ def _run_single_case_in_repo(runner, skill_name, case_ws, output_dir,
         # solely in raw stdout.log, invisible to every downstream reader.
         "permission_denials": result.permission_denials or [],
         "repo_modified": repo_dirty,
+        "message_ids": result.message_ids or [],
+        "error_class": result.error_class,
     }
-
-    with open(case_output / "run_result.json", "w") as f:
-        json.dump(case_result, f, indent=2)
-        f.write("\n")
+    # run_result write-site 1: case mode, repo-mode per-case result
+    case_result = write_run_result(case_output / "run_result.json", case_result)
 
     status = "OK" if result.exit_code == 0 else f"FAIL (exit {result.exit_code})"
     if repo_before != repo_after:
@@ -1118,10 +1191,10 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
             "per_model_usage": None,
             "per_model_turns": None,
             "error": error_msg,
+            "message_ids": [],
         }
-        with open(case_output / "run_result.json", "w") as f:
-            json.dump(failed_result, f, indent=2)
-            f.write("\n")
+        # run_result write-site 2: case mode, runner exception (crash path)
+        failed_result = write_run_result(case_output / "run_result.json", failed_result)
         return case_id, failed_result
 
     # Write stdout/stderr to workspace output (for collect.py and judges)
@@ -1168,15 +1241,16 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
         # a real run's only denial (a workspace-escape attempt) survived
         # solely in raw stdout.log, invisible to every downstream reader.
         "permission_denials": result.permission_denials or [],
+        "message_ids": result.message_ids or [],
+        "error_class": result.error_class,
     }
-
-    with open(case_output / "run_result.json", "w") as f:
-        json.dump(case_result, f, indent=2)
-        f.write("\n")
+    # run_result write-site 3: case mode, per-case result
+    case_result = write_run_result(case_output / "run_result.json", case_result)
 
     status = "OK" if result.exit_code == 0 else f"FAIL (exit {result.exit_code})"
     print(f"    → {case_id}: {status} | {result.duration_s:.0f}s | "
-          f"{_cost_label(result.cost_usd)}", file=sys.stderr)
+          f"{_cost_label(case_result.get('cost_usd'), case_result.get('cost_source'), case_result.get('cost_usd_estimate'))}",
+          file=sys.stderr)
 
     return case_id, case_result
 
@@ -1361,6 +1435,7 @@ def _run_multi_step_case(runner, case_id, case_ws, output_dir, model,
                 "per_model_usage": step_result.per_model_usage,
                 "per_model_turns": step_result.per_model_turns,
                 "permission_denials": step_result.permission_denials or [],
+                "message_ids": step_result.message_ids or [],
             }
             steps_ctx[step_id] = {
                 "output": _extract_last_assistant_text(step_result.stdout),
@@ -1393,10 +1468,11 @@ def _run_multi_step_case(runner, case_id, case_ws, output_dir, model,
             "per_model_turns": None, "error": error_msg,
             "permission_denials": [],  # case crashed before a result existed
             "steps": step_metrics or None,
+            "message_ids": sorted({i for m in (step_metrics or {}).values()
+                                   for i in (m.get("message_ids") or [])}),
         }
-        with open(case_output / "run_result.json", "w") as f:
-            json.dump(failed, f, indent=2)
-            f.write("\n")
+        # run_result write-site 4: multi-step, failed result with partial steps
+        failed = write_run_result(case_output / "run_result.json", failed)
         return case_id, failed
 
     # Whole-case stdout/stderr = the final step (for collect.py + default judges).
@@ -1428,9 +1504,8 @@ def _run_multi_step_case(runner, case_id, case_ws, output_dir, model,
         case_result["exit_code"] = max(case_result.get("exit_code", 0), 1)
     if aborted_at:
         case_result["aborted_at_step"] = aborted_at
-    with open(case_output / "run_result.json", "w") as f:
-        json.dump(case_result, f, indent=2)
-        f.write("\n")
+    # run_result write-site 5: multi-step, final case result
+    case_result = write_run_result(case_output / "run_result.json", case_result)
 
     print(f"    → {case_id}: {len(step_metrics)} step(s) | "
           f"{case_result['duration_s']:.0f}s | "
@@ -1681,9 +1756,9 @@ def _execute_per_case(args, config, runner, runner_cls,
                         }
                         case_output = output_dir / "cases" / case_id
                         case_output.mkdir(parents=True, exist_ok=True)
-                        with open(case_output / "run_result.json", "w") as f:
-                            json.dump(result, f, indent=2)
-                            f.write("\n")
+                        result["message_ids"] = []
+                        # run_result write-site 6: parallel case exception result
+                        result = write_run_result(case_output / "run_result.json", result)
                 else:
                     # Regular isolated workspace mode with hooks
                     case_id, result = _run_single_case(
@@ -1717,9 +1792,14 @@ def _execute_per_case(args, config, runner, runner_cls,
         else:
             print("✓ Repository state verified: no changes detected", file=sys.stderr)
 
-    # Aggregate metrics across cases
+    # Aggregate metrics across cases. Under a provider plan the per-case
+    # values are reconciled (never the estimate) and a partial sum is not
+    # spend: one unpriced case makes the run total null (null-cost arithmetic).
     total_duration = sum(r["duration_s"] for r in case_results.values())
-    total_cost = _sum_reported_costs(case_results)
+    if _PROVIDER_PLAN is not None:
+        total_cost, cases_priced = aggregate_case_costs(case_results)
+    else:
+        total_cost, cases_priced = _sum_reported_costs(case_results), None
     total_turns = sum(r.get("num_turns") or 0 for r in case_results.values())
     worst_exit = max((r["exit_code"] for r in case_results.values()), default=0)
     # Ensure exit code reflects repo verification failure
@@ -1769,10 +1849,16 @@ def _execute_per_case(args, config, runner, runner_cls,
         "execution_mode": config.execution.mode,
         "eval_params": eval_params or {},
         "per_case": case_results,
+        "message_ids": sorted({i for r in case_results.values()
+                               for i in (r.get("message_ids") or [])}),
     }
-    with open(output_dir / "run_result.json", "w") as f:
-        json.dump(run_meta, f, indent=2)
-        f.write("\n")
+    if cases_priced is not None:
+        run_meta["cases_priced"] = cases_priced
+    # run_result write-site 7: case-mode aggregate
+    run_meta = write_run_result(output_dir / "run_result.json", run_meta)
+    strict_exit = _strict_exit_code(run_meta)
+    if strict_exit:
+        worst_exit = max(worst_exit, strict_exit)
 
     print(f"EXIT: {worst_exit}")
     print(f"DURATION: {wall_clock_s:.0f}s wall-clock, {total_duration:.0f}s total")
@@ -1841,11 +1927,12 @@ def _save_result(result, args, output_dir, runner, model, eval_params=None):
         "agent_version": getattr(runner, "version", ""),
         "execution_mode": "batch",
         "eval_params": eval_params or {},
+        "message_ids": result.message_ids or [],
+        "error_class": result.error_class,
     }
     run_result_path = output_dir / "run_result.json"
-    with open(run_result_path, "w") as f:
-        json.dump(run_meta, f, indent=2)
-        f.write("\n")
+    # run_result write-site 8: batch mode result
+    run_meta = write_run_result(run_result_path, run_meta)
 
     # Verify the file is valid JSON.
 

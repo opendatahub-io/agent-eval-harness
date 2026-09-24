@@ -279,3 +279,40 @@ def test_generate_report_missing_html_shows_placeholder(tmp_path):
     index = compare.generate_report(runs, "T", None, out)
     html = Path(index).read_text()
     assert "No HTML report available" in html
+
+
+# --- cost sources (spec 014 PR-4) ----------------------------------------------
+
+def _run_with(rr, name="r", model="m"):
+    rr = dict(rr, model=model)
+    return {"name": name, "dir": name, "run_result": rr, "summary": {}, "html_report": None}
+
+
+def test_get_cost_source_normalises_legacy_and_defaults():
+    from compare import cost_source_class, get_cost_source
+
+    assert get_cost_source(_run_with({})) == "runner:reported"
+    assert get_cost_source(_run_with({"cost_source": "openrouter-reconciled"})) == "openrouter:generation"
+    assert get_cost_source({"run_result": None}) == "runner:reported"
+    assert cost_source_class("openrouter:key-usage") == "real"
+    assert cost_source_class("runner:estimate") == "estimate"
+    assert cost_source_class("unavailable") == "unavailable"
+
+
+def test_cost_source_notes_flag_mixed_sources_and_dirty_audits():
+    from compare import cost_source_notes
+
+    groups = {
+        "z-ai/glm-5.2": [_run_with({"cost_source": "openrouter:generation",
+                                    "routing": {"sha": "a", "violations": [], "audit_complete": True}}, "g1"),
+                         _run_with({"cost_source": "openrouter:generation",
+                                    "routing": {"sha": "b", "violations": [{"gen_id": "x"}],
+                                                "audit_complete": True}}, "g2")],
+        "claude-opus-4-8": [_run_with({"cost_source": "runner:reported"}, "o1")],
+    }
+    notes = cost_source_notes(groups)
+    assert any("Cost sources are mixed" in n and "estimate: Opus 4.8" in n
+               and "real: z-ai/glm-5.2" in n for n in notes)
+    assert any("2 routing shas" in n for n in notes)
+    assert any("1 run(s) have routing violations" in n for n in notes)
+    assert cost_source_notes({"m": [_run_with({"cost_source": "openrouter:generation"})]}) == []

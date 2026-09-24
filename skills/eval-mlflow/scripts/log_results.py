@@ -215,6 +215,49 @@ def _harbor_step_run_result(case_dir, step_name, base, transcript):
 
 # ── Main ─────────────────────────────────────────────────────────────
 
+def _provenance_tags(run_result):
+    """Cost-provenance and routing tags from run_result.json (spec 014); only
+    what the run recorded — a legacy run tags nothing."""
+    rr = run_result or {}
+    tags = {}
+    if rr.get("cost_source"):
+        tags["cost_source"] = str(rr["cost_source"])
+    if rr.get("cost_confidence"):
+        tags["cost_confidence"] = str(rr["cost_confidence"])
+    routing = rr.get("routing") or {}
+    if routing:
+        tags["routing_enforcement"] = str(routing.get("enforcement") or "none")
+        if routing.get("sha"):
+            tags["routing_sha"] = str(routing["sha"])
+        tags["audit_violations"] = str(len(routing.get("violations") or []))
+        tags["audit_clean"] = "yes" if (not routing.get("violations")
+                                        and routing.get("audit_complete") is not False) else "no"
+    provider = rr.get("provider") or {}
+    if provider.get("key_scope"):
+        tags["key_scope"] = str(provider["key_scope"])
+    budget = rr.get("budget") or {}
+    if budget.get("enforcement"):
+        tags["budget_enforcement"] = str(budget["enforcement"])
+    return tags
+
+
+def _provenance_metrics(run_result):
+    """Hook cost and per-provider spend as metrics (numeric values only)."""
+    import re as _re
+
+    rr = run_result or {}
+    metrics = {}
+    hook = rr.get("hook_cost_usd")
+    if isinstance(hook, (int, float)) and not isinstance(hook, bool):
+        metrics["hook_cost_usd"] = float(hook)
+    for slug, stats in (rr.get("providers") or {}).items():
+        cost = (stats or {}).get("cost_usd")
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            safe = _re.sub(r"[^A-Za-z0-9_\-\. :/]", "-", str(slug))
+            metrics[f"provider/{safe}/cost_usd"] = float(cost)
+    return metrics
+
+
 def _cost_metrics_from_summary(summary):
     """MLflow metrics/tags for judge-side spend from summary.yaml (spec 014).
 
@@ -332,6 +375,12 @@ def main():
                     val = stats.get(key)
                     if val is not None:
                         mlflow.log_metric(f"{prefix}/tokens/{key}", val)
+
+        # ── Cost provenance (spec 014) ────────────────────────────
+        for key, value in _provenance_tags(run_result).items():
+            mlflow.set_tag(key, value)
+        for key, value in _provenance_metrics(run_result).items():
+            mlflow.log_metric(key, value)
 
         # ── Judge-side cost (spec 014 Decision 15) ───────────────
         cost_metrics, cost_tags = _cost_metrics_from_summary(summary)

@@ -41,6 +41,9 @@ $AGENT_EVAL_RUNS_DIR/<run-id>/
 ├── summary.yaml        # judge results: judges (mean, pass_rate, scored_cases,
 │                       #   errored_cases, stability) + per_case + run_metrics
 │                       #   + judge_usage / total_cost_usd (judge spend, see below)
+├── provider/
+│   └── ledger.jsonl    # one row per provider generation the harness learned about
+│                       #   (OpenRouter runs; absent otherwise) — see "Cost provenance"
 └── cases/
     └── <case-id>/
         ├── artifacts/          # files collected from outputs[].path
@@ -90,6 +93,42 @@ breakdown; judges read it when `traces.metrics` is on.
 | `num_turns` | Total turns (root + subagent transcripts) |
 | `num_cases` | Number of cases executed |
 | `model` / `agent` / `agent_version` | Model, runner name, runner version |
+| `message_ids` | Every assistant message id of the run (root stream + subagent transcripts). On a direct OpenRouter connection these are `gen-…` generation ids: the cost-truth key set the backfill prices. |
+| `cost_source`, `cost_usd_estimate`, `cost_confidence`, `cost_coverage`, `cost_warnings`, `hook_cost_usd`, `providers`, `routing`, `provider`, `budget` | Cost provenance — see below. Absent on runs that never touched a provider. |
+
+#### Cost provenance
+
+Every `run_result.json` write goes through one reconciling writer
+(`agent_eval.providers.reconcile.write_run_result`): it joins the run's
+`provider/ledger.jsonl` rows against the transcript's `message_ids` and writes the
+fields below. With no provider plan and no ledger file the payload is written
+unchanged, so a run without OpenRouter reads exactly as before.
+
+| Field | Meaning |
+| --- | --- |
+| `cost_usd` | Agent spend from a **truth source**: the sum of priced ledger rows when generation coverage is at least 80 %, else the key-usage delta, else `null`. Never the runner's estimate, never a mix. |
+| `cost_usd_estimate` | The runner's own number (Claude Code prices a non-Anthropic model 2 to 60 times high). Set once, never overwritten. |
+| `cost_source` | `openrouter:generation`, `openrouter:key-usage`, `runner:estimate` (only with `--allow-estimate`), `runner:reported` (Claude Code on Anthropic/Vertex, the legacy default), `harness:estimate` (Codex), or `unavailable`. Legacy literals (`openrouter-reconciled`, `runner-reported`) are read as their colon forms. |
+| `cost_confidence` | `high` (coverage ≥ 95 % and the key-usage cross-check within 5 %), `medium` (coverage 80 to 95 %, or key-usage only on a dedicated key), `low` (coverage below 80 % on a shared key, or a cross-check deviation above 5 %). |
+| `cost_coverage` | `{requests, requests_priced, requests_missing_cost, requests_unattributed, coverage, key_usage_delta_usd, key_usage_settle_s}` — the denominator is the transcript's `gen-…` ids, not the ledger. |
+| `cost_warnings` | Human-readable findings: unpriced requests, a cross-check deviation, an unmatched per-model key, routing violations. |
+| `hook_cost_usd` | Spend of the harness's own hook calls (tool interception). Excluded from `cost_usd` and from `run_metrics`. |
+| `providers` | `{<provider slug>: {requests, cost_usd}}`, with `unknown` for unattributed rows. |
+| `per_model_usage[m].cost_usd` / `.cost_usd_estimate` / `.providers` | Per-model cost from the ledger join (bare-slug echo, permaslug via the catalog, single-model fallback); the estimate is preserved next to it. A key with no match keeps `null` and a warning. |
+| `routing` | The audit of served providers against the declared pins: `enforcement`, `policy`, `sha`, `declared`, `served`, `audited`, `compliant`, `violations`, `unattributed`, `degraded`, `audit_complete`, `snapshot`. A violation is a billed, kept generation whose provider was outside the declared set; it is reported, never repaired. |
+| `provider` | `{name, kind, transport: direct, runner, base_url, key_scope, key_hash, key_exposed_to_agent, background_model}`. |
+| `budget` | `{invocation_usd, cli_cap_usd, run_usd, enforcement: cli-estimate \| key-guardrail, exceeded, exceeded_reason, overshoot_usd}`; `exceeded: run` with `post-hoc` is set when the reconciled sum passes `budget.run_usd`. |
+
+Under a plan the case aggregate follows the same arithmetic: one unpriced case makes
+the run's `cost_usd` `null` (`cases_priced` says how many were priced); a partial sum is
+not spend. `execute.py --strict-cost` exits 2 on `cost_source: unavailable` or an
+exceeded run budget, `--strict-routing` on violations or an incomplete audit.
+
+`provider/ledger.jsonl` holds one JSON row per generation: `role` (`agent`, `hook`,
+`judge`, `key-usage`), `source` (`generation`, `key-usage`, `judge`), `gen_id`,
+`message_index`, the requested/echoed/served model ids, `provider`, `quantization`,
+`audit`, `status` (`ok`, `backfill_failed`, `partial`), `cost_usd`, native token
+counts, latency and `backfill_lag_s`. Never request bodies, headers or keys.
 | `permission_denials` | Tool calls denied by permissions, as `[{tool_name, tool_use_id, tool_input}]` from the CLI result event (`[]` when none). Per case inside `per_case` entries (and per step under a multi-step case's `steps`); the top level carries the concatenation across cases (batch/single-run mode: that run's own list) |
 | `execution_mode` | `case` or `batch` |
 | `per_case` | Per-case dict of the same metrics plus `permission_denials`, keyed by case ID |

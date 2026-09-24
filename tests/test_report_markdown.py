@@ -110,3 +110,59 @@ def test_run_config_cost_rows_show_the_baseline_column():
     html = _render_run_config(_RUN, baseline_result=_RUN, summary=_summary(),
                               baseline_summary={"judges": {}})
     assert "<dt>Judge Cost</dt>" in html and '<dd class="bl">—</dd>' in html
+
+
+# --- cost provenance panel (spec 014 PR-4) ------------------------------------
+
+from report import _render_cost_provenance  # noqa: E402
+
+_RECONCILED = {
+    "cost_usd": 0.0612, "cost_usd_estimate": 2.51, "cost_source": "openrouter:generation",
+    "cost_confidence": "high",
+    "cost_coverage": {"requests": 40, "requests_priced": 40, "requests_missing_cost": 0,
+                      "key_usage_delta_usd": 0.0631, "key_usage_settle_s": 21.0},
+    "hook_cost_usd": 0.004,
+    "budget": {"invocation_usd": 5.0, "cli_cap_usd": 250.0, "run_usd": None,
+               "enforcement": "cli-estimate", "exceeded": None},
+    "provider": {"key_scope": "operator", "key_hash": "sha256:1a2b3c4d", "key_exposed_to_agent": True},
+    "routing": {"enforcement": "audit", "policy": "strict", "sha": "9f3a",
+                "snapshot": "provider/routing_snapshot.json",
+                "declared": {"z-ai/glm-5.2": {"order": ["z-ai", "novita"], "allow_fallbacks": False}},
+                "served": {"novita/fp8": 38, "z-ai": 2}, "audited": 40, "compliant": 40,
+                "violations": [], "unattributed": 0, "degraded": False, "audit_complete": True},
+    "cost_warnings": ["ledger sum $0.0612 differs from key-usage delta $0.0631 by 3.0%"],
+}
+
+
+def test_provenance_panel_renders_rows_and_warnings():
+    html = _render_cost_provenance(_RECONCILED)
+    assert "<h2>Cost Provenance</h2>" in html
+    for text in ("openrouter:generation", "high — 40 / 40 requests priced", "$2.51 (×41)",
+                 "$0.0631 (-3.0%)", "$0.0040", "CLI cap $250.00", "enforcement: cli-estimate",
+                 "operator sha256:1a2b3c4d — exposed to the agent", "novita/fp8: 38, z-ai: 2",
+                 "40 compliant / 40 audited", "provider/routing_snapshot.json (9f3a)",
+                 "order=['z-ai', 'novita']"):
+        assert text in html, text
+    assert "banner" not in html
+    assert "differs from key-usage delta" in html
+
+
+def test_provenance_panel_banners_for_the_loud_states():
+    rr = dict(_RECONCILED, cost_source="unavailable", cost_usd=None,
+              routing=dict(_RECONCILED["routing"], degraded=True, degraded_reason="violations",
+                           violations=[{"gen_id": "gen-1"}], audit_complete=False),
+              budget=dict(_RECONCILED["budget"], exceeded="run", exceeded_reason="post-hoc"))
+    html = _render_cost_provenance(rr)
+    assert html.count("banner-red") == 4
+    assert "Cost unavailable" in html and "Routing degraded: violations" in html
+    assert "audit incomplete" in html and "Budget exceeded (run: post-hoc)" in html
+    amber = _render_cost_provenance(dict(_RECONCILED, routing=dict(
+        _RECONCILED["routing"], violations=[{"gen_id": "gen-1"}], degraded=False)))
+    assert "banner-amber" in amber and "policy: warn" in amber
+
+
+def test_provenance_panel_absent_without_a_cost_source():
+    assert _render_cost_provenance({"cost_usd": 1.0}) == ""
+    assert _render_cost_provenance(None) == ""
+    assert "Cost Provenance" in _render_run_config(_RECONCILED)
+    assert "Cost Provenance" not in _render_run_config(_RUN)

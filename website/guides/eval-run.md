@@ -110,6 +110,7 @@ Parsed from `$ARGUMENTS` at Step 0. CLI flags override the corresponding `eval.y
 | `--cases <id> [<id> …]` | all cases | Run only the listed case IDs |
 | `--baseline <run-id>` | — | Add a pairwise A/B comparison against a prior run under the same eval-name |
 | `--no-llm-judges` | false | Skip every judge that calls a model — `llm` (`prompt`, `prompt_file`, `llm_rubric`), `agent`, and LLM builtins; run only deterministic judges |
+| `--strict-cost` / `--strict-routing` / `--allow-estimate` | false | `execute.py` flags for provider-routed runs: fail the run (exit 2) when the cost could not be reconciled or the run budget was exceeded, or when the routing audit found violations; `--allow-estimate` lets an offline replay record the runner estimate as `runner:estimate` instead of `unavailable`. See [runs directory → cost provenance](../reference/runs-directory.md#cost-provenance). |
 | `--gold` | false | After scoring, save collected artifacts back to the dataset cases as gold references |
 | `--effort <level>` | `runner.effort` | Reasoning effort. Applied by `claude-code` (`low`…`max`), `codex` (`minimal`…`xhigh`), and Cursor model parameter syntax; Cursor leaves IDs that already encode an effort variant unchanged; ignored by runners without an effort control |
 | `--runner <type>` | `local` | `local` (default pipeline), `harbor` (containerized), or `evalhub` (platform) |

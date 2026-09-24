@@ -695,7 +695,11 @@ def run_eval_on_harbor(
         "n_unjudged_steps": parsed.get("n_unjudged_steps", 0),
         "unjudged_steps": parsed.get("unjudged_steps", []),
     }
-    (output_dir / "run_result.json").write_text(json.dumps(run_meta, indent=2) + "\n")
+    # run_result write-site 9: the Harbor run (the same reconciling writer as
+    # execute.py; with no plan and no ledger file the payload is unchanged).
+    from agent_eval.providers.reconcile import write_run_result
+
+    run_meta = write_run_result(output_dir / "run_result.json", run_meta)
     # Total cost under the null-cost arithmetic (judge spend stays out of
     # run_result.cost_usd, Decision 15).
     total_cost, total_source = _load_score_module().compute_total_cost(

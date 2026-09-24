@@ -11,6 +11,8 @@ The package is deliberately stdlib-only: no HTTP client dependency is pulled in
 for a provider declaration.
 """
 
+from agent_eval.providers.ledger import Ledger, make_record, read_ledger
+from agent_eval.providers.reconcile import reconcile, write_run_result
 from agent_eval.providers.base import (
     ERROR_CLASSES,
     AgentModel,
@@ -24,4 +26,5 @@ from agent_eval.providers.base import (
 )
 
 __all__ = ["ERROR_CLASSES", "AgentModel", "ConfigError", "ErrorClass", "JudgeProviderError",
-           "ProviderKind", "ProviderPlan", "parse_agent_model", "routing_key"]
+           "Ledger", "ProviderKind", "ProviderPlan", "make_record", "parse_agent_model",
+           "read_ledger", "reconcile", "routing_key", "write_run_result"]

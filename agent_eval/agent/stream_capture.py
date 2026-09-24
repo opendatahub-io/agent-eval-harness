@@ -208,6 +208,38 @@ def count_subagent_turns(subagent_dir, already_seen=None):
     return len(seen) - initial_count
 
 
+def subagent_message_ids(subagent_dir):
+    """Every assistant ``message.id`` across the captured subagent transcripts
+    (deduplicated). Empty when the directory does not exist."""
+    subagent_path = Path(subagent_dir)
+    ids = set()
+    if not subagent_path.is_dir():
+        return ids
+    for transcript in subagent_path.iterdir():
+        if not transcript.is_file() or transcript.suffix != ".jsonl":
+            continue
+        try:
+            with open(transcript) as f:
+                for line in f:
+                    try:
+                        obj = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    msg = obj.get("message", {}) if isinstance(obj, dict) else {}
+                    if isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("id"):
+                        ids.add(msg["id"])
+        except OSError:
+            continue
+    return ids
+
+
+def message_ids_for_run(stream_ids, subagent_dir):
+    """The run's cost-truth key set: root-stream ids merged with the subagent
+    transcripts' ids, in a stable order."""
+    ids = set(stream_ids or ()) | subagent_message_ids(subagent_dir)
+    return sorted(ids)
+
+
 def count_subagent_turns_by_model(subagent_dir, already_seen_by_model=None):
     """Count NEW unique assistant turns per model across subagent transcripts.
 

@@ -121,6 +121,57 @@ def get_model(run):
     return run.get("name") or "unknown"
 
 
+REAL_COST_PREFIX = "openrouter:"
+LEGACY_COST_SOURCES = {"openrouter-reconciled": "openrouter:generation",
+                       "runner-reported": "runner:reported", "harness-estimate": "harness:estimate"}
+
+
+def get_cost_source(run):
+    """Canonical cost_source of a run (legacy literals normalised); a run
+    without the field is a runner-reported estimate (the historical default)."""
+    rr = run.get("run_result") or {}
+    value = rr.get("cost_source") or "runner:reported"
+    return LEGACY_COST_SOURCES.get(value, value)
+
+
+def cost_source_class(source):
+    """`real` for provider-priced costs, `unavailable`, else `estimate`."""
+    if source == "unavailable":
+        return "unavailable"
+    return "real" if str(source).startswith(REAL_COST_PREFIX) else "estimate"
+
+
+def cost_source_notes(groups):
+    """Footnotes for the cost table (spec 014): a mix of provider-priced and
+    estimated/unavailable costs must not be read as one comparable column, and
+    runs whose routing audit differs are different factor levels."""
+    notes = []
+    classes = {}
+    for m, model_runs in groups.items():
+        for r in model_runs:
+            classes.setdefault(cost_source_class(get_cost_source(r)), set()).add(m)
+    if len(classes) > 1:
+        detail = "; ".join(f"{cls}: {', '.join(sorted(short_name(x) for x in ms))}"
+                           for cls, ms in sorted(classes.items()))
+        notes.append("Cost sources are mixed and not directly comparable — " + detail
+                     + ". Provider-priced (openrouter:*) costs are billed spend; runner/harness "
+                       "figures are estimates; unavailable means no truth source landed.")
+    for m, model_runs in groups.items():
+        shas, dirty = set(), 0
+        for r in model_runs:
+            routing = (r.get("run_result") or {}).get("routing") or {}
+            if routing:
+                shas.add(routing.get("sha"))
+                if routing.get("violations") or routing.get("audit_complete") is False:
+                    dirty += 1
+        if len(shas) > 1:
+            notes.append(f"{short_name(m)}: runs were pooled across different routing declarations "
+                         f"({len(shas)} routing shas) — served providers may differ.")
+        if dirty:
+            notes.append(f"{short_name(m)}: {dirty} run(s) have routing violations or an incomplete audit.")
+    return notes
+
+
 def get_metric(run, key, default=None):
     rr = run["run_result"] or {}
     if key == "cost_usd":
@@ -728,6 +779,8 @@ def generate_report(runs, title, overview, output_dir, stats=None):
     cost_rows = [(label, [model_aggs[m][key] for m in models], ft, hib)
                  for label, key, ft, hib in cost_spec]
     html += render_comparison_table(models, cost_rows)
+    for note in cost_source_notes(groups):
+        html += f'<p class="cost-note" style="color:var(--text-muted);font-size:12px">{escape(note)}</p>\n'
     html += '</section>\n\n'
 
     # Quality table
@@ -908,6 +961,7 @@ def cmd_discover(args):
             "dir": r["dir"],
             "model": get_model(r),
             "cost_usd": get_metric(r, "cost_usd"),
+            "cost_source": get_cost_source(r),
             "judges": {j: get_judge_mean(r, j) for j in all_judge_names},
             "has_html": r["html_report"] is not None,
         }
@@ -930,6 +984,8 @@ def cmd_generate(args):
     path = generate_report(runs, args.title, args.overview, output_dir, stats=stats)
     groups = group_by_model(runs)
     print(f"Report generated: {path}")
+    for note in cost_source_notes(groups):
+        print(f"NOTE: {note}", file=sys.stderr)
     print(f"Runs: {len(runs)} across {len(groups)} models")
     if stats:
         print("Included eval-anova statistics (anova.json)")

@@ -984,6 +984,126 @@ def _render_cost_rows(summary, baseline_summary, has_bl):
     return html
 
 
+def _fmt_usd(value, digits=2):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return f"${value:.{digits}f}"
+
+
+def _cost_provenance_rows(run_result):
+    """(label, value) rows for the cost-provenance panel (spec 014): shown
+    only when the run carries a `cost_source`, i.e. it was reconciled or the
+    runner labelled its own number."""
+    rr = run_result or {}
+    source = rr.get("cost_source")
+    if not source:
+        return []
+    rows = [("Cost source", source)]
+    confidence = rr.get("cost_confidence")
+    cov = rr.get("cost_coverage") or {}
+    if confidence or cov:
+        detail = []
+        if cov.get("requests") is not None:
+            detail.append(f"{cov.get('requests_priced', 0)} / {cov['requests']} requests priced")
+        if cov.get("requests_missing_cost"):
+            detail.append(f"{cov['requests_missing_cost']} unpriced")
+        rows.append(("Cost confidence", " — ".join(x for x in [confidence, ", ".join(detail)] if x) or "—"))
+    cost, estimate = rr.get("cost_usd"), rr.get("cost_usd_estimate")
+    if isinstance(estimate, (int, float)) and estimate != cost:
+        factor = (f" (×{estimate / cost:.0f})" if isinstance(cost, (int, float)) and cost > 0 else "")
+        rows.append(("Cost (runner estimate)", f"{_fmt_usd(estimate)}{factor}"))
+    delta = cov.get("key_usage_delta_usd")
+    if isinstance(delta, (int, float)):
+        text = _fmt_usd(delta, 4)
+        if isinstance(cost, (int, float)) and delta > 0:
+            text += f" ({(cost - delta) / delta:+.1%})"
+        rows.append(("Key-usage cross-check", text))
+    hook = rr.get("hook_cost_usd")
+    if isinstance(hook, (int, float)) and hook > 0:
+        rows.append(("Hook cost", _fmt_usd(hook, 4)))
+    budget = rr.get("budget") or {}
+    if budget:
+        parts = []
+        if budget.get("invocation_usd") is not None:
+            parts.append(f"invocation {_fmt_usd(budget['invocation_usd'])}")
+        if budget.get("cli_cap_usd") is not None:
+            parts.append(f"CLI cap {_fmt_usd(budget['cli_cap_usd'])}")
+        if budget.get("run_usd") is not None:
+            parts.append(f"run {_fmt_usd(budget['run_usd'])}")
+        if budget.get("enforcement"):
+            parts.append(f"enforcement: {budget['enforcement']}")
+        if budget.get("exceeded"):
+            parts.append(f"EXCEEDED ({budget['exceeded']}, {budget.get('exceeded_reason')})")
+        rows.append(("Budget", ", ".join(parts) or "—"))
+    provider = rr.get("provider") or {}
+    if provider:
+        rows.append(("Key", f"{provider.get('key_scope', '—')} {provider.get('key_hash') or ''}"
+                            + (" — exposed to the agent" if provider.get("key_exposed_to_agent") else "")))
+    return rows
+
+
+def _routing_rows(run_result):
+    routing = (run_result or {}).get("routing") or {}
+    if not routing:
+        return []
+    rows = [("Enforcement", routing.get("enforcement") or "none")]
+    declared = routing.get("declared") or {}
+    if declared:
+        rows.append(("Declared pins", "; ".join(
+            f"{key}: " + ", ".join(f"{k}={v}" for k, v in spec.items()) for key, spec in declared.items())))
+    served = routing.get("served") or {}
+    if served:
+        rows.append(("Providers served", ", ".join(f"{k}: {v}" for k, v in served.items())))
+    audit = f"{routing.get('compliant', 0)} compliant / {routing.get('audited', 0)} audited"
+    if routing.get("violations"):
+        audit += f", {len(routing['violations'])} violation(s)"
+    if routing.get("unattributed"):
+        audit += f", {routing['unattributed']} unattributed"
+    if routing.get("audit_complete") is False:
+        audit += " — incomplete"
+    rows.append(("Audit", audit))
+    if routing.get("snapshot"):
+        rows.append(("Snapshot", f"{routing['snapshot']} ({routing.get('sha') or '—'})"))
+    return rows
+
+
+def _render_cost_provenance(run_result):
+    """Cost-provenance and routing-audit panel plus the banner for the loud
+    states (cost unavailable, degraded routing, incomplete audit, budget
+    exceeded). Empty for runs without a cost_source."""
+    rows = _cost_provenance_rows(run_result)
+    if not rows:
+        return ""
+    rr = run_result or {}
+    banners = []
+    if rr.get("cost_source") == "unavailable":
+        banners.append(("red", "Cost unavailable: no /generation row and no key-usage delta "
+                               "landed — cost_usd is null (the runner estimate is not spend)"))
+    routing = rr.get("routing") or {}
+    if routing.get("degraded"):
+        banners.append(("red", f"Routing degraded: {routing.get('degraded_reason')}"))
+    elif routing.get("violations"):
+        banners.append(("amber", f"Routing: {len(routing['violations'])} violation(s) under policy: warn"))
+    if routing.get("audit_complete") is False:
+        banners.append(("red", "Routing audit incomplete: unattributed generations"))
+    if (rr.get("budget") or {}).get("exceeded"):
+        banners.append(("red", f"Budget exceeded ({rr['budget'].get('exceeded')}: "
+                               f"{rr['budget'].get('exceeded_reason')})"))
+    html = '<h2>Cost Provenance</h2>\n'
+    for tone, text in banners:
+        color = "#d1242f" if tone == "red" else "#bf8700"
+        html += (f'<div class="banner banner-{tone}" style="border-left:4px solid {color};'
+                 f'padding:6px 10px;margin:6px 0">{_esc(text)}</div>\n')
+    html += '<dl class="config-grid">\n'
+    for label, value in rows + _routing_rows(run_result):
+        html += f'<div class="kv"><dt>{_esc(label)}</dt><dd>{_esc(str(value))}</dd></div>\n'
+    html += "</dl>\n"
+    warnings = rr.get("cost_warnings") or []
+    if warnings:
+        html += "<ul class=\"cost-warnings\">" + "".join(f"<li>{_esc(w)}</li>" for w in warnings) + "</ul>\n"
+    return html
+
+
 def _render_run_config(run_result, baseline_result=None, summary=None,
                        baseline_summary=None):
     has_bl = baseline_result is not None
@@ -1069,6 +1189,7 @@ def _render_run_config(run_result, baseline_result=None, summary=None,
         html += '</div>\n'
     html += _render_cost_rows(summary, baseline_summary, has_bl)
     html += "</dl>\n"
+    html += _render_cost_provenance(run_result)
     html += _render_model_usage(run_result, baseline_result)
     html += _render_eval_params(run_result)
     return html

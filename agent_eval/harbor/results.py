@@ -74,6 +74,7 @@ def _empty_transcript_metrics() -> dict:
     return {
         "cost_usd": None, "token_usage": None, "per_model_usage": None,
         "num_turns": None, "duration_s": None, "agent_version": None,
+        "message_ids": [],
     }
 
 
@@ -94,6 +95,13 @@ def _extract_transcript_metrics(transcript_path: Path) -> dict:
                 continue
             if not isinstance(ev, dict):
                 continue
+            # Cost-truth key set (spec 014): every assistant message id — on a
+            # direct OpenRouter connection these are `gen-…` generation ids.
+            if ev.get("type") == "assistant":
+                msg = ev.get("message")
+                msg_id = msg.get("id") if isinstance(msg, dict) else None
+                if isinstance(msg_id, str) and msg_id and msg_id not in result["message_ids"]:
+                    result["message_ids"].append(msg_id)
             if (ev.get("type") == "system" and ev.get("subtype") == "init"
                     and not result["agent_version"]):
                 result["agent_version"] = ev.get("claude_code_version")
@@ -333,6 +341,7 @@ def parse_trial(trial_dir: Path) -> dict | None:
     # available there; cost/tokens fall back to transcript when result.json
     # doesn't have them).
     extracted = _agent_transcript_metrics(trial_dir / "agent")
+    record["message_ids"] = list(extracted.get("message_ids") or [])
     if record["cost_usd"] is None:
         record["cost_usd"] = extracted["cost_usd"]
     if record["token_usage"] is None:
