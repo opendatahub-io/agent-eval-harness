@@ -31,7 +31,7 @@ def test_strict_pass_writes_the_snapshot(fake, tmp_path):
     assert snap["routing_sha"] == table_sha(plan.routing) and snap["ts"]
     assert snap["keys"]["z-ai/glm-5.2"] == {
         "variant": "exacto", "pinned_set": ["novita"],
-        "catalog": {"providers": ["novita", "z-ai"], "endpoints": ["novita/fp8", "z-ai"]}}
+        "catalog": {"providers": ["novita", "z-ai"], "endpoints": ["novita/fp8", "z-ai", "novita/bf16"]}}
     assert snap["catalog"]["endpoints"]["z-ai/glm-5.2"][0]["provider_name"] == "Novita"
     # the key-authenticated GETs carried the bearer, the catalog GETs did not need it
     assert ("/api/v1/key", True) in fake.requests and ("/api/v1/models/user", True) in fake.requests
@@ -51,9 +51,13 @@ def test_unknown_slug_and_unserved_pin_fail_strict(fake, tmp_path):
     table = RoutingTable.from_dict({"models": {"z-ai/glm-5.2": {"only": ["deepinfra"]}}})
     with pytest.raises(ConfigError, match="pinned provider\\(s\\) deepinfra do not serve it"):
         run_preflight(make_plan(fake.base_url, routing=table), level="strict")
-    table = RoutingTable.from_dict({"models": {"z-ai/glm-5.2": {"only": ["novita"], "quantizations": ["bf16"]}}})
-    with pytest.raises(ConfigError, match="quantization \\['bf16'\\]"):
+    table = RoutingTable.from_dict({"models": {"z-ai/glm-5.2": {"only": ["novita"], "quantizations": ["int4"]}}})
+    with pytest.raises(ConfigError, match="quantization \\['int4'\\]"):
         run_preflight(make_plan(fake.base_url, routing=table), level="strict")
+    # every endpoint of a pinned provider counts, not only the last one listed
+    for quant in ("fp8", "bf16"):
+        table = RoutingTable.from_dict({"models": {"z-ai/glm-5.2": {"only": ["novita"], "quantizations": [quant]}}})
+        assert run_preflight(make_plan(fake.base_url, routing=table), level="strict").failures == []
 
 
 def test_bad_key_and_ineligible_model_fail_strict(fake, tmp_path):

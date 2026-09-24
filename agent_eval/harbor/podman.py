@@ -62,6 +62,14 @@ def _plan_exclusions() -> set:
     raw = os.environ.get("AGENT_EVAL_PODMAN_PLAN_EXCLUDE", "")
     return {k.strip() for k in raw.split(",") if k.strip()}
 
+
+def _plan_forward_names() -> tuple:
+    """Extra host variables to forward while a plan is active
+    (``AGENT_EVAL_PODMAN_PLAN_FORWARD``): the inference key under a custom
+    ``api_key_env`` name, for the in-container ``openrouter:/`` judge."""
+    raw = os.environ.get("AGENT_EVAL_PODMAN_PLAN_FORWARD", "")
+    return tuple(k.strip() for k in raw.split(",") if k.strip())
+
 # Where a mounted GCP credentials file lands inside the container.
 _CONTAINER_CREDS = "/var/creds/creds.json"
 
@@ -270,7 +278,7 @@ class PodmanEnvironment(BaseEnvironment):
         # Forward provider configuration and credentials needed by agent CLIs
         # (minus what an active OpenRouter plan told us to keep out).
         exclude = _plan_exclusions()
-        forwarded = {k: os.environ[k] for k in _FORWARD_ENV
+        forwarded = {k: os.environ[k] for k in _FORWARD_ENV + _plan_forward_names()
                      if os.environ.get(k) and k not in exclude}
 
         # Credentials: only via an explicitly provided file, read-only mounted —

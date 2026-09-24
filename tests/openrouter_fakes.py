@@ -33,6 +33,8 @@ ENDPOINTS = {
          "supported_parameters": ["tools", "tool_choice"]},
         {"provider_name": "Z.AI", "tag": "z-ai", "quantization": "fp8", "status": 0,
          "supported_parameters": ["tools", "tool_choice"]},
+        # a second Novita endpoint at another quantization, listed last on purpose
+        {"provider_name": "Novita", "tag": "novita/bf16", "quantization": "bf16", "status": 0},
     ],
     "qwen/qwen3-8b": [{"provider_name": "DeepInfra", "tag": "deepinfra", "quantization": "bf16", "status": 0}],
     "deepseek/deepseek-v4.1-flash": [{"provider_name": "Novita", "tag": "novita", "quantization": "fp8", "status": 0}],

@@ -263,12 +263,16 @@ def _plan_child_env_exclusions(plan, *, keep_api_key: bool) -> set:
     """Host variables that must not reach the harbor child (and, through it,
     podman's forwarding) while a plan is active: every managed key — host
     Vertex/Bedrock settings, ``ANTHROPIC_BASE_URL``/``ANTHROPIC_API_KEY``/
-    ``ANTHROPIC_AUTH_TOKEN`` — the management key, and the inference key
-    variable unless the in-container verifier needs it for an ``openrouter:/``
-    judge (the agent never reads it: its key is ``ANTHROPIC_AUTH_TOKEN``)."""
-    excluded = set(MANAGED_ENV_KEYS) | {plan.management_key_env or "OPENROUTER_MANAGEMENT_KEY"}
-    if not keep_api_key:
-        excluded.add(plan.key_env)
+    ``ANTHROPIC_AUTH_TOKEN`` — the management key and the inference key under
+    both their configured and their default names (a custom ``api_key_env``
+    must not let an unrelated host ``OPENROUTER_API_KEY`` slip in). Only the
+    configured inference key survives, and only when the in-container verifier
+    needs it for an ``openrouter:/`` judge (the agent never reads it: its key
+    is ``ANTHROPIC_AUTH_TOKEN``)."""
+    excluded = set(MANAGED_ENV_KEYS) | {"OPENROUTER_API_KEY", "OPENROUTER_MANAGEMENT_KEY",
+                                        plan.key_env, plan.management_key_env or "OPENROUTER_MANAGEMENT_KEY"}
+    if keep_api_key:
+        excluded.discard(plan.key_env)
     return excluded
 
 
@@ -735,10 +739,14 @@ def _run_eval_on_harbor(
         # Host Vertex/Bedrock/Anthropic variables never enter the container:
         # scrubbed here (podman's forwarding runs inside this child) and
         # excluded again by podman.py from the same list — belt and braces.
-        excluded = _plan_child_env_exclusions(
-            plan, keep_api_key=_openrouter_judge_configured(config, judge_model))
+        keep_api_key = _openrouter_judge_configured(config, judge_model)
+        excluded = _plan_child_env_exclusions(plan, keep_api_key=keep_api_key)
         child_env = {k: v for k, v in child_env.items() if k not in excluded}
         child_env["AGENT_EVAL_PODMAN_PLAN_EXCLUDE"] = ",".join(sorted(excluded))
+        if keep_api_key:
+            # The verifier reads the key under its configured name, which
+            # podman's static forwarding list may not know.
+            child_env["AGENT_EVAL_PODMAN_PLAN_FORWARD"] = plan.key_env
     child_env.update(harbor_env)
     proc = subprocess.Popen(cmd, env=child_env)
     def _forward_signal(signum, frame):

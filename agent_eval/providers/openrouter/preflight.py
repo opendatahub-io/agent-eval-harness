@@ -111,7 +111,10 @@ def run_preflight(plan, *, level: str = "strict", run_dir=None, catalog=None,
             res.degraded_reason = res.degraded_reason or "catalog"
             continue
         snapshot_catalog["endpoints"][key] = eps
-        served = {catalog.provider_slug(e.get("provider_name")): e for e in eps if isinstance(e, dict)}
+        served: dict = {}
+        for e in eps:
+            if isinstance(e, dict):
+                served.setdefault(catalog.provider_slug(e.get("provider_name")), []).append(e)
         entry["catalog"] = {"providers": sorted(s for s in served if s),
                             "endpoints": [e.get("tag") or e.get("provider_name") for e in eps if isinstance(e, dict)]}
         if not pins:
@@ -121,7 +124,8 @@ def run_preflight(plan, *, level: str = "strict", run_dir=None, catalog=None,
             res.failures.append(f"model {key}: pinned provider(s) {', '.join(missing)} do not serve it "
                                 f"(served by: {', '.join(entry['catalog']['providers']) or 'nobody'})")
         quants = getattr(spec, "quantizations", None)
-        if quants and not missing and not any(served[p].get("quantization") in quants for p in pins):
+        if quants and not missing and not any(e.get("quantization") in quants
+                                              for p in pins for e in served.get(p, [])):
             res.failures.append(f"model {key}: no pinned provider serves it at quantization {list(quants)}")
     try:
         keyed(f"{base}/v1/key")

@@ -171,3 +171,29 @@ def test_preflight_failure_exits_2_before_any_case(tmp_path, monkeypatch, capsys
     assert code == 2 and "preflight failed" in err and "rejected: HTTP 401" in err
     assert fake_claude_records(ws / "cases" / "case-1") == []
     assert "sk-or-wrong" not in err
+
+
+def test_a_non_claude_runner_is_refused_under_a_plan(tmp_path, monkeypatch, capsys):
+    """A per-step runner override is refused by the config loader; the
+    ``--agent`` CLI override by execute.py — either way before any case runs."""
+    fake = FakeOpenRouter()
+    base = fake.start()
+    try:
+        ws, out = _setup(tmp_path, monkeypatch, base)
+        argv = list(sys.argv)
+        monkeypatch.setattr(sys, "argv", argv + ["--agent", "codex"])
+        code = _main()
+        err = capsys.readouterr().err
+        assert code == 2 and "runner 'codex' cannot run" in err
+        monkeypatch.setattr(sys, "argv", argv)
+        cfg = yaml.safe_load((tmp_path / "eval.yaml").read_text())
+        cfg["execution"] = {"mode": "case", "steps": [
+            {"id": "a", "skill": "s1", "arguments": "x"},
+            {"id": "b", "skill": "s2", "arguments": "y", "runner": {"type": "codex"}}]}
+        (tmp_path / "eval.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
+        with pytest.raises(ValueError, match="execution.steps\\[1\\].runner.type.*codex"):
+            ex.main()
+    finally:
+        fake.stop()
+    assert fake_claude_records(ws / "cases" / "case-1") == []
+

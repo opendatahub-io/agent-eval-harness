@@ -881,6 +881,8 @@ def _build_provider_plan(config, args, agent, output_dir):
             print("WARNING: models.providers.openrouter is declared but no effective role "
                   "or CLI model uses openrouter:/ — routing table inactive", file=sys.stderr)
         return None
+    # (A per-step runner.type other than claude-code is already rejected by the
+    # config loader under a plan; this guards the --agent CLI override.)
     if agent != "claude-code":
         print(f"ERROR: the direct OpenRouter transport is implemented for the claude-code "
               f"runner; runner '{agent}' cannot run {roles['skill']!r}", file=sys.stderr)

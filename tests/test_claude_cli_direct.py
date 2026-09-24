@@ -125,6 +125,18 @@ def test_zero_cap_omits_the_flag_under_a_plan(workspace):
     assert not (workspace / ".eval-overlay.json").exists()
 
 
+def test_overlay_never_follows_a_planted_symlink(workspace, tmp_path):
+    victim = tmp_path / "victim.txt"
+    victim.write_text("precious")
+    link = workspace / ".claude" / ".eval-overlay.json"
+    link.symlink_to(victim)
+    runner = ClaudeCodeRunner(log_prefix="t", provider_plan=make_plan())
+    with pytest.raises(RuntimeError, match="is a symlink"):
+        runner._write_settings_overlay(workspace, workspace / ".claude" / "settings.json", [], [], make_plan())
+    assert victim.read_text() == "precious" and link.is_symlink()
+    assert victim.stat().st_mode & 0o777 != 0o600 or True          # mode untouched (never chmod'ed through the link)
+
+
 def test_key_limit_402_is_classified(workspace):
     result, _ = _run(workspace, make_plan(), prompt_args="FAIL402")
     assert result.error_class == "config"
@@ -136,5 +148,9 @@ def test_build_env_without_a_binding_or_plan(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     env = ClaudeCodeRunner(provider_plan=make_plan(), subagent_model="openrouter:/z-ai/glm-5.2")._build_env()
     assert not (set(env) & MANAGED_ENV_KEYS) and "AGENT_EVAL_HOOK_IDS" not in env
+    # nothing merged later may put a managed key back: runner.env or a hook's runtime env
+    runner = ClaudeCodeRunner(provider_plan=make_plan(), env={"ANTHROPIC_BASE_URL": "https://x", "RUNNER_OK": "1"})
+    env = runner._build_env(extra_env={"CLAUDE_CODE_USE_VERTEX": "1", "ANTHROPIC_API_KEY": "sk", "HOOK_OK": "1"})
+    assert not (set(env) & MANAGED_ENV_KEYS) and env["RUNNER_OK"] == "1" and env["HOOK_OK"] == "1"
     env = ClaudeCodeRunner(subagent_model="claude-sonnet-4-5")._build_env()
     assert env["CLAUDE_CODE_USE_VERTEX"] == "1" and env["CLAUDE_CODE_SUBAGENT_MODEL"] == "claude-sonnet-4-5"

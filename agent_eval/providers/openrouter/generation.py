@@ -266,7 +266,7 @@ class Backfill:
             role=s.role, source="generation", status=status, provider_kind=self.provider_kind,
             run_id=self.run_id, case_id=s.case_id, step_id=s.step_id, gen_id=s.gen_id,
             message_index=s.message_index, model_requested=s.model_requested,
-            model=routing_key(s.model_requested or s.model_echo or ""),
+            model=self._model_key(s, fields.get("model_served")),
             model_echo=s.model_echo, routing_sha=s.routing_sha,
             backfill_lag_s=round(lag, 1), **fields)
         if error is not None:
@@ -280,6 +280,18 @@ class Backfill:
                 self._failed[s.gen_id] = s
                 self.stats.errors.append(record["error_message"])
         self.ledger.append(record)
+
+    def _model_key(self, s: Sighting, model_served) -> str:
+        """The routing key of a row: from what was requested/echoed, else from
+        the served permaslug through the catalog (an offline backfill knows
+        only the ids, and an unkeyed row could never be audited)."""
+        key = routing_key(s.model_requested or s.model_echo or "")
+        if not key and model_served and self.catalog is not None:
+            try:
+                key = routing_key(self.catalog.canonical_to_id(model_served) or "")
+            except Exception:
+                key = ""
+        return key
 
     def _redact(self, text: str) -> str:
         """An upstream error body may echo the request; the key never lands in
