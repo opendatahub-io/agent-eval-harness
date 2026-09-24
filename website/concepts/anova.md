@@ -86,12 +86,44 @@ those with at least two observed levels (see
 | Variant | Chosen when | What it does |
 | --- | --- | --- |
 | **Repeated-measures** (pingouin `rm_anova`) | exactly one effective factor | Blocks on `case_id` so per-case difficulty is removed from the noise term. The standard agent-eval setup. |
-| **Mixed-effects** (statsmodels `mixedlm`) | two or more effective factors | Factors + interactions as fixed effects, `case_id` as a random effect; a p-value per factor plus AIC/BIC. |
+| **Mixed-effects** (statsmodels `mixedlm`) | two or more effective factors | Factors + interactions as fixed effects, `case_id` as a random effect; one joint Wald test per term (see below) plus AIC/BIC. |
 | **One-way** (scipy `f_oneway`) | cases are **not** reused | Rarely appropriate — the auto-selector never picks it for the reuse-the-cases design. |
 
 **F** is the ratio of between-condition variance to within-condition variance;
 **p** is the probability of an F that large if the configuration had no effect.
-A result is *significant* when `p < alpha` (default `alpha = 0.05`).
+A result is *significant* when `p < alpha` (default `alpha = 0.05`) — after the
+multiplicity correction described next, when more than one term is tested.
+
+## Per-term Wald tests and multiplicity correction
+
+In the mixed-effects model, a factor with *L* levels is encoded as *L − 1*
+dummy coefficients. Each **model term** — every main effect *and* every
+interaction — gets one **joint Wald test** over all of its coefficients: the
+omnibus question "does this factor matter at all?", not the per-dummy question
+"does this level differ from the reference?". (Taking the minimum of the dummy
+p-values instead — what the harness did before — is anti-conservative for
+factors with more than two levels and is not an omnibus test.)
+
+Testing several terms from one model is a *family* of tests, so their p-values
+are corrected for multiple comparisons before any significance call:
+
+- **Holm** (default) — step-down control of the family-wise error rate.
+- **Benjamini–Hochberg** (`fdr_bh`) — false-discovery-rate control; less
+  conservative, appropriate when screening many factors.
+- **none** — no correction; significance is judged on raw p-values.
+
+`anova.json` always reports **both** the raw (`p_values`) and adjusted
+(`p_adjusted`) values per term, plus `correction` and `family_size`.
+`significant` is computed on the adjusted p (on raw when the correction is
+`none`). The family counts only real tests: a term whose test is degenerate
+(no finite p — e.g. a zero-variance response) is reported as `null`, listed in
+`excluded_terms`, and never inflates the other terms' adjusted values — a
+p-value is never fabricated for a degenerate design. Configure the method with
+`matrix.analysis.correction` or the `--correction` flag (CLI wins).
+
+The single-factor variants are a family of one, so they carry the same schema
+fields (`p_adjusted` equal to `p_value`, `family_size: 1`) purely for
+consistency.
 
 !!! tip "Greenhouse–Geisser correction"
     Repeated-measures ANOVA assumes *sphericity* (equal variances of the

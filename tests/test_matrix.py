@@ -96,6 +96,38 @@ class TestFromYaml:
         with pytest.raises(ValueError, match="non-empty list"):
             MatrixBuilder.from_yaml(p, strict=True)
 
+    def test_parses_analysis_correction_to_canonical_name(self, tmp_path):
+        config = {"matrix": {"factors": {"model": ["a", "b"]},
+                             "analysis": {"correction": "fdr_bh"}}}
+        p = tmp_path / "eval.yaml"
+        p.write_text(yaml.dump(config))
+        result = MatrixBuilder.from_yaml(p)
+        assert result is not None
+        assert result.correction == "bh"  # statsmodels spelling canonicalised
+
+    def test_correction_defaults_to_none_when_unset(self, tmp_path):
+        p = tmp_path / "eval.yaml"
+        p.write_text(yaml.dump({"matrix": {"factors": {"model": ["a", "b"]}}}))
+        result = MatrixBuilder.from_yaml(p)
+        assert result is not None
+        assert result.correction is None
+
+    def test_unknown_correction_rejected_at_parse(self, tmp_path):
+        # A typo must fail at config parse, not after the runs have executed.
+        config = {"matrix": {"factors": {"model": ["a"]},
+                             "analysis": {"correction": "bonferroni-ish"}}}
+        p = tmp_path / "eval.yaml"
+        p.write_text(yaml.dump(config))
+        with pytest.raises(ValueError, match="correction"):
+            MatrixBuilder.from_yaml(p)
+
+    def test_analysis_must_be_mapping(self, tmp_path):
+        config = {"matrix": {"factors": {"model": ["a"]}, "analysis": ["holm"]}}
+        p = tmp_path / "eval.yaml"
+        p.write_text(yaml.dump(config))
+        with pytest.raises(ValueError, match="analysis must be a mapping"):
+            MatrixBuilder.from_yaml(p)
+
 
 class TestExpandFullFactorial:
     """Full factorial expansion of factor levels."""

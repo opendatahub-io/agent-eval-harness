@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 
+from agent_eval.anova.corrections import normalize_correction
+
 
 @dataclass(frozen=True)
 class Condition:
@@ -26,6 +28,9 @@ class MatrixConfig:
 
     factors: dict[str, list[Any]]
     replications: int = 1
+    # matrix.analysis.correction — multiple-comparison correction across the
+    # ANOVA term family (holm | bh | none). None = not configured (holm).
+    correction: str | None = None
 
 
 class MatrixBuilder:
@@ -73,7 +78,11 @@ class MatrixBuilder:
                 )
 
         replications = _parse_replications(matrix.get("replications", 1))
-        return MatrixConfig(factors=dict(factors), replications=replications)
+        return MatrixConfig(
+            factors=dict(factors),
+            replications=replications,
+            correction=_parse_correction(matrix.get("analysis")),
+        )
 
     @staticmethod
     def expand_full_factorial(factors: dict[str, list[Any]]) -> list[Condition]:
@@ -121,6 +130,25 @@ def _parse_replications(value: Any) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise ValueError("matrix.replications must be an integer >= 1")
     return value
+
+
+def _parse_correction(analysis: Any) -> str | None:
+    """matrix.analysis.correction, canonicalised — or None when unset.
+
+    A typo has to fail here, at config parse, not after the matrix has already
+    burned its budget executing runs.
+    """
+    if analysis is None:
+        return None
+    if not isinstance(analysis, Mapping):
+        raise ValueError("matrix.analysis must be a mapping")
+    correction = analysis.get("correction")
+    if correction is None:
+        return None
+    try:
+        return normalize_correction(correction)
+    except ValueError as exc:
+        raise ValueError(f"matrix.analysis.correction: {exc}") from None
 
 
 def _safe_id_segment(value: Any) -> str:
