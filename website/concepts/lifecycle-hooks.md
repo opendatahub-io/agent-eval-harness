@@ -104,8 +104,13 @@ Every hook receives the caller's environment plus harness-injected variables:
 | `CASE_WORKSPACE` | per-case | Absolute path to the case workspace |
 | `CASE_SOURCE_DIR` | per-case | Case source dir under `dataset.path` |
 | `CASE_INPUT` | per-case | Absolute path to the case `input.yaml` |
+| `AGENT_EVAL_COST_LEDGER` | OpenRouter plan | Path to the run's `provider/ledger.jsonl` |
+| `AGENT_EVAL_PROVIDER` / `AGENT_EVAL_ROUTING_ENFORCEMENT` | OpenRouter plan | Provider kind (`openrouter`) and enforcement level (`audit`) |
 
-The four `CASE_*` variables are only set for `before_each` / `after_each`.
+The four `CASE_*` variables are only set for `before_each` / `after_each`. Under an
+OpenRouter plan the provider's key variables (`OPENROUTER_API_KEY`,
+`OPENROUTER_MANAGEMENT_KEY`) are removed from the hook environment: lifecycle hooks do
+not talk to the provider.
 
 ## Hook outputs → runners and judges
 

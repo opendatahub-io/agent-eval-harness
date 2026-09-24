@@ -103,6 +103,8 @@ variables:
 | `CASE_WORKSPACE` | `before_each` / `after_each` | Absolute path to this case's workspace |
 | `CASE_SOURCE_DIR` | `before_each` / `after_each` | The case's source directory under `dataset.path` |
 | `CASE_INPUT` | `before_each` / `after_each` | Absolute path to the case's `input.yaml` |
+| `AGENT_EVAL_COST_LEDGER` | all phases, OpenRouter plan only | Path to the run's `provider/ledger.jsonl` |
+| `AGENT_EVAL_PROVIDER` / `AGENT_EVAL_ROUTING_ENFORCEMENT` | all phases, OpenRouter plan only | `openrouter` / the enforcement level; the provider's key variables are dropped from the hook env |
 
 `condition` commands receive the same environment, so you can guard a hook on a
 case:

@@ -211,9 +211,25 @@ def build_hook_env(
     case_workspace: Optional[str] = None,
     case_source_dir: Optional[str] = None,
     case_input: Optional[str] = None,
+    plan=None,
+    run_dir=None,
 ) -> dict[str, str]:
-    """Build environment dict with harness-injected variables."""
+    """Build environment dict with harness-injected variables.
+
+    Under a provider ``plan`` (spec 014) the hooks learn where the cost ledger
+    is and which enforcement level runs, and the provider's own key variables
+    are dropped from the copied environment: lifecycle hooks do not talk to
+    the provider, and the management key must never reach a subprocess.
+    """
     env = dict(os.environ)
+    if plan is not None:
+        if run_dir is not None:
+            env["AGENT_EVAL_COST_LEDGER"] = str(Path(run_dir) / "provider" / "ledger.jsonl")
+        env["AGENT_EVAL_PROVIDER"] = plan.kind
+        env["AGENT_EVAL_ROUTING_ENFORCEMENT"] = plan.enforcement
+        for name in (plan.key_env, getattr(plan, "management_key_env", None)):
+            if name:
+                env.pop(name, None)
     env["AGENT_EVAL_WORKSPACE"] = workspace
     env["AGENT_EVAL_RUN_ID"] = run_id
     env["AGENT_EVAL_CONFIG"] = config_path

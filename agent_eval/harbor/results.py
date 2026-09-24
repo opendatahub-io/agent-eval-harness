@@ -546,6 +546,42 @@ def _parse_multi_step_trial(trial_dir: Path, steps_dir: Path) -> dict | None:
     }
 
 
+def price_trials(trials: list, rows: list) -> None:
+    """Per-trial cost truth (spec 014): join each trial's transcript ids
+    against the run's ledger rows, in place.
+
+    A trial is priced only when every one of its ``gen-…`` ids has an ``ok``
+    generation row (a partial sum is not spend); the transcript's own
+    ``total_cost_usd`` moves to ``cost_usd_estimate``. Attribution is per
+    trial and exact — the ids are per request and the transcript is per
+    trial, so replications of one case never share a number. Trials without
+    ids stay unpriced with the estimate preserved.
+    """
+    from agent_eval.providers.openrouter.generation import is_generation_id
+
+    priced_rows = {r["gen_id"]: r for r in rows
+                   if r.get("source") == "generation" and r.get("status") == "ok"
+                   and r.get("gen_id") and isinstance(r.get("cost_usd"), (int, float))}
+    for trial in trials:
+        ids = [i for i in (trial.get("message_ids") or []) if is_generation_id(i)]
+        trial["cost_usd_estimate"] = trial.get("cost_usd")
+        costs = [priced_rows[i]["cost_usd"] for i in ids if i in priced_rows]
+        if ids and len(costs) == len(ids):
+            trial["cost_usd"] = round(sum(costs), 6)
+            trial["cost_source"] = "openrouter:generation"
+        else:
+            trial["cost_usd"] = None
+            trial["cost_source"] = "unavailable"
+        trial["cost_coverage"] = {"requests": len(ids), "requests_priced": len(costs)}
+
+
+def trial_costs(trials: list) -> list:
+    """The per-trial cost view carried in ``run_result.json`` under a plan."""
+    return [{k: t.get(k) for k in ("case_id", "trial_dir", "cost_usd", "cost_source",
+                                   "cost_usd_estimate", "cost_coverage")}
+            for t in trials]
+
+
 def parse_job(job_dir: Path) -> dict:
     """Parse a Harbor job directory into aggregated per-case results.
 

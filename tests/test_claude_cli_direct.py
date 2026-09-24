@@ -1,0 +1,140 @@
+"""The claude-code runner under a provider plan (spec 014), against a fake
+``claude`` binary that records what it was launched with: the settings
+overlay (plan wins, 0600, removed after the run), the managed-key strip of the
+process env, the bare id on the wire, the budget-flag mapping, ids sighted as
+the stream is read, the hook's ids, error classification, cost-source labels.
+The live-CLI form of these checks is the spec-local probe_claude_cli.py."""
+
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from agent_eval.agent.claude_code import ClaudeCodeRunner, _cli_budget_flag, _runner_cost_source  # noqa: E402
+from agent_eval.providers.env import MANAGED_ENV_KEYS, settings_env_block  # noqa: E402
+from openrouter_fakes import FAKE_KEY, fake_claude_records, install_fake_claude, make_plan  # noqa: E402
+
+
+class _Binding:
+    def __init__(self, tmp_path):
+        self.sighted = []
+        self.after = []
+        self.hook_ids_path = tmp_path / "provider" / "hook-ids-c1.jsonl"
+
+    def sight(self, gen_id, *, message_index=None, model_echo=None, role="agent"):
+        self.sighted.append((gen_id, message_index, model_echo, role))
+        return True
+
+    def after_run(self, message_ids):
+        self.after.append(list(message_ids))
+        return 0
+
+
+@pytest.fixture
+def workspace(tmp_path, monkeypatch):
+    install_fake_claude(tmp_path, monkeypatch)
+    ws = tmp_path / "ws"
+    (ws / ".claude").mkdir(parents=True)
+    (ws / ".claude" / "settings.json").write_text(json.dumps({
+        "env": {"ANTHROPIC_BASE_URL": "https://elsewhere.example", "KEEP_ME": "1"},
+        "permissions": {"deny": ["Read(secret/**)"]}}))
+    # a hostile host environment: Vertex forced, real Anthropic + OpenRouter keys around
+    monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+    monkeypatch.setenv("ANTHROPIC_VERTEX_PROJECT_ID", "host-project")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-host-secret")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "host-oauth-secret")
+    monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_KEY)
+    monkeypatch.setenv("OPENROUTER_MANAGEMENT_KEY", "sk-or-mgmt-secret")
+    return ws
+
+
+def _run(ws, plan, binding=None, prompt_args="hello", **kw):
+    runner = ClaudeCodeRunner(log_prefix="t", provider_plan=plan, run_id="run-1", **kw)
+    if binding is not None:
+        runner.bind_provider(binding)
+    return runner.execute(target=None, args=prompt_args, workspace=ws,
+                          model="openrouter:/z-ai/glm-5.2:exacto",
+                          settings_path=ws / ".claude" / "settings.json",
+                          max_budget_usd=5.0, timeout_s=60), runner
+
+
+def test_plan_run_uses_the_overlay_and_a_clean_process_env(workspace):
+    plan = make_plan()
+    binding = _Binding(workspace.parent)
+    result, _ = _run(workspace, plan, binding, prompt_args="HOOKCALL please")
+    assert result.exit_code == 0
+    rec = fake_claude_records(workspace)[-1]
+    argv = rec["argv"]
+    assert argv[argv.index("--model") + 1] == "z-ai/glm-5.2:exacto"          # bare id on the wire
+    assert argv[argv.index("--max-budget-usd") + 1] == "250.0"               # 5 × 50
+    overlay = Path(argv[argv.index("--settings") + 1])
+    assert overlay.name == ".eval-overlay.json" and overlay.parent == workspace / ".claude"
+    assert not overlay.exists()                                              # removed in the finally
+    assert rec["settings_mode"] == "0o600"
+    env_block = rec["settings"]["env"]
+    expected = settings_env_block(plan, secrets="literal")
+    assert {k: env_block[k] for k in expected} == expected                    # plan wins for managed keys
+    assert env_block["KEEP_ME"] == "1"                                       # non-managed keys kept
+    assert rec["settings"]["permissions"]["deny"] == ["Read(secret/**)"]      # existing rules kept
+    assert rec["token_sha"] == plan.key_hash
+    # process env: no managed key, no provider key variable, the hook-ids path
+    assert not (set(rec["env_keys"]) & MANAGED_ENV_KEYS)
+    assert "OPENROUTER_API_KEY" not in rec["env_keys"] and "OPENROUTER_MANAGEMENT_KEY" not in rec["env_keys"]
+    assert rec["env"]["AGENT_EVAL_HOOK_IDS"] == str(binding.hook_ids_path)
+    # ids were sighted as the stream was read (before the process exited), then the rest
+    assert [s[0] for s in binding.sighted] == rec["ids"]
+    assert binding.sighted[0][1:] == (1, "z-ai/glm-5.2", "agent")
+    assert binding.after == [sorted(rec["ids"])] and result.message_ids == sorted(rec["ids"])
+    assert json.loads(binding.hook_ids_path.read_text())["id"].endswith("-hook")
+    assert result.cost_source == "runner:estimate" and result.cost_usd_estimate == 0.5
+    assert result.error_class is None and result.budget is None
+
+
+def test_no_plan_is_unchanged(workspace, monkeypatch):
+    result, runner = _run(workspace, None)
+    rec = fake_claude_records(workspace)[-1]
+    argv = rec["argv"]
+    assert argv[argv.index("--model") + 1] == "openrouter:/z-ai/glm-5.2:exacto"   # as given
+    assert argv[argv.index("--max-budget-usd") + 1] == "5.0"
+    assert "--settings" in argv and argv[argv.index("--settings") + 1].endswith("settings.json")
+    assert "CLAUDE_CODE_USE_VERTEX" in rec["env_keys"] and rec["env"]["ANTHROPIC_API_KEY"] == "sk-ant-host-secret"
+    assert result.cost_source == "runner:reported" and result.cost_usd_estimate is None
+    assert result.message_ids == sorted(rec["ids"])
+
+
+def test_budget_flag_mapping_and_cost_source_labels():
+    plan = make_plan()
+    assert _cli_budget_flag(5.0, None) == "5.0" and _cli_budget_flag(0, None) == "0"
+    assert _cli_budget_flag(5.0, plan) == "250.0"
+    assert _cli_budget_flag(0, plan) is None and _cli_budget_flag(None, plan) is None
+    assert _runner_cost_source({}, plan) == "runner:estimate"
+    assert _runner_cost_source({"ANTHROPIC_BASE_URL": "https://api.anthropic.com"}, None) == "runner:reported"
+    assert _runner_cost_source({"ANTHROPIC_BASE_URL": "http://localhost:4000"}, None) == "runner:estimate"
+    assert _runner_cost_source({}, None) == "runner:reported"
+
+
+def test_zero_cap_omits_the_flag_under_a_plan(workspace):
+    runner = ClaudeCodeRunner(log_prefix="t", provider_plan=make_plan())
+    result = runner.execute(target=None, args="x", workspace=workspace, model="openrouter:/z-ai/glm-5.2",
+                            settings_path=None, max_budget_usd=0, timeout_s=60)
+    assert result.exit_code == 0
+    assert "--max-budget-usd" not in fake_claude_records(workspace)[-1]["argv"]
+    assert not (workspace / ".eval-overlay.json").exists()
+
+
+def test_key_limit_402_is_classified(workspace):
+    result, _ = _run(workspace, make_plan(), prompt_args="FAIL402")
+    assert result.error_class == "config"
+    assert result.budget == {"exceeded": "run", "exceeded_reason": "limit_usd"}
+
+
+def test_build_env_without_a_binding_or_plan(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    env = ClaudeCodeRunner(provider_plan=make_plan(), subagent_model="openrouter:/z-ai/glm-5.2")._build_env()
+    assert not (set(env) & MANAGED_ENV_KEYS) and "AGENT_EVAL_HOOK_IDS" not in env
+    env = ClaudeCodeRunner(subagent_model="claude-sonnet-4-5")._build_env()
+    assert env["CLAUDE_CODE_USE_VERTEX"] == "1" and env["CLAUDE_CODE_SUBAGENT_MODEL"] == "claude-sonnet-4-5"

@@ -511,3 +511,24 @@ def test_multi_step_trial_unions_message_ids_and_errored_trials_carry_the_field(
     (errored / "exception.txt").write_text("RuntimeError: pod not ready\n")
     assert R.parse_trial(errored)["message_ids"] == []
 
+
+def test_price_trials_joins_each_trial_against_its_own_ids():
+    rows = [
+        {"source": "generation", "status": "ok", "gen_id": "gen-a1", "cost_usd": 0.01},
+        {"source": "generation", "status": "ok", "gen_id": "gen-a2", "cost_usd": 0.02},
+        {"source": "generation", "status": "backfill_failed", "gen_id": "gen-b1", "cost_usd": None},
+    ]
+    trials = [
+        {"case_id": "c", "trial_dir": "c__1", "cost_usd": 0.9, "message_ids": ["gen-a1", "gen-a2"]},
+        {"case_id": "c", "trial_dir": "c__2", "cost_usd": 0.8, "message_ids": ["gen-b1"]},
+        {"case_id": "d", "trial_dir": "d__1", "cost_usd": 0.7, "message_ids": []},
+    ]
+    R.price_trials(trials, rows)
+    assert trials[0]["cost_usd"] == 0.03 and trials[0]["cost_source"] == "openrouter:generation"
+    assert trials[0]["cost_usd_estimate"] == 0.9
+    assert trials[1]["cost_usd"] is None and trials[1]["cost_source"] == "unavailable"
+    assert trials[1]["cost_usd_estimate"] == 0.8 and trials[1]["cost_coverage"] == {"requests": 1, "requests_priced": 0}
+    assert trials[2]["cost_usd"] is None and trials[2]["cost_usd_estimate"] == 0.7
+    view = R.trial_costs(trials)
+    assert [v["trial_dir"] for v in view] == ["c__1", "c__2", "d__1"] and "message_ids" not in view[0]
+

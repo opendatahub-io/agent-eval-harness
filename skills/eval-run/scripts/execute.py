@@ -482,125 +482,144 @@ def main():
             sys.exit(1)
     runner_cls = RUNNERS[agent]
 
-    mlflow_experiment = args.mlflow_experiment or config.mlflow.experiment
-    effort = args.effort or config.runner.effort
-
-    # Honor user-authored permissions (allow + deny) in every mode.
-    filtered_permissions = _resolve_permissions(config)
-
-    runner = runner_cls.from_config(
-        config,
-        log_prefix="eval",
-        subagent_model=subagent_model,
-        mlflow_experiment=mlflow_experiment,
-        mlflow_tracking_uri=config.mlflow.tracking_uri,
-        effort=effort,
-        permissions=filtered_permissions,
-    )
-
-    # Resolve timeout and budget: CLI override > config > defaults.
-    # Use explicit None checks so that 0 is preserved (an operator who
-    # passes --timeout 0 or sets max_budget_usd: 0 in the config gets
-    # exactly that, not the default).
-    timeout_s = (args.timeout if args.timeout is not None
-                 else config.execution.timeout if config.execution.timeout is not None
-                 else 3600)
-    max_budget = (args.max_budget if args.max_budget is not None
-                  else config.execution.max_budget_usd if config.execution.max_budget_usd is not None
-                  else 100.0)
-
-    # Compose system prompt: runner.system_prompt (if any) + harness prompt.
-    # Skip the harness safety prompt for the opaque CLI runner — it references
-    # tool interception hooks and permission controls that don't exist there.
-    existing_prompt = (config.runner.system_prompt or "").strip()
-    if agent == "cli":
-        system_prompt = existing_prompt or None
-    else:
-        system_prompt = "\n\n".join(p for p in [existing_prompt, _HARNESS_SYSTEM_PROMPT] if p)
-
-    # Capture user-facing eval parameters that defined this run, for the report.
-    eval_params = _build_eval_params(args, config, skill_args, max_budget, timeout_s, effort)
-
-    # ── Per-case execution (case mode) ────────────────
-    # Case mode executes once per case with separate workspaces
-    # (Works for both skill and prompt execution)
-    if config.execution.mode == "case":
-        parallelism = (args.parallelism if args.parallelism is not None
-                       else config.execution.parallelism)
-        _execute_per_case(args, config, runner, runner_cls,
-                          output_dir, max_budget, timeout_s,
-                          model, mlflow_experiment, system_prompt,
-                          skill_args_template=skill_args,
-                          eval_params=eval_params,
-                          parallelism=parallelism,
-                          effort=effort,
-                          subagent_model=subagent_model,
-                          target=target)
-        return
-
-    # ── Batch execution (below) ──────────────────────────────────────
-    exec_label = f"/{target} {skill_args}" if target else skill_args
-    print(f"Executing: {exec_label}", file=sys.stderr)
-    print(f"Agent: {runner.name} | Model: {model}", file=sys.stderr)
-    print(f"Workspace: {args.workspace}", file=sys.stderr)
-
-    # Build hook environment for batch mode
-    run_id = args.run_id or ""
-    hook_env = build_hook_env(
-        workspace=args.workspace,
-        run_id=run_id,
-        config_path=str(Path(args.config).resolve()),
-        project_root=str(Path.cwd()),
-        model=model,
-    )
-    log_dir = output_dir / "hooks"
-
+    # Provider plan (spec 014): built iff the effective skill model is an
+    # openrouter:/ URI; preflight before any spend; one session (backfill
+    # worker, key-usage reads) shared by every case and closed in the finally
+    # — on every exit path (SystemExit, KeyboardInterrupt, exceptions).
+    plan = _build_provider_plan(config, args, agent, output_dir)
+    session = None
+    if plan is not None:
+        session = _start_provider_session(
+            plan, config, output_dir,
+            args.parallelism if args.parallelism is not None else config.execution.parallelism)
     try:
-        # Run before_all hooks and collect outputs
-        global_hook_outputs = {}
-        if config.hooks.before_all:
-            print("Running before_all hooks...", file=sys.stderr)
-            run_hooks(config.hooks.before_all, env=hook_env,
-                      cwd=Path.cwd(), log_dir=log_dir,
-                      phase_name="before_all")
-            global_hook_outputs = collect_hook_outputs(Path(args.workspace))
 
-        save_hook_data(output_dir, global_hook_outputs.get("data"))
+        mlflow_experiment = args.mlflow_experiment or config.mlflow.experiment
+        effort = args.effort or config.runner.effort
 
-        # Set MLflow environment in the workspace settings
-        if mlflow_experiment:
-            from agent_eval.mlflow.experiment import inject_tracing_env
-            inject_tracing_env(args.workspace, project_root=Path.cwd(),
-                               tracking_uri=config.mlflow.tracking_uri,
-                               experiment_name=mlflow_experiment)
+        # Honor user-authored permissions (allow + deny) in every mode.
+        filtered_permissions = _resolve_permissions(config)
 
-        workspace_settings = Path(args.workspace) / ".claude" / "settings.json"
-        settings_path = workspace_settings if workspace_settings.exists() else None
-
-        result = runner.execute(
-            target=target,
-            args=skill_args,
-            workspace=Path(args.workspace),
-            model=model,
-            settings_path=settings_path,
-            system_prompt=system_prompt,
-            max_budget_usd=max_budget,
-            timeout_s=timeout_s,
-            extra_env=global_hook_outputs.get("env") or None,
+        runner = runner_cls.from_config(
+            config,
+            log_prefix="eval",
+            subagent_model=subagent_model,
+            mlflow_experiment=mlflow_experiment,
+            mlflow_tracking_uri=config.mlflow.tracking_uri,
+            effort=effort,
+            permissions=filtered_permissions,
+            **_runner_overrides(),
         )
 
-        exit_code = _save_result(result, args, output_dir, runner, model, eval_params=eval_params)
+        # Resolve timeout and budget: CLI override > config > defaults.
+        # Use explicit None checks so that 0 is preserved (an operator who
+        # passes --timeout 0 or sets max_budget_usd: 0 in the config gets
+        # exactly that, not the default).
+        timeout_s = (args.timeout if args.timeout is not None
+                     else config.execution.timeout if config.execution.timeout is not None
+                     else 3600)
+        max_budget = (args.max_budget if args.max_budget is not None
+                      else config.execution.max_budget_usd if config.execution.max_budget_usd is not None
+                      else 100.0)
 
-        # Copy batch input files to output dir for MLflow artifact logging.
-        _copy_input_files_batch(Path(args.workspace), output_dir)
+        # Compose system prompt: runner.system_prompt (if any) + harness prompt.
+        # Skip the harness safety prompt for the opaque CLI runner — it references
+        # tool interception hooks and permission controls that don't exist there.
+        existing_prompt = (config.runner.system_prompt or "").strip()
+        if agent == "cli":
+            system_prompt = existing_prompt or None
+        else:
+            system_prompt = "\n\n".join(p for p in [existing_prompt, _HARNESS_SYSTEM_PROMPT] if p)
 
-        sys.exit(exit_code)
+        # Capture user-facing eval parameters that defined this run, for the report.
+        eval_params = _build_eval_params(args, config, skill_args, max_budget, timeout_s, effort,
+                                         plan=plan)
+
+        # ── Per-case execution (case mode) ────────────────
+        # Case mode executes once per case with separate workspaces
+        # (Works for both skill and prompt execution)
+        if config.execution.mode == "case":
+            parallelism = (args.parallelism if args.parallelism is not None
+                           else config.execution.parallelism)
+            _execute_per_case(args, config, runner, runner_cls,
+                              output_dir, max_budget, timeout_s,
+                              model, mlflow_experiment, system_prompt,
+                              skill_args_template=skill_args,
+                              eval_params=eval_params,
+                              parallelism=parallelism,
+                              effort=effort,
+                              subagent_model=subagent_model,
+                              target=target)
+            return
+
+        # ── Batch execution (below) ──────────────────────────────────────
+        exec_label = f"/{target} {skill_args}" if target else skill_args
+        print(f"Executing: {exec_label}", file=sys.stderr)
+        print(f"Agent: {runner.name} | Model: {model}", file=sys.stderr)
+        print(f"Workspace: {args.workspace}", file=sys.stderr)
+
+        # Build hook environment for batch mode
+        run_id = args.run_id or ""
+        hook_env = build_hook_env(
+            workspace=args.workspace,
+            run_id=run_id,
+            config_path=str(Path(args.config).resolve()),
+            project_root=str(Path.cwd()),
+            model=model,
+            plan=plan, run_dir=output_dir,
+        )
+        log_dir = output_dir / "hooks"
+
+        try:
+            # Run before_all hooks and collect outputs
+            global_hook_outputs = {}
+            if config.hooks.before_all:
+                print("Running before_all hooks...", file=sys.stderr)
+                run_hooks(config.hooks.before_all, env=hook_env,
+                          cwd=Path.cwd(), log_dir=log_dir,
+                          phase_name="before_all")
+                global_hook_outputs = collect_hook_outputs(Path(args.workspace))
+
+            save_hook_data(output_dir, global_hook_outputs.get("data"))
+
+            # Set MLflow environment in the workspace settings
+            if mlflow_experiment:
+                from agent_eval.mlflow.experiment import inject_tracing_env
+                inject_tracing_env(args.workspace, project_root=Path.cwd(),
+                                   tracking_uri=config.mlflow.tracking_uri,
+                                   experiment_name=mlflow_experiment)
+
+            workspace_settings = Path(args.workspace) / ".claude" / "settings.json"
+            settings_path = workspace_settings if workspace_settings.exists() else None
+
+            _bind_provider(runner)
+            result = runner.execute(
+                target=target,
+                args=skill_args,
+                workspace=Path(args.workspace),
+                model=model,
+                settings_path=settings_path,
+                system_prompt=system_prompt,
+                max_budget_usd=max_budget,
+                timeout_s=timeout_s,
+                extra_env=global_hook_outputs.get("env") or None,
+            )
+
+            exit_code = _save_result(result, args, output_dir, runner, model, eval_params=eval_params)
+
+            # Copy batch input files to output dir for MLflow artifact logging.
+            _copy_input_files_batch(Path(args.workspace), output_dir)
+
+            sys.exit(exit_code)
+        finally:
+            if config.hooks.after_all:
+                print("Running after_all hooks...", file=sys.stderr)
+                run_hooks_safe(config.hooks.after_all, env=hook_env,
+                               cwd=Path.cwd(), log_dir=log_dir,
+                               phase_name="after_all")
     finally:
-        if config.hooks.after_all:
-            print("Running after_all hooks...", file=sys.stderr)
-            run_hooks_safe(config.hooks.after_all, env=hook_env,
-                           cwd=Path.cwd(), log_dir=log_dir,
-                           phase_name="after_all")
+        if session is not None:
+            session.close()
 
 
 def _resolve_arguments(template, case_data, steps=None):
@@ -684,7 +703,7 @@ def _resolve_arguments(template, case_data, steps=None):
     return result
 
 
-def _build_eval_params(args, config, skill_args, max_budget, timeout_s, effort=None):
+def _build_eval_params(args, config, skill_args, max_budget, timeout_s, effort=None, plan=None):
     """Snapshot the user-facing eval parameters that defined this run.
 
     Surfaced in the HTML report so reviewers can see *what was run* without
@@ -713,6 +732,23 @@ def _build_eval_params(args, config, skill_args, max_budget, timeout_s, effort=N
         params["effort"] = effort
     if getattr(args, "mlflow_experiment", None):
         params["mlflow_experiment"] = args.mlflow_experiment
+    if plan is not None:
+        from agent_eval.providers.openrouter.preflight import table_sha
+
+        params["provider"] = {
+            "name": plan.kind, "kind": plan.kind, "transport": plan.transport,
+            "runner": plan.runner, "base_url": plan.base_url,
+            "routing_sha": table_sha(plan.routing), "routing_enforcement": plan.enforcement,
+            "background_model": plan.background_model, "key_exposed_to_agent": True,
+            "key_scope": plan.key_scope,
+            "key_hash": f"sha256:{plan.key_hash}" if plan.key_hash else None,
+        }
+        # The CLI's cap is the only in-flight cap at `audit`; a cap <= 0 emits
+        # no flag at all (the CLI rejects 0), recorded as null.
+        cap = (round(max_budget * float(plan.cli_budget_inflation), 6)
+               if isinstance(max_budget, (int, float)) and max_budget > 0 else None)
+        params["budget"] = {"cli_cap_usd": cap, "invocation_usd": max_budget,
+                            "run_usd": plan.budget_run_usd, "enforcement": "cli-estimate"}
     return params
 
 
@@ -786,21 +822,135 @@ def _cost_label(cost, source=None, estimate=None):
 # by main(); with no plan and no ledger file the payload is written unchanged.
 
 _PROVIDER_PLAN = None
+_PROVIDER_SESSION = None
+_SESSION_FACTORY = None      # tests inject a ProviderSession subclass with fake timing
 _RECONCILE_OPTS = {"strict_cost": False, "strict_routing": False, "allow_estimate": False}
 
 
-def set_provider_plan(plan):
-    global _PROVIDER_PLAN
+def set_provider_plan(plan, session=None):
+    global _PROVIDER_PLAN, _PROVIDER_SESSION
     _PROVIDER_PLAN = plan
+    _PROVIDER_SESSION = session
 
 
 def write_run_result(path, payload, *, plan=None, ledger=None, key_usage=None):
     """Reconcile ``payload`` against the run's ledger and write it. Delegates to
     the shared helper so Harbor's writer and this one cannot drift."""
     plan = plan if plan is not None else _PROVIDER_PLAN
+    session = _PROVIDER_SESSION
+    catalog = session.catalog if session is not None else None
+    if plan is not None and session is not None and session.snapshot_ref:
+        # The audit joins against the preflight's frozen catalog view.
+        routing = payload.get("routing") if isinstance(payload.get("routing"), dict) else {}
+        if not routing.get("snapshot"):
+            payload = {**payload, "routing": {**routing, "snapshot": session.snapshot_ref}}
     return _reconciled_write(Path(path), payload, plan=plan, ledger=ledger,
-                             key_usage=key_usage,
+                             key_usage=key_usage, catalog=catalog,
                              allow_estimate=_RECONCILE_OPTS["allow_estimate"])
+
+
+def _runner_overrides():
+    """Constructor overrides every runner instance receives under a plan."""
+    if _PROVIDER_PLAN is None:
+        return {}
+    return {"provider_plan": _PROVIDER_PLAN, "run_id": _PROVIDER_PLAN.run_id}
+
+
+def _bind_provider(runner, case_id=None, step_id=None):
+    """Hand the runner the session binding it sights generation ids through
+    for one case/step. A no-op without a plan or for a runner without
+    provider integration (duck-typed runners keep working)."""
+    bind = getattr(runner, "bind_provider", None)
+    if bind is None:
+        return
+    bind(_PROVIDER_SESSION.bind(case_id, step_id) if _PROVIDER_SESSION is not None else None)
+
+
+def _build_provider_plan(config, args, agent, output_dir):
+    """Activation rule (spec 014, Decision 21): the plan exists iff the
+    *effective* skill model (CLI > config) is an ``openrouter:/`` URI. A
+    declared block no role uses is inert (one WARNING). Exit 2 on a plan the
+    config cannot build (missing key, non-OpenRouter subagent/hook, runner)."""
+    from agent_eval.providers.base import ConfigError
+    from agent_eval.providers.openrouter.plan import build_plan, effective_roles, plan_is_active
+
+    roles = effective_roles(config, {"skill": args.model, "subagent": args.subagent_model})
+    declared = getattr(getattr(config.models, "providers", None), "openrouter", None) is not None
+    if not plan_is_active(roles):
+        if declared:
+            print("WARNING: models.providers.openrouter is declared but no effective role "
+                  "or CLI model uses openrouter:/ — routing table inactive", file=sys.stderr)
+        return None
+    if agent != "claude-code":
+        print(f"ERROR: the direct OpenRouter transport is implemented for the claude-code "
+              f"runner; runner '{agent}' cannot run {roles['skill']!r}", file=sys.stderr)
+        sys.exit(2)
+    try:
+        return build_plan(config, roles, runner="claude-code",
+                          run_id=args.run_id or output_dir.name)
+    except ConfigError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+
+def _start_provider_session(plan, config, output_dir, parallelism):
+    """Preflight (before any spend), then the run-scoped session: the
+    ``/generation`` backfill worker and the key-usage "before" read. The
+    session is attached to the plan so ``plan.close()`` reaches it."""
+    from agent_eval.config import OpenRouterConfig
+    from agent_eval.providers.base import ConfigError
+    from agent_eval.providers.openrouter.preflight import run_preflight
+    from agent_eval.providers.openrouter.session import ProviderSession
+
+    orc = getattr(getattr(config.models, "providers", None), "openrouter", None) or OpenRouterConfig()
+    try:
+        pre = run_preflight(plan, level=orc.preflight, run_dir=output_dir)
+    except ConfigError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(2)
+    for warning in pre.warnings:
+        print(f"WARNING: preflight: {warning}", file=sys.stderr)
+    factory = _SESSION_FACTORY or ProviderSession
+    session = factory(plan, output_dir, parallelism=parallelism or 1, snapshot=pre.snapshot).start()
+    plan.attach(session)
+    set_provider_plan(plan, session=session)
+    degraded = f" (degraded: {pre.degraded_reason})" if pre.degraded_reason else ""
+    print(f"Provider: openrouter direct | model: {plan.skill.id} | enforcement: {plan.enforcement} | "
+          f"preflight: {orc.preflight}{degraded} | key exposed to agent: operator key "
+          f"sha256:{plan.key_hash} (enforcement: {plan.enforcement})", file=sys.stderr)
+    return session
+
+
+def _finish_provider_run(run_meta):
+    """Run end, before the strict flags judge the final result: drain and
+    retry the backfill, settle and read the key usage, then the last
+    reconcile pass over every ``run_result.json`` of the run."""
+    session = _PROVIDER_SESSION
+    if session is None:
+        return run_meta
+    session.finish()
+    final = session.reconcile_run(allow_estimate=_RECONCILE_OPTS["allow_estimate"])
+    return final if final is not None else run_meta
+
+
+def _live_markers(payload):
+    """Per-case progress-line markers derived from the reconciled payload:
+    ids still inside the backfill window, routing violations already visible,
+    the per-run key's limit."""
+    marks = []
+    cov = payload.get("cost_coverage") if isinstance(payload.get("cost_coverage"), dict) else None
+    if cov:
+        pending = ((cov.get("requests") or 0) - (cov.get("requests_priced") or 0)
+                   - (cov.get("requests_missing_cost") or 0))
+        if pending > 0:
+            marks.append(f"cost pending: {pending} ids")
+    routing = payload.get("routing") if isinstance(payload.get("routing"), dict) else {}
+    if routing.get("violations"):
+        marks.append(f"routing: {len(routing['violations'])} violations")
+    budget = payload.get("budget") if isinstance(payload.get("budget"), dict) else {}
+    if budget.get("exceeded_reason") == "limit_usd":
+        marks.append("budget: limit_usd")
+    return "".join(f" [{m}]" for m in marks)
 
 
 def _apply_strict_exit(exit_code, strict_exit):
@@ -1004,6 +1154,7 @@ def _run_single_case_in_repo(runner, skill_name, case_ws, output_dir,
           file=sys.stderr)
 
     # Execute in repo with case_ws-based settings
+    _bind_provider(runner, case_id)
     result = runner.execute(
         target=skill_name,
         args=case_args,
@@ -1085,7 +1236,9 @@ def _run_single_case_in_repo(runner, skill_name, case_ws, output_dir,
         "permission_denials": result.permission_denials or [],
         "repo_modified": repo_dirty,
         "message_ids": result.message_ids or [],
+        "cost_source": result.cost_source,
         "error_class": result.error_class,
+        "budget": result.budget,
     }
     # run_result write-site 1: case mode, repo-mode per-case result
     case_result = write_run_result(case_output / "run_result.json", case_result)
@@ -1185,6 +1338,7 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
             case_data_out = case_outputs.get("data", {})
             merged_hook_data = {**global_data, **case_data_out}
 
+        _bind_provider(runner, case_id)
         result = runner.execute(
             target=skill_name,
             args=case_args,
@@ -1272,14 +1426,17 @@ def _run_single_case(runner, skill_name, case_id, case_ws, output_dir,
         # solely in raw stdout.log, invisible to every downstream reader.
         "permission_denials": result.permission_denials or [],
         "message_ids": result.message_ids or [],
+        "cost_source": result.cost_source,
         "error_class": result.error_class,
+        "budget": result.budget,
     }
     # run_result write-site 3: case mode, per-case result
     case_result = write_run_result(case_output / "run_result.json", case_result)
 
     status = "OK" if result.exit_code == 0 else f"FAIL (exit {result.exit_code})"
     print(f"    → {case_id}: {status} | {result.duration_s:.0f}s | "
-          f"{_cost_label(case_result.get('cost_usd'), case_result.get('cost_source'), case_result.get('cost_usd_estimate'))}",
+          f"{_cost_label(case_result.get('cost_usd'), case_result.get('cost_source'), case_result.get('cost_usd_estimate'))}"
+          f"{_live_markers(case_result)}",
           file=sys.stderr)
 
     return case_id, case_result
@@ -1391,7 +1548,8 @@ def _run_multi_step_case(runner, case_id, case_ws, output_dir, model,
                     mlflow_experiment=mlflow_experiment,
                     mlflow_tracking_uri=mlflow_tracking_uri,
                     permissions=_resolve_permissions(config),
-                    effort=step.runner.effort)
+                    effort=step.runner.effort,
+                    **_runner_overrides())
 
             step_timeout = (step.timeout if step.timeout is not None
                             else timeout_s)
@@ -1427,6 +1585,7 @@ def _run_multi_step_case(runner, case_id, case_ws, output_dir, model,
                     # Same precedence Harbor task generation applies: a
                     # per-step runner override wins over the eval default.
                     step_system_prompt = step.runner.system_prompt
+                _bind_provider(step_runner, case_id, step_id)
                 step_result = step_runner.execute(
                     target=step_target,
                     args=resolved,
@@ -1466,6 +1625,9 @@ def _run_multi_step_case(runner, case_id, case_ws, output_dir, model,
                 "per_model_turns": step_result.per_model_turns,
                 "permission_denials": step_result.permission_denials or [],
                 "message_ids": step_result.message_ids or [],
+                "cost_source": step_result.cost_source,
+                "error_class": step_result.error_class,
+                "budget": step_result.budget,
             }
             steps_ctx[step_id] = {
                 "output": _extract_last_assistant_text(step_result.stdout),
@@ -1692,6 +1854,7 @@ def _execute_per_case(args, config, runner, runner_cls,
         config_path=str(Path(args.config).resolve()),
         project_root=str(Path.cwd()),
         model=model,
+        plan=_PROVIDER_PLAN, run_dir=output_dir,
     )
     log_dir = output_dir / "hooks"
 
@@ -1726,6 +1889,7 @@ def _execute_per_case(args, config, runner, runner_cls,
                         mlflow_tracking_uri=config.mlflow.tracking_uri,
                         effort=effort,
                         permissions=case_permissions,
+                        **_runner_overrides(),
                     )
 
                     # Route to in-repo or regular execution based on mode
@@ -1894,6 +2058,7 @@ def _execute_per_case(args, config, runner, runner_cls,
         run_meta["cost_usd_estimate"] = estimate_total
     # run_result write-site 7: case-mode aggregate
     run_meta = write_run_result(output_dir / "run_result.json", run_meta)
+    run_meta = _finish_provider_run(run_meta)
     run_meta, worst_exit = _finalize_strict(output_dir / "run_result.json", run_meta, worst_exit)
     total_cost = run_meta.get("cost_usd")
 
@@ -1965,11 +2130,14 @@ def _save_result(result, args, output_dir, runner, model, eval_params=None):
         "execution_mode": "batch",
         "eval_params": eval_params or {},
         "message_ids": result.message_ids or [],
+        "cost_source": result.cost_source,
         "error_class": result.error_class,
+        "budget": result.budget,
     }
     run_result_path = output_dir / "run_result.json"
     # run_result write-site 8: batch mode result
     run_meta = write_run_result(run_result_path, run_meta)
+    run_meta = _finish_provider_run(run_meta)
     run_meta, exit_code = _finalize_strict(run_result_path, run_meta, result.exit_code)
 
     # Verify the file is valid JSON.

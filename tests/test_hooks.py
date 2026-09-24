@@ -356,3 +356,18 @@ def test_collect_hook_outputs_empty_file(tmp_path):
     result = collect_hook_outputs(tmp_path)
     assert result == {}
     assert not (tmp_path / ".hook-outputs.yaml").exists()
+
+
+def test_build_hook_env_under_a_plan_drops_provider_keys(monkeypatch, tmp_path):
+    from agent_eval.hooks import build_hook_env
+    from openrouter_fakes import make_plan
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-x")
+    monkeypatch.setenv("OPENROUTER_MANAGEMENT_KEY", "sk-or-mgmt")
+    env = build_hook_env("ws", "run-1", "eval.yaml", ".", "m", plan=make_plan(), run_dir=tmp_path)
+    assert env["AGENT_EVAL_COST_LEDGER"] == str(tmp_path / "provider" / "ledger.jsonl")
+    assert env["AGENT_EVAL_PROVIDER"] == "openrouter" and env["AGENT_EVAL_ROUTING_ENFORCEMENT"] == "audit"
+    assert "OPENROUTER_API_KEY" not in env and "OPENROUTER_MANAGEMENT_KEY" not in env
+    plain = build_hook_env("ws", "run-1", "eval.yaml", ".", "m")
+    assert plain["OPENROUTER_API_KEY"] == "sk-or-x" and "AGENT_EVAL_PROVIDER" not in plain
+

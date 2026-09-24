@@ -202,3 +202,42 @@ def test_exec_passes_scoped_environment_to_podman_process():
     assert child_env == {"CARRIER": "secret", "VISIBLE": "yes"}
     assert "secret" not in " ".join(args)
     assert ["-e", "CARRIER", "-e", "VISIBLE"] == args[3:7]
+
+
+def test_podman_forward_excludes_under_plan(tmp_path, monkeypatch):
+    """With the plan's exclusion list set by harbor/run.py, no host Vertex
+    setting or Anthropic credential is forwarded and the GCP credential mount
+    is skipped; an allowed key (the verifier's OPENROUTER_API_KEY) still is."""
+    env = _startable_environment(tmp_path, [])
+    calls = []
+
+    async def fake_podman(args, timeout_sec=None, input_bytes=None, environment=None):
+        calls.append((args, environment))
+        return SimpleNamespace(return_code=0, stderr="")
+
+    async def fake_upload():
+        return None
+
+    env._podman = fake_podman
+    env._upload_environment_dir_after_start = fake_upload
+    creds = tmp_path / "sa.json"
+    creds.write_text("{}")
+    for k, v in {"CLAUDE_CODE_USE_VERTEX": "1", "ANTHROPIC_VERTEX_PROJECT_ID": "p", "CLOUD_ML_REGION": "r",
+                 "ANTHROPIC_API_KEY": "sk-ant", "ANTHROPIC_AUTH_TOKEN": "tok", "ANTHROPIC_BASE_URL": "https://x",
+                 "OPENROUTER_API_KEY": "sk-or", "AGENT_EVAL_PODMAN_GCP_CREDENTIALS_FILE": str(creds),
+                 "AGENT_EVAL_PODMAN_PLAN_EXCLUDE": "CLAUDE_CODE_USE_VERTEX,ANTHROPIC_VERTEX_PROJECT_ID,"
+                 "CLOUD_ML_REGION,ANTHROPIC_API_KEY,ANTHROPIC_AUTH_TOKEN,ANTHROPIC_BASE_URL"}.items():
+        monkeypatch.setenv(k, v)
+    asyncio.run(PodmanEnvironment.start(env, force_build=False))
+    run_args, child_env = calls[-1]
+    forwarded = {run_args[i + 1] for i, a in enumerate(run_args) if a == "-e"}
+    assert "OPENROUTER_API_KEY" in forwarded and "TASK_FLAG" in forwarded
+    assert not forwarded & {"CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION",
+                            "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+                            "GOOGLE_APPLICATION_CREDENTIALS"}
+    assert not any(str(creds) in a for a in run_args)
+    monkeypatch.delenv("AGENT_EVAL_PODMAN_PLAN_EXCLUDE")
+    asyncio.run(PodmanEnvironment.start(env, force_build=False))
+    run_args, _ = calls[-1]
+    assert "CLAUDE_CODE_USE_VERTEX" in run_args and "GOOGLE_APPLICATION_CREDENTIALS" in run_args
+

@@ -658,3 +658,146 @@ def test_reuse_accepts_a_pre_chain_package_for_a_plain_config(tmp_path, monkeypa
     _write_task_with_chain(tasks, ["eval.yaml", "eval-profiles/glm.yaml"], case_id="case-2")
     with pytest.raises(ValueError, match="was built from"):
         run_mod._validate_task_package_reuse(tasks, config)
+
+
+# --- spec 014: the same plan on Harbor podman -----------------------------------------
+
+def _plan_config(tmp_path, base_url, *, judge=None):
+    raw = yaml.safe_load((tmp_path / "eval.yaml").read_text())
+    raw["runner"] = {"type": "claude-code"}
+    raw["models"] = {"skill": "openrouter:/z-ai/glm-5.2:exacto",
+                     "providers": {"openrouter": {"base_url": base_url, "routing": {
+                         "models": {"z-ai/glm-5.2": {"order": ["novita"], "allow_fallbacks": False}}}}}}
+    if judge:
+        raw["models"]["judge"] = judge
+        raw["judges"] = [{"name": "rfe_quality", "prompt": "score it", "model": judge}]
+    else:
+        raw["judges"] = [{"name": "files_exist", "check": "return (True, 'ok')\n"}]
+    raw["thresholds"] = {}
+    p = tmp_path / "plan-eval.yaml"
+    p.write_text(yaml.safe_dump(raw, sort_keys=False))
+    return p
+
+
+class _FastSession:
+    """Installed as run_mod.SESSION_FACTORY: the real session, no waiting."""
+
+    def __new__(cls, *a, **kw):
+        from agent_eval.providers.openrouter.session import ProviderSession
+        kw.update(poll_s=0.01, give_up_s=0.3, settle_s=0.0, key_poll_s=0.0, key_max_s=2.0)
+        return ProviderSession(*a, **kw)
+
+
+def _harbor_plan_run(tmp_path, monkeypatch, *, judge=None, env="podman", returncode=17, fake_env=None):
+    from openrouter_fakes import FAKE_KEY, FakeOpenRouter
+
+    _config(tmp_path)
+    fake = FakeOpenRouter()
+    base = fake.start()
+    config_path = _plan_config(tmp_path, base, judge=judge)
+    tasks_dir = tmp_path / "tasks"
+    _write_pregenerated_task(tasks_dir, judge_mode="deterministic-only" if judge is None else "full",
+                             judges=("files_exist",) if judge is None else ("rfe_quality",))
+    captured = {}
+
+    class FakeProcess:
+        def __init__(self):
+            self.returncode = returncode
+
+        def wait(self):
+            return self.returncode
+
+        def send_signal(self, signum):
+            pass
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs["env"]
+        return FakeProcess()
+
+    monkeypatch.setattr(run_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(run_mod, "SESSION_FACTORY", _FastSession)
+    for k, v in {"OPENROUTER_API_KEY": FAKE_KEY, "OPENROUTER_MANAGEMENT_KEY": "sk-or-mgmt",
+                 "CLAUDE_CODE_USE_VERTEX": "1", "ANTHROPIC_VERTEX_PROJECT_ID": "p", "CLOUD_ML_REGION": "r",
+                 "ANTHROPIC_API_KEY": "sk-ant-host", "ANTHROPIC_AUTH_TOKEN": "host-tok",
+                 "ANTHROPIC_BASE_URL": "https://host.example", **(fake_env or {})}.items():
+        monkeypatch.setenv(k, v)
+    try:
+        result = run_mod.run_eval_on_harbor(
+            config_path, image=None, model="openrouter:/z-ai/glm-5.2:exacto",
+            output_dir=tmp_path / "out", tasks_dir=tasks_dir, jobs_dir=tmp_path / "jobs",
+            harbor_bin="harbor", env_import_path=run_mod._ENV_IMPORT_PATHS[env],
+            no_llm_judges=judge is None)
+    finally:
+        fake.stop()
+    return result, captured, fake, base
+
+
+def test_harbor_podman_run_under_a_plan(tmp_path, monkeypatch, capsys):
+    from agent_eval.providers.env import MANAGED_ENV_KEYS
+    from openrouter_fakes import FAKE_KEY
+
+    result, captured, fake, base = _harbor_plan_run(tmp_path, monkeypatch)
+    assert result == 17
+    command, env = captured["command"], captured["env"]
+    assert command[command.index("-m") + 1] == "z-ai/glm-5.2:exacto"          # bare id
+    carriers = {command[i + 1].split("=")[0]: command[i + 1] for i, a in enumerate(command) if a == "--agent-env"}
+    assert set(carriers) >= MANAGED_ENV_KEYS - {"ANTHROPIC_CUSTOM_HEADERS"}      # no attribution configured
+    assert all(v.endswith("}") and "${AGENT_EVAL_HARBOR_AGENT_ENV_" in v for v in carriers.values())
+    assert FAKE_KEY not in " ".join(command)
+    values = {command[i + 1].split("=")[0]: env[command[i + 1].split("${")[1].rstrip("}")]
+              for i, a in enumerate(command) if a == "--agent-env"}
+    assert values["ANTHROPIC_AUTH_TOKEN"] == FAKE_KEY and values["ANTHROPIC_BASE_URL"] == base
+    assert values["CLAUDE_CODE_USE_VERTEX"] == "" and values["ANTHROPIC_MODEL"] == "z-ai/glm-5.2:exacto"
+    # the child env is scrubbed of every managed key and of both provider key variables
+    assert not (set(env) & MANAGED_ENV_KEYS)
+    assert "OPENROUTER_API_KEY" not in env and "OPENROUTER_MANAGEMENT_KEY" not in env
+    assert "ANTHROPIC_BASE_URL" in env["AGENT_EVAL_PODMAN_PLAN_EXCLUDE"]
+    assert (tmp_path / "out" / "provider" / "routing_snapshot.json").exists()      # preflight ran first
+    assert "Provider: openrouter direct | model: z-ai/glm-5.2:exacto" in capsys.readouterr().err
+
+
+def test_harbor_keeps_the_verifier_key_only_for_an_openrouter_judge(tmp_path, monkeypatch):
+    from openrouter_fakes import FAKE_KEY
+
+    _, captured, _, _ = _harbor_plan_run(tmp_path, monkeypatch, judge="openrouter:/z-ai/glm-5.2")
+    env = captured["env"]
+    assert env["OPENROUTER_API_KEY"] == FAKE_KEY and "OPENROUTER_MANAGEMENT_KEY" not in env
+    assert "OPENROUTER_API_KEY" not in env["AGENT_EVAL_PODMAN_PLAN_EXCLUDE"]
+
+
+def test_harbor_plan_refuses_kubernetes_for_now(tmp_path, monkeypatch):
+    from agent_eval.providers.base import ConfigError
+
+    with pytest.raises(ConfigError, match="podman"):
+        _harbor_plan_run(tmp_path, monkeypatch, env="kubernetes")
+
+
+def test_harbor_without_a_plan_forwards_the_host_env_as_before(tmp_path, monkeypatch):
+    _config_det_thresholds(tmp_path)
+    config_path = tmp_path / "det-eval.yaml"
+    tasks_dir = tmp_path / "tasks"
+    _write_pregenerated_task(tasks_dir, judge_mode="deterministic-only", judges=("files_exist",))
+    captured = {}
+
+    class FakeProcess:
+        returncode = 17
+
+        def wait(self):
+            return 17
+
+        def send_signal(self, signum):
+            pass
+
+    def fake_popen(command, **kwargs):
+        captured["env"] = kwargs["env"]
+        return FakeProcess()
+
+    monkeypatch.setattr(run_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.setenv("CLAUDE_CODE_USE_VERTEX", "1")
+    run_mod.run_eval_on_harbor(config_path, image=None, model="claude-sonnet-4-5",
+                               output_dir=tmp_path / "out", tasks_dir=tasks_dir, jobs_dir=tmp_path / "jobs",
+                               harbor_bin="harbor", env_import_path=run_mod._ENV_IMPORT_PATHS["podman"],
+                               no_llm_judges=True)
+    assert captured["env"]["CLAUDE_CODE_USE_VERTEX"] == "1" and "AGENT_EVAL_PODMAN_PLAN_EXCLUDE" not in captured["env"]
+

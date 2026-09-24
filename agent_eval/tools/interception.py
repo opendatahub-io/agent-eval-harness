@@ -171,10 +171,17 @@ def generate_interception(
             perms["deny"] = compile_permission_rules(deny, harden_bash=True)
         settings["permissions"] = perms
 
-    # Inject execution.env
+    # Inject execution.env. A task package must stay reusable across runs
+    # and hosts, so it never carries a `$VAR` reference (it would land in the
+    # container as a literal string) nor any key a provider plan owns (the
+    # plan's values are run-specific and travel through --agent-env / the pod
+    # spec, spec 014).
     if config.execution.env:
+        from agent_eval.providers.env import MANAGED_ENV_KEYS
+
         settings["env"] = {k: str(v) for k, v in config.execution.env.items()
-                           if v is not None}
+                           if v is not None and k not in MANAGED_ENV_KEYS
+                           and not (isinstance(v, str) and v.startswith("$"))}
 
     (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2))
 

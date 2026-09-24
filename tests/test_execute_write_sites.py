@@ -72,4 +72,4 @@ def test_harbor_run_only_writes_through_the_helper():
     assert _lines_writing_run_result(HARBOR_RUN) == []
     text = HARBOR_RUN.read_text()
     assert "# run_result write-site 9" in text
-    assert "write_run_result(output_dir / \"run_result.json\", run_meta)" in text
+    assert re.search(r'write_run_result\(\s*output_dir / "run_result.json", run_meta', text)

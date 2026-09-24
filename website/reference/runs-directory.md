@@ -41,9 +41,10 @@ $AGENT_EVAL_RUNS_DIR/<run-id>/
 ├── summary.yaml        # judge results: judges (mean, pass_rate, scored_cases,
 │                       #   errored_cases, stability) + per_case + run_metrics
 │                       #   + judge_usage / total_cost_usd (judge spend, see below)
-├── provider/
-│   └── ledger.jsonl    # one row per provider generation the harness learned about
-│                       #   (OpenRouter runs; absent otherwise) — see "Cost provenance"
+├── provider/           # OpenRouter runs only (absent otherwise) — see "Cost provenance"
+│   ├── ledger.jsonl            # one row per provider generation the harness learned about
+│   ├── routing_snapshot.json   # the preflight's frozen catalog view the routing audit joins against
+│   └── hook-ids-<case>.jsonl   # generation ids of the harness's own hook calls (tool interception)
 └── cases/
     └── <case-id>/
         ├── artifacts/          # files collected from outputs[].path
@@ -126,6 +127,16 @@ Under a plan the case aggregate follows the same arithmetic: one unpriced case m
 the run's `cost_usd` `null` (`cases_priced` says how many were priced); a partial sum is
 not spend. `execute.py --strict-cost` exits 2 on `cost_source: unavailable` or an
 exceeded run budget, `--strict-routing` on violations or an incomplete audit.
+
+A per-case file is usually written **inside** OpenRouter's `/generation` lag (the
+record materialises 8 to 13 s after the stream ends), so it may briefly read
+`cost_source: unavailable` with pending ids in `cost_coverage`; the progress line shows
+`[cost pending: N ids]`. At run end the harness drains the backfill, reads the key
+usage after a settle (about 20 s, up to 60 s) and re-reconciles every `run_result.json`
+of the run before the strict flags judge it, so the files on disk converge. On Harbor
+the trials' ids are backfilled once the job dir is parsed; `trial_costs` lists each
+trial's `cost_usd` / `cost_source` / `cost_usd_estimate` (a trial is priced only when
+every one of its ids has a row).
 
 `provider/ledger.jsonl` holds one JSON row per generation: `role` (`agent`, `hook`,
 `judge`, `key-usage`), `source` (`generation`, `key-usage`, `judge`), `gen_id`,

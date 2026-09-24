@@ -7,6 +7,7 @@ from ``claude --print --output-format stream-json``.  Used by both
 
 import json
 import os
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -238,6 +239,62 @@ def message_ids_for_run(stream_ids, subagent_dir):
     transcripts' ids, in a stable order."""
     ids = set(stream_ids or ()) | subagent_message_ids(subagent_dir)
     return sorted(ids)
+
+
+def assistant_message_id(obj):
+    """``(message id, model)`` of an ``assistant`` stream event — what a
+    provider session sights as the stream is read; ``(None, None)`` otherwise."""
+    if not isinstance(obj, dict) or obj.get("type") != "assistant":
+        return None, None
+    msg = obj.get("message")
+    if not isinstance(msg, dict) or not isinstance(msg.get("id"), str) or not msg["id"]:
+        return None, None
+    return msg["id"], msg.get("model")
+
+
+_API_ERROR_RE = re.compile(r"API Error:?\s*(?:(\d{3})\b)?\s*(.*)", re.S)
+_ERROR_TYPE_RE = re.compile(r'"(?:error_)?type"\s*:\s*"([a-z_]+)"')
+_KEY_LIMIT_RE = re.compile(r"key limit|limit_usd|credit limit|insufficient credits", re.I)
+
+
+def classify_stream_errors(stdout_lines):
+    """Best-effort ``(error_class, budget)`` for the run's failed provider
+    requests — the only view the harness has of an agent-path failure, since it
+    is not on the HTTP path: the ``result`` event's ``api_error_status`` /
+    ``is_error`` and Claude Code's ``API Error: <status> …`` assistant text.
+    ``budget`` is ``{"exceeded": "run", "exceeded_reason": "limit_usd"}`` for
+    OpenRouter's key-limit 402. ``(None, None)`` when no provider error shows."""
+    status, message = None, ""
+    for line in stdout_lines:
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        texts = []
+        if obj.get("type") == "result":
+            if isinstance(obj.get("api_error_status"), int) and not isinstance(obj.get("api_error_status"), bool):
+                status, message = obj["api_error_status"], str(obj.get("result") or message)
+            elif obj.get("is_error") and isinstance(obj.get("result"), str):
+                texts.append(obj["result"])
+        elif obj.get("type") == "assistant" and isinstance(obj.get("message"), dict):
+            texts += [b.get("text") for b in (obj["message"].get("content") or [])
+                      if isinstance(b, dict) and isinstance(b.get("text"), str)]
+        for text in texts:
+            m = _API_ERROR_RE.search(text) if text.lstrip().startswith("API Error") else None
+            if m:
+                status = int(m.group(1)) if m.group(1) else status
+                message = m.group(2) or message
+    if status is None and not message:
+        return None, None
+    from agent_eval.providers.openrouter.errors import classify
+
+    tm = _ERROR_TYPE_RE.search(message or "")
+    error_class = classify(tm.group(1) if tm else None, status, message).value
+    budget = ({"exceeded": "run", "exceeded_reason": "limit_usd"}
+              if status == 402 and _KEY_LIMIT_RE.search(message or "") else None)
+    return error_class, budget
 
 
 def count_subagent_turns_by_model(subagent_dir, already_seen_by_model=None):
