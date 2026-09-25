@@ -863,21 +863,33 @@ class ClaudeCodeRunner(EvalRunner):
 
 def _reap(proc, timeout_s: float = 10.0) -> list:
     """Kill a still-running CLI, drain the rest of its stdout (the lines may
-    carry billed generation ids) and wait for it. Returns the drained lines."""
-    lines = []
+    carry billed generation ids) and wait for it — all bounded by
+    ``timeout_s``. A background descendant (an async hook) may keep the CLI's
+    stdout open after the CLI is dead, so the drain runs in a daemon thread
+    and whatever it read by the deadline is what gets accounted for.
+    Returns the drained lines."""
+    lines: list = []
     try:
         if proc.poll() is None:
             proc.kill()
-        if proc.stdout is not None:
-            for line in proc.stdout:
-                lines.append(line.rstrip("\n"))
-    except (OSError, ValueError):
+    except OSError:
         pass
+    if proc.stdout is not None:
+        def _drain():
+            try:
+                for line in proc.stdout:
+                    lines.append(line.rstrip("\n"))
+            except (OSError, ValueError):
+                pass
+
+        drain = threading.Thread(target=_drain, name="claude-reap-drain", daemon=True)
+        drain.start()
+        drain.join(timeout_s)
     try:
         proc.wait(timeout=timeout_s)
     except (subprocess.TimeoutExpired, OSError):
         pass
-    return lines
+    return list(lines)
 
 
 def _wire_model(model, plan):
