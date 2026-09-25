@@ -200,21 +200,33 @@ def test_overlay_is_removed_when_env_setup_fails(workspace, tmp_path):
     assert fake_claude_records(workspace) == []                    # the CLI was never launched
 
 
-def test_a_failure_mid_stream_keeps_the_sighted_ids(workspace, tmp_path):
-    """Ids streamed before a stream-processing failure are billed: the failed
-    result still carries them and the binding still gets its after-run pass."""
+def test_a_failure_mid_stream_keeps_the_sighted_ids(workspace, tmp_path, monkeypatch):
+    """Ids streamed before (and at) a stream-processing failure are billed:
+    the CLI is reaped, the failed result still carries every id it produced
+    and the binding still gets its after-run pass."""
+    import agent_eval.agent.claude_code as cc
+
     class _Flaky(_Binding):
         def sight(self, gen_id, **kw):
             if len(self.sighted) == 1:
                 raise RuntimeError("boom")
             return super().sight(gen_id, **kw)
 
+    procs = []
+    real_popen = cc.subprocess.Popen
+
+    def recording_popen(*a, **kw):
+        procs.append(real_popen(*a, **kw))
+        return procs[-1]
+
+    monkeypatch.setattr(cc.subprocess, "Popen", recording_popen)
     binding = _Flaky(workspace.parent)
     result, _ = _run(workspace, make_plan(), binding)
     assert result.exit_code == -1 and "boom" in result.stderr
-    first = fake_claude_records(workspace)[-1]["ids"][0]
-    assert result.message_ids == [first]                          # the streamed id survives
-    assert binding.after == [[first]]                             # after_run still ran
+    ids = sorted(fake_claude_records(workspace)[-1]["ids"])
+    assert result.message_ids == ids                              # the id whose sight raised included
+    assert binding.after == [ids]                                 # after_run still ran, with all of them
+    assert procs and procs[-1].returncode is not None             # the CLI was reaped, not left running
     assert result.cost_source == "runner:estimate" and result.cost_usd_estimate is None
     assert not (workspace / ".claude" / ".eval-overlay.json").exists()
 
