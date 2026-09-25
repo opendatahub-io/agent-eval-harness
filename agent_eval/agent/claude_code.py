@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import threading
 import time
@@ -696,19 +697,33 @@ class ClaudeCodeRunner(EvalRunner):
                      if v is not None}
             settings_config["env"] = {**existing_env, **block}
         data = json.dumps(settings_config, indent=2)
-        # O_NOFOLLOW: the agent under test can write to the workspace (and a
-        # multi-step case shares it between steps), so a symlink planted at
-        # the overlay path must not be followed — the file holds the literal
-        # inference key and is truncated on every write (CWE-59 / CWE-367).
-        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+        # The agent under test can write to the workspace (and a multi-step
+        # case shares it between steps), and the file holds the literal
+        # inference key: never follow a symlink, never write through a
+        # hardlink, never truncate an entry we did not create (CWE-59 /
+        # CWE-367). A stale regular overlay from a run that never reached its
+        # finally is removed; anything else at the path is refused, and the
+        # create itself is exclusive so nothing can slip in between.
+        if overlay.is_symlink():
+            raise RuntimeError(f"refusing to write the settings overlay: {overlay} is a symlink")
         try:
-            if overlay.is_symlink():
-                raise OSError(errno.ELOOP, "symbolic link")
+            existing = overlay.lstat()
+        except FileNotFoundError:
+            existing = None
+        if existing is not None:
+            if existing.st_nlink > 1 or not stat.S_ISREG(existing.st_mode):
+                raise RuntimeError(
+                    f"refusing to write the settings overlay: {overlay} is a pre-existing "
+                    f"entry with {existing.st_nlink} link(s)")
+            overlay.unlink()
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        try:
             fd = os.open(overlay, flags, 0o600)
         except OSError as exc:
-            if exc.errno in (errno.ELOOP, errno.EMLINK):
+            if exc.errno in (errno.EEXIST, errno.ELOOP, errno.EMLINK):
                 raise RuntimeError(
-                    f"refusing to write the settings overlay: {overlay} is a symlink") from exc
+                    f"refusing to write the settings overlay: {overlay} appeared between "
+                    "check and create") from exc
             raise
         with os.fdopen(fd, "w") as f:
             if plan is not None:
