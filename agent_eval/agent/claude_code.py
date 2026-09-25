@@ -398,6 +398,7 @@ class ClaudeCodeRunner(EvalRunner):
 
         # Track temp settings file for cleanup
         cleanup_settings = temp_settings_file
+        cost_source = None
 
         try:
             # Inside the try: the overlay already holds the key, so a failure
@@ -535,8 +536,16 @@ class ClaudeCodeRunner(EvalRunner):
             )
         except Exception as e:
             duration = time.monotonic() - start
+            # Ids already streamed were sighted (and are billed): keep them as
+            # the result's cost-truth key set and let the binding finish
+            # (subagent transcripts, hook ids), or the partial run's spend
+            # would stay unpriced and unaudited.
+            stream_ids = extract_usage(stdout_lines)[3]
+            message_ids = message_ids_for_run(stream_ids, workspace / "subagents")
             return RunResult(
                 exit_code=-1, stdout="", stderr=str(e), duration_s=duration,
+                message_ids=message_ids,
+                **self._provenance(stdout_lines, message_ids, None, cost_source),
             )
         finally:
             # The overlay may hold the plan's literal key: gone on every path
