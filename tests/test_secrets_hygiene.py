@@ -197,3 +197,25 @@ def test_a_non_claude_runner_is_refused_under_a_plan(tmp_path, monkeypatch, caps
         fake.stop()
     assert fake_claude_records(ws / "cases" / "case-1") == []
 
+
+def test_a_cli_activated_plan_still_refuses_a_non_claude_step_runner(tmp_path, monkeypatch, capsys):
+    """The loader only sees the config's skill model; a plan activated by
+    --model must apply the same rule to per-step runner overrides."""
+    fake = FakeOpenRouter()
+    base = fake.start()
+    try:
+        ws, out = _setup(tmp_path, monkeypatch, base)
+        cfg = yaml.safe_load((tmp_path / "eval.yaml").read_text())
+        cfg["models"]["skill"] = "claude-sonnet-4-5"
+        cfg["execution"] = {"mode": "case", "steps": [
+            {"id": "a", "skill": "s1", "arguments": "x"},
+            {"id": "b", "skill": "s2", "arguments": "y", "runner": {"type": "codex"}}]}
+        (tmp_path / "eval.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
+        monkeypatch.setattr(sys, "argv", sys.argv + ["--model", "openrouter:/z-ai/glm-5.2:exacto"])
+        code = _main()
+        err = capsys.readouterr().err
+    finally:
+        fake.stop()
+    assert code == 2 and "execution.steps[].runner.type 'codex'" in err
+    assert fake_claude_records(ws / "cases" / "case-1") == []
+
