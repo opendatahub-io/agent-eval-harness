@@ -1,3 +1,10 @@
+# [1.50.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.49.2...v1.50.0) (2026-09-25)
+
+
+### Features
+
+* **providers:** direct OpenRouter transport for claude-code and Harbor podman (spec 014, PR-5) ([1ae1bf4](https://github.com/opendatahub-io/agent-eval-harness/commit/1ae1bf4ce9f5abe6022a4077f313ab0a36153c4a))
+
 ## [1.49.2](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.49.1...v1.49.2) (2026-09-22)
 
 
