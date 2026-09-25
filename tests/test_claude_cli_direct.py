@@ -6,6 +6,7 @@ the stream is read, the hook's ids, error classification, cost-source labels.
 The live-CLI form of these checks is the spec-local probe_claude_cli.py."""
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -128,13 +129,43 @@ def test_zero_cap_omits_the_flag_under_a_plan(workspace):
 def test_overlay_never_follows_a_planted_symlink(workspace, tmp_path):
     victim = tmp_path / "victim.txt"
     victim.write_text("precious")
+    victim.chmod(0o644)
+    mode_before = victim.stat().st_mode
     link = workspace / ".claude" / ".eval-overlay.json"
     link.symlink_to(victim)
     runner = ClaudeCodeRunner(log_prefix="t", provider_plan=make_plan())
     with pytest.raises(RuntimeError, match="is a symlink"):
         runner._write_settings_overlay(workspace, workspace / ".claude" / "settings.json", [], [], make_plan())
     assert victim.read_text() == "precious" and link.is_symlink()
-    assert victim.stat().st_mode & 0o777 != 0o600 or True          # mode untouched (never chmod'ed through the link)
+    assert victim.stat().st_mode == mode_before                    # never chmod'ed through the link
+
+
+@pytest.mark.parametrize("plan_mode", [True, False])
+def test_overlay_never_writes_through_a_planted_hardlink(workspace, tmp_path, plan_mode):
+    """A hardlink at the overlay path (either name) is a pre-existing entry
+    with two links: refused, and the linked target keeps content and mode."""
+    victim = tmp_path / "victim.txt"
+    victim.write_text("precious")
+    victim.chmod(0o644)
+    mode_before = victim.stat().st_mode
+    name = ".eval-overlay.json" if plan_mode else ".eval-permissions.json"
+    os.link(victim, workspace / ".claude" / name)
+    runner = ClaudeCodeRunner(log_prefix="t", provider_plan=make_plan() if plan_mode else None)
+    with pytest.raises(RuntimeError, match="pre-existing entry with 2 link"):
+        runner._write_settings_overlay(workspace, workspace / ".claude" / "settings.json",
+                                       [{"path": "secret/**", "tools": ["Read"]}] if not plan_mode else [],
+                                       [], make_plan() if plan_mode else None)
+    assert victim.read_text() == "precious" and victim.stat().st_mode == mode_before
+    assert victim.stat().st_nlink == 2                               # the planted link is left alone
+
+
+def test_a_stale_overlay_from_a_killed_run_is_replaced(workspace):
+    stale = workspace / ".claude" / ".eval-overlay.json"
+    stale.write_text("{\"env\": {\"ANTHROPIC_AUTH_TOKEN\": \"old\"}}")
+    runner = ClaudeCodeRunner(log_prefix="t", provider_plan=make_plan())
+    overlay = runner._write_settings_overlay(workspace, workspace / ".claude" / "settings.json", [], [], make_plan())
+    assert overlay == stale and json.loads(stale.read_text())["env"]["ANTHROPIC_AUTH_TOKEN"] == make_plan().key
+    assert stale.stat().st_mode & 0o777 == 0o600
 
 
 def test_key_limit_402_is_classified(workspace):
