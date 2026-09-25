@@ -230,3 +230,25 @@ def test_a_failure_mid_stream_keeps_the_sighted_ids(workspace, tmp_path, monkeyp
     assert result.cost_source == "runner:estimate" and result.cost_usd_estimate is None
     assert not (workspace / ".claude" / ".eval-overlay.json").exists()
 
+
+def test_reap_drain_is_bounded_when_a_descendant_holds_stdout():
+    """A background descendant keeping the CLI's stdout open must not make
+    the failure-path drain block: it returns by the deadline with what was
+    read, and the child itself is reaped."""
+    import subprocess
+    import time
+
+    from agent_eval.agent.claude_code import _reap
+
+    child = subprocess.Popen(
+        [sys.executable, "-c",
+         "import subprocess, sys; print('{\"type\": \"assistant\", \"message\": {\"id\": \"gen-fake-drain\"}}', flush=True); "
+         "subprocess.Popen(['sleep', '5']); sys.exit(0)"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    child.wait(timeout=10)                  # the CLI is gone; only the descendant holds stdout
+    started = time.monotonic()
+    lines = _reap(child, timeout_s=1.0)
+    assert time.monotonic() - started < 4
+    assert any("gen-fake-drain" in line for line in lines)
+    assert child.returncode is not None
+
