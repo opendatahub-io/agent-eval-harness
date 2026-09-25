@@ -199,3 +199,22 @@ def test_overlay_is_removed_when_env_setup_fails(workspace, tmp_path):
     assert not (workspace / ".claude" / ".eval-overlay.json").exists()
     assert fake_claude_records(workspace) == []                    # the CLI was never launched
 
+
+def test_a_failure_mid_stream_keeps_the_sighted_ids(workspace, tmp_path):
+    """Ids streamed before a stream-processing failure are billed: the failed
+    result still carries them and the binding still gets its after-run pass."""
+    class _Flaky(_Binding):
+        def sight(self, gen_id, **kw):
+            if len(self.sighted) == 1:
+                raise RuntimeError("boom")
+            return super().sight(gen_id, **kw)
+
+    binding = _Flaky(workspace.parent)
+    result, _ = _run(workspace, make_plan(), binding)
+    assert result.exit_code == -1 and "boom" in result.stderr
+    first = fake_claude_records(workspace)[-1]["ids"][0]
+    assert result.message_ids == [first]                          # the streamed id survives
+    assert binding.after == [[first]]                             # after_run still ran
+    assert result.cost_source == "runner:estimate" and result.cost_usd_estimate is None
+    assert not (workspace / ".claude" / ".eval-overlay.json").exists()
+
