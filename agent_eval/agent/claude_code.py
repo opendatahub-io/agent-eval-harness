@@ -399,6 +399,8 @@ class ClaudeCodeRunner(EvalRunner):
         # Track temp settings file for cleanup
         cleanup_settings = temp_settings_file
         cost_source = None
+        proc = None
+        stream_ids_seen = []          # every assistant id parsed, sighted or not
 
         try:
             # Inside the try: the overlay already holds the key, so a failure
@@ -466,6 +468,7 @@ class ClaudeCodeRunner(EvalRunner):
                             mid, mecho = assistant_message_id(obj)
                             if mid:
                                 msg_index += 1
+                                stream_ids_seen.append(mid)     # before sight: it is billed either way
                                 self._binding.sight(mid, message_index=msg_index,
                                                     model_echo=mecho)
                         msg = _extract_progress(obj, estimate=plan is not None)
@@ -536,11 +539,15 @@ class ClaudeCodeRunner(EvalRunner):
             )
         except Exception as e:
             duration = time.monotonic() - start
-            # Ids already streamed were sighted (and are billed): keep them as
-            # the result's cost-truth key set and let the binding finish
-            # (subagent transcripts, hook ids), or the partial run's spend
-            # would stay unpriced and unaudited.
-            stream_ids = extract_usage(stdout_lines)[3]
+            # Stop and reap the CLI first: a child left running would keep
+            # producing billed generations nobody reads (CWE-772). Drain what
+            # it already wrote — those ids are billed too — then keep every
+            # streamed id as the result's cost-truth key set and let the
+            # binding finish (subagent transcripts, hook ids), or the partial
+            # run's spend would stay unpriced and unaudited.
+            if proc is not None:
+                stdout_lines.extend(_reap(proc))
+            stream_ids = set(extract_usage(stdout_lines)[3]) | set(stream_ids_seen)
             message_ids = message_ids_for_run(stream_ids, workspace / "subagents")
             return RunResult(
                 exit_code=-1, stdout="", stderr=str(e), duration_s=duration,
@@ -852,6 +859,25 @@ class ClaudeCodeRunner(EvalRunner):
             for k in MANAGED_ENV_KEYS:
                 env.pop(k, None)
         return env
+
+
+def _reap(proc, timeout_s: float = 10.0) -> list:
+    """Kill a still-running CLI, drain the rest of its stdout (the lines may
+    carry billed generation ids) and wait for it. Returns the drained lines."""
+    lines = []
+    try:
+        if proc.poll() is None:
+            proc.kill()
+        if proc.stdout is not None:
+            for line in proc.stdout:
+                lines.append(line.rstrip("\n"))
+    except (OSError, ValueError):
+        pass
+    try:
+        proc.wait(timeout=timeout_s)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return lines
 
 
 def _wire_model(model, plan):
