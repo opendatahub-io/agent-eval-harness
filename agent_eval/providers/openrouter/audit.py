@@ -118,7 +118,8 @@ def routing_audit(rows: Iterable[dict], plan, catalog=None, *, policy: str = "st
             declared[key] = {k: v for k, v in spec.to_dict().items()
                              if k in ("order", "only", "ignore", "allow_fallbacks", "quantizations")}
     return {
-        "enforcement": enforcement,
+        # Nothing pinned means nothing to enforce, whatever the configured level.
+        "enforcement": enforcement if declared else "none",
         "policy": policy,
         "sha": routing_sha({k: v for k, v in declared.items()}) if declared else None,
         "snapshot": snapshot,

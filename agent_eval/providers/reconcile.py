@@ -245,6 +245,10 @@ def reconcile(run_result: dict, ledger_rows: Iterable[dict], plan=None, *, key_u
     hook_rows = _generation_rows(rows, roles=("hook",))
     ok_agent = [r for r in agent_rows if r.get("status") == "ok"]
     ledger_sum = _sum(r.get("cost_usd") for r in ok_agent)
+    hook_sum = _sum(r.get("cost_usd") for r in hook_rows if r.get("status") == "ok")
+    # The key counts every request on it: the cross-check compares the delta
+    # with agent + hook spend, not with the agent rows alone.
+    ledgered = None if ledger_sum is None and hook_sum is None else (ledger_sum or 0) + (hook_sum or 0)
     cov = _coverage(ids, agent_rows + hook_rows)
     coverage_ratio = cov.get("coverage")
 
@@ -287,9 +291,9 @@ def reconcile(run_result: dict, ledger_rows: Iterable[dict], plan=None, *, key_u
     elif coverage_ratio is not None and coverage_ratio >= COVERAGE_SOURCE_MIN and ledger_sum is not None:
         out["cost_usd"], out["cost_source"] = ledger_sum, "openrouter:generation"
         if key_delta is not None and key_delta > 0 and not is_aggregate:
-            deviation = abs(ledger_sum - key_delta) / key_delta
+            deviation = abs(ledgered - key_delta) / key_delta
             if deviation > CROSS_CHECK_TOLERANCE:
-                warnings.append(f"ledger sum ${ledger_sum:.4f} differs from key-usage delta "
+                warnings.append(f"ledger sum ${ledgered:.4f} differs from key-usage delta "
                                 f"${key_delta:.4f} by {deviation:.1%}")
     elif usable_delta is not None and not is_aggregate:
         out["cost_usd"], out["cost_source"] = usable_delta, "openrouter:key-usage"
@@ -308,13 +312,13 @@ def reconcile(run_result: dict, ledger_rows: Iterable[dict], plan=None, *, key_u
             and coverage_ratio < 1.0:
         warnings.append(f"{cov['requests_missing_cost'] + cov.get('requests_pending', 0)} of "
                         f"{cov['requests']} requests are unpriced (coverage {coverage_ratio:.0%})")
-    out["cost_confidence"] = _confidence(cov, key_delta, ledger_sum, dedicated=dedicated) \
+    out["cost_confidence"] = _confidence(cov, key_delta, ledgered, dedicated=dedicated) \
         if out.get("cost_source", "").startswith("openrouter:") else None
     cov_block = {k: v for k, v in cov.items() if k != "requests_pending"}
     cov_block["key_usage_delta_usd"] = key_delta
     cov_block["key_usage_settle_s"] = getattr(key_usage, "settle_s", None) if key_usage is not None else None
     out["cost_coverage"] = cov_block
-    out["hook_cost_usd"] = _sum(r.get("cost_usd") for r in hook_rows if r.get("status") == "ok")
+    out["hook_cost_usd"] = hook_sum
     out["providers"] = _providers_block(agent_rows + hook_rows)
     if isinstance(out.get("per_model_usage"), dict):
         # modelUsage is the agent process's own view; the hook is a separate
@@ -357,7 +361,7 @@ def _load_json(path: Path) -> Optional[dict]:
 
 
 def reconcile_run_dir(run_dir, *, plan=None, ledger=None, key_usage=None, catalog=None,
-                      allow_estimate: bool = False) -> Optional[dict]:
+                      allow_estimate: bool = False, warnings=None) -> Optional[dict]:
     """The final reconcile pass over a run dir: every ``cases/<id>/run_result.json``
     (rows that landed after the case was written), then the run-level file with
     the refreshed per-case values and the key-usage delta. Stale ``cost_warnings``
@@ -378,6 +382,8 @@ def reconcile_run_dir(run_dir, *, plan=None, ledger=None, key_usage=None, catalo
     if payload is None:
         return None
     payload.pop("cost_warnings", None)
+    if warnings:
+        payload["cost_warnings"] = list(warnings)            # the host's own findings (e.g. a failed revoke)
     if isinstance(payload.get("per_case"), dict):
         payload["per_case"] = {cid: cases.get(cid, rec) for cid, rec in payload["per_case"].items()}
     return write_run_result(run_file, payload, plan=plan, ledger=ledger, key_usage=key_usage,

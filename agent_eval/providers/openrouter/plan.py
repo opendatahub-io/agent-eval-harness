@@ -7,6 +7,7 @@ how the env block is delivered (``overlay`` / ``harbor_carrier`` /
 
 from __future__ import annotations
 
+import atexit
 import os
 from typing import Optional
 
@@ -16,6 +17,7 @@ from agent_eval.providers.base import (
     ConfigError,
     ProviderPlan,
     parse_agent_model,
+    routing_key,
 )
 
 AGENT_ROLES = ("skill", "subagent", "hook")
@@ -74,16 +76,60 @@ def role_models(roles: dict) -> dict:
     return {"skill": skill, "subagent": subagent, "hook": hook}
 
 
+def guardrail_providers(orc, keys) -> tuple:
+    """The per-run key's provider allow-list: ``routing.guardrail.providers``
+    when explicit, else the union of the pinned sets of the routing keys the
+    agent roles use."""
+    from agent_eval.providers.openrouter.audit import pinned_providers
+
+    explicit = orc.routing.guardrail.providers
+    if isinstance(explicit, (list, tuple)) and explicit:
+        return tuple(sorted(set(explicit)))
+    union: set = set()
+    for key in keys:
+        pins = pinned_providers(orc.routing.for_model(key))
+        if pins:
+            union |= pins
+    return tuple(sorted(union))
+
+
+def judge_routing_keys(config, judge_model: Optional[str] = None) -> dict:
+    """``{routing key: pinned}`` for every ``openrouter:/`` judge of the run —
+    ``models.judge`` (or a CLI override) and per-judge ``model:`` values. A
+    judge is *pinned* when it inherits the table's pins or carries its own
+    ``provider_options.routing`` (Decision 25), which is what the preflight's
+    ``tool_choice: function`` check is about."""
+    orc = getattr(getattr(config.models, "providers", None), "openrouter", None)
+    inherit = bool(getattr(getattr(orc, "judge", None), "inherit_pins", False)) if orc is not None else False
+    default = judge_model or getattr(config.models, "judge", None)
+    out: dict = {}
+    for jc in getattr(config, "judges", None) or []:
+        model = getattr(jc, "model", None) or default
+        if not (isinstance(model, str) and model.startswith("openrouter:")):
+            continue
+        try:
+            key = parse_agent_model(model).key
+        except ValueError:
+            continue
+        opts = getattr(jc, "provider_options", None) or {}
+        out[key] = out.get(key, False) or inherit or bool(isinstance(opts, dict) and opts.get("routing"))
+    return out
+
+
 def build_plan(config, roles: Optional[dict] = None, *, runner: str = "claude-code",
                run_id: Optional[str] = None, require_key: bool = True) -> ProviderPlan:
     """The plan for ``config`` with ``roles`` (effective role URIs; defaults
     to ``config.models``).
 
     ``require_key=False`` builds a keyless plan for validation and dry runs
-    (its env block can only be rendered with ``secrets="ref"``/``"omit"``).
-    ``routing.enforcement: key-guardrail`` is parsed by the config but the
-    per-run key provisioning lands in a later release, so building such a plan
-    is a :class:`ConfigError` for now.
+    (its env block can only be rendered with ``secrets="ref"``/``"omit"``). At
+    ``routing.enforcement: key-guardrail`` the real build provisions the
+    per-run key first (management key from ``management_key_env`` — value
+    never echoed — ``limit`` = ``budget.run_usd``, allow-list = the pinned
+    providers or ``guardrail.providers``), reads it back and refuses to start
+    on any mismatch; the plan then carries the per-run key (``key_scope:
+    per-run``) and an ``atexit`` fallback revokes it should no ``close()``
+    run.
     """
     if runner not in PLAN_RUNNERS:
         raise ConfigError(f"unknown plan runner {runner!r}; expected one of {sorted(PLAN_RUNNERS)}")
@@ -110,22 +156,22 @@ def build_plan(config, roles: Optional[dict] = None, *, runner: str = "claude-co
     orc = getattr(getattr(config.models, "providers", None), "openrouter", None) or OpenRouterConfig()
     enforcement = orc.routing.enforcement
     key = None
+    key_scope = "operator"
+    provisioned = None
     if require_key:
-        # A keyless plan is a validation/dry-run view; the real build is where
-        # the per-run key would be provisioned — not implemented yet.
         if enforcement == "key-guardrail":
-            raise ConfigError(
-                "models.providers.openrouter.routing.enforcement: key-guardrail (per-run "
-                "keys) lands in a later release; use 'audit' for now")
-        key = os.environ.get(orc.api_key_env)
-        if not key:
-            raise ConfigError(
-                f"set {orc.api_key_env}: the OpenRouter agent plan needs the inference "
-                "key in the harness environment (its value is never echoed)")
-    return ProviderPlan(
+            provisioned = _provision_run_key(orc, models, run_id)
+            key, key_scope = provisioned.key, "per-run"
+        else:
+            key = os.environ.get(orc.api_key_env)
+            if not key:
+                raise ConfigError(
+                    f"set {orc.api_key_env}: the OpenRouter agent plan needs the inference "
+                    "key in the harness environment (its value is never echoed)")
+    plan = ProviderPlan(
         kind="openrouter",
         base_url=orc.base_url,
-        key_scope="operator",
+        key_scope=key_scope,
         key=key,
         key_env=orc.api_key_env,
         skill=skill,
@@ -140,4 +186,46 @@ def build_plan(config, roles: Optional[dict] = None, *, runner: str = "claude-co
         cli_budget_inflation=orc.cli_budget_inflation,
         budget_run_usd=orc.budget.run_usd,
         management_key_env=orc.management_key_env,
+        provisioned=provisioned,
     )
+    if provisioned is not None:
+        from agent_eval.providers.openrouter.keys import revoke_plan_key
+
+        atexit.register(revoke_plan_key, plan)        # idempotent fallback; close() normally wins
+    return plan
+
+
+def _provision_run_key(orc, models: dict, run_id: Optional[str]):
+    """Create, read back and validate the per-run key (``key-guardrail``)."""
+    from agent_eval.providers.openrouter.keys import (
+        guardrail_mismatches, provision, revoke, verify_guardrail)
+
+    management_key = os.environ.get(orc.management_key_env)
+    if not management_key:
+        raise ConfigError(
+            f"set {orc.management_key_env}: routing.enforcement: key-guardrail provisions a "
+            "per-run key through the management API (the value is never echoed)")
+    limit = orc.budget.run_usd
+    if not isinstance(limit, (int, float)) or limit <= 0:
+        raise ConfigError("routing.enforcement: key-guardrail needs budget.run_usd > 0 — it becomes "
+                          "the per-run key's limit")
+    keys = {m.key for m in models.values() if m is not None}
+    if orc.background_model:
+        keys.add(routing_key(orc.background_model))
+    allowed = guardrail_providers(orc, sorted(keys))
+    if not allowed:
+        raise ConfigError("routing.enforcement: key-guardrail has no provider allow-list — pin a "
+                          "routing key (order/only) or set routing.guardrail.providers")
+    name = str(orc.routing.guardrail.key_name).replace("{run_id}", run_id or "run")
+    provisioned = provision(management_key, name=name, limit_usd=float(limit),
+                            allowed_providers=allowed, base_url=orc.base_url)
+    problems = guardrail_mismatches(
+        verify_guardrail(management_key, provisioned.hash, base_url=orc.base_url), provisioned)
+    if problems:
+        try:
+            revoke(management_key, provisioned.hash, base_url=orc.base_url)
+        except Exception:                                   # noqa: BLE001 — best effort, reported below
+            problems.append(f"and the key {provisioned.hash} could not be revoked; revoke it by hand")
+        raise ConfigError("key-guardrail read-back mismatch — the per-run key was revoked, nothing was "
+                          "spent: " + "; ".join(problems))
+    return provisioned

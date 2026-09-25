@@ -111,7 +111,7 @@ def test_run_cost_info_and_degraded_runs_are_excluded_unless_allowed(tmp_path, c
                                    "violations": [{"gen_id": "x"}], "audit_complete": True})
     legacy = _write_run(runs, "legacy", model="m", cost=0.4)
     assert _run_cost_info(clean) == {"cost": 0.5, "source": "openrouter:generation",
-                                     "degraded": False, "audit_clean": True}
+                                     "degraded": False, "audit_clean": True, "enforcement": "none"}
     assert _run_cost_info(degraded)["degraded"] is True and _run_cost_info(degraded)["audit_clean"] is False
     assert _run_cost_info(legacy)["source"] == "runner:reported"
     assert _run_cost_info(tmp_path / "missing")["cost"] is None
@@ -125,3 +125,24 @@ def test_run_cost_info_and_degraded_runs_are_excluded_unless_allowed(tmp_path, c
     caplog.clear()
     rows_all, _, _ = load_conditions_from_runs(runs, config, allow_unaudited=True)
     assert len(rows_all) == 3
+
+
+def test_mixed_enforcement_is_not_pooled_unless_allowed(tmp_path, caplog):
+    import logging
+    from types import SimpleNamespace
+
+    from analyze import load_conditions_from_runs
+
+    runs = tmp_path / "runs"
+    _write_run(runs, "audit-1", model="m", cost=0.5, cost_source="openrouter:generation",
+               routing={"enforcement": "audit", "violations": [], "audit_complete": True})
+    _write_run(runs, "guardrail-1", model="m", cost=0.4, cost_source="openrouter:generation",
+               routing={"enforcement": "key-guardrail", "violations": [], "audit_complete": True})
+    cfg = SimpleNamespace(reward=None, judges=[])
+    with caplog.at_level(logging.WARNING):
+        rows, _, _ = load_conditions_from_runs(runs, cfg)
+    assert {r["replication"] for r in rows} == {0}
+    assert any("routing enforcement 'key-guardrail' differs" in m for m in caplog.messages)
+    rows, _, _ = load_conditions_from_runs(runs, cfg, allow_mixed_enforcement=True)
+    assert {r["replication"] for r in rows} == {0, 1}
+

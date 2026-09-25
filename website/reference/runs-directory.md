@@ -44,7 +44,9 @@ $AGENT_EVAL_RUNS_DIR/<run-id>/
 ├── provider/           # OpenRouter runs only (absent otherwise) — see "Cost provenance"
 │   ├── ledger.jsonl            # one row per provider generation the harness learned about
 │   ├── routing_snapshot.json   # the preflight's frozen catalog view the routing audit joins against
-│   └── hook-ids-<case>.jsonl   # generation ids of the harness's own hook calls (tool interception)
+│   ├── hook-ids-<case>.jsonl   # generation ids of the harness's own hook calls (tool interception)
+│   └── key.json                # enforcement: key-guardrail only — the per-run key's hash, name,
+│                               #   limit, providers, created_at / revoked_at (never the key)
 └── cases/
     └── <case-id>/
         ├── artifacts/          # files collected from outputs[].path
@@ -120,13 +122,20 @@ unchanged, so a run without OpenRouter reads exactly as before.
 | `providers` | `{<provider slug>: {requests, cost_usd}}`, with `unknown` for unattributed rows. |
 | `per_model_usage[m].cost_usd` / `.cost_usd_estimate` / `.providers` | Per-model cost from the ledger join (bare-slug echo, permaslug via the catalog, single-model fallback); the estimate is preserved next to it. A key with no match keeps `null` and a warning. |
 | `routing` | The audit of served providers against the declared pins: `enforcement`, `policy`, `sha`, `declared`, `served`, `audited`, `compliant`, `violations`, `unattributed`, `degraded`, `audit_complete`, `snapshot`. A violation is a billed, kept generation whose provider was outside the declared set; it is reported, never repaired. |
-| `provider` | `{name, kind, transport: direct, runner, base_url, key_scope, key_hash, key_exposed_to_agent, background_model}`. |
+| `provider` | `{name, kind, transport: direct, runner, base_url, key_scope, key_hash, key_exposed_to_agent, background_model}`. `key_scope` is `operator` at `enforcement: audit` and `per-run` at `key-guardrail`. |
 | `budget` | `{invocation_usd, cli_cap_usd, run_usd, enforcement: cli-estimate \| key-guardrail, exceeded, exceeded_reason, overshoot_usd}`; `exceeded: run` with `post-hoc` is set when the reconciled sum passes `budget.run_usd`. |
 
 Under a plan the case aggregate follows the same arithmetic: one unpriced case makes
 the run's `cost_usd` `null` (`cases_priced` says how many were priced); a partial sum is
 not spend. `execute.py --strict-cost` exits 2 on `cost_source: unavailable` or an
 exceeded run budget, `--strict-routing` on violations or an incomplete audit.
+
+`routing.enforcement` reads `none` when no routing key carries pins (nothing to
+enforce, whatever the configured level). At `key-guardrail` a failed revocation of the
+per-run key adds a `cost_warnings` entry naming the hash; `python3 -m
+agent_eval.providers.openrouter.keys revoke <run_dir>` retries it, and `python3 -m
+agent_eval.providers.openrouter.backfill <run_dir>` re-queries unpriced generations
+offline.
 
 A per-case file is usually written **inside** OpenRouter's `/generation` lag (the
 record materialises 8 to 13 s after the stream ends), so it may briefly read

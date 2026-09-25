@@ -276,16 +276,19 @@ def _plan_child_env_exclusions(plan, *, keep_api_key: bool) -> set:
     return excluded
 
 
-def _start_harbor_session(plan, config: EvalConfig, output_dir: Path, n_concurrent: int):
+def _start_harbor_session(plan, config: EvalConfig, output_dir: Path, n_concurrent: int,
+                          judge_model: str | None = None):
     """Preflight before task generation (a failed strict preflight costs
     nothing), then the run-scoped session. Harbor exposes no live stream, so
     the backfill polls immediately once the job dir is parsed."""
     from agent_eval.config import OpenRouterConfig
+    from agent_eval.providers.openrouter.plan import judge_routing_keys
     from agent_eval.providers.openrouter.preflight import run_preflight
     from agent_eval.providers.openrouter.session import ProviderSession
 
     orc = getattr(getattr(config.models, "providers", None), "openrouter", None) or OpenRouterConfig()
-    pre = run_preflight(plan, level=orc.preflight, run_dir=output_dir)
+    pre = run_preflight(plan, level=orc.preflight, run_dir=output_dir,
+                        judges=judge_routing_keys(config, judge_model))
     for warning in pre.warnings:
         print(f"WARNING: preflight: {warning}", file=sys.stderr)
     factory = SESSION_FACTORY or ProviderSession
@@ -293,8 +296,9 @@ def _start_harbor_session(plan, config: EvalConfig, output_dir: Path, n_concurre
                       first_poll_s=0.0).start()
     plan.attach(session)
     degraded = f" (degraded: {pre.degraded_reason})" if pre.degraded_reason else ""
+    scope = "per-run" if plan.key_scope == "per-run" else "operator"
     print(f"Provider: openrouter direct | model: {plan.skill.id} | enforcement: {plan.enforcement} | "
-          f"preflight: {orc.preflight}{degraded} | key exposed to agent: operator key "
+          f"preflight: {orc.preflight}{degraded} | key exposed to agent: {scope} key "
           f"sha256:{plan.key_hash} (enforcement: {plan.enforcement})", file=sys.stderr)
     return session
 
@@ -620,7 +624,7 @@ def run_eval_on_harbor(
             raise ConfigError(f"the direct OpenRouter transport is implemented for the "
                               f"claude-code Harbor agent; got {agent_name!r}")
         plan = build_plan(config, roles, runner="harbor-podman", run_id=output_dir.name)
-        session = _start_harbor_session(plan, config, output_dir, n_concurrent)
+        session = _start_harbor_session(plan, config, output_dir, n_concurrent, judge_model)
         model = plan.skill.id            # -m gets the bare slug:variants
     try:
         return _run_eval_on_harbor(

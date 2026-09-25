@@ -25,7 +25,8 @@ class FastSession(ProviderSession):
         super().__init__(*a, **kw)
 
 
-def _setup(tmp_path, monkeypatch, base_url, *, prompt="say hi HOOKCALL", providers=True, strict=()):
+def _setup(tmp_path, monkeypatch, base_url, *, prompt="say hi HOOKCALL", providers=True, strict=(),
+           guardrail=False):
     install_fake_claude(tmp_path, monkeypatch)
     ws = tmp_path / "ws"
     for cid in ("case-1", "case-2"):
@@ -44,6 +45,9 @@ def _setup(tmp_path, monkeypatch, base_url, *, prompt="say hi HOOKCALL", provide
         cfg["models"]["providers"] = {"openrouter": {
             "base_url": base_url, "attribution": {"title": "t", "run_id_header": True},
             "routing": {"models": {"z-ai/glm-5.2": {"order": ["novita"], "allow_fallbacks": False}}}}}
+        if guardrail:
+            cfg["models"]["providers"]["openrouter"]["routing"]["enforcement"] = "key-guardrail"
+            cfg["models"]["providers"]["openrouter"]["budget"] = {"run_usd": 0.5}
     config = tmp_path / "eval.yaml"
     config.write_text(yaml.safe_dump(cfg, sort_keys=False))
     out = tmp_path / "runs" / "run-x"
@@ -90,6 +94,7 @@ def test_case_mode_run_under_a_plan(tmp_path, monkeypatch, capsys):
     assert run["cost_usd_estimate"] == 1.0 and run["cases_priced"] == 2
     assert run["hook_cost_usd"] == pytest.approx(2 * GEN_COST, abs=1e-6)
     assert run["cost_coverage"]["key_usage_delta_usd"] == pytest.approx(6 * GEN_COST, abs=1e-6)
+    assert run["cost_confidence"] == "high"                  # the cross-check counts hook spend too
     assert run["routing"]["violations"] == [] and run["routing"]["audit_complete"] is True
     assert run["routing"]["snapshot"] and run["provider"]["key_hash"].startswith("sha256:")
     assert run["eval_params"]["provider"]["routing_enforcement"] == "audit"
@@ -218,4 +223,46 @@ def test_a_cli_activated_plan_still_refuses_a_non_claude_step_runner(tmp_path, m
         fake.stop()
     assert code == 2 and "execution.steps[].runner.type 'codex'" in err
     assert fake_claude_records(ws / "cases" / "case-1") == []
+
+
+def test_key_guardrail_run_uses_a_per_run_key_and_revokes_it(tmp_path, monkeypatch, capsys):
+    import hashlib
+
+    from openrouter_fakes import FAKE_MGMT_KEY, quiet_atexit
+
+    fake = FakeOpenRouter()
+    base = fake.start()
+    try:
+        ws, out = _setup(tmp_path, monkeypatch, base, guardrail=True)
+        monkeypatch.setenv("OPENROUTER_MANAGEMENT_KEY", FAKE_MGMT_KEY)
+        quiet_atexit(monkeypatch)
+        code = _main()
+        err = capsys.readouterr().err
+    finally:
+        fake.stop()
+    assert code == 0, err
+    assert len(fake.issued) == 1
+    key_hash, issued = next(iter(fake.issued.items()))
+    per_run_key = issued["key"]
+    assert "key exposed to agent: per-run key sha256:" + hashlib.sha256(per_run_key.encode()).hexdigest()[:8] in err
+    assert fake.key_requests == [{"name": "agent-eval run-x", "limit": 0.5, "allowed_providers": ["novita"]}]
+    assert fake.deletes == [key_hash]                                     # revoked exactly once, at the end
+    # the agent saw the per-run key only (as ANTHROPIC_AUTH_TOKEN), never the operator or management key
+    for rec in fake_claude_records(ws / "cases" / "case-1") + fake_claude_records(ws / "cases" / "case-2"):
+        assert rec["token_sha"] == hashlib.sha256(per_run_key.encode()).hexdigest()[:8]
+        assert "OPENROUTER_MANAGEMENT_KEY" not in rec["env_keys"] and "OPENROUTER_API_KEY" not in rec["env_keys"]
+    run = json.loads((out / "run_result.json").read_text())
+    assert run["provider"]["key_scope"] == "per-run" and run["budget"]["enforcement"] == "key-guardrail"
+    assert run["eval_params"]["budget"]["enforcement"] == "key-guardrail" and run["budget"]["run_usd"] == 0.5
+    assert run["cost_source"] == "openrouter:generation" and run["cost_confidence"] == "high"
+    record = json.loads((out / "provider" / "key.json").read_text())
+    assert record["hash"] == key_hash and record["revoked_at"] and record["limit_usd"] == 0.5
+    # no secret anywhere in the run dir or on stderr: per-run key, operator key, management key
+    for path in out.rglob("*"):
+        if path.is_file():
+            text = path.read_text(errors="replace")
+            for secret in (per_run_key, FAKE_KEY, FAKE_MGMT_KEY):
+                assert secret not in text, path
+    for secret in (per_run_key, FAKE_KEY, FAKE_MGMT_KEY):
+        assert secret not in err
 

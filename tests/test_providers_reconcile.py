@@ -249,6 +249,7 @@ def test_unpinned_key_is_never_audited():
     out = reconcile(_payload(["gen-1"]), rows, _plan(pins=False), catalog=_catalog())
     assert out["routing"]["audited"] == 0 and out["routing"]["violations"] == []
     assert out["routing"]["degraded"] is False and out["routing"]["audit_complete"] is True
+    assert out["routing"]["enforcement"] == "none"           # nothing declared, nothing enforced
 
 
 def test_policy_warn_flags_but_does_not_degrade():

@@ -224,19 +224,70 @@ directly (`/v1/messages`):
   Host Vertex/Bedrock/Anthropic variables are not forwarded into the container while
   the plan is active. Kubernetes/OpenShift and EvalHub land in a later release.
 
-Before any spend, **preflight** (`preflight: strict | warn | off`) checks against the
-public catalog that every agent-path slug exists and that each pinned provider serves
-it, that the key is valid (`GET /key`) and that the account can use the model
-(`GET /models/user`); it writes `provider/routing_snapshot.json`. A catalog fetch
-failure degrades to `warn`; the key, slug and eligibility checks stay strict.
+Before any spend, **preflight** (`preflight: strict | warn | off`) checks every routing
+key an agent role uses (skill, subagent, hook, `background_model`) and every
+`openrouter:/` judge against the public catalog: the slug exists; each pinned provider
+serves it, at a declared quantization when `quantizations` is set, with tools and
+`tool_choice: auto` for agent slugs (Claude Code sends `auto`) and `tool_choice: function`
+for judges that carry pins (a forced tool call under pins answers 404 otherwise);
+endpoints with `status < 0` are degraded and excluded, and a pinned set with no eligible
+endpoint left is a failure; `max_completion_tokens` below 32k warns. The key is valid
+(`GET /key`) and the account can use the model (`GET /models/user`, the paid-training
+filter). A catalog fetch failure degrades to `warn`; the key, slug and eligibility checks
+stay strict. The frozen catalog view goes to `provider/routing_snapshot.json`
+(`ts`, `routing_sha`, `enforcement`, `key_scope`, per key `pinned_set` /
+`eligible` / `excluded` with reasons, `pricing`). The same checks run without a run via
+
+```bash
+python3 -m agent_eval.providers.openrouter.preflight --config eval.yaml [--model openrouter:/…] [--run-dir DIR]
+```
 
 Cost is **per request**: the `gen-…` ids in Claude Code's own transcript are priced
 from `GET /generation` by a background worker as the stream is read, the key-usage
-delta cross-checks the sum, and the served provider of every generation is audited
-against the pins. See [runs directory → cost provenance](../runs-directory.md#cost-provenance)
-for the fields and the `--strict-cost` / `--strict-routing` flags. The agent holds the
-operator key at `enforcement: audit` (the startup line says so); `key-guardrail` is
-parsed but not available yet.
+delta cross-checks the sum (agent plus hook spend), and the served provider of every
+generation is audited against the pins. See [runs directory → cost provenance](../runs-directory.md#cost-provenance)
+for the fields and the `--strict-cost` / `--strict-routing` flags. eval-compare and
+eval-anova treat runs whose routing declaration, audit outcome or enforcement level
+differ as different factor levels (`allow_unaudited` / `allow_mixed_enforcement`
+override).
+
+### Enforcement levels
+
+At **`audit`** (the default) the agent holds the operator key (`key_exposed_to_agent:
+true`, `key_scope: operator`; the startup line says so), pins are checked before the
+run and audited after it, and `budget.run_usd` is enforced post hoc (`--strict-cost`).
+
+At **`key-guardrail`** the harness provisions a **per-run key** through the management
+API before any spend: `POST /api/v1/keys` with `OPENROUTER_MANAGEMENT_KEY` (the variable
+named by `management_key_env`; required in the harness environment, never placed
+anywhere else), `name` from `guardrail.key_name`, `limit` = `budget.run_usd` (required,
+> 0) and an allowed-provider list = the union of the pinned sets of the routing keys the
+agent roles use, or the explicit `guardrail.providers`. The key is read back and any
+mismatch (a different limit, no echoed allow-list) revokes it and refuses to start, so a
+server that does not enforce what was asked never runs the eval. The per-run key is
+what the agent, the backfill and the key-usage reads use (`key_scope: per-run`; the
+key-usage delta is exact by construction); judges keep the operator key. It is revoked
+(`DELETE /api/v1/keys/{hash}`) when the run ends, on every exit path including
+Ctrl-C, after the run-end backfill and key-usage settle, with an `atexit` fallback;
+`provider/key.json` records the hash, name, limit, providers and `revoked_at` (never
+the key). A failed revoke is a stderr ERROR plus a `cost_warnings` entry, and
+
+```bash
+python3 -m agent_eval.providers.openrouter.keys revoke <run_dir>
+```
+
+retries it. Server-side enforcement means a pin violation cannot happen (an unroutable
+request 404s, visible in the agent's error output) and a budget breach is a 402
+(`budget.exceeded_reason: limit_usd`).
+
+!!! warning "Guardrail field semantics are documented, not verified"
+    The management API's field names for the allow-list and the limit (probe #26 in
+    spec 014) have not been exercised against a live management key. They live in
+    one function (`agent_eval.providers.openrouter.keys.key_request`), and the
+    read-back check fails closed: if the server does not echo the requested limit and
+    provider list, the key is revoked and the run does not start. Until the probe
+    runs, treat `key-guardrail` as a bounded-exposure mode whose provider
+    restriction is verified per run by that read-back, not as an established fact.
 
 ## hook
 

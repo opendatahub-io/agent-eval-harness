@@ -81,6 +81,7 @@ def analyze_runs(
     alpha: float = 0.05,
     write_to: Path | str | None = None,
     allow_unaudited: bool = False,
+    allow_mixed_enforcement: bool = False,
 ) -> tuple[dict[str, Any], Path]:
     """Analyse a directory of standard eval-run runs and write ``anova.json``.
 
@@ -93,7 +94,8 @@ def analyze_runs(
     """
     runs_dir = Path(runs_dir)
     rows, factors, cost_by_condition = load_conditions_from_runs(
-        runs_dir, eval_config, allow_unaudited=allow_unaudited)
+        runs_dir, eval_config, allow_unaudited=allow_unaudited,
+        allow_mixed_enforcement=allow_mixed_enforcement)
     if not rows:
         raise ValueError(
             f"No scored runs found under {runs_dir} "
@@ -235,6 +237,7 @@ def load_conditions_from_runs(
     eval_config: Any,
     *,
     allow_unaudited: bool = False,
+    allow_mixed_enforcement: bool = False,
 ) -> tuple[list[dict[str, Any]], list[str], dict[str, float]]:
     """Build analysis rows from a directory of standard eval-run runs.
 
@@ -252,6 +255,7 @@ def load_conditions_from_runs(
     cost_sum: dict[str, float] = {}
     cost_n: dict[str, int] = {}
     cost_sources: dict[str, set] = {}
+    enforcement_by_condition: dict[str, str] = {}
 
     for run_dir in _discover_run_dirs(runs_dir):
         try:
@@ -281,6 +285,15 @@ def load_conditions_from_runs(
             logger.warning("Skipping %s: routing audit degraded (violations or unattributed "
                            "generations under policy: strict); pass allow_unaudited to pool it.",
                            run_dir)
+            rep_counter[condition_id] = rep
+            continue
+        first_level = enforcement_by_condition.setdefault(condition_id, cost_info["enforcement"])
+        if cost_info["enforcement"] != first_level and not allow_mixed_enforcement:
+            # audit vs key-guardrail vs none are different factor levels, not
+            # replications of one condition (spec 014 pooling rule).
+            logger.warning("Skipping %s: routing enforcement %r differs from the condition's %r; "
+                           "pass allow_mixed_enforcement to pool it.",
+                           run_dir, cost_info["enforcement"], first_level)
             rep_counter[condition_id] = rep
             continue
         cost = cost_info["cost"]
@@ -356,7 +369,8 @@ def _run_cost_info(run_dir: Path) -> dict:
     runner:reported), ``degraded`` (routing audit failed under policy strict)
     and ``audit_clean``."""
     rr_path = run_dir / "run_result.json"
-    info = {"cost": None, "source": "runner:reported", "degraded": False, "audit_clean": True}
+    info = {"cost": None, "source": "runner:reported", "degraded": False, "audit_clean": True,
+            "enforcement": "none"}
     if not rr_path.is_file():
         return info
     try:
@@ -374,6 +388,7 @@ def _run_cost_info(run_dir: Path) -> dict:
     info["degraded"] = bool(routing.get("degraded"))
     info["audit_clean"] = (not routing.get("violations")
                            and routing.get("audit_complete") is not False)
+    info["enforcement"] = routing.get("enforcement") or "none"
     return info
 
 

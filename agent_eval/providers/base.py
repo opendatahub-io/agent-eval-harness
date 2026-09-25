@@ -166,6 +166,7 @@ class ProviderPlan:
     transport: str = "direct"
     management_key_env: Optional[str] = None   # never read by the plan; scrubbed from child envs
     session: Any = field(default=None, compare=False, repr=False)
+    provisioned: Any = field(default=None, compare=False, repr=False)   # ProvisionedKey at key-guardrail
 
     @property
     def key_hash(self) -> Optional[str]:
@@ -191,10 +192,15 @@ class ProviderPlan:
 
     def close(self) -> None:
         """The single ``finally`` every host wraps around the run: run-end
-        backfill retry, key-usage settle/read and the last reconcile (the
-        per-run key revoke joins at ``key-guardrail``). A no-op with no session."""
+        backfill retry, key-usage settle/read, the last reconcile and, at
+        ``key-guardrail``, the per-run key revoke. Without a session (the run
+        never started) only the revoke remains."""
         if self.session is not None:
             self.session.close()
+        elif self.provisioned is not None:
+            from agent_eval.providers.openrouter.keys import revoke_plan_key
+
+            revoke_plan_key(self)
 
     def __repr__(self) -> str:
         return (f"ProviderPlan(kind={self.kind!r}, transport={self.transport!r}, "

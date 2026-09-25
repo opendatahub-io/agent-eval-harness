@@ -84,6 +84,10 @@ def settings_env_block(plan, *, secrets: Optional[str] = None,
     secrets = secrets or _DEFAULT_SECRETS[target]
     if secrets not in SECRET_MODES:
         raise ValueError(f"unknown secrets mode {secrets!r}; expected one of {SECRET_MODES}")
+    if secrets == "ref" and getattr(plan, "key_scope", None) == "per-run":
+        # A per-run key exists in no host variable: the carrier env holds the
+        # literal (never argv), exactly like the 0600 overlay.
+        secrets = "literal"
 
     block = {"ANTHROPIC_BASE_URL": plan.base_url}
     if secrets == "literal":

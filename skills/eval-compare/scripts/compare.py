@@ -157,18 +157,32 @@ def cost_source_notes(groups):
                      + ". Provider-priced (openrouter:*) costs are billed spend; runner/harness "
                        "figures are estimates; unavailable means no truth source landed.")
     for m, model_runs in groups.items():
-        shas, dirty = set(), 0
+        shas, dirty, levels, served_by_run = set(), 0, set(), []
         for r in model_runs:
             routing = (r.get("run_result") or {}).get("routing") or {}
+            levels.add(routing.get("enforcement") or "none")
             if routing:
                 shas.add(routing.get("sha"))
                 if routing.get("violations") or routing.get("audit_complete") is False:
                     dirty += 1
+                served_by_run.append((r.get("name") or "?", routing.get("declared") or {},
+                                      routing.get("served") or {}))
         if len(shas) > 1:
             notes.append(f"{short_name(m)}: runs were pooled across different routing declarations "
                          f"({len(shas)} routing shas) — served providers may differ.")
+        if len(levels) > 1:
+            notes.append(f"{short_name(m)}: runs were pooled across enforcement levels "
+                         f"({', '.join(sorted(levels))}) — these are different factor levels.")
         if dirty:
             notes.append(f"{short_name(m)}: {dirty} run(s) have routing violations or an incomplete audit.")
+        histograms = {tuple(sorted(s.items())) for _, _, s in served_by_run if s}
+        if len(histograms) > 1:
+            # The snapshot diff: declared pins next to what was actually served.
+            detail = " | ".join(
+                f"{name}: declared {', '.join(f'{k}={v}' for k, v in d.items()) or 'none'}; "
+                f"served {', '.join(f'{k}: {n}' for k, n in sorted(s.items())) or 'none'}"
+                for name, d, s in served_by_run)
+            notes.append(f"{short_name(m)}: served providers differ across runs — {detail}")
     return notes
 
 
