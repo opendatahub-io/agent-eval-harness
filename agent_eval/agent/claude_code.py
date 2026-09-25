@@ -398,11 +398,14 @@ class ClaudeCodeRunner(EvalRunner):
 
         # Track temp settings file for cleanup
         cleanup_settings = temp_settings_file
-        env = self._build_env(extra_env=extra_env)
-        cost_source = _runner_cost_source(env, plan)
-        msg_index = 0
 
         try:
+            # Inside the try: the overlay already holds the key, so a failure
+            # here (e.g. the hook-ids directory cannot be created) must still
+            # reach the finally that removes it.
+            env = self._build_env(extra_env=extra_env)
+            cost_source = _runner_cost_source(env, plan)
+            msg_index = 0
             proc = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,

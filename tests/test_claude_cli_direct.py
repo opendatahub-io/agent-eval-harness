@@ -185,3 +185,17 @@ def test_build_env_without_a_binding_or_plan(monkeypatch):
     assert not (set(env) & MANAGED_ENV_KEYS) and env["RUNNER_OK"] == "1" and env["HOOK_OK"] == "1"
     env = ClaudeCodeRunner(subagent_model="claude-sonnet-4-5")._build_env()
     assert env["CLAUDE_CODE_USE_VERTEX"] == "1" and env["CLAUDE_CODE_SUBAGENT_MODEL"] == "claude-sonnet-4-5"
+
+
+def test_overlay_is_removed_when_env_setup_fails(workspace, tmp_path):
+    """The overlay holds the key before the process env is built: a failure
+    there (the hook-ids directory cannot be created) still removes it."""
+    binding = _Binding(workspace.parent)
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x")
+    binding.hook_ids_path = blocker / "hook-ids-c1.jsonl"          # parent is a file: mkdir raises
+    result, _ = _run(workspace, make_plan(), binding)
+    assert result.exit_code == -1 and "not-a-dir" in result.stderr
+    assert not (workspace / ".claude" / ".eval-overlay.json").exists()
+    assert fake_claude_records(workspace) == []                    # the CLI was never launched
+
