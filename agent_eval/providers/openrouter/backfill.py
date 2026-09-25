@@ -102,6 +102,9 @@ def plan_from_record(run: dict, *, key: str, key_env: str, run_id: str) -> Provi
 
 
 def plan_from_config(config_path: Path, run: dict, *, run_id: str) -> ProviderPlan:
+    """The keyless plan from the run's config (``require_key=False``): the
+    caller selects the key variable (``--key-env`` or the config's
+    ``api_key_env``) and attaches the key afterwards."""
     from agent_eval.config import EvalConfig  # call-time, see checked_base_url
     from agent_eval.providers.openrouter.plan import build_plan, effective_roles
 
@@ -110,7 +113,20 @@ def plan_from_config(config_path: Path, run: dict, *, run_id: str) -> ProviderPl
     override = recorded if isinstance(recorded, str) and recorded.startswith("openrouter:") else None
     runner = (run.get("provider") or {}).get("runner")
     return build_plan(config, effective_roles(config, {"skill": override}),
-                      runner=runner if runner in PLAN_RUNNERS else "claude-code", run_id=run_id)
+                      runner=runner if runner in PLAN_RUNNERS else "claude-code", run_id=run_id,
+                      require_key=False)
+
+
+def with_key(plan: ProviderPlan, *, key_env: str, base_url: Optional[str] = None) -> ProviderPlan:
+    """``plan`` carrying the key read from ``key_env`` (and ``base_url`` when
+    given). The value is never echoed."""
+    key = os.environ.get(key_env)
+    if not key:
+        raise ConfigError(f"set {key_env} — the backfill authenticates with the run's inference key")
+    fields = {**plan.__dict__, "key": key, "key_env": key_env, "session": None}
+    if base_url:
+        fields["base_url"] = base_url
+    return ProviderPlan(**fields)
 
 
 def run_backfill(run_dir: Path, plan: ProviderPlan, *, give_up_s: float = 30.0, fetch=None) -> dict:
@@ -154,20 +170,16 @@ def main(argv=None) -> int:
     run_id = next((r.get("run_id") for r in rows if r.get("run_id")), None) or args.run_dir.name
     try:
         if args.config is not None:
+            # Keyless plan first, then the selected key: --key-env wins over the
+            # config's api_key_env, and only the selected variable is read.
             plan = plan_from_config(args.config, run, run_id=run_id)
-            key_env = args.key_env or plan.key_env
-            if args.key_env and not os.environ.get(args.key_env):
-                raise ConfigError(f"set {args.key_env}")
             base_url = checked_base_url(args.base_url, explicit=True) if args.base_url else plan.base_url
+            plan = with_key(plan, key_env=args.key_env or plan.key_env, base_url=base_url)
         else:
             key_env = args.key_env or "OPENROUTER_API_KEY"
-            key = os.environ.get(key_env)
-            if not key:
-                raise ConfigError(f"set {key_env} — the backfill authenticates with the run's inference key")
-            plan = plan_from_record(run, key=key, key_env=key_env, run_id=run_id)
+            plan = plan_from_record(run, key="", key_env=key_env, run_id=run_id)
             base_url = checked_base_url(args.base_url or plan.base_url, explicit=args.base_url is not None)
-        if base_url != plan.base_url:
-            plan = ProviderPlan(**{**plan.__dict__, "base_url": base_url, "session": None})
+            plan = with_key(plan, key_env=key_env, base_url=base_url)
     except (ConfigError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

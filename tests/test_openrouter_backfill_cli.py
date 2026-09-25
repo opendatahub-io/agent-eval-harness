@@ -70,10 +70,20 @@ def test_offline_backfill_with_the_config_rebuilds_the_exact_plan(tmp_path, monk
             "models": {"skill": "openrouter:/z-ai/glm-5.2:exacto", "providers": {"openrouter": {
                 "api_key_env": "MY_OR_KEY", "base_url": base, "budget": {"run_usd": 0.001},
                 "routing": {"models": {"z-ai/glm-5.2": {"only": ["z-ai"]}}}}}}}))
-        monkeypatch.setenv("MY_OR_KEY", FAKE_KEY)
+        monkeypatch.delenv("MY_OR_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        config_args = [str(tmp_path), "--config", str(tmp_path / "eval.yaml"), "--give-up-s", "1"]
+        # the config names MY_OR_KEY: unset → a clear error, no request made
+        assert bf.main(config_args) == 2
+        assert "set MY_OR_KEY" in capsys.readouterr().err and fake.priced == []
+        # --key-env wins over the config's api_key_env (only the selected variable is read)
+        monkeypatch.setenv("OTHER_KEY", FAKE_KEY)
+        monkeypatch.setenv("MY_OR_KEY", "sk-or-wrong")
+        assert bf.main(config_args + ["--key-env", "OTHER_KEY"]) == 0
+        assert all(auth for path, auth in fake.requests if path == "/api/v1/generation")
         # the config's base_url is the loader's business: no --base-url needed
-        assert bf.main([str(tmp_path), "--config", str(tmp_path / "eval.yaml"), "--give-up-s", "1"]) == 0
+        monkeypatch.setenv("MY_OR_KEY", FAKE_KEY)
+        assert bf.main(config_args) == 0
     finally:
         fake.stop()
     run = json.loads((tmp_path / "run_result.json").read_text())
