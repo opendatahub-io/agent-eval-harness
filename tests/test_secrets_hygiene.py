@@ -26,7 +26,7 @@ class FastSession(ProviderSession):
 
 
 def _setup(tmp_path, monkeypatch, base_url, *, prompt="say hi HOOKCALL", providers=True, strict=(),
-           guardrail=False):
+           guardrail=False, pins=("novita",)):
     install_fake_claude(tmp_path, monkeypatch)
     ws = tmp_path / "ws"
     for cid in ("case-1", "case-2"):
@@ -44,7 +44,7 @@ def _setup(tmp_path, monkeypatch, base_url, *, prompt="say hi HOOKCALL", provide
     if providers:
         cfg["models"]["providers"] = {"openrouter": {
             "base_url": base_url, "attribution": {"title": "t", "run_id_header": True},
-            "routing": {"models": {"z-ai/glm-5.2": {"order": ["novita"], "allow_fallbacks": False}}}}}
+            "routing": {"models": {"z-ai/glm-5.2": {"order": list(pins), "allow_fallbacks": False}}}}}
         if guardrail:
             cfg["models"]["providers"]["openrouter"]["routing"]["enforcement"] = "key-guardrail"
             cfg["models"]["providers"]["openrouter"]["budget"] = {"run_usd": 0.5}
@@ -265,4 +265,24 @@ def test_key_guardrail_run_uses_a_per_run_key_and_revokes_it(tmp_path, monkeypat
                 assert secret not in text, path
     for secret in (per_run_key, FAKE_KEY, FAKE_MGMT_KEY):
         assert secret not in err
+
+
+def test_a_failed_startup_revokes_the_per_run_key(tmp_path, monkeypatch, capsys):
+    """Strict preflight fails after the key was provisioned (a pin nobody
+    serves): exit 2, and the key does not outlive the failed startup."""
+    from openrouter_fakes import FAKE_MGMT_KEY, quiet_atexit
+
+    fake = FakeOpenRouter()
+    base = fake.start()
+    try:
+        ws, out = _setup(tmp_path, monkeypatch, base, guardrail=True, pins=("deepinfra",))
+        monkeypatch.setenv("OPENROUTER_MANAGEMENT_KEY", FAKE_MGMT_KEY)
+        quiet_atexit(monkeypatch)
+        code = _main()
+        err = capsys.readouterr().err
+    finally:
+        fake.stop()
+    assert code == 2 and "pinned provider(s) deepinfra do not serve it" in err
+    assert len(fake.issued) == 1 and fake.deletes == list(fake.issued)
+    assert fake_claude_records(ws / "cases" / "case-1") == []
 

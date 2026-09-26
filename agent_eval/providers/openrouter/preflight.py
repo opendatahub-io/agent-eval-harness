@@ -98,11 +98,82 @@ def _check_endpoint(key, slug, e, roles, quants, res) -> list:
     return reasons
 
 
+def _check_key(key, roles, spec, judge_pinned, variant, known, catalog, snapshot_catalog,
+               pricing, res) -> dict:
+    """Check one routing key against one declaration; returns its snapshot
+    entry and records failures/warnings on ``res``."""
+    pins = pinned_providers(spec)
+    quants = getattr(spec, "quantizations", None) if spec is not None else None
+    entry = {"variant": variant, "roles": sorted(roles), "pinned_set": [],
+             "eligible": [], "excluded": [], "catalog": {"providers": [], "endpoints": []}}
+    if known is None:
+        return entry
+    if key not in known:
+        res.failures.append(f"model {key}: not in the OpenRouter catalog")
+        return entry
+    permaslug = known[key].get("canonical_slug") or known[key].get("id")
+    try:
+        eps = catalog.endpoints(key)
+    except OpenRouterHTTPError as exc:
+        res.warnings.append(f"model {key}: endpoints unavailable ({exc}); pin check skipped")
+        res.degraded_reason = res.degraded_reason or "catalog"
+        return entry
+    snapshot_catalog["endpoints"][key] = eps
+    served: dict = {}
+    for e in eps:
+        if isinstance(e, dict):
+            served.setdefault(catalog.provider_slug(e.get("provider_name")), []).append(e)
+    entry["catalog"] = {"providers": sorted(s for s in served if s),
+                        "endpoints": [_tag(s, e) for s, lst in served.items() for e in lst]}
+    pricing[key] = {s: [e.get("pricing") for e in lst if e.get("pricing")] for s, lst in served.items()
+                    if any(e.get("pricing") for e in lst)}
+    if not pins:
+        return entry
+    label = f"model {key}" + (" (judge declaration)" if roles == {"judge"} else "")
+    missing = sorted(p for p in pins if p not in served)
+    if missing:
+        res.failures.append(f"{label}: pinned provider(s) {', '.join(missing)} do not serve it "
+                            f"(served by: {', '.join(entry['catalog']['providers']) or 'nobody'})")
+        return entry
+    function_capable, function_reported = [], False
+    for slug in sorted(pins):
+        for e in served.get(slug, []):
+            reasons = _check_endpoint(key, slug, e, roles, quants, res)
+            tag = _tag(slug, e)
+            if reasons:
+                entry["excluded"].append({"tag": tag, "reasons": reasons})
+                continue
+            entry["eligible"].append(tag)
+            entry["pinned_set"].append([slug, permaslug, e.get("quantization")])
+            stc = e.get("supports_tool_choice")
+            if isinstance(stc, dict) and "function" in stc:
+                function_reported = True
+                if stc.get("function"):
+                    function_capable.append(tag)
+    if not entry["eligible"]:
+        detail = "; ".join(f"{x['tag']}: {', '.join(x['reasons'])}" for x in entry["excluded"])
+        res.failures.append(f"{label}: no eligible pinned endpoint ({detail})")
+        return entry
+    if entry["excluded"]:
+        res.warnings.append(f"{label}: excluded pinned endpoint(s) " + "; ".join(
+            f"{x['tag']} ({', '.join(x['reasons'])})" for x in entry["excluded"]))
+    if "judge" in roles and judge_pinned and function_reported:
+        lacking = [t for t in entry["eligible"] if t not in function_capable]
+        if not function_capable:
+            res.failures.append(f"{label}: no pinned endpoint supports tool_choice: function — "
+                                "a pinned judge's forced tool call answers 404 (Decision 25)")
+        elif lacking:
+            res.warnings.append(f"{label}: pinned endpoint(s) {', '.join(lacking)} lack "
+                                "tool_choice: function; the judge falls back per the tool_choice ladder")
+    return entry
+
+
 def run_preflight(plan, *, level: str = "strict", run_dir=None, catalog=None, fetch=None,
                   judges: Optional[dict] = None) -> PreflightResult:
     """Run the checks for ``plan`` at ``level``; ``judges`` is
     ``{routing key: pinned}`` for the run's ``openrouter:/`` judges (see
-    ``plan.judge_routing_keys``). ``strict`` raises :class:`ConfigError` listing
+    ``plan.judge_routing_keys``: the judge's effective RoutingSpec, ``True`` for
+    the table's entry, falsy when it sends no pins). ``strict`` raises :class:`ConfigError` listing
     every failure; ``warn`` prints them and marks the result degraded; ``off``
     does nothing. ``fetch`` (tests) serves every GET."""
     if level not in LEVELS:
@@ -115,12 +186,17 @@ def run_preflight(plan, *, level: str = "strict", run_dir=None, catalog=None, fe
     catalog = catalog or (ModelCatalog(fetch=fetch, base_url=plan.base_url) if fetch
                           else ModelCatalog(base_url=plan.base_url))
     table = getattr(plan, "routing", None)
-    keys: dict = {k: {"variant": v, "roles": {"agent"}, "judge_pinned": False}
+    keys: dict = {k: {"variant": v, "roles": {"agent"}, "judge_spec": None}
                   for k, v in plan_models(plan).items()}
-    for key, pinned in (judges or {}).items():
-        entry = keys.setdefault(routing_key(key), {"variant": None, "roles": set(), "judge_pinned": False})
+    for key, declared in (judges or {}).items():
+        # ``declared``: the judge's effective RoutingSpec (plan.judge_routing_keys),
+        # ``True`` for "the table's entry", falsy for a judge that sends no pins.
+        entry = keys.setdefault(routing_key(key), {"variant": None, "roles": set(), "judge_spec": None})
         entry["roles"].add("judge")
-        entry["judge_pinned"] = entry["judge_pinned"] or bool(pinned)
+        if declared is True:
+            declared = table.for_model(key) if table is not None else None
+        if declared and not isinstance(declared, bool) and entry["judge_spec"] is None:
+            entry["judge_spec"] = declared
     snapshot_catalog: dict = {"providers": [], "models": [], "endpoints": {}}
     known: Optional[dict] = None
     try:
@@ -141,70 +217,27 @@ def run_preflight(plan, *, level: str = "strict", run_dir=None, catalog=None, fe
     pricing: dict = {}
     for key, info in keys.items():
         roles = info["roles"]
-        spec = table.for_model(key) if table is not None else None
-        pins = pinned_providers(spec)
-        quants = getattr(spec, "quantizations", None) if spec is not None else None
-        entry = {"variant": info["variant"], "roles": sorted(roles), "pinned_set": [],
-                 "eligible": [], "excluded": [], "catalog": {"providers": [], "endpoints": []}}
-        snap_keys[key] = entry
-        if known is None:
-            continue
-        if key not in known:
-            res.failures.append(f"model {key}: not in the OpenRouter catalog")
-            continue
-        permaslug = known[key].get("canonical_slug") or known[key].get("id")
-        try:
-            eps = catalog.endpoints(key)
-        except OpenRouterHTTPError as exc:
-            res.warnings.append(f"model {key}: endpoints unavailable ({exc}); pin check skipped")
-            res.degraded_reason = res.degraded_reason or "catalog"
-            continue
-        snapshot_catalog["endpoints"][key] = eps
-        served: dict = {}
-        for e in eps:
-            if isinstance(e, dict):
-                served.setdefault(catalog.provider_slug(e.get("provider_name")), []).append(e)
-        entry["catalog"] = {"providers": sorted(s for s in served if s),
-                            "endpoints": [_tag(s, e) for s, lst in served.items() for e in lst]}
-        pricing[key] = {s: [e.get("pricing") for e in lst if e.get("pricing")] for s, lst in served.items()
-                        if any(e.get("pricing") for e in lst)}
-        if not pins:
-            continue
-        missing = sorted(p for p in pins if p not in served)
-        if missing:
-            res.failures.append(f"model {key}: pinned provider(s) {', '.join(missing)} do not serve it "
-                                f"(served by: {', '.join(entry['catalog']['providers']) or 'nobody'})")
-            continue
-        function_capable, function_reported = [], False
-        for slug in sorted(pins):
-            for e in served.get(slug, []):
-                reasons = _check_endpoint(key, slug, e, roles, quants, res)
-                tag = _tag(slug, e)
-                if reasons:
-                    entry["excluded"].append({"tag": tag, "reasons": reasons})
-                    continue
-                entry["eligible"].append(tag)
-                entry["pinned_set"].append([slug, permaslug, e.get("quantization")])
-                stc = e.get("supports_tool_choice")
-                if isinstance(stc, dict) and "function" in stc:
-                    function_reported = True
-                    if stc.get("function"):
-                        function_capable.append(tag)
-        if not entry["eligible"]:
-            detail = "; ".join(f"{x['tag']}: {', '.join(x['reasons'])}" for x in entry["excluded"])
-            res.failures.append(f"model {key}: no eligible pinned endpoint ({detail})")
-            continue
-        if entry["excluded"]:
-            res.warnings.append(f"model {key}: excluded pinned endpoint(s) " + "; ".join(
-                f"{x['tag']} ({', '.join(x['reasons'])})" for x in entry["excluded"]))
-        if "judge" in roles and info["judge_pinned"] and function_reported:
-            lacking = [t for t in entry["eligible"] if t not in function_capable]
-            if not function_capable:
-                res.failures.append(f"model {key}: no pinned endpoint supports tool_choice: function — "
-                                    "a pinned judge's forced tool call answers 404 (Decision 25)")
-            elif lacking:
-                res.warnings.append(f"model {key}: pinned endpoint(s) {', '.join(lacking)} lack "
-                                    "tool_choice: function; the judge falls back per the tool_choice ladder")
+        agent_spec = table.for_model(key) if table is not None else None
+        judge_spec = info.get("judge_spec")
+        agent_pins = pinned_providers(agent_spec) if "agent" in roles else None
+        judge_pins = pinned_providers(judge_spec) if "judge" in roles else None
+        # One check per declaration actually sent: the agent path sends the
+        # table's entry; a judge sends its own effective declaration, which
+        # may pin other providers (Decision 25) — then it is checked apart.
+        checks = []
+        if "agent" in roles:
+            same = "judge" in roles and judge_pins == agent_pins
+            checks.append(({"agent"} | ({"judge"} if same else set()), agent_spec, same and bool(judge_pins)))
+        if "judge" in roles and ("agent" not in roles or judge_pins != agent_pins):
+            checks.append(({"judge"}, judge_spec, bool(judge_pins)))
+        for check_roles, spec, judge_pinned in checks:
+            entry = _check_key(key, check_roles, spec, judge_pinned, info["variant"], known, catalog,
+                               snapshot_catalog, pricing, res)
+            if key not in snap_keys:
+                snap_keys[key] = entry
+            else:
+                snap_keys[key]["roles"] = sorted(set(snap_keys[key]["roles"]) | check_roles)
+                snap_keys[key]["judge"] = entry
     try:
         keyed(f"{base}/v1/key")
     except OpenRouterHTTPError as exc:

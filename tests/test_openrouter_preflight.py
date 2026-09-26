@@ -157,3 +157,35 @@ def test_preflight_cli_runs_without_a_run_or_a_per_run_key(fake, tmp_path, monke
     assert main(["--config", str(tmp_path / "eval.yaml")]) == 2
     assert "rejected: HTTP 401" in capsys.readouterr().err
 
+
+def test_a_judge_is_checked_against_its_own_declaration(fake, tmp_path):
+    """The agent pins Novita; a judge on the same slug may pin someone else
+    (provider_options.routing, Decision 25) and is checked apart."""
+    import yaml
+
+    from agent_eval.config import EvalConfig
+    from agent_eval.providers.openrouter.plan import judge_routing_keys
+
+    def cfg(judge_routing):
+        raw = {"name": "t", "execution": {"skill": "s"},
+               "models": {"skill": "openrouter:/z-ai/glm-5.2:exacto", "judge": "openrouter:/z-ai/glm-5.2",
+                          "providers": {"openrouter": {"base_url": fake.base_url, "routing": {
+                              "models": {"z-ai/glm-5.2": {"order": ["novita"], "allow_fallbacks": False}}}}}},
+               "judges": [{"name": "q", "prompt": "score it", "provider_options": {"routing": judge_routing}}]}
+        (tmp_path / "eval.yaml").write_text(yaml.safe_dump(raw))
+        return EvalConfig.from_yaml(tmp_path / "eval.yaml")
+
+    # the judge pins a provider that does not serve the model: the judge check fails, not the agent's
+    judges = judge_routing_keys(cfg({"only": ["deepinfra"]}))
+    assert judges["z-ai/glm-5.2"].only == ("deepinfra",)
+    with pytest.raises(ConfigError, match="\\(judge declaration\\): pinned provider\\(s\\) deepinfra do not serve it"):
+        run_preflight(make_plan(fake.base_url), level="strict", judges=judges)
+    # the judge pins Z.AI (function-capable) while the agent pins Novita: both pass, checked apart
+    judges = judge_routing_keys(cfg({"only": ["z-ai"]}))
+    res = run_preflight(make_plan(fake.base_url), level="strict", run_dir=tmp_path, judges=judges)
+    entry = res.snapshot["keys"]["z-ai/glm-5.2"]
+    assert entry["roles"] == ["agent", "judge"] and entry["eligible"] == ["novita/fp8", "novita/bf16"]
+    assert entry["judge"]["roles"] == ["judge"] and entry["judge"]["eligible"] == ["z-ai"]
+    # no override and no inherit_pins: the judge sends no pins and nothing extra is checked
+    assert judge_routing_keys(cfg(None)) == {"z-ai/glm-5.2": None}
+

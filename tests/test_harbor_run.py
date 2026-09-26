@@ -662,12 +662,12 @@ def test_reuse_accepts_a_pre_chain_package_for_a_plain_config(tmp_path, monkeypa
 
 # --- spec 014: the same plan on Harbor podman -----------------------------------------
 
-def _plan_config(tmp_path, base_url, *, judge=None, api_key_env=None, guardrail=False):
+def _plan_config(tmp_path, base_url, *, judge=None, api_key_env=None, guardrail=False, pins=("novita",)):
     raw = yaml.safe_load((tmp_path / "eval.yaml").read_text())
     raw["runner"] = {"type": "claude-code"}
     raw["models"] = {"skill": "openrouter:/z-ai/glm-5.2:exacto",
                      "providers": {"openrouter": {"base_url": base_url, "routing": {
-                         "models": {"z-ai/glm-5.2": {"order": ["novita"], "allow_fallbacks": False}}}}}}
+                         "models": {"z-ai/glm-5.2": {"order": list(pins), "allow_fallbacks": False}}}}}}
     if api_key_env:
         raw["models"]["providers"]["openrouter"]["api_key_env"] = api_key_env
     if guardrail:
@@ -694,13 +694,14 @@ class _FastSession:
 
 
 def _harbor_plan_run(tmp_path, monkeypatch, *, judge=None, env="podman", returncode=17, fake_env=None,
-                     api_key_env=None, guardrail=False):
+                     api_key_env=None, guardrail=False, pins=("novita",)):
     from openrouter_fakes import FAKE_KEY, FAKE_MGMT_KEY, FakeOpenRouter, quiet_atexit
 
     _config(tmp_path)
     fake = FakeOpenRouter()
     base = fake.start()
-    config_path = _plan_config(tmp_path, base, judge=judge, api_key_env=api_key_env, guardrail=guardrail)
+    config_path = _plan_config(tmp_path, base, judge=judge, api_key_env=api_key_env, guardrail=guardrail,
+                               pins=pins)
     quiet_atexit(monkeypatch)
     tasks_dir = tmp_path / "tasks"
     _write_pregenerated_task(tasks_dir, judge_mode="deterministic-only" if judge is None else "full",
@@ -736,6 +737,10 @@ def _harbor_plan_run(tmp_path, monkeypatch, *, judge=None, env="podman", returnc
             output_dir=tmp_path / "out", tasks_dir=tasks_dir, jobs_dir=tmp_path / "jobs",
             harbor_bin="harbor", env_import_path=run_mod._ENV_IMPORT_PATHS[env],
             no_llm_judges=judge is None)
+    except BaseException as exc:
+        fake.stop()
+        exc.fake = fake
+        raise
     finally:
         fake.stop()
     return result, captured, fake, base
@@ -800,6 +805,15 @@ def test_harbor_key_guardrail_carries_the_per_run_key(tmp_path, monkeypatch):
     assert fake.deletes == list(fake.issued)                             # revoked in the finally
     record = json.loads((tmp_path / "out" / "provider" / "key.json").read_text())
     assert record["revoked_at"] and per_run_key not in json.dumps(record)
+
+
+def test_harbor_failed_startup_revokes_the_per_run_key(tmp_path, monkeypatch):
+    from agent_eval.providers.base import ConfigError
+
+    with pytest.raises(ConfigError, match="pinned provider\\(s\\) deepinfra do not serve it") as exc:
+        _harbor_plan_run(tmp_path, monkeypatch, guardrail=True, pins=("deepinfra",))
+    fake = exc.value.fake
+    assert len(fake.issued) == 1 and fake.deletes == list(fake.issued)
 
 
 def test_harbor_plan_refuses_kubernetes_for_now(tmp_path, monkeypatch):

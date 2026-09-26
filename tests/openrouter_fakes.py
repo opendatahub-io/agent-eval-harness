@@ -62,11 +62,12 @@ class FakeOpenRouter:
                  served_model: str = "z-ai/glm-5.2-20260616", lag_calls: int = 0,
                  ineligible=("deepseek/deepseek-v4.1-flash",), key_usage_start: float = 0.5,
                  catalog_down: bool = False, management_key: str = FAKE_MGMT_KEY,
-                 echo_allowlist: bool = True, revoke_status: int = 200):
+                 echo_allowlist: bool = True, revoke_status: int = 200, readback_status: int = 200):
         self.key, self.cost, self.provider, self.served_model = key, cost, provider, served_model
         self.lag_calls, self.ineligible, self.catalog_down = lag_calls, set(ineligible), catalog_down
         self.key_usage_start = key_usage_start
         self.management_key, self.echo_allowlist, self.revoke_status = management_key, echo_allowlist, revoke_status
+        self.readback_status = readback_status
         self.requests: list = []
         self.generation_calls: dict = {}
         self.priced: list = []            # gen ids that returned 200, in order
@@ -182,6 +183,8 @@ class FakeOpenRouter:
             if entry is None:
                 return 404, {"error": {"message": "key not found", "code": 404}}
             if method == "GET":
+                if self.readback_status != 200:
+                    return self.readback_status, {"error": {"message": "try later", "code": self.readback_status}}
                 return 200, {"data": dict(entry["record"])}
             if method == "DELETE":
                 self.deletes.append(key_hash)

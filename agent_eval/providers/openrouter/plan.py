@@ -94,13 +94,18 @@ def guardrail_providers(orc, keys) -> tuple:
 
 
 def judge_routing_keys(config, judge_model: Optional[str] = None) -> dict:
-    """``{routing key: pinned}`` for every ``openrouter:/`` judge of the run —
-    ``models.judge`` (or a CLI override) and per-judge ``model:`` values. A
-    judge is *pinned* when it inherits the table's pins or carries its own
-    ``provider_options.routing`` (Decision 25), which is what the preflight's
-    ``tool_choice: function`` check is about."""
+    """``{routing key: effective RoutingSpec | None}`` for every ``openrouter:/``
+    judge of the run — ``models.judge`` (or a CLI override) and per-judge
+    ``model:`` values. The value is the declaration the judge actually sends
+    (Decision 25): the table's entry when ``judge.inherit_pins`` is set, merged
+    with the judge's own ``provider_options.routing`` when it carries one;
+    ``None`` for a judge that sends no pins. Two judges on one key keep the
+    more specific (overriding) declaration."""
+    from agent_eval.providers.openrouter.routing import RoutingSpec, RoutingTable
+
     orc = getattr(getattr(config.models, "providers", None), "openrouter", None)
     inherit = bool(getattr(getattr(orc, "judge", None), "inherit_pins", False)) if orc is not None else False
+    table = getattr(orc, "routing", None) or RoutingTable()
     default = judge_model or getattr(config.models, "judge", None)
     out: dict = {}
     for jc in getattr(config, "judges", None) or []:
@@ -112,7 +117,15 @@ def judge_routing_keys(config, judge_model: Optional[str] = None) -> dict:
         except ValueError:
             continue
         opts = getattr(jc, "provider_options", None) or {}
-        out[key] = out.get(key, False) or inherit or bool(isinstance(opts, dict) and opts.get("routing"))
+        override = opts.get("routing") if isinstance(opts, dict) else None
+        if override:
+            spec = table.for_model(key).merged(RoutingSpec.from_dict(override, context="provider_options.routing"))
+        elif inherit:
+            spec = table.for_model(key)
+        else:
+            spec = None
+        if key not in out or (spec is not None and override):
+            out[key] = spec
     return out
 
 
@@ -219,13 +232,25 @@ def _provision_run_key(orc, models: dict, run_id: Optional[str]):
     name = str(orc.routing.guardrail.key_name).replace("{run_id}", run_id or "run")
     provisioned = provision(management_key, name=name, limit_usd=float(limit),
                             allowed_providers=allowed, base_url=orc.base_url)
-    problems = guardrail_mismatches(
-        verify_guardrail(management_key, provisioned.hash, base_url=orc.base_url), provisioned)
-    if problems:
+
+    def _revoked() -> str:
+        # From here on the key is live: every error path revokes it (best
+        # effort) before surfacing, and says so, hash included.
         try:
             revoke(management_key, provisioned.hash, base_url=orc.base_url)
-        except Exception:                                   # noqa: BLE001 — best effort, reported below
-            problems.append(f"and the key {provisioned.hash} could not be revoked; revoke it by hand")
-        raise ConfigError("key-guardrail read-back mismatch — the per-run key was revoked, nothing was "
-                          "spent: " + "; ".join(problems))
+            return f"the per-run key {provisioned.hash} was revoked, nothing was spent"
+        except Exception as exc:                            # noqa: BLE001 — reported, not hidden
+            return (f"and the per-run key {provisioned.hash} could NOT be revoked ({exc}); "
+                    "delete it by hand")
+
+    try:
+        problems = guardrail_mismatches(
+            verify_guardrail(management_key, provisioned.hash, base_url=orc.base_url), provisioned)
+    except ConfigError as exc:
+        raise ConfigError(f"key-guardrail: {exc}; {_revoked()}") from None
+    except BaseException:
+        _revoked()
+        raise
+    if problems:
+        raise ConfigError("key-guardrail read-back mismatch — " + "; ".join(problems) + f"; {_revoked()}")
     return provisioned

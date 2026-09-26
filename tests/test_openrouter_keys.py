@@ -108,6 +108,21 @@ def test_read_back_mismatch_revokes_and_refuses(tmp_path, monkeypatch):
         "allowed_providers: requested ['novita'], server holds ['z-ai']"]
 
 
+def test_read_back_request_failure_revokes_too(tmp_path, monkeypatch):
+    srv = FakeOpenRouter(readback_status=503)
+    base = srv.start()
+    monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_KEY)
+    monkeypatch.setenv("OPENROUTER_MANAGEMENT_KEY", FAKE_MGMT_KEY)
+    quiet_atexit(monkeypatch)
+    try:
+        with pytest.raises(ConfigError, match="could not be read back.*was revoked, nothing was spent") as exc:
+            plan_mod.build_plan(_config(tmp_path, base), run_id="r3b")
+        key_hash = next(iter(srv.issued))
+        assert key_hash in str(exc.value) and srv.deletes == [key_hash]
+    finally:
+        srv.stop()
+
+
 def test_session_close_revokes_once_and_records_key_json(fake, tmp_path):
     plan = plan_mod.build_plan(_config(tmp_path, fake.base_url), run_id="r4")
     session = FastSession(plan, tmp_path).start()

@@ -489,9 +489,13 @@ def main():
     plan = _build_provider_plan(config, args, agent, output_dir)
     session = None
     if plan is not None:
-        session = _start_provider_session(
-            plan, config, output_dir,
-            args.parallelism if args.parallelism is not None else config.execution.parallelism)
+        try:
+            session = _start_provider_session(
+                plan, config, output_dir,
+                args.parallelism if args.parallelism is not None else config.execution.parallelism)
+        except BaseException:
+            plan.close()                 # a per-run key must not outlive a failed startup (exit 2 included)
+            raise
     try:
 
         mlflow_experiment = args.mlflow_experiment or config.mlflow.experiment

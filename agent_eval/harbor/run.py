@@ -624,7 +624,11 @@ def run_eval_on_harbor(
             raise ConfigError(f"the direct OpenRouter transport is implemented for the "
                               f"claude-code Harbor agent; got {agent_name!r}")
         plan = build_plan(config, roles, runner="harbor-podman", run_id=output_dir.name)
-        session = _start_harbor_session(plan, config, output_dir, n_concurrent, judge_model)
+        try:
+            session = _start_harbor_session(plan, config, output_dir, n_concurrent, judge_model)
+        except BaseException:
+            plan.close()                 # a per-run key must not outlive a failed startup
+            raise
         model = plan.skill.id            # -m gets the bare slug:variants
     try:
         return _run_eval_on_harbor(
