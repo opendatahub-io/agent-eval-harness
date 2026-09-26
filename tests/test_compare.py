@@ -316,3 +316,22 @@ def test_cost_source_notes_flag_mixed_sources_and_dirty_audits():
     assert any("2 routing shas" in n for n in notes)
     assert any("1 run(s) have routing violations" in n for n in notes)
     assert cost_source_notes({"m": [_run_with({"cost_source": "openrouter:generation"})]}) == []
+
+
+def test_cost_source_notes_flag_mixed_enforcement_and_served_diff():
+    from compare import cost_source_notes
+
+    a = _run_with({"cost_source": "openrouter:generation",
+                   "routing": {"sha": "s", "enforcement": "audit", "violations": [], "audit_complete": True,
+                               "declared": {"z-ai/glm-5.2": {"order": ["novita"]}}, "served": {"novita/fp8": 12}}})
+    b = _run_with({"cost_source": "openrouter:generation",
+                   "routing": {"sha": "s", "enforcement": "key-guardrail", "violations": [], "audit_complete": True,
+                               "declared": {"z-ai/glm-5.2": {"order": ["novita"]}}, "served": {"z-ai": 12}}})
+    a["name"], b["name"] = "run-a", "run-b"
+    notes = cost_source_notes({"m": [a, b]})
+    assert any("across enforcement levels (audit, key-guardrail)" in n for n in notes)
+    diff = next(n for n in notes if "served providers differ" in n)
+    assert "run-a: declared z-ai/glm-5.2={'order': ['novita']}; served novita/fp8: 12" in diff
+    assert "run-b:" in diff and "served z-ai: 12" in diff
+    assert not any("served providers differ" in n for n in cost_source_notes({"m": [a, a]}))
+

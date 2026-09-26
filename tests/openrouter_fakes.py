@@ -18,6 +18,7 @@ from agent_eval.providers.base import ProviderPlan, parse_agent_model
 from agent_eval.providers.openrouter.routing import RoutingTable
 
 FAKE_KEY = "sk-or-fake-0123456789"
+FAKE_MGMT_KEY = "sk-or-mgmt-fake-0123456789"
 GEN_COST = 0.00165633           # probe #12's recorded /generation total_cost
 PROVIDERS = [{"slug": "novita", "name": "Novita"}, {"slug": "z-ai", "name": "Z.AI"},
              {"slug": "deepinfra", "name": "DeepInfra"}]
@@ -27,16 +28,29 @@ MODELS = [
     {"id": "deepseek/deepseek-v4.1-flash", "canonical_slug": "deepseek/deepseek-v4.1-flash-20260701",
      "name": "DeepSeek V4.1 Flash"},
 ]
+_TC = {"none": True, "auto": True, "required": True, "function": True}
 ENDPOINTS = {
     "z-ai/glm-5.2": [
         {"provider_name": "Novita", "tag": "novita/fp8", "quantization": "fp8", "status": 0,
-         "supported_parameters": ["tools", "tool_choice"]},
+         "supported_parameters": ["tools", "tool_choice"], "supports_tool_choice": dict(_TC),
+         "max_completion_tokens": 131072, "pricing": {"prompt": "0.0000002", "completion": "0.0000008"}},
         {"provider_name": "Z.AI", "tag": "z-ai", "quantization": "fp8", "status": 0,
-         "supported_parameters": ["tools", "tool_choice"]},
+         "supported_parameters": ["tools", "tool_choice"], "supports_tool_choice": dict(_TC),
+         "max_completion_tokens": 128000, "pricing": {"prompt": "0.0000003", "completion": "0.0000009"}},
         # a second Novita endpoint at another quantization, listed last on purpose
-        {"provider_name": "Novita", "tag": "novita/bf16", "quantization": "bf16", "status": 0},
+        {"provider_name": "Novita", "tag": "novita/bf16", "quantization": "bf16", "status": 0,
+         "supported_parameters": ["tools", "tool_choice"], "supports_tool_choice": dict(_TC),
+         "max_completion_tokens": 131072},
     ],
-    "qwen/qwen3-8b": [{"provider_name": "DeepInfra", "tag": "deepinfra", "quantization": "bf16", "status": 0}],
+    "qwen/qwen3-8b": [
+        # a degraded endpoint and one that cannot force a tool call
+        {"provider_name": "DeepInfra", "tag": "deepinfra", "quantization": "bf16", "status": -2,
+         "supported_parameters": ["tools", "tool_choice"], "supports_tool_choice": dict(_TC)},
+        {"provider_name": "Novita", "tag": "novita/qwen", "quantization": "bf16", "status": 0,
+         "supported_parameters": ["tools", "tool_choice"],
+         "supports_tool_choice": {"none": True, "auto": True, "required": False, "function": False},
+         "max_completion_tokens": 16384},
+    ],
     "deepseek/deepseek-v4.1-flash": [{"provider_name": "Novita", "tag": "novita", "quantization": "fp8", "status": 0}],
 }
 
@@ -47,13 +61,18 @@ class FakeOpenRouter:
     def __init__(self, *, key: str = FAKE_KEY, cost: float = GEN_COST, provider: str = "Novita",
                  served_model: str = "z-ai/glm-5.2-20260616", lag_calls: int = 0,
                  ineligible=("deepseek/deepseek-v4.1-flash",), key_usage_start: float = 0.5,
-                 catalog_down: bool = False):
+                 catalog_down: bool = False, management_key: str = FAKE_MGMT_KEY,
+                 echo_allowlist: bool = True, revoke_status: int = 200):
         self.key, self.cost, self.provider, self.served_model = key, cost, provider, served_model
         self.lag_calls, self.ineligible, self.catalog_down = lag_calls, set(ineligible), catalog_down
         self.key_usage_start = key_usage_start
+        self.management_key, self.echo_allowlist, self.revoke_status = management_key, echo_allowlist, revoke_status
         self.requests: list = []
         self.generation_calls: dict = {}
         self.priced: list = []            # gen ids that returned 200, in order
+        self.issued: dict = {}            # hash -> {"key", "record"} (management API)
+        self.deletes: list = []           # hashes DELETEd, in order
+        self.key_requests: list = []      # POST /keys bodies
         self._server = None
 
     # -- lifecycle ---------------------------------------------------------------
@@ -64,14 +83,28 @@ class FakeOpenRouter:
             def log_message(self, *a):        # quiet
                 pass
 
-            def do_GET(self):
-                status, body = fake._route(self.path, self.headers)
+            def _answer(self, status, body):
                 data = json.dumps(body).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
+
+            def do_GET(self):
+                self._answer(*fake._route(self.path, self.headers))
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length) if length else b""
+                try:
+                    body = json.loads(raw.decode() or "{}")
+                except ValueError:
+                    body = {}
+                self._answer(*fake._manage("POST", self.path, self.headers, body))
+
+            def do_DELETE(self):
+                self._answer(*fake._manage("DELETE", self.path, self.headers, None))
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
@@ -100,7 +133,10 @@ class FakeOpenRouter:
             if eps is None:
                 return 404, {"error": {"message": "not found", "code": 404}}
             return 200, {"data": {"id": slug, "endpoints": eps}}
-        if auth != f"Bearer {self.key}":
+        if path.startswith("/api/v1/keys"):
+            return self._manage("GET", raw_path, headers, None)
+        live = {self.key} | {v["key"] for v in self.issued.values() if not v["record"].get("revoked_at")}
+        if auth not in {f"Bearer {k}" for k in live}:
             return 401, {"error": {"message": "No auth credentials found", "code": 401}}
         if path == "/api/v1/key":
             usage = round(self.key_usage_start + self.cost * len(self.priced), 8)
@@ -123,6 +159,37 @@ class FakeOpenRouter:
                 "finish_reason": "stop", "native_finish_reason": "stop", "latency": 2043,
                 "generation_time": 1960, "streamed": True, "is_byok": False}}
         return 404, {"error": {"message": f"no route {path}", "code": 404}}
+
+    # -- management API (key-guardrail) --------------------------------------------
+    def _manage(self, method, raw_path, headers, body):
+        path = urlsplit(raw_path).path
+        self.requests.append((f"{method} {path}", bool(headers.get("Authorization"))))
+        if headers.get("Authorization") != f"Bearer {self.management_key}":
+            return 401, {"error": {"message": "management key required", "code": 401}}
+        if method == "POST" and path == "/api/v1/keys":
+            n = len(self.issued) + 1
+            key_hash, key = f"hash-{n:04d}", f"sk-or-run-{n:04d}-{'x' * 16}"
+            record = {"hash": key_hash, "name": body.get("name"), "limit": body.get("limit"),
+                      "usage": 0, "created_at": "2026-09-25T00:00:00Z"}
+            if self.echo_allowlist and "allowed_providers" in body:
+                record["allowed_providers"] = list(body["allowed_providers"])
+            self.issued[key_hash] = {"key": key, "record": record}
+            self.key_requests.append(dict(body))
+            return 201, {"data": dict(record), "key": key}
+        if path.startswith("/api/v1/keys/"):
+            key_hash = path[len("/api/v1/keys/"):]
+            entry = self.issued.get(key_hash)
+            if entry is None:
+                return 404, {"error": {"message": "key not found", "code": 404}}
+            if method == "GET":
+                return 200, {"data": dict(entry["record"])}
+            if method == "DELETE":
+                self.deletes.append(key_hash)
+                if self.revoke_status != 200:
+                    return self.revoke_status, {"error": {"message": "try later", "code": self.revoke_status}}
+                entry["record"]["revoked_at"] = "2026-09-25T00:10:00Z"
+                return 200, {"data": {"deleted": True}}
+        return 404, {"error": {"message": f"no route {method} {path}", "code": 404}}
 
 
 def make_plan(base_url: str = "https://openrouter.ai/api", *, key=FAKE_KEY, pins=True,
@@ -200,6 +267,28 @@ if flag("--output-format", "json") == "stream-json":
 else:
     print(json.dumps(result))
 '''
+
+
+def quiet_atexit(monkeypatch) -> list:
+    """Keep the plan's ``atexit`` revoke fallback out of the interpreter's
+    exit handlers during a test (the fake server is gone by then) while
+    letting every other registration through. Returns the captured
+    ``(fn, args)`` list so a test can invoke the fallback itself."""
+    import atexit
+
+    from agent_eval.providers.openrouter.keys import revoke_plan_key
+
+    captured: list = []
+    real_register = atexit.register
+
+    def register(fn, *args, **kwargs):
+        if fn is revoke_plan_key:
+            captured.append((fn, args))
+            return fn
+        return real_register(fn, *args, **kwargs)
+
+    monkeypatch.setattr(atexit, "register", register)
+    return captured
 
 
 def install_fake_claude(tmp_path: Path, monkeypatch) -> Path:

@@ -245,13 +245,16 @@ def test_build_plan_rejects_non_openrouter_roles_and_unknown_runners(tmp_path, m
         build_plan(routed, roles={"skill": "openrouter:/z-ai/glm-5.2", "subagent": "sonnet", "hook": None})
 
 
-def test_build_plan_key_guardrail_is_not_available_yet(tmp_path, monkeypatch):
+def test_build_plan_key_guardrail_needs_the_management_key(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    monkeypatch.delenv("OPENROUTER_MANAGEMENT_KEY", raising=False)
     config = _config(tmp_path, _ROUTED.replace("        models:\n", "        enforcement: key-guardrail\n        models:\n"))
     assert config.models.providers.openrouter.routing.enforcement == "key-guardrail"
-    with pytest.raises(ConfigError, match="key-guardrail .* later release"):
+    with pytest.raises(ConfigError, match="set OPENROUTER_MANAGEMENT_KEY") as exc:
         build_plan(config)
-    assert build_plan(config, require_key=False).enforcement == "key-guardrail"
+    assert "k" != str(exc.value) and "sk-" not in str(exc.value)
+    keyless = build_plan(config, require_key=False)
+    assert keyless.enforcement == "key-guardrail" and keyless.key is None and keyless.provisioned is None
 
 
 def test_effective_roles_and_activation(tmp_path):

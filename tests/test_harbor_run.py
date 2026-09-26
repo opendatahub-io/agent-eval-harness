@@ -662,7 +662,7 @@ def test_reuse_accepts_a_pre_chain_package_for_a_plain_config(tmp_path, monkeypa
 
 # --- spec 014: the same plan on Harbor podman -----------------------------------------
 
-def _plan_config(tmp_path, base_url, *, judge=None, api_key_env=None):
+def _plan_config(tmp_path, base_url, *, judge=None, api_key_env=None, guardrail=False):
     raw = yaml.safe_load((tmp_path / "eval.yaml").read_text())
     raw["runner"] = {"type": "claude-code"}
     raw["models"] = {"skill": "openrouter:/z-ai/glm-5.2:exacto",
@@ -670,6 +670,9 @@ def _plan_config(tmp_path, base_url, *, judge=None, api_key_env=None):
                          "models": {"z-ai/glm-5.2": {"order": ["novita"], "allow_fallbacks": False}}}}}}
     if api_key_env:
         raw["models"]["providers"]["openrouter"]["api_key_env"] = api_key_env
+    if guardrail:
+        raw["models"]["providers"]["openrouter"]["routing"]["enforcement"] = "key-guardrail"
+        raw["models"]["providers"]["openrouter"]["budget"] = {"run_usd": 0.5}
     if judge:
         raw["models"]["judge"] = judge
         raw["judges"] = [{"name": "rfe_quality", "prompt": "score it", "model": judge}]
@@ -691,13 +694,14 @@ class _FastSession:
 
 
 def _harbor_plan_run(tmp_path, monkeypatch, *, judge=None, env="podman", returncode=17, fake_env=None,
-                     api_key_env=None):
-    from openrouter_fakes import FAKE_KEY, FakeOpenRouter
+                     api_key_env=None, guardrail=False):
+    from openrouter_fakes import FAKE_KEY, FAKE_MGMT_KEY, FakeOpenRouter, quiet_atexit
 
     _config(tmp_path)
     fake = FakeOpenRouter()
     base = fake.start()
-    config_path = _plan_config(tmp_path, base, judge=judge, api_key_env=api_key_env)
+    config_path = _plan_config(tmp_path, base, judge=judge, api_key_env=api_key_env, guardrail=guardrail)
+    quiet_atexit(monkeypatch)
     tasks_dir = tmp_path / "tasks"
     _write_pregenerated_task(tasks_dir, judge_mode="deterministic-only" if judge is None else "full",
                              judges=("files_exist",) if judge is None else ("rfe_quality",))
@@ -720,7 +724,7 @@ def _harbor_plan_run(tmp_path, monkeypatch, *, judge=None, env="podman", returnc
 
     monkeypatch.setattr(run_mod.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(run_mod, "SESSION_FACTORY", _FastSession)
-    for k, v in {"OPENROUTER_API_KEY": FAKE_KEY, "OPENROUTER_MANAGEMENT_KEY": "sk-or-mgmt",
+    for k, v in {"OPENROUTER_API_KEY": FAKE_KEY, "OPENROUTER_MANAGEMENT_KEY": FAKE_MGMT_KEY,
                  **({api_key_env: FAKE_KEY} if api_key_env else {}),
                  "CLAUDE_CODE_USE_VERTEX": "1", "ANTHROPIC_VERTEX_PROJECT_ID": "p", "CLOUD_ML_REGION": "r",
                  "ANTHROPIC_API_KEY": "sk-ant-host", "ANTHROPIC_AUTH_TOKEN": "host-tok",
@@ -779,6 +783,23 @@ def test_harbor_custom_key_name_keeps_the_default_out_and_forwards_by_name(tmp_p
     assert env["MY_OR_KEY"] == FAKE_KEY and "OPENROUTER_API_KEY" not in env
     assert env["AGENT_EVAL_PODMAN_PLAN_FORWARD"] == "MY_OR_KEY"
     assert "OPENROUTER_API_KEY" in env["AGENT_EVAL_PODMAN_PLAN_EXCLUDE"]
+
+
+def test_harbor_key_guardrail_carries_the_per_run_key(tmp_path, monkeypatch):
+    from openrouter_fakes import FAKE_KEY, FAKE_MGMT_KEY
+
+    result, captured, fake, _ = _harbor_plan_run(tmp_path, monkeypatch, guardrail=True)
+    assert result == 17
+    command, env = captured["command"], captured["env"]
+    per_run_key = next(iter(fake.issued.values()))["key"]
+    carrier = next(command[i + 1] for i, a in enumerate(command) if a == "--agent-env"
+                   and command[i + 1].startswith("ANTHROPIC_AUTH_TOKEN="))
+    assert env[carrier.split("${")[1].rstrip("}")] == per_run_key       # the literal per-run key, not $OPENROUTER_API_KEY
+    assert FAKE_KEY not in env.values() and FAKE_MGMT_KEY not in env.values()
+    assert "OPENROUTER_MANAGEMENT_KEY" not in env
+    assert fake.deletes == list(fake.issued)                             # revoked in the finally
+    record = json.loads((tmp_path / "out" / "provider" / "key.json").read_text())
+    assert record["revoked_at"] and per_run_key not in json.dumps(record)
 
 
 def test_harbor_plan_refuses_kubernetes_for_now(tmp_path, monkeypatch):

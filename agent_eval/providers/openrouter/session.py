@@ -25,6 +25,7 @@ from agent_eval.providers.openrouter.generation import (
     FIRST_POLL_S, GIVE_UP_S, KEY_USAGE_MAX_S, KEY_USAGE_POLL_S, KEY_USAGE_SETTLE_S, POLL_S,
     Backfill, KeyUsageDelta, is_generation_id, read_key_usage, read_key_usage_settled)
 from agent_eval.providers.openrouter.http import OpenRouterHTTPError, get_json
+from agent_eval.providers.openrouter.keys import revoke_plan_key, write_key_record
 from agent_eval.providers.openrouter.preflight import table_sha
 from agent_eval.providers.reconcile import reconcile_run_dir
 
@@ -127,6 +128,8 @@ class ProviderSession:
     # -- lifecycle ---------------------------------------------------------------
 
     def start(self) -> "ProviderSession":
+        if getattr(self.plan, "provisioned", None) is not None:
+            write_key_record(self.run_dir, self.plan.provisioned)      # hash, limit, providers — never the key
         try:
             self.key_usage_before = read_key_usage(self._fetch_key, base_url=self.plan.base_url)
         except OpenRouterHTTPError as exc:
@@ -171,28 +174,44 @@ class ProviderSession:
                 _log(f"key-usage read failed at run end ({exc})")
         return self.key_usage
 
-    def reconcile_run(self, *, allow_estimate: bool = False) -> Optional[dict]:
+    def reconcile_run(self, *, allow_estimate: bool = False, warnings=None) -> Optional[dict]:
         """The final reconcile pass over the run dir (``reconcile_run_dir``)
         with this session's ledger, catalog and key-usage delta. Returns the
         run payload, or None when no run-level file exists yet."""
         self.reconciled = True
         return reconcile_run_dir(self.run_dir, plan=self.plan, ledger=self.ledger,
                                  key_usage=self.key_usage, catalog=self.catalog,
-                                 allow_estimate=allow_estimate)
+                                 allow_estimate=allow_estimate, warnings=warnings)
 
     def close(self) -> None:
         """The host's ``finally``: nothing left to do after ``finish()`` +
         ``reconcile_run()``; on a crash path it performs both (a second
-        Ctrl-C skips the key-usage settle)."""
+        Ctrl-C skips the key-usage settle). At ``key-guardrail`` the per-run
+        key is revoked last, on every path."""
         if self.closed:
             return
         self.closed = True
         try:
-            if not self.finished:
-                self.finish()
-            if not self.reconciled:
-                self.reconcile_run()
-        except KeyboardInterrupt:
-            self.backfill.close(retry=False)
-            _log("interrupted; key-usage settle skipped (rows already written are kept)")
+            try:
+                if not self.finished:
+                    self.finish()
+                if not self.reconciled:
+                    self.reconcile_run()
+            except KeyboardInterrupt:
+                self.backfill.close(retry=False)
+                _log("interrupted; key-usage settle skipped (rows already written are kept)")
+        finally:
+            self._revoke()
+
+    def _revoke(self) -> None:
+        pk = getattr(self.plan, "provisioned", None)
+        if pk is None or pk.revoked_at:
+            return
+        if not revoke_plan_key(self.plan, run_dir=self.run_dir):
+            warning = (f"per-run key {pk.hash} could not be revoked ({pk.revoke_error}); retry with "
+                       f"`python3 -m agent_eval.providers.openrouter.keys revoke {self.run_dir}`")
+            try:
+                self.reconcile_run(warnings=[warning])
+            except Exception as exc:                        # noqa: BLE001 — the ERROR line is already out
+                _log(f"could not record the revoke failure in run_result.json: {exc}")
 

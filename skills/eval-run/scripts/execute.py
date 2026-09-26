@@ -748,7 +748,9 @@ def _build_eval_params(args, config, skill_args, max_budget, timeout_s, effort=N
         cap = (round(max_budget * float(plan.cli_budget_inflation), 6)
                if isinstance(max_budget, (int, float)) and max_budget > 0 else None)
         params["budget"] = {"cli_cap_usd": cap, "invocation_usd": max_budget,
-                            "run_usd": plan.budget_run_usd, "enforcement": "cli-estimate"}
+                            "run_usd": plan.budget_run_usd,
+                            "enforcement": "key-guardrail" if plan.enforcement == "key-guardrail"
+                            else "cli-estimate"}
     return params
 
 
@@ -906,12 +908,14 @@ def _start_provider_session(plan, config, output_dir, parallelism):
     session is attached to the plan so ``plan.close()`` reaches it."""
     from agent_eval.config import OpenRouterConfig
     from agent_eval.providers.base import ConfigError
+    from agent_eval.providers.openrouter.plan import judge_routing_keys
     from agent_eval.providers.openrouter.preflight import run_preflight
     from agent_eval.providers.openrouter.session import ProviderSession
 
     orc = getattr(getattr(config.models, "providers", None), "openrouter", None) or OpenRouterConfig()
     try:
-        pre = run_preflight(plan, level=orc.preflight, run_dir=output_dir)
+        pre = run_preflight(plan, level=orc.preflight, run_dir=output_dir,
+                            judges=judge_routing_keys(config))
     except ConfigError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(2)
@@ -922,8 +926,9 @@ def _start_provider_session(plan, config, output_dir, parallelism):
     plan.attach(session)
     set_provider_plan(plan, session=session)
     degraded = f" (degraded: {pre.degraded_reason})" if pre.degraded_reason else ""
+    scope = "per-run" if plan.key_scope == "per-run" else "operator"
     print(f"Provider: openrouter direct | model: {plan.skill.id} | enforcement: {plan.enforcement} | "
-          f"preflight: {orc.preflight}{degraded} | key exposed to agent: operator key "
+          f"preflight: {orc.preflight}{degraded} | key exposed to agent: {scope} key "
           f"sha256:{plan.key_hash} (enforcement: {plan.enforcement})", file=sys.stderr)
     return session
 

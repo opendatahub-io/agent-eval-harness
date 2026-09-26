@@ -199,6 +199,24 @@ chain resolved (root first), every list item annotated with `# from: <file>`,
 and `# !replace from: <file>` on a list a profile replaced. Exit `1` with the
 loader's message on a broken chain (missing base, cycle, absolute path).
 
+### `agent_eval.providers.openrouter.*` — provider maintenance
+
+OpenRouter runs (spec 014) have three maintenance entry points; none of them spends
+on the agent path, and every key is read from the environment, never from a flag:
+
+```bash
+# the run's preflight without a run: catalog, pins, key, eligibility; writes routing_snapshot.json
+python3 -m agent_eval.providers.openrouter.preflight --config eval.yaml [--model openrouter:/…] [--run-dir DIR]
+
+# re-query the run's unpriced generations and re-reconcile every run_result.json
+python3 -m agent_eval.providers.openrouter.backfill <run_dir> [--config eval.yaml] [--base-url URL]
+
+# retry the revocation of a key-guardrail per-run key recorded in <run_dir>/provider/key.json
+python3 -m agent_eval.providers.openrouter.keys revoke <run_dir>
+```
+
+See [models → providers](config/models.md#how-the-agent-reaches-openrouter).
+
 ## `state.py` — the context-safe state store
 
 `agent_eval/state.py` is a small YAML/JSON key-value utility the skills use to persist
