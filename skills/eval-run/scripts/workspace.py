@@ -738,7 +738,10 @@ def _carry_over_hooks(settings, config):
     for event, groups in proj_hooks.items():
         if not isinstance(groups, list):
             continue
-        carried = [copy.deepcopy(g) for g in groups if isinstance(g, dict)]
+        # A group is a mapping whose ``hooks`` member is the handler list;
+        # anything else would serialize into settings the CLI rejects.
+        carried = [copy.deepcopy(g) for g in groups
+                   if isinstance(g, dict) and isinstance(g.get("hooks"), list)]
         if carried:
             hooks.setdefault(event, []).extend(carried)
 

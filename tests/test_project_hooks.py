@@ -202,7 +202,13 @@ def test_malformed_project_settings_are_ignored(tmp_path, monkeypatch, text):
 def test_malformed_events_are_skipped_individually(tmp_path, monkeypatch):
     """A bad event or group does not take the well-formed ones down with it."""
     project = _project(tmp_path, monkeypatch, {"hooks": {
-        "SessionStart": [COMPACT_GROUP, "not-a-group", 3],
+        "SessionStart": [
+            COMPACT_GROUP,
+            "not-a-group",
+            3,
+            {"matcher": "startup", "hooks": "not-a-list"},   # handlers must be a list
+            {"matcher": "resume"},                           # no handlers at all
+        ],
         "Stop": {"hooks": []},                        # event is not a list
         "Notification": [],
     }})
