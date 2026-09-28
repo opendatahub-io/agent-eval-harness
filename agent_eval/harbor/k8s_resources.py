@@ -214,25 +214,65 @@ def create_env_secret(
     _apply_secret(core, name, namespace, data)
 
 
+OWNER_LABEL = "agent-eval.opendatahub.io/owner"
+
+
 def create_openrouter_secret(api_key: str, name: str, namespace: str,
-                             key: str = "OPENROUTER_API_KEY") -> None:
+                             key: str = "OPENROUTER_API_KEY", owner: str | None = None) -> str:
     """Create the per-run Secret holding only the OpenRouter inference key
     (spec 014, ``key-guardrail`` on Kubernetes). The pod maps it to
     ``ANTHROPIC_AUTH_TOKEN`` through ``valueFrom.secretKeyRef``; the value is
-    never logged."""
+    never logged. **Create only**: a name clash (409) is an error, never a
+    replacement of a Secret another run may still be using. ``owner`` (a
+    per-invocation token) is stamped as a label so the matching delete can
+    prove the Secret is this run's. Returns the Secret's UID."""
     core = _ensure_client()
-    _apply_secret(core, name, namespace, {key: api_key.encode()})
+    labels = {**_LABELS, **({OWNER_LABEL: owner} if owner else {})}
+    secret = k8s_client.V1Secret(
+        metadata=k8s_client.V1ObjectMeta(name=name, namespace=namespace, labels=labels),
+        data={key: base64.b64encode(api_key.encode()).decode()},
+        type="Opaque",
+    )
+    try:
+        created = core.create_namespaced_secret(namespace, secret)
+    except ApiException as exc:
+        if getattr(exc, "status", None) == 409:
+            raise RuntimeError(
+                f"Secret {namespace}/{name} already exists — a previous run with the same run id "
+                "did not clean up (or is still running). Delete it, or use another --output "
+                "name, before retrying") from None
+        raise
+    log.info("Created Secret %s/%s (per-run OpenRouter key)", namespace, name)
+    uid = getattr(getattr(created, "metadata", None), "uid", None)
+    return uid or ""
 
 
-def delete_openrouter_secret(name: str, namespace: str) -> bool:
-    """Delete the per-run Secret; a missing Secret (404) is not an error —
-    the delete runs from ``plan.close()`` on every exit path, including a
-    startup that failed before the Secret existed. Returns True when deleted."""
+def delete_openrouter_secret(name: str, namespace: str, *, owner: str | None = None,
+                             uid: str | None = None) -> bool:
+    """Delete the per-run Secret — only when it is this run's. With ``owner``
+    the Secret is read first and deleted only if its owner label matches; the
+    delete carries the observed UID as a precondition, so a Secret re-created
+    under the same name by another run is never removed. A missing Secret
+    (404) or a failed precondition (409/412) is not an error — the delete runs
+    from the session's cleanups on every exit path, including a startup that
+    failed before the Secret existed. Returns True when deleted."""
     core = _ensure_client()
     try:
-        core.delete_namespaced_secret(name, namespace)
+        if owner is not None or uid is None:
+            current = core.read_namespaced_secret(name, namespace)
+            labels = getattr(getattr(current, "metadata", None), "labels", None) or {}
+            if owner is not None and labels.get(OWNER_LABEL) != owner:
+                log.warning("Secret %s/%s is not this run's (owner label mismatch); left in place",
+                            namespace, name)
+                return False
+            uid = getattr(getattr(current, "metadata", None), "uid", None) or uid
+        body = k8s_client.V1DeleteOptions(preconditions=k8s_client.V1Preconditions(uid=uid)) if uid else None
+        if body is not None:
+            core.delete_namespaced_secret(name, namespace, body=body)
+        else:
+            core.delete_namespaced_secret(name, namespace)
     except ApiException as exc:
-        if getattr(exc, "status", None) == 404:
+        if getattr(exc, "status", None) in (404, 409, 412):
             return False
         raise
     log.info("Deleted Secret %s/%s", namespace, name)

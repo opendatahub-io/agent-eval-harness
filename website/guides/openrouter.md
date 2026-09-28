@@ -156,7 +156,8 @@ bounds what that exposure is worth.
   Secret cannot re-route). The token is never a `--agent-env` carrier there (the K8s exec
   prefix would inline it into every command). At `key-guardrail` the harness creates the
   per-run Secret `agent-eval-<run_id>-openrouter` before `harbor run` and deletes it with
-  the key — this needs `create`, `update` and `delete` on `secrets` in the namespace. The
+  the key — this needs `create`, `get` and `delete` on `secrets` in the namespace (a
+  name clash is an error, never a replacement). The
   credentials Secret stays attached for whatever else it holds, but the provider key
   names are blanked in the pod (explicit empty `env[]` entries win over `envFrom`), so at
   `key-guardrail` the agent sees only the per-run key; the operator key stays visible

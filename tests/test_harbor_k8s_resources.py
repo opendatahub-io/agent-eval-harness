@@ -106,36 +106,63 @@ def test_cleanup():
     core.delete_namespaced_config_map.assert_called_once_with("cm1", "test-ns")
 
 
-def test_create_openrouter_secret_holds_only_the_key():
+def test_create_openrouter_secret_holds_only_the_key_and_never_replaces():
     import base64
 
+    import pytest
+    from kubernetes.client.rest import ApiException
+
     core = _mock_core()
+    core.create_namespaced_secret.return_value = MagicMock()
+    core.create_namespaced_secret.return_value.metadata.uid = "uid-1"
     with patch.object(kr, "_ensure_client", return_value=core):
-        kr.create_openrouter_secret("sk-or-run-1", "agent-eval-r1-openrouter", "test-ns")
+        uid = kr.create_openrouter_secret("sk-or-run-1", "agent-eval-r1-openrouter", "test-ns", owner="tok")
+    assert uid == "uid-1"
     namespace, secret = core.create_namespaced_secret.call_args[0]
     assert namespace == "test-ns" and secret.metadata.name == "agent-eval-r1-openrouter"
-    assert secret.metadata.labels == {"app.kubernetes.io/managed-by": "agent-eval-harness"}
+    assert secret.metadata.labels == {"app.kubernetes.io/managed-by": "agent-eval-harness",
+                                      kr.OWNER_LABEL: "tok"}
     assert list(secret.data) == ["OPENROUTER_API_KEY"]
     assert base64.b64decode(secret.data["OPENROUTER_API_KEY"]) == b"sk-or-run-1"
     with patch.object(kr, "_ensure_client", return_value=core):
         kr.create_openrouter_secret("sk-or-run-1", "n", "test-ns", key="MY_OR_KEY")
     assert list(core.create_namespaced_secret.call_args[0][1].data) == ["MY_OR_KEY"]
+    # a name clash is an error, never a replace of another run's Secret
+    core.create_namespaced_secret.side_effect = ApiException(status=409)
+    with patch.object(kr, "_ensure_client", return_value=core), pytest.raises(RuntimeError, match="already exists"):
+        kr.create_openrouter_secret("sk-or-run-1", "agent-eval-r1-openrouter", "test-ns")
+    core.replace_namespaced_secret.assert_not_called()
 
 
-def test_delete_openrouter_secret_tolerates_a_missing_secret_only():
+def test_delete_openrouter_secret_checks_the_owner_and_the_uid():
     import pytest
     from kubernetes.client.rest import ApiException
 
     core = _mock_core()
+    core.read_namespaced_secret.return_value.metadata.labels = {kr.OWNER_LABEL: "tok"}
+    core.read_namespaced_secret.return_value.metadata.uid = "uid-1"
     with patch.object(kr, "_ensure_client", return_value=core):
-        assert kr.delete_openrouter_secret("agent-eval-r1-openrouter", "test-ns") is True
-    core.delete_namespaced_secret.assert_called_once_with("agent-eval-r1-openrouter", "test-ns")
-    core.delete_namespaced_secret.side_effect = ApiException(status=404)
+        assert kr.delete_openrouter_secret("agent-eval-r1-openrouter", "test-ns", owner="tok") is True
+    (name, ns), kwargs = core.delete_namespaced_secret.call_args
+    assert (name, ns) == ("agent-eval-r1-openrouter", "test-ns") and kwargs["body"].preconditions.uid == "uid-1"
+    # another run's Secret under the same name: left in place
+    core.delete_namespaced_secret.reset_mock()
+    core.read_namespaced_secret.return_value.metadata.labels = {kr.OWNER_LABEL: "other"}
     with patch.object(kr, "_ensure_client", return_value=core):
-        assert kr.delete_openrouter_secret("agent-eval-r1-openrouter", "test-ns") is False
+        assert kr.delete_openrouter_secret("agent-eval-r1-openrouter", "test-ns", owner="tok") is False
+    core.delete_namespaced_secret.assert_not_called()
+    # missing (404) and precondition failures (409/412) are not errors; anything else is
+    core.read_namespaced_secret.side_effect = ApiException(status=404)
+    with patch.object(kr, "_ensure_client", return_value=core):
+        assert kr.delete_openrouter_secret("agent-eval-r1-openrouter", "test-ns", owner="tok") is False
+    core.read_namespaced_secret.side_effect = None
+    core.read_namespaced_secret.return_value.metadata.labels = {kr.OWNER_LABEL: "tok"}
+    core.delete_namespaced_secret.side_effect = ApiException(status=412)
+    with patch.object(kr, "_ensure_client", return_value=core):
+        assert kr.delete_openrouter_secret("agent-eval-r1-openrouter", "test-ns", owner="tok") is False
     core.delete_namespaced_secret.side_effect = ApiException(status=403)
     with patch.object(kr, "_ensure_client", return_value=core), pytest.raises(ApiException):
-        kr.delete_openrouter_secret("agent-eval-r1-openrouter", "test-ns")
+        kr.delete_openrouter_secret("agent-eval-r1-openrouter", "test-ns", owner="tok")
 
 
 def test_default_namespace_prefers_the_env_var(monkeypatch):

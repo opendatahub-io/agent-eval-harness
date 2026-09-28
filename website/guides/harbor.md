@@ -227,7 +227,7 @@ Unlike Podman, nothing is forwarded from your host. Credentials come from the cl
 
     At `enforcement: key-guardrail` the harness creates the per-run Secret
     `agent-eval-<run_id>-openrouter` before `harbor run` and deletes it with the key —
-    the harness's identity needs `create`, `update` and `delete` on `secrets` in the
+    the harness's identity needs `create`, `get` and `delete` on `secrets` in the
     namespace, and the host needs `OPENROUTER_MANAGEMENT_KEY` (the credentials Secret is
     then needed only for an in-container `openrouter:/` judge). See the
     [OpenRouter guide](openrouter.md#runners).

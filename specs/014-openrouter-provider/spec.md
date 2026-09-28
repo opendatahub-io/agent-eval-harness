@@ -2431,8 +2431,9 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
   `message.id`s (probe #25 UNVERIFIED, PR-5 gate); if it strips them, per-trial cost is
   `null`, the run has key-usage cost only, and the routing audit is `audit_complete: false`
   with every request unattributed — the fallback is honest, not silent.
-- **Kubernetes** (PR-7): `key-guardrail` needs `create`/`update`/`delete` on `secrets` in the
-  namespace for the per-run Secret, which is deleted in the same `finally` as the key
+- **Kubernetes** (PR-7): `key-guardrail` needs `create`/`get`/`delete` on `secrets` in the
+  namespace for the per-run Secret (create-only: a name clash fails the run; the delete
+  checks an owner label and the observed UID), which is deleted in the same `finally` as the key
   revoke whether or not the revoke succeeds; a Secret is left behind only when its own
   delete fails or the harness dies before cleanup (`kubectl delete secret
   agent-eval-<run_id>-openrouter`; the key itself is bounded by `limit_usd`). The

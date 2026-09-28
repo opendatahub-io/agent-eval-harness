@@ -864,6 +864,12 @@ def test_harbor_kubernetes_key_guardrail_without_a_judge_needs_no_credentials_se
 
     monkeypatch.delenv("AGENT_EVAL_K8S_CREDENTIALS_SECRET", raising=False)
     core = MagicMock()
+
+    def created(namespace, secret):
+        core.read_namespaced_secret.return_value.metadata.labels = dict(secret.metadata.labels)
+        return MagicMock()
+
+    core.create_namespaced_secret.side_effect = created
     monkeypatch.setattr(kr, "_ensure_client", lambda: core)
     result, captured, fake, _ = _harbor_plan_run(tmp_path, monkeypatch, env="kubernetes", guardrail=True)
     assert result == 17 and captured["env"][k8s_plan.TOKEN_SECRET_VAR] == "agent-eval-out-openrouter"
@@ -884,6 +890,14 @@ def test_harbor_kubernetes_key_guardrail_creates_and_deletes_the_per_run_secret(
     from agent_eval.harbor import k8s_plan, k8s_resources as kr
 
     core = MagicMock()
+
+    def created(namespace, secret):
+        # the API's view of the Secret once created: what the cleanup reads back
+        core.read_namespaced_secret.return_value.metadata.labels = dict(secret.metadata.labels)
+        core.read_namespaced_secret.return_value.metadata.uid = "uid-out"
+        return core.read_namespaced_secret.return_value
+
+    core.create_namespaced_secret.side_effect = created
     monkeypatch.setattr(kr, "_ensure_client", lambda: core)
     result, captured, fake, _ = _harbor_plan_run(
         tmp_path, monkeypatch, env="kubernetes", guardrail=True,
@@ -893,14 +907,40 @@ def test_harbor_kubernetes_key_guardrail_creates_and_deletes_the_per_run_secret(
     namespace, secret = core.create_namespaced_secret.call_args[0]
     assert namespace == "team-a" and secret.metadata.name == "agent-eval-out-openrouter"
     assert secret.metadata.labels["app.kubernetes.io/managed-by"] == "agent-eval-harness"
+    assert secret.metadata.labels[kr.OWNER_LABEL]                        # the per-invocation owner token
     assert base64.b64decode(secret.data["OPENROUTER_API_KEY"]).decode() == per_run_key
     env = captured["env"]
     assert env[k8s_plan.TOKEN_SECRET_VAR] == "agent-eval-out-openrouter"
     assert "OPENROUTER_API_KEY" in env[k8s_plan.MASK_VAR]                # the operator key is blanked in the pod
     assert per_run_key not in " ".join(env.values()) and per_run_key not in " ".join(captured["command"])
-    # the finally: key revoked, Secret deleted (positional (name, namespace))
+    # the finally: key revoked, Secret deleted (name, namespace, UID precondition)
     assert fake.deletes == list(fake.issued)
-    core.delete_namespaced_secret.assert_called_once_with("agent-eval-out-openrouter", "team-a")
+    (name, ns), kwargs = core.delete_namespaced_secret.call_args
+    assert (name, ns) == ("agent-eval-out-openrouter", "team-a")
+    assert kwargs["body"].preconditions.uid == "uid-out"                  # read → owner match → UID precondition
+
+
+def test_harbor_kubernetes_secret_name_clash_fails_the_run_and_revokes(tmp_path, monkeypatch):
+    """A same-named Secret from another run is never replaced: the run fails
+    before `harbor run`, the provisioned key is revoked, and the cleanup
+    (registered before the create) leaves the foreign Secret alone."""
+    from unittest.mock import MagicMock
+
+    from kubernetes.client.rest import ApiException
+
+    from agent_eval.harbor import k8s_resources as kr
+
+    core = MagicMock()
+    core.create_namespaced_secret.side_effect = ApiException(status=409)
+    core.read_namespaced_secret.return_value.metadata.labels = {kr.OWNER_LABEL: "someone-else"}
+    monkeypatch.setattr(kr, "_ensure_client", lambda: core)
+    with pytest.raises(RuntimeError, match="already exists") as exc:
+        _harbor_plan_run(tmp_path, monkeypatch, env="kubernetes", guardrail=True,
+                         fake_env={"AGENT_EVAL_K8S_CREDENTIALS_SECRET": "model-keys"})
+    fake = exc.value.fake
+    assert fake.deletes == list(fake.issued)                             # key revoked in the finally
+    core.replace_namespaced_secret.assert_not_called()
+    core.delete_namespaced_secret.assert_not_called()                    # not ours: left in place
 
 
 def test_harbor_plan_refuses_a_custom_environment_import_path(tmp_path, monkeypatch):

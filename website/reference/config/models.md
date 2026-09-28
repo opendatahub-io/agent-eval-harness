@@ -232,8 +232,8 @@ directly (`/v1/messages`):
   token is never a `--agent-env` carrier there (the K8s exec prefix would inline it), and
   the provider key names the Secret may hold are blanked in the pod so the agent sees only
   its own token. At `key-guardrail` a per-run Secret `agent-eval-<run_id>-openrouter` is
-  created before the run and deleted with the key (RBAC: `create`, `update`, `delete` on
-  `secrets`). On the host, `audit` needs `OPENROUTER_API_KEY` exported (preflight,
+  created before the run and deleted with the key (RBAC: `create`, `get`, `delete` on
+  `secrets`; a name clash is an error, never a replacement). On the host, `audit` needs `OPENROUTER_API_KEY` exported (preflight,
   backfill, key usage); `key-guardrail` needs `OPENROUTER_MANAGEMENT_KEY` instead.
 - **EvalHub** — the plan is built inside the job pod from the JobSpec model and the pod's
   own environment (`OPENROUTER_API_KEY`, plus `OPENROUTER_MANAGEMENT_KEY` at

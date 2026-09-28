@@ -63,7 +63,7 @@ What's inside:
 
 | Dependency | Why |
 |---|---|
-| `eval-hub-sdk[adapter]>=0.1,<1.0` | The `FrameworkAdapter` contract (JobSpec → JobResults) |
+| `eval-hub-sdk[adapter]>=0.1.7,<1.0` | The `FrameworkAdapter` contract (JobSpec → JobResults); 0.1.7 is the first release whose callbacks forward `evaluation_metadata["artifacts"]` (the OpenRouter provenance channel) |
 | `boto3>=1.34,<2.0` | S3 dataset download for EvalHub datasets |
 | `mlflow-skinny>=3.5` | Result logging |
 

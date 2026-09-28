@@ -353,15 +353,23 @@ def _k8s_plan_child_env(plan, session, output_dir: Path, *, keep_api_key: bool =
            k8s_plan.TOKEN_SECRET_KEY_VAR: plan.key_env,
            k8s_plan.MASK_VAR: ",".join(sorted(masked))}
     if plan.key_scope == "per-run":
+        import secrets as _secrets
+
         from agent_eval.harbor import k8s_resources
 
         namespace = k8s_resources.default_namespace()
         name = k8s_plan.per_run_secret_name(output_dir.name)
-        k8s_resources.create_openrouter_secret(plan.key, name, namespace, key=plan.key_env)
+        owner = _secrets.token_hex(8)
+        # Registered BEFORE the create so an interruption in between cannot
+        # orphan the Secret; the owner label + UID precondition make the delete
+        # touch only what this invocation created (never a same-named Secret
+        # of another run).
+        if session is not None:
+            session.cleanups.append(
+                lambda: k8s_resources.delete_openrouter_secret(name, namespace, owner=owner))
+        k8s_resources.create_openrouter_secret(plan.key, name, namespace, key=plan.key_env, owner=owner)
         print(f"provider: per-run Secret {namespace}/{name} created (deleted with the key)",
               file=sys.stderr)
-        if session is not None:
-            session.cleanups.append(lambda: k8s_resources.delete_openrouter_secret(name, namespace))
         env[k8s_plan.TOKEN_SECRET_VAR] = name
     else:
         env[k8s_plan.TOKEN_SECRET_VAR] = os.environ["AGENT_EVAL_K8S_CREDENTIALS_SECRET"]
