@@ -63,7 +63,21 @@ def test_overlay_carrier_and_package_agree(tmp_path, monkeypatch):
     assert {a.split("=")[0] for a in args[1::2]} == set(resolved)
     assert FAKE_KEY in child_env.values()
 
-    # 3. the task package: no `$VAR`, no managed key, nothing provider-related
+    # 3. the Kubernetes pod: the same block as plain env[] (the plan wins over a stale
+    #    envFrom value), the token only as a secretKeyRef — never a literal
+    from agent_eval.harbor import k8s_plan
+
+    k8s_plan_obj = make_plan(runner="harbor-k8s")
+    environ = {k8s_plan.PLAN_ENV_VAR: json.dumps(k8s_plan_obj.agent_env()),
+               k8s_plan.TOKEN_SECRET_VAR: "model-keys"}
+    pod = k8s_plan.pod_env({"ANTHROPIC_BASE_URL": "https://stale", "ANTHROPIC_AUTH_TOKEN": "stale"}, environ)
+    assert pod == {k: v for k, v in block.items() if k != "ANTHROPIC_AUTH_TOKEN"}
+    assert set(pod) == set(env_managed := {k for k in block}) - {"ANTHROPIC_AUTH_TOKEN"} and env_managed
+    assert k8s_plan.token_secret_ref(environ)["valueFrom"]["secretKeyRef"] == {"name": "model-keys",
+                                                                              "key": "OPENROUTER_API_KEY"}
+    assert FAKE_KEY not in json.dumps(pod)
+
+    # 4. the task package: no `$VAR`, no managed key, nothing provider-related
     pkg = tmp_path / "pkg"
     pkg.mkdir()
     generate_interception(pkg, config, "python3 /workspace/hooks/tools.py")

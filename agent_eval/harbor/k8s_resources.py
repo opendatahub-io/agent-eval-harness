@@ -12,6 +12,9 @@ The resources created:
   and EvalHub adapter find the config)
 - **Credentials Secret** — GCP service-account key or API keys (mounted
   read-only for model auth)
+- **Per-run OpenRouter Secret** — at ``enforcement: key-guardrail`` (spec 014),
+  ``agent-eval-<run_id>-openrouter`` holding only the per-run inference key,
+  created before ``harbor run`` and deleted with the key revoke
 
 All resources are labeled ``app.kubernetes.io/managed-by: agent-eval-harness``
 for easy cleanup.
@@ -209,6 +212,57 @@ def create_env_secret(
     core = _ensure_client()
     data = {k: v.encode() for k, v in env_vars.items()}
     _apply_secret(core, name, namespace, data)
+
+
+def create_openrouter_secret(api_key: str, name: str, namespace: str,
+                             key: str = "OPENROUTER_API_KEY") -> None:
+    """Create the per-run Secret holding only the OpenRouter inference key
+    (spec 014, ``key-guardrail`` on Kubernetes). The pod maps it to
+    ``ANTHROPIC_AUTH_TOKEN`` through ``valueFrom.secretKeyRef``; the value is
+    never logged."""
+    core = _ensure_client()
+    _apply_secret(core, name, namespace, {key: api_key.encode()})
+
+
+def delete_openrouter_secret(name: str, namespace: str) -> bool:
+    """Delete the per-run Secret; a missing Secret (404) is not an error —
+    the delete runs from ``plan.close()`` on every exit path, including a
+    startup that failed before the Secret existed. Returns True when deleted."""
+    core = _ensure_client()
+    try:
+        core.delete_namespaced_secret(name, namespace)
+    except ApiException as exc:
+        if getattr(exc, "status", None) == 404:
+            return False
+        raise
+    log.info("Deleted Secret %s/%s", namespace, name)
+    return True
+
+
+def default_namespace() -> str:
+    """The namespace the Harbor environment will use: ``AGENT_EVAL_K8S_NAMESPACE``,
+    else the in-cluster service-account namespace, else the active kubeconfig
+    context, else ``default`` (mirrors ``kubernetes._default_namespace``)."""
+    import os
+
+    ns = os.environ.get("AGENT_EVAL_K8S_NAMESPACE")
+    if ns:
+        return ns
+    sa_ns = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+    if sa_ns.is_file():
+        try:
+            return sa_ns.read_text().strip() or "default"
+        except OSError:
+            pass
+    if _K8S_AVAILABLE:
+        try:
+            _, active = k8s_config.list_kube_config_contexts()
+            ns = (active or {}).get("context", {}).get("namespace")
+            if ns:
+                return ns
+        except Exception:
+            pass
+    return "default"
 
 
 def cleanup(namespace: str, name_prefix: str | None = None) -> int:

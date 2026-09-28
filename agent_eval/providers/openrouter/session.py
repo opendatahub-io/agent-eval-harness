@@ -117,6 +117,7 @@ class ProviderSession:
         self._clock, self._sleep = clock, sleep
         self.key_usage_before: Optional[float] = None
         self.key_usage: Optional[KeyUsageDelta] = None
+        self.cleanups: list = []          # host resources tied to the key (e.g. a per-run K8s Secret)
         self.finished = False
         self.reconciled = False
         self.closed = False
@@ -201,7 +202,18 @@ class ProviderSession:
                 self.backfill.close(retry=False)
                 _log("interrupted; key-usage settle skipped (rows already written are kept)")
         finally:
-            self._revoke()
+            try:
+                self._revoke()
+            finally:
+                self._run_cleanups()          # a Ctrl-C during the revoke must not orphan a K8s Secret
+
+    def _run_cleanups(self) -> None:
+        for cleanup in self.cleanups:
+            try:
+                cleanup()
+            except Exception as exc:                        # noqa: BLE001 — every cleanup gets its turn
+                _log(f"cleanup failed: {exc}")
+        self.cleanups = []
 
     def _revoke(self) -> None:
         pk = getattr(self.plan, "provisioned", None)

@@ -816,11 +816,99 @@ def test_harbor_failed_startup_revokes_the_per_run_key(tmp_path, monkeypatch):
     assert len(fake.issued) == 1 and fake.deletes == list(fake.issued)
 
 
-def test_harbor_plan_refuses_kubernetes_for_now(tmp_path, monkeypatch):
+def test_harbor_kubernetes_run_under_a_plan(tmp_path, monkeypatch, capsys):
+    """On Kubernetes the token never travels as a carrier (the K8s exec prefix
+    would inline it): the pod maps it from the credentials Secret, and the
+    plan's non-secret block reaches the pod spec through the child env."""
+    from agent_eval.harbor import k8s_plan
+    from agent_eval.providers.env import MANAGED_ENV_KEYS
+    from openrouter_fakes import FAKE_KEY
+
+    result, captured, fake, base = _harbor_plan_run(
+        tmp_path, monkeypatch, env="kubernetes", fake_env={"AGENT_EVAL_K8S_CREDENTIALS_SECRET": "model-keys"})
+    assert result == 17
+    command, env = captured["command"], captured["env"]
+    assert command[command.index("-m") + 1] == "z-ai/glm-5.2:exacto"
+    assert command[command.index("--environment-import-path") + 1] == run_mod._ENV_IMPORT_PATHS["kubernetes"]
+    carriers = {command[i + 1].split("=")[0] for i, a in enumerate(command) if a == "--agent-env"}
+    assert "ANTHROPIC_AUTH_TOKEN" not in carriers                              # secretKeyRef, not a carrier
+    assert carriers >= MANAGED_ENV_KEYS - {"ANTHROPIC_CUSTOM_HEADERS", "ANTHROPIC_AUTH_TOKEN"}
+    assert FAKE_KEY not in " ".join(command) and FAKE_KEY not in " ".join(env.values())
+    assert env[k8s_plan.TOKEN_SECRET_VAR] == "model-keys" and env[k8s_plan.TOKEN_SECRET_KEY_VAR] == "OPENROUTER_API_KEY"
+    assert env[k8s_plan.MASK_VAR] == "OPENROUTER_API_KEY,OPENROUTER_MANAGEMENT_KEY"   # blanked in the pod
+    block = json.loads(env[k8s_plan.PLAN_ENV_VAR])
+    assert block["ANTHROPIC_BASE_URL"] == base and block["CLAUDE_CODE_USE_VERTEX"] == ""
+    assert block["ANTHROPIC_MODEL"] == "z-ai/glm-5.2:exacto" and "ANTHROPIC_AUTH_TOKEN" not in block
+    assert not (set(env) & MANAGED_ENV_KEYS) and "OPENROUTER_MANAGEMENT_KEY" not in env
+    assert "key exposed to agent: operator key" in capsys.readouterr().err
+    snapshot = json.loads((tmp_path / "out" / "provider" / "routing_snapshot.json").read_text())
+    assert snapshot["key_scope"] == "operator"
+
+
+def test_harbor_kubernetes_needs_the_credentials_secret_at_audit(tmp_path, monkeypatch):
     from agent_eval.providers.base import ConfigError
 
-    with pytest.raises(ConfigError, match="podman"):
+    monkeypatch.delenv("AGENT_EVAL_K8S_CREDENTIALS_SECRET", raising=False)
+    with pytest.raises(ConfigError, match="AGENT_EVAL_K8S_CREDENTIALS_SECRET") as exc:
         _harbor_plan_run(tmp_path, monkeypatch, env="kubernetes")
+    assert "preflight, the backfill and the key-usage reads" in str(exc.value)
+
+
+def test_harbor_kubernetes_key_guardrail_without_a_judge_needs_no_credentials_secret(tmp_path, monkeypatch):
+    """The per-run Secret is the pod's only provider secret then; with an
+    openrouter:/ judge the credentials Secret is required for the verifier."""
+    from unittest.mock import MagicMock
+
+    from agent_eval.harbor import k8s_plan, k8s_resources as kr
+    from agent_eval.providers.base import ConfigError
+
+    monkeypatch.delenv("AGENT_EVAL_K8S_CREDENTIALS_SECRET", raising=False)
+    core = MagicMock()
+    monkeypatch.setattr(kr, "_ensure_client", lambda: core)
+    result, captured, fake, _ = _harbor_plan_run(tmp_path, monkeypatch, env="kubernetes", guardrail=True)
+    assert result == 17 and captured["env"][k8s_plan.TOKEN_SECRET_VAR] == "agent-eval-out-openrouter"
+    assert fake.deletes == list(fake.issued) and core.delete_namespaced_secret.called
+    monkeypatch.delenv("AGENT_EVAL_K8S_CREDENTIALS_SECRET", raising=False)
+    second = tmp_path / "with-judge"
+    second.mkdir()
+    with pytest.raises(ConfigError, match="in-container openrouter:/ judge reads the operator key") as exc:
+        _harbor_plan_run(second, monkeypatch, env="kubernetes", guardrail=True,
+                         judge="openrouter:/z-ai/glm-5.2")
+    assert exc.value.fake.deletes == list(exc.value.fake.issued)      # the provisioned key was revoked
+
+
+def test_harbor_kubernetes_key_guardrail_creates_and_deletes_the_per_run_secret(tmp_path, monkeypatch):
+    import base64
+    from unittest.mock import MagicMock
+
+    from agent_eval.harbor import k8s_plan, k8s_resources as kr
+
+    core = MagicMock()
+    monkeypatch.setattr(kr, "_ensure_client", lambda: core)
+    result, captured, fake, _ = _harbor_plan_run(
+        tmp_path, monkeypatch, env="kubernetes", guardrail=True,
+        fake_env={"AGENT_EVAL_K8S_CREDENTIALS_SECRET": "model-keys", "AGENT_EVAL_K8S_NAMESPACE": "team-a"})
+    assert result == 17
+    per_run_key = next(iter(fake.issued.values()))["key"]
+    namespace, secret = core.create_namespaced_secret.call_args[0]
+    assert namespace == "team-a" and secret.metadata.name == "agent-eval-out-openrouter"
+    assert secret.metadata.labels["app.kubernetes.io/managed-by"] == "agent-eval-harness"
+    assert base64.b64decode(secret.data["OPENROUTER_API_KEY"]).decode() == per_run_key
+    env = captured["env"]
+    assert env[k8s_plan.TOKEN_SECRET_VAR] == "agent-eval-out-openrouter"
+    assert "OPENROUTER_API_KEY" in env[k8s_plan.MASK_VAR]                # the operator key is blanked in the pod
+    assert per_run_key not in " ".join(env.values()) and per_run_key not in " ".join(captured["command"])
+    # the finally: key revoked, Secret deleted (positional (name, namespace))
+    assert fake.deletes == list(fake.issued)
+    core.delete_namespaced_secret.assert_called_once_with("agent-eval-out-openrouter", "team-a")
+
+
+def test_harbor_plan_refuses_a_custom_environment_import_path(tmp_path, monkeypatch):
+    from agent_eval.providers.base import ConfigError
+
+    monkeypatch.setitem(run_mod._ENV_IMPORT_PATHS, "custom", "my.module:Env")
+    with pytest.raises(ConfigError, match="custom --environment-import-path"):
+        _harbor_plan_run(tmp_path, monkeypatch, env="custom")
 
 
 def test_harbor_without_a_plan_forwards_the_host_env_as_before(tmp_path, monkeypatch):

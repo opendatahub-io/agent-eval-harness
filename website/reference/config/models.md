@@ -128,7 +128,9 @@ export EVAL_JUDGE_MODEL=claude-opus-4-6   # last-resort default across runs
 
 ## providers (openrouter)
 
-`models.providers` is the registry behind `<provider>:/<model>` URIs. One
+`models.providers` is the registry behind `<provider>:/<model>` URIs (full
+reference: [models.providers](providers.md); narrative: the
+[OpenRouter guide](../../guides/openrouter.md)). One
 provider kind exists, `openrouter`, and the block is optional — an
 `openrouter:/…` judge works with the defaults and `OPENROUTER_API_KEY`
 exported. A declared block is **inert until a role names it**: the base
@@ -222,7 +224,21 @@ directly (`/v1/messages`):
 - **Harbor podman** (`--runner harbor --env podman`) — the same block travels as
   value-free `--agent-env` carriers; Harbor merges it last into the agent's environment.
   Host Vertex/Bedrock/Anthropic variables are not forwarded into the container while
-  the plan is active. Kubernetes/OpenShift and EvalHub land in a later release.
+  the plan is active.
+- **Harbor Kubernetes / OpenShift** (`--env kubernetes|openshift`) — the credentials
+  Secret named by `AGENT_EVAL_K8S_CREDENTIALS_SECRET` holds `OPENROUTER_API_KEY`; the pod
+  gets `ANTHROPIC_AUTH_TOKEN` from it through `valueFrom.secretKeyRef` and the plan's
+  non-secret block as plain `env[]` entries, which win over the Secret's `envFrom`. The
+  token is never a `--agent-env` carrier there (the K8s exec prefix would inline it), and
+  the provider key names the Secret may hold are blanked in the pod so the agent sees only
+  its own token. At `key-guardrail` a per-run Secret `agent-eval-<run_id>-openrouter` is
+  created before the run and deleted with the key (RBAC: `create`, `update`, `delete` on
+  `secrets`). On the host, `audit` needs `OPENROUTER_API_KEY` exported (preflight,
+  backfill, key usage); `key-guardrail` needs `OPENROUTER_MANAGEMENT_KEY` instead.
+- **EvalHub** — the plan is built inside the job pod from the JobSpec model and the pod's
+  own environment (`OPENROUTER_API_KEY`, plus `OPENROUTER_MANAGEMENT_KEY` at
+  `key-guardrail`); the run is reconciled in the pod and the provenance travels back with
+  the job results into the client's `run_result.json`.
 
 Before any spend, **preflight** (`preflight: strict | warn | off`) checks every routing
 key an agent role uses (skill, subagent, hook, `background_model`) and every

@@ -2431,10 +2431,15 @@ env var. CLI: `--model openrouter:/…`, `--judge-model openrouter:/…`, `--str
   `message.id`s (probe #25 UNVERIFIED, PR-5 gate); if it strips them, per-trial cost is
   `null`, the run has key-usage cost only, and the routing audit is `audit_complete: false`
   with every request unattributed — the fallback is honest, not silent.
-- **Kubernetes** (PR-7): `key-guardrail` needs `create`/`delete` on `secrets` in the
-  namespace for the per-run Secret; a revoke that fails leaves a Secret behind until
-  `agent-eval provider revoke <run_dir>` (the key itself is bounded by `limit_usd`).
-  EvalHub inherits the K8s behaviour through the env pass-through and nothing more.
+- **Kubernetes** (PR-7): `key-guardrail` needs `create`/`update`/`delete` on `secrets` in the
+  namespace for the per-run Secret, which is deleted in the same `finally` as the key
+  revoke whether or not the revoke succeeds; a Secret is left behind only when its own
+  delete fails or the harness dies before cleanup (`kubectl delete secret
+  agent-eval-<run_id>-openrouter`; the key itself is bounded by `limit_usd`). The
+  credentials Secret stays attached whole for what else it holds; the provider key names
+  are blanked in the pod (explicit empty `env[]` entries), the operator key staying visible
+  only for an in-container `openrouter:/` judge — the podman rule. EvalHub inherits the
+  K8s behaviour through the env pass-through and nothing more.
 - Subagent/hook children inheriting the overlay env (`CLAUDE_CODE_SUBAGENT_MODEL`, the
   blank Vertex lines) is VERIFIED on Claude Code 2.1.273+ (probe #1 incl. children,
   `probes/probe_cli_report_2026-09-16.json`) and kept green by `test_claude_cli_direct.py`;

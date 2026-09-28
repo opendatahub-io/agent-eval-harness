@@ -111,3 +111,26 @@ def test_key_usage_failure_is_not_fatal(tmp_path):
     session = FastSession(plan, tmp_path).start()
     assert session.key_usage_before is None
     assert session.finish() is None
+
+
+def test_cleanups_run_even_when_the_revoke_is_interrupted(fake, tmp_path, monkeypatch):
+    """A Ctrl-C during the key revoke must not orphan a host resource (the
+    per-run K8s Secret) registered on the session."""
+    from agent_eval.providers.openrouter import session as session_mod
+
+    plan = make_plan(fake.base_url)
+    session = FastSession(plan, tmp_path)
+    session.finished = session.reconciled = True
+    cleaned = []
+    session.cleanups.append(lambda: cleaned.append("secret"))
+
+    def interrupted(*a, **kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(session_mod, "revoke_plan_key", interrupted)
+    plan.attach(session)
+    object.__setattr__(plan, "provisioned", type("PK", (), {"revoked_at": None, "hash": "h"})())
+    with pytest.raises(KeyboardInterrupt):
+        session.close()
+    assert cleaned == ["secret"] and session.cleanups == []
+

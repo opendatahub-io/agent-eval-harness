@@ -178,6 +178,7 @@ nav:
     - "Running headless (tool interception)": guides/headless.md
     - "Running on Harbor (containers)": guides/harbor.md
     - "Running on EvalHub": guides/evalhub.md
+    - "Running on OpenRouter": guides/openrouter.md
     - "CI integration & regression gating": guides/ci.md
   - "Concepts":
     - concepts/index.md
@@ -203,6 +204,7 @@ nav:
       - "execution": reference/config/execution.md
       - "runner": reference/config/runner.md
       - "models": reference/config/models.md
+      - "models.providers": reference/config/providers.md
       - "mlflow": reference/config/mlflow.md
       - "dataset": reference/config/dataset.md
       - "generation": reference/config/generation.md

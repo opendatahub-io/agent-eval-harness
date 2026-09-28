@@ -168,6 +168,9 @@ models:
 
 ## Out of scope (future)
 
+- OpenRouter as a first-class provider for the agent under test and the judges
+  (`openrouter:/…` URIs, `models.providers`, direct transport, cost provenance) — see
+  [spec 014](../014-openrouter-provider/spec.md).
 - Native Gemini/Bedrock judge SDKs (today: via OpenAI-compatible gateway).
 - OpenAI-native synthetic generation.
 - Per-judge `backend:` override (the model URI is the contract).

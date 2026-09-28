@@ -58,6 +58,8 @@ except ImportError:
     _K8S_AVAILABLE = False
     ApiException = Exception  # type: ignore[assignment,misc]
 
+from agent_eval.harbor import k8s_plan  # noqa: E402 — stdlib-only, safe before the optional imports
+
 _CREDS_MOUNT = "/var/creds"
 _INCLUSTER_NS = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
 
@@ -231,8 +233,11 @@ class KubernetesEnvironment(BaseEnvironment):
         sa = os.environ.get("AGENT_EVAL_K8S_SERVICE_ACCOUNT")
         if sa:
             pod_spec["serviceAccountName"] = sa
+        token_ref = k8s_plan.token_secret_ref()
         creds_secret = os.environ.get("AGENT_EVAL_K8S_GCP_CREDENTIALS_SECRET")
-        if creds_secret:
+        if creds_secret and token_ref is None:
+            # Skipped under an OpenRouter plan (like podman): a Vertex
+            # credential inside an OpenRouter run is noise the agent can read.
             container.setdefault("volumeMounts", []).append(
                 {"name": "aeh-creds", "mountPath": _CREDS_MOUNT, "readOnly": True})
             pod_spec.setdefault("volumes", []).append(
@@ -244,6 +249,19 @@ class KubernetesEnvironment(BaseEnvironment):
         env_secret = os.environ.get("AGENT_EVAL_K8S_CREDENTIALS_SECRET")
         if env_secret:
             container["envFrom"] = [{"secretRef": {"name": env_secret}}]
+        # OpenRouter plan (spec 014): the inference key reaches the agent as
+        # ANTHROPIC_AUTH_TOKEN from a Secret — the operator's credentials
+        # Secret at `audit`, the per-run Secret at `key-guardrail` — through an
+        # explicit env[] entry, which wins over envFrom. The value never
+        # appears in the manifest. The plan's non-secret block was merged into
+        # `env` by start() (k8s_plan.pod_env). The credentials Secret stays
+        # attached for everything else it holds, but the provider key names
+        # the agent must not see are blanked by explicit entries.
+        if token_ref is not None:
+            hidden = {k8s_plan.TOKEN_ENV_NAME, *k8s_plan.masked_names()}
+            container["env"] = [e for e in container["env"] if e.get("name") not in hidden]
+            container["env"].append(token_ref)
+            container["env"].extend({"name": name, "value": ""} for name in k8s_plan.masked_names())
 
         # Project resources from a ConfigMap (skills, scripts, .context, CLAUDE.md).
         # Mounted read-only; the agent copies what it needs into /workspace at run
@@ -275,7 +293,10 @@ class KubernetesEnvironment(BaseEnvironment):
         image = self.task_env_config.docker_image
 
         forwarded = {k: os.environ[k] for k in _FORWARD_ENV if os.environ.get(k)}
-        pod_env = {**forwarded, **(self._persistent_env or {})}
+        # Under an OpenRouter plan the harness child env carries none of the
+        # forwarded names (scrubbed by harbor/run.py) and the plan's block is
+        # merged last (k8s_plan), so the pod spec holds exactly the plan's env.
+        pod_env = k8s_plan.pod_env({**forwarded, **(self._persistent_env or {})})
         self._persistent_env = pod_env
         manifest = self._pod_manifest(image, pod_env)
 
@@ -544,6 +565,11 @@ class KubernetesEnvironment(BaseEnvironment):
             prefix += f"cd {shlex.quote(effective_cwd)} && "
         if env:
             for key, value in env.items():
+                if k8s_plan.exec_env_skips(key):
+                    # The token is in the pod from its Secret; never inline it
+                    # into the exec command (visible in the API request and
+                    # Harbor's debug log).
+                    continue
                 prefix += f"export {key}={shlex.quote(str(value))}; "
         return await asyncio.to_thread(self._ws_exec, prefix + command, timeout_sec)
 

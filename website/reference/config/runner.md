@@ -275,7 +275,9 @@ runner:
     `ANTHROPIC_CUSTOM_HEADERS` are rejected on presence, the Vertex/Bedrock
     blanks and the model aliases load only when identical to the plan's values,
     and `OPENROUTER_API_KEY` / `OPENROUTER_MANAGEMENT_KEY` may never be authored
-    anywhere. See [models → providers](models.md#providers-openrouter).
+    anywhere. The plan's env reaches the agent through the runner's own channel
+    (overlay, `--agent-env`, pod spec + Secret) and wins over `runner.env` there.
+    See [models.providers](providers.md).
 
 ### `system_prompt`
 

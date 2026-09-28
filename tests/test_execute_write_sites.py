@@ -10,6 +10,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXECUTE = REPO_ROOT / "skills" / "eval-run" / "scripts" / "execute.py"
 HARBOR_RUN = REPO_ROOT / "agent_eval" / "harbor" / "run.py"
+EVALHUB_RUNNER = REPO_ROOT / "agent_eval" / "evalhub" / "runner.py"
 RECONCILE = REPO_ROOT / "agent_eval" / "providers" / "reconcile.py"
 
 WRITE_SITE_COUNT = 8
@@ -49,6 +50,13 @@ def test_every_enumerated_write_site_calls_the_helper():
         assert any("write_run_result(" in line for line in block), (
             f"write-site {n} is not followed by a write_run_result( call")
     assert text.count("write_run_result(") >= WRITE_SITE_COUNT + 1     # calls + the def
+
+
+def test_evalhub_runner_only_writes_through_the_helper():
+    assert _lines_writing_run_result(EVALHUB_RUNNER) == []
+    text = EVALHUB_RUNNER.read_text()
+    assert "# run_result write-site 10" in text
+    assert re.search(r'write_run_result\(\s*output_dir / "run_result.json", run_meta', text)
 
 
 def test_the_helper_reconciles_exactly_once():

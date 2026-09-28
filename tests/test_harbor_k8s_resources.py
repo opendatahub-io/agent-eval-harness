@@ -104,3 +104,41 @@ def test_cleanup():
 
     assert deleted == 1
     core.delete_namespaced_config_map.assert_called_once_with("cm1", "test-ns")
+
+
+def test_create_openrouter_secret_holds_only_the_key():
+    import base64
+
+    core = _mock_core()
+    with patch.object(kr, "_ensure_client", return_value=core):
+        kr.create_openrouter_secret("sk-or-run-1", "agent-eval-r1-openrouter", "test-ns")
+    namespace, secret = core.create_namespaced_secret.call_args[0]
+    assert namespace == "test-ns" and secret.metadata.name == "agent-eval-r1-openrouter"
+    assert secret.metadata.labels == {"app.kubernetes.io/managed-by": "agent-eval-harness"}
+    assert list(secret.data) == ["OPENROUTER_API_KEY"]
+    assert base64.b64decode(secret.data["OPENROUTER_API_KEY"]) == b"sk-or-run-1"
+    with patch.object(kr, "_ensure_client", return_value=core):
+        kr.create_openrouter_secret("sk-or-run-1", "n", "test-ns", key="MY_OR_KEY")
+    assert list(core.create_namespaced_secret.call_args[0][1].data) == ["MY_OR_KEY"]
+
+
+def test_delete_openrouter_secret_tolerates_a_missing_secret_only():
+    import pytest
+    from kubernetes.client.rest import ApiException
+
+    core = _mock_core()
+    with patch.object(kr, "_ensure_client", return_value=core):
+        assert kr.delete_openrouter_secret("agent-eval-r1-openrouter", "test-ns") is True
+    core.delete_namespaced_secret.assert_called_once_with("agent-eval-r1-openrouter", "test-ns")
+    core.delete_namespaced_secret.side_effect = ApiException(status=404)
+    with patch.object(kr, "_ensure_client", return_value=core):
+        assert kr.delete_openrouter_secret("agent-eval-r1-openrouter", "test-ns") is False
+    core.delete_namespaced_secret.side_effect = ApiException(status=403)
+    with patch.object(kr, "_ensure_client", return_value=core), pytest.raises(ApiException):
+        kr.delete_openrouter_secret("agent-eval-r1-openrouter", "test-ns")
+
+
+def test_default_namespace_prefers_the_env_var(monkeypatch):
+    monkeypatch.setenv("AGENT_EVAL_K8S_NAMESPACE", "team-b")
+    assert kr.default_namespace() == "team-b"
+

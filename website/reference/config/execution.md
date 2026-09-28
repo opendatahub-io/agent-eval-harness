@@ -222,8 +222,9 @@ execution:
     keys (Vertex/Bedrock blanks, model aliases) must match the plan, a non-empty
     `ANTHROPIC_API_KEY` warns, and the OpenRouter key variables are env-only.
     `max_budget_usd` keeps its per-invocation meaning; the run-wide pool is
-    `models.providers.openrouter.budget.run_usd`. See
-    [models → providers](models.md#providers-openrouter).
+    `models.providers.openrouter.budget.run_usd`. The rule holds on every runner —
+    local, Harbor podman, Harbor Kubernetes, EvalHub. See
+    [models.providers](providers.md).
 
 ## Precedence
 

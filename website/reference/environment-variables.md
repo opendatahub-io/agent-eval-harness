@@ -127,12 +127,14 @@ Read by `agent_eval.harbor.podman` when running `/eval-run --runner harbor` (or
 Read by `agent_eval.harbor.kubernetes` when running against OpenShift/Kubernetes
 (`--environment-import-path agent_eval.harbor.kubernetes:KubernetesEnvironment`).
 Credentials come from cluster Secrets, never the host — only `ANTHROPIC_MODEL` and
-`ANTHROPIC_BASE_URL` are inherited from your environment.
+`ANTHROPIC_BASE_URL` are inherited from your environment, and neither while an OpenRouter
+plan is active (both are managed keys the plan sets in the pod spec instead).
 
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `AGENT_EVAL_K8S_NAMESPACE` | *(auto)* | Namespace for trial pods. Falls back to the in-cluster service-account namespace, then the active kubeconfig context, then `default`. |
-| `AGENT_EVAL_K8S_CREDENTIALS_SECRET` | *(none)* | Secret whose keys are injected as env (`envFrom`) — this is how API keys / gateway config reach the pod. |
+| `AGENT_EVAL_K8S_CREDENTIALS_SECRET` | *(none)* | Secret whose keys are injected as env (`envFrom`) — this is how API keys / gateway config reach the pod. Under an OpenRouter plan it must also hold `OPENROUTER_API_KEY`, which the harness maps to `ANTHROPIC_AUTH_TOKEN` through an explicit `secretKeyRef` entry (explicit `env[]` wins over `envFrom`). |
+| `AGENT_EVAL_K8S_PLAN_ENV` / `AGENT_EVAL_K8S_TOKEN_SECRET` / `AGENT_EVAL_K8S_TOKEN_SECRET_KEY` | *(set by the harness)* | How `harbor/run.py` hands an OpenRouter plan to the Kubernetes environment: the non-secret env block (JSON) for the pod `env[]`, and the Secret / key the token is mapped from — the credentials Secret at `audit`, the per-run Secret at `key-guardrail`. Operators never set them. |
 | `AGENT_EVAL_K8S_SERVICE_ACCOUNT` | *(none)* | Service account for the trial pod (e.g. for Workload Identity). |
 | `AGENT_EVAL_K8S_GCP_CREDENTIALS_SECRET` | *(none)* | Secret mounted read-only at `/var/creds`; sets `GOOGLE_APPLICATION_CREDENTIALS`. |
 | `AGENT_EVAL_K8S_GCP_CREDENTIALS_KEY` | `key.json` | Key within the GCP credentials Secret to point `GOOGLE_APPLICATION_CREDENTIALS` at. |

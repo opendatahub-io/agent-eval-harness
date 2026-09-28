@@ -135,7 +135,7 @@ Creates 5 starter test cases based on the skill analysis. Skip this if you alrea
 /eval-run --model opus
 ```
 
-This prepares a workspace, runs the skill (headless or interactive), collects artifacts, scores with judges, and reports results.
+This prepares a workspace, runs the skill (headless or interactive), collects artifacts, scores with judges, and reports results. To run the same eval against an open model through OpenRouter, export `OPENROUTER_API_KEY` and pass `--model openrouter:/<author>/<slug>` (see the [OpenRouter guide](website/guides/openrouter.md)).
 
 ## eval.yaml
 

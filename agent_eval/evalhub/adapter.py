@@ -19,6 +19,7 @@ Uses conditional imports so the module works without eval-hub-sdk
 installed (stubs are provided for testing/CI).
 """
 
+import json
 import logging
 import os
 import shutil
@@ -41,6 +42,15 @@ from agent_eval.agent.base import RunResult
 from agent_eval.config import EvalConfig, resolve_arguments
 from agent_eval.evalhub.results_mapper import map_to_job_results
 from agent_eval.evalhub.s3_dataset import DatasetInfo, download_dataset
+
+SESSION_FACTORY = None       # tests inject a ProviderSession subclass with fake timing
+
+# Provenance fields of the reconciled run-level run_result.json that travel
+# back to the client (results_mapper.PROVENANCE_ARTIFACT). The id list itself
+# stays in the pod; its size travels as message_ids_count.
+PROVENANCE_FIELDS = ("cost_usd", "cost_source", "cost_confidence", "cost_usd_estimate",
+                     "cost_coverage", "cost_warnings", "cases_priced", "hook_cost_usd",
+                     "providers", "routing", "provider", "budget")
 
 try:
     from evalhub.adapter import (
@@ -149,6 +159,103 @@ def _configmap_to_dir(cm_data: dict[str, str], dest: Path) -> None:
         file_path.write_text(content)
 
 
+def _start_provider_plan(eval_config, model_name, runner_type, *, run_id, run_dir):
+    """The pod-side half of spec 014's startup order: plan (iff the effective
+    skill model is ``openrouter:/``), preflight, session. Returns
+    ``(plan, session, run_dir)`` — ``(None, None, None)`` without a plan."""
+    from agent_eval.providers.openrouter.plan import build_plan, effective_roles, plan_is_active
+
+    roles = effective_roles(eval_config, {"skill": model_name})
+    if not plan_is_active(roles):
+        return None, None, None
+    if runner_type != "claude-code":
+        raise ValueError(f"the direct OpenRouter transport is implemented for the claude-code "
+                         f"runner; runner.type {runner_type!r} cannot run {roles['skill']!r}")
+    from agent_eval.config import OpenRouterConfig
+    from agent_eval.providers.base import ConfigError
+    from agent_eval.providers.openrouter.plan import judge_routing_keys
+    from agent_eval.providers.openrouter.preflight import run_preflight
+    from agent_eval.providers.openrouter.session import ProviderSession
+
+    try:
+        plan = build_plan(eval_config, roles, runner="evalhub", run_id=run_id)
+    except ConfigError as exc:
+        raise ValueError(f"OpenRouter plan: {exc}") from None
+    orc = getattr(getattr(eval_config.models, "providers", None), "openrouter", None) or OpenRouterConfig()
+    run_dir = Path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        pre = run_preflight(plan, level=orc.preflight, run_dir=run_dir,
+                            judges=judge_routing_keys(eval_config))
+        for warning in pre.warnings:
+            log.warning("preflight: %s", warning)
+        factory = SESSION_FACTORY or ProviderSession
+        session = factory(plan, run_dir, parallelism=1, snapshot=pre.snapshot).start()
+    except BaseException:
+        plan.close()                     # a per-run key must not outlive a failed startup
+        raise
+    plan.attach(session)
+    scope = "per-run" if plan.key_scope == "per-run" else "operator"
+    log.info("Provider: openrouter direct | model: %s | enforcement: %s | preflight: %s%s | "
+             "key exposed to agent: %s key sha256:%s", plan.skill.id, plan.enforcement, orc.preflight,
+             f" (degraded: {pre.degraded_reason})" if pre.degraded_reason else "", scope, plan.key_hash)
+    return plan, session, run_dir
+
+
+def _case_payload(result: RunResult) -> dict:
+    return {
+        "exit_code": result.exit_code,
+        "duration_s": round(result.duration_s, 1),
+        "token_usage": result.token_usage,
+        "cost_usd": result.cost_usd,
+        "num_turns": result.num_turns,
+        "per_model_usage": result.per_model_usage,
+        "per_model_turns": result.per_model_turns,
+        "permission_denials": result.permission_denials or [],
+        "message_ids": result.message_ids or [],
+        "cost_source": result.cost_source,
+        "error_class": result.error_class,
+        "budget": result.budget,
+    }
+
+
+def _write_case_result(run_dir: Path, case_id: str, result: RunResult, session) -> dict:
+    """Per-case ``run_result.json`` in the pod's run dir (the reconciling
+    writer; the run-end pass converges it once the backfill lands)."""
+    from agent_eval.providers.reconcile import write_run_result
+
+    return write_run_result(Path(run_dir) / "cases" / case_id / "run_result.json",
+                            _case_payload(result), plan=session.plan, ledger=session.ledger,
+                            catalog=session.catalog)
+
+
+def _finish_provider_plan(session, run_dir: Path, case_results: list) -> dict:
+    """Run end in the pod: write the run-level file, then close the session —
+    drain the backfill, read the key usage, run the final reconcile pass and,
+    at ``key-guardrail``, revoke the per-run key — **before** the provenance
+    leaves the pod, so a revoke failure (``cost_warnings`` naming the key
+    hash) travels with the results; the pod's run dir is a temp dir nobody
+    can retry against. Returns the provenance fields for the client."""
+    from agent_eval.providers.reconcile import write_run_result
+
+    per_case = {cr["case_id"]: _case_payload(cr["run_result"]) for cr in case_results}
+    payload = {
+        "exit_code": max((cr["run_result"].exit_code for cr in case_results), default=-1, key=abs),
+        "execution_mode": "evalhub", "cost_usd": None, "per_case": per_case,
+        "message_ids": sorted({i for cr in case_results for i in (cr["run_result"].message_ids or [])}),
+    }
+    write_run_result(Path(run_dir) / "run_result.json", payload, plan=session.plan, ledger=session.ledger,
+                     catalog=session.catalog)
+    session.close()
+    try:
+        final = json.loads((Path(run_dir) / "run_result.json").read_text())
+    except (OSError, ValueError):
+        final = payload
+    provenance = {k: final.get(k) for k in PROVENANCE_FIELDS if k in final}
+    provenance["message_ids_count"] = len(final.get("message_ids") or [])
+    return provenance
+
+
 def _get_namespace() -> str:
     """Get the current K8s namespace (in-cluster or from kubeconfig)."""
     ns_path = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
@@ -219,8 +326,27 @@ class AgentEvalAdapter(FrameworkAdapter):
                 f"Unknown runner type '{runner_type}' in eval.yaml. "
                 f"Available: {list(RUNNERS.keys())}")
         runner_cls = RUNNERS[runner_type]
-        runner = runner_cls.from_config(eval_config, log_prefix="evalhub")
-        log.info("Runner: %s (%s)", runner.name, runner_type)
+        # OpenRouter plan (spec 014): built in the pod iff the effective skill
+        # model is openrouter:/ (the JobSpec model overrides eval.yaml, like
+        # --model locally). The pod's own env supplies OPENROUTER_API_KEY (and
+        # the management key at key-guardrail) — the EvalHub server owns the
+        # pod spec, so credentials reach it out of band, as today.
+        plan, session, run_dir = _start_provider_plan(eval_config, model_name, runner_type,
+                                                      run_id=config.id, run_dir=tmp_root / "run")
+        if plan is not None:
+            model_name = plan.skill.uri
+        overrides = {"provider_plan": plan, "run_id": config.id} if plan is not None else {}
+        try:
+            runner = runner_cls.from_config(eval_config, log_prefix="evalhub", **overrides)
+            log.info("Runner: %s (%s)", runner.name, runner_type)
+            return self._run_cases(config, callbacks, eval_config, dataset_info, runner,
+                                   model_name, start_time, session, run_dir)
+        finally:
+            if session is not None:
+                session.close()          # idempotent: the normal path closed it before mapping results
+
+    def _run_cases(self, config, callbacks, eval_config, dataset_info, runner, model_name,
+                   start_time, session, run_dir):
 
         # 4. Execute per case
         self._report_status(callbacks, JobStatus.RUNNING, JobPhase.RUNNING_EVALUATION,
@@ -249,6 +375,9 @@ class AgentEvalAdapter(FrameworkAdapter):
             timeout = eval_config.execution.timeout or 600
             budget = eval_config.execution.max_budget_usd or 5.0
 
+            bind = getattr(runner, "bind_provider", None)
+            if bind is not None and session is not None:
+                bind(session.bind(case_id))
             result = runner.execute(
                 target=target,
                 args=args,
@@ -262,6 +391,8 @@ class AgentEvalAdapter(FrameworkAdapter):
             log.info("Case %s: exit=%s cost=%s %.1fs",
                      case_id, result.exit_code, cost_str, result.duration_s)
             case_results.append({"case_id": case_id, "run_result": result})
+            if session is not None:
+                _write_case_result(run_dir, case_id, result, session)
 
             self._report_status(callbacks, JobStatus.RUNNING, JobPhase.RUNNING_EVALUATION,
                                 f"Completed case {case_id}",
@@ -275,8 +406,12 @@ class AgentEvalAdapter(FrameworkAdapter):
         case_dirs = [dataset_info.dest / cr["case_id"] for cr in case_results]
         judge_scores = _load_judges_and_score(eval_config, case_dirs)
 
-        # 6. Aggregate + map to JobResults
-        aggregate = self._aggregate(case_results, start_time)
+        # 6. Aggregate + map to JobResults. Under a plan the run's cost is the
+        # reconciled truth (null-cost arithmetic), never the runner estimate,
+        # and the provenance travels back in evaluation_metadata.
+        provenance = _finish_provider_plan(session, run_dir, case_results) if session is not None else None
+        aggregate = self._aggregate(case_results, start_time,
+                                    cost_usd=provenance.get("cost_usd") if provenance else ...)
         log.info("Mapping results: %d cases, exit_code=%d",
                  len(case_results), aggregate.exit_code)
         job_results = map_to_job_results(
@@ -287,6 +422,7 @@ class AgentEvalAdapter(FrameworkAdapter):
             judge_scores=judge_scores,
             num_cases=dataset_info.num_cases,
             benchmark_index=config.benchmark_index,
+            provenance=provenance,
         )
 
         self._report_status(callbacks, JobStatus.COMPLETED, JobPhase.COMPLETED,
@@ -364,7 +500,11 @@ class AgentEvalAdapter(FrameworkAdapter):
     # --- helpers -------------------------------------------------------------
 
     @staticmethod
-    def _aggregate(case_results: list, start_time: float) -> RunResult:
+    def _aggregate(case_results: list, start_time: float, cost_usd=...) -> RunResult:
+        """One RunResult for the job. ``cost_usd`` (when given, ``None``
+        included) replaces the sum of the runners' own numbers: under an
+        OpenRouter plan that sum is an estimate and the reconciled value —
+        or ``null`` when a case is unpriced — is the only honest total."""
         if not case_results:
             return RunResult(exit_code=-1, stdout="", stderr="No cases executed",
                              duration_s=time.monotonic() - start_time)
@@ -375,7 +515,7 @@ class AgentEvalAdapter(FrameworkAdapter):
             stdout="",
             stderr=f"{failed}/{len(runs)} cases failed" if failed else "",
             duration_s=time.monotonic() - start_time,
-            cost_usd=sum(r.cost_usd or 0 for r in runs) or None,
+            cost_usd=(sum(r.cost_usd or 0 for r in runs) or None) if cost_usd is ... else cost_usd,
             num_turns=sum(r.num_turns or 0 for r in runs) or None,
             resolved_model=runs[0].resolved_model,
         )

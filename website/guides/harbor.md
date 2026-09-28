@@ -213,6 +213,25 @@ Unlike Podman, nothing is forwarded from your host. Credentials come from the cl
     # then: AGENT_EVAL_K8S_CREDENTIALS_SECRET=model-keys
     ```
 
+=== "OpenRouter (Secret key → secretKeyRef)"
+
+    When `models.skill` is `openrouter:/…` the credentials Secret holds the OpenRouter
+    key; the harness maps it to `ANTHROPIC_AUTH_TOKEN` with an explicit `secretKeyRef`
+    (winning over `envFrom`) and writes the plan's non-secret env into the pod spec:
+
+    ```python
+    from agent_eval.harbor.k8s_resources import create_env_secret
+    create_env_secret({"OPENROUTER_API_KEY": "sk-or-..."}, "model-keys", "<ns>")
+    # then: AGENT_EVAL_K8S_CREDENTIALS_SECRET=model-keys; at `audit` also export OPENROUTER_API_KEY on the host
+    ```
+
+    At `enforcement: key-guardrail` the harness creates the per-run Secret
+    `agent-eval-<run_id>-openrouter` before `harbor run` and deletes it with the key —
+    the harness's identity needs `create`, `update` and `delete` on `secrets` in the
+    namespace, and the host needs `OPENROUTER_MANAGEMENT_KEY` (the credentials Secret is
+    then needed only for an in-container `openrouter:/` judge). See the
+    [OpenRouter guide](openrouter.md#runners).
+
 === "Vertex AI (Secret file)"
 
     Service-account key mounted as a file:
@@ -255,7 +274,7 @@ what it needs into `/workspace` at runtime.
 | Variable | Description |
 | --- | --- |
 | `AGENT_EVAL_K8S_NAMESPACE` | Target namespace |
-| `AGENT_EVAL_K8S_CREDENTIALS_SECRET` | Secret with API keys (injected via `envFrom`) |
+| `AGENT_EVAL_K8S_CREDENTIALS_SECRET` | Secret with API keys (injected via `envFrom`; under an OpenRouter plan also `OPENROUTER_API_KEY`, mapped to `ANTHROPIC_AUTH_TOKEN` via `secretKeyRef`) |
 | `AGENT_EVAL_K8S_GCP_CREDENTIALS_SECRET` | Secret with GCP SA key (file mount) |
 | `AGENT_EVAL_K8S_SERVICE_ACCOUNT` | Pod ServiceAccount (Workload Identity) |
 | `AGENT_EVAL_K8S_PROJECT_CONFIGMAP` | ConfigMap with project resources (< 1 MB) |

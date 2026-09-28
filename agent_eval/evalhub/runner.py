@@ -20,7 +20,6 @@ it (no sub-pods, no Harbor).
 import agent_eval._bootstrap  # noqa: F401 — auto-activate venv before 3p imports
 import argparse
 import importlib.util
-import json
 import logging
 import os
 import sys
@@ -30,6 +29,7 @@ from pathlib import Path
 import yaml
 
 from agent_eval.config import EvalConfig, load_raw
+from agent_eval.providers.reconcile import write_run_result
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +50,46 @@ def _load_score_module():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _provenance(job, bench_result) -> dict:
+    """The pod's reconciled provenance (spec 014). The SDK forwards
+    ``evaluation_metadata["artifacts"]`` to the server as the benchmark
+    result's ``artifacts``, so the ``agent-eval.provenance`` artifact is the
+    channel; ``evaluation_metadata`` itself is consulted for in-process or
+    stub result objects that still carry it."""
+    from agent_eval.evalhub.results_mapper import PROVENANCE_ARTIFACT
+
+    artifacts = getattr(bench_result, "artifacts", None)
+    if isinstance(artifacts, dict) and isinstance(artifacts.get(PROVENANCE_ARTIFACT), dict):
+        return dict(artifacts[PROVENANCE_ARTIFACT])
+    for holder in (bench_result, getattr(job, "results", None)):
+        meta = getattr(holder, "evaluation_metadata", None)
+        if isinstance(meta, dict) and isinstance(meta.get("provenance"), dict):
+            return dict(meta["provenance"])
+    return {}
+
+
+def _run_meta(job, bench_result, metrics: dict, *, model: str, provider_id: str, job_id) -> dict:
+    """``run_result.json`` for an EvalHub run: the flat metrics plus, under an
+    OpenRouter plan, the provenance the pod reconciled (``cost_usd`` is then
+    the truth-source value or null, never the runner estimate)."""
+    run_meta = {
+        "exit_code": int(metrics.get("exit_code", 0)),
+        "execution_mode": "evalhub",
+        "agent": f"evalhub:{provider_id}",
+        "model": model,
+        "job_id": job_id,
+        "cost_usd": metrics.get("cost_usd"),
+        "num_cases": int(metrics.get("num_examples_evaluated", 0)),
+        "duration_seconds": metrics.get("duration_seconds"),
+        "mlflow_run_id": bench_result.mlflow_run_id,
+        "mlflow_experiment_url": job.results.mlflow_experiment_url,
+    }
+    provenance = _provenance(job, bench_result)
+    if provenance:
+        run_meta.update(provenance)
+    return run_meta
 
 
 def _metrics_to_summary(metrics: dict, config: EvalConfig) -> dict:
@@ -182,21 +222,11 @@ def _run_with_client(client, url, config, config_path, ns, provider_id,
     metrics = bench_result.metrics or {}
     summary = _metrics_to_summary(metrics, config)
 
-    run_meta = {
-        "exit_code": int(metrics.get("exit_code", 0)),
-        "execution_mode": "evalhub",
-        "agent": f"evalhub:{provider_id}",
-        "model": model,
-        "job_id": job_id,
-        "cost_usd": metrics.get("cost_usd"),
-        "num_cases": int(metrics.get("num_examples_evaluated", 0)),
-        "duration_seconds": metrics.get("duration_seconds"),
-        "mlflow_run_id": bench_result.mlflow_run_id,
-        "mlflow_experiment_url": job.results.mlflow_experiment_url,
-    }
-
-    (output_dir / "run_result.json").write_text(
-        json.dumps(run_meta, indent=2) + "\n")
+    run_meta = _run_meta(job, bench_result, metrics, model=model, provider_id=provider_id, job_id=job_id)
+    # run_result write-site 10: the EvalHub run (the same reconciling writer;
+    # the client holds no plan and no ledger, so the payload — including the
+    # provenance the pod reconciled — is written unchanged).
+    run_meta = write_run_result(output_dir / "run_result.json", run_meta)
     (output_dir / "summary.yaml").write_text(
         yaml.safe_dump({"run_id": output_dir.name, **summary},
                        sort_keys=False, allow_unicode=True))

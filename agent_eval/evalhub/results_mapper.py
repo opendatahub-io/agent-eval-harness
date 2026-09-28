@@ -11,6 +11,11 @@ except ImportError:
     from agent_eval.evalhub.stubs import JobResults, EvaluationResult  # type: ignore[assignment]
 
 
+# The artifact key the pod's reconciled provenance travels under (the only
+# evaluation_metadata content the SDK callbacks forward to the server).
+PROVENANCE_ARTIFACT = "agent-eval.provenance"
+
+
 def map_to_job_results(
     job_id: str,
     benchmark_id: str,
@@ -19,6 +24,7 @@ def map_to_job_results(
     judge_scores: dict,
     num_cases: int,
     benchmark_index: int = 0,
+    provenance: dict | None = None,
 ) -> JobResults:
     """Map agent-eval-harness RunResult and judge scores to EvalHub JobResults.
 
@@ -30,6 +36,13 @@ def map_to_job_results(
         judge_scores: Dict mapping judge name to {mean, pass_rate, values}
         num_cases: Number of test cases evaluated
         benchmark_index: Index in benchmark sequence (default 0)
+        provenance: Cost/routing provenance of an OpenRouter-routed run
+            (spec 014: ``cost_source``, ``cost_confidence``, ``routing``,
+            ``provider``, ``budget``, …). The SDK's callbacks forward only
+            ``metrics`` and ``evaluation_metadata["artifacts"]`` to the
+            server, so it travels as the ``agent-eval.provenance`` artifact
+            (and stays under ``evaluation_metadata["provenance"]`` for
+            in-process readers); the client writes it into ``run_result.json``
 
     Returns:
         JobResults populated with all metrics and metadata
@@ -110,6 +123,9 @@ def map_to_job_results(
         evaluation_metadata["models_used"] = run_result.models_used
     if run_result.token_usage:
         evaluation_metadata["token_usage"] = run_result.token_usage
+    if provenance:
+        evaluation_metadata["provenance"] = provenance
+        evaluation_metadata["artifacts"] = {PROVENANCE_ARTIFACT: provenance}
 
     return JobResults(
         id=job_id,

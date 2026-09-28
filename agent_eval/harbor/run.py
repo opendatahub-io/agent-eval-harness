@@ -34,6 +34,7 @@ from agent_eval.config import (
     resolve_plugin_dir,
     resolve_plugin_skill_roots,
 )
+from agent_eval.harbor import k8s_plan
 from agent_eval.harbor import results as results_mod
 from agent_eval.harbor import tasks as tasks_mod
 from agent_eval.harbor.reward import _load_score_module
@@ -201,6 +202,12 @@ def _harbor_agent_kwargs(config: EvalConfig, agent_name: str) -> list[str]:
     return [f"reasoning_effort={effort}"] if effort else []
 
 
+def _is_kubernetes(env_import_path: str | None) -> bool:
+    """Whether ``env_import_path`` is the harness's Kubernetes environment
+    (``--env kubernetes|k8s|openshift``)."""
+    return env_import_path == _ENV_IMPORT_PATHS["kubernetes"]
+
+
 def _resolve_harbor_agent_env(config: EvalConfig, plan=None) -> dict[str, str]:
     """Resolve eval/runner env for Harbor's agent process.
 
@@ -208,12 +215,17 @@ def _resolve_harbor_agent_env(config: EvalConfig, plan=None) -> dict[str, str]:
     merged **last** so it wins; its key travels as a ``$VAR`` reference that
     the resolution below turns into a carrier value — never a literal in the
     config or in argv. Harbor merges ``--agent-env`` last into the agent's
-    environment, so the container's Claude Code sees exactly this block.
+    environment, so the container's Claude Code sees exactly this block. On
+    Kubernetes (``plan.runner == "harbor-k8s"``) the block is the ``k8s_pod``
+    target: **no** ``ANTHROPIC_AUTH_TOKEN`` carrier — the pod maps it from a
+    Secret, and the K8s exec prefix would otherwise inline the value into
+    every command.
     """
     resolved: dict[str, str] = {}
     configured = {**config.execution.env, **config.runner.env}
     if plan is not None:
-        configured.update(settings_env_block(plan, secrets="ref", target="harbor_carrier"))
+        configured.update(plan.agent_env() if plan.runner == "harbor-k8s"
+                          else settings_env_block(plan, secrets="ref", target="harbor_carrier"))
     for key, value in configured.items():
         if value is None:
             continue
@@ -301,6 +313,62 @@ def _start_harbor_session(plan, config: EvalConfig, output_dir: Path, n_concurre
           f"preflight: {orc.preflight}{degraded} | key exposed to agent: {scope} key "
           f"sha256:{plan.key_hash} (enforcement: {plan.enforcement})", file=sys.stderr)
     return session
+
+
+def _check_k8s_credentials_secret(plan, keep_api_key: bool) -> None:
+    """On Kubernetes the credentials Secret (``AGENT_EVAL_K8S_CREDENTIALS_SECRET``)
+    is where the agent's key comes from at ``audit`` and where an in-container
+    ``openrouter:/`` judge reads the operator key; at ``key-guardrail`` without
+    such a judge the per-run Secret is enough."""
+    if os.environ.get("AGENT_EVAL_K8S_CREDENTIALS_SECRET"):
+        return
+    if plan.key_scope == "operator":
+        raise ConfigError(
+            "on Kubernetes the agent's key comes from a Secret: set "
+            "AGENT_EVAL_K8S_CREDENTIALS_SECRET to the credentials Secret holding "
+            f"{plan.key_env} (the harness process needs the same key exported for the "
+            "preflight, the backfill and the key-usage reads)")
+    if keep_api_key:
+        raise ConfigError(
+            "on Kubernetes an in-container openrouter:/ judge reads the operator key from the "
+            f"credentials Secret: set AGENT_EVAL_K8S_CREDENTIALS_SECRET (holding {plan.key_env})")
+
+
+def _k8s_plan_child_env(plan, session, output_dir: Path, *, keep_api_key: bool = False) -> dict[str, str]:
+    """What the Kubernetes environment (inside the harbor child) needs from the
+    plan: the non-secret block for the pod ``env[]``, the Secret the token is
+    mapped from, and the provider key names the credentials Secret's
+    ``envFrom`` must not expose to the agent (masked with empty entries; the
+    inference key stays visible under its configured name only when an
+    in-container ``openrouter:/`` judge needs it). At ``key-guardrail`` the
+    per-run Secret ``agent-eval-<run_id>-openrouter`` is created here, before
+    ``harbor run``, and its deletion is registered on the session (runs with
+    the key revoke, on every exit path). At ``audit`` the operator's
+    credentials Secret is used and nothing is created."""
+    masked = {"OPENROUTER_API_KEY", "OPENROUTER_MANAGEMENT_KEY", plan.key_env,
+              plan.management_key_env or "OPENROUTER_MANAGEMENT_KEY"}
+    if keep_api_key:
+        masked.discard(plan.key_env)
+    env = {k8s_plan.PLAN_ENV_VAR: json.dumps(plan.agent_env(), sort_keys=True),
+           k8s_plan.TOKEN_SECRET_KEY_VAR: plan.key_env,
+           k8s_plan.MASK_VAR: ",".join(sorted(masked))}
+    if plan.key_scope == "per-run":
+        from agent_eval.harbor import k8s_resources
+
+        namespace = k8s_resources.default_namespace()
+        name = k8s_plan.per_run_secret_name(output_dir.name)
+        k8s_resources.create_openrouter_secret(plan.key, name, namespace, key=plan.key_env)
+        print(f"provider: per-run Secret {namespace}/{name} created (deleted with the key)",
+              file=sys.stderr)
+        if session is not None:
+            session.cleanups.append(lambda: k8s_resources.delete_openrouter_secret(name, namespace))
+        env[k8s_plan.TOKEN_SECRET_VAR] = name
+    else:
+        env[k8s_plan.TOKEN_SECRET_VAR] = os.environ["AGENT_EVAL_K8S_CREDENTIALS_SECRET"]
+    if plan.key_scope == "per-run" and not os.environ.get("AGENT_EVAL_K8S_CREDENTIALS_SECRET"):
+        # Nothing else to attach: the pod's only provider secret is the per-run one.
+        pass
+    return env
 
 
 def _display_command(cmd: list[str]) -> str:
@@ -611,20 +679,26 @@ def run_eval_on_harbor(
         else:
             agent_name = config.runner.type
 
-    # Provider plan (spec 014, Decision 23): the same plan as the local runner,
-    # delivered through --agent-env; podman only in this release.
+    # Provider plan (spec 014, Decision 23): the same plan as the local runner.
+    # podman delivers it through --agent-env; Kubernetes through the pod spec
+    # (non-secret env[]) plus a Secret for the token (secretKeyRef).
     plan = session = None
     roles = effective_roles(config, {"skill": model})
     if plan_is_active(roles):
-        if env_import_path != _ENV_IMPORT_PATHS["podman"]:
+        on_k8s = _is_kubernetes(env_import_path)
+        if env_import_path != _ENV_IMPORT_PATHS["podman"] and not on_k8s:
             raise ConfigError(
-                "the direct OpenRouter transport runs on the podman Harbor environment in "
-                "this release (Kubernetes/OpenShift land in a later release); pass --env podman")
+                "the direct OpenRouter transport runs on the harness's podman and Kubernetes "
+                "Harbor environments (--env podman|kubernetes|openshift); a custom "
+                "--environment-import-path is not supported under a plan")
         if agent_name != "claude-code":
             raise ConfigError(f"the direct OpenRouter transport is implemented for the "
                               f"claude-code Harbor agent; got {agent_name!r}")
-        plan = build_plan(config, roles, runner="harbor-podman", run_id=output_dir.name)
+        plan = build_plan(config, roles, runner="harbor-k8s" if on_k8s else "harbor-podman",
+                          run_id=output_dir.name)
         try:
+            if on_k8s:
+                _check_k8s_credentials_secret(plan, _openrouter_judge_configured(config, judge_model))
             session = _start_harbor_session(plan, config, output_dir, n_concurrent, judge_model)
         except BaseException:
             plan.close()                 # a per-run key must not outlive a failed startup
@@ -755,6 +829,8 @@ def _run_eval_on_harbor(
             # The verifier reads the key under its configured name, which
             # podman's static forwarding list may not know.
             child_env["AGENT_EVAL_PODMAN_PLAN_FORWARD"] = plan.key_env
+        if plan.runner == "harbor-k8s":
+            child_env.update(_k8s_plan_child_env(plan, session, output_dir, keep_api_key=keep_api_key))
     child_env.update(harbor_env)
     proc = subprocess.Popen(cmd, env=child_env)
     def _forward_signal(signum, frame):

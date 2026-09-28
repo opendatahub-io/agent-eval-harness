@@ -168,6 +168,11 @@ resource requests/limits).
 
     The pod needs `ANTHROPIC_API_KEY` or Vertex AI credentials as environment
     variables (see [environment variables](../reference/environment-variables.md)).
+    For an `openrouter:/…` skill model the pod needs `OPENROUTER_API_KEY` instead (plus
+    `OPENROUTER_MANAGEMENT_KEY` at `enforcement: key-guardrail`): the adapter builds the
+    provider plan in the pod, reconciles the run there and ships `cost_source` /
+    `routing` / `provider` / `budget` back with the job results, which the client writes
+    into `run_result.json` (see the [OpenRouter guide](openrouter.md#runners)).
 
 === "Client-side (/eval-run --runner evalhub)"
 
