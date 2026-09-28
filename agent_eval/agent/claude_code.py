@@ -817,6 +817,18 @@ class ClaudeCodeRunner(EvalRunner):
         "AGENT_EVAL_RUNS_DIR",
     }
 
+    # Forwarded from the ambient environment only without a provider plan: the
+    # plan blanks every Vertex switch, so the agent has no use for the
+    # operator's Google credential locations, and none of them belongs in the
+    # environment of an agent whose model traffic goes to a third party (the
+    # Kubernetes runner already skips the credentials mount under a plan).
+    # An explicit ``runner.env`` entry still passes: that is the operator's
+    # decision, not an ambient leak.
+    _VERTEX_CREDENTIAL_KEYS = frozenset({
+        "GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_CONFIG",
+        "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
+    })
+
     def _build_env(self, extra_env=None):
         """Build subprocess environment with allowlisted keys only.
 
@@ -826,9 +838,13 @@ class ClaudeCodeRunner(EvalRunner):
         ``ANTHROPIC_API_KEY``/``ANTHROPIC_AUTH_TOKEN`` can never reach the CLI,
         its subagents or its hook children. The provider key variables are
         not in the allowlist: the agent sees the inference key only as
-        ``ANTHROPIC_AUTH_TOKEN`` in the overlay.
+        ``ANTHROPIC_AUTH_TOKEN`` in the overlay. The Google credential
+        locations (``_VERTEX_CREDENTIAL_KEYS``) are not forwarded either.
         """
-        env = {k: v for k, v in os.environ.items() if k in self._SAFE_ENV_KEYS}
+        ambient = self._SAFE_ENV_KEYS
+        if self._plan is not None:
+            ambient = ambient - self._VERTEX_CREDENTIAL_KEYS
+        env = {k: v for k, v in os.environ.items() if k in ambient}
         for k, v in self._env.items():
             if v is None:
                 continue

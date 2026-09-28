@@ -140,7 +140,11 @@ never argv, the ledger, the snapshot, logs or `run_result.json` (`key_hash` is t
 trace); lifecycle hooks and the harbor child env are scrubbed of both variables, and the
 management key reaches no subprocess. Because the agent under test can read its own
 environment, `provider.key_exposed_to_agent` is `true` at both levels; `key-guardrail`
-bounds what that exposure is worth.
+bounds what that exposure is worth. The operator's own credentials stay out of that
+environment: the local runner does not forward the Google credential locations
+(`GOOGLE_APPLICATION_CREDENTIALS`, `CLOUDSDK_CONFIG`,
+`CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE`) while a plan is active, podman skips the
+credentials mount, and the Kubernetes pod gets no credentials volume.
 
 ## Runners
 

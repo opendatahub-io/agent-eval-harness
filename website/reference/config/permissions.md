@@ -107,6 +107,29 @@ compiles (deny, `harden_bash=True`) to:
 
 Results are deduplicated with original order preserved.
 
+### Relative Bash rules get an absolute-workspace twin
+
+Claude Code matches a Bash rule literally up to its first `*`, so a project rule such
+as `Bash(python3 scripts/foo.py *)` never matches the
+`python3 <workspace>/scripts/foo.py ...` form weaker models emit for the same script,
+and in a headless run that denial ends the session. The local claude-code runner knows
+the directory the agent runs in when it writes the workspace settings — the isolated
+workspace in batch and per-case mode, the project checkout in repo mode — so for every
+Bash rule carried over from the project's `.claude/settings.json` (allow and deny) and
+every rule in `permissions.allow` (plus the deny list the settings hold by then) whose
+first path-looking argument is project-relative, it adds the same rule with that
+argument rewritten to the literal `<workspace>/<path>` (a leading `./` dropped, a
+trailing `:*` kept, and the real path added when the path it was given is a symlink). An
+allow twin is added only when the target exists under the workspace (a project resource
+the harness symlinked or copied there); a deny twin is added regardless, since it can
+only remove permission. The twin is never a wildcard: it allows or denies the same
+program on the same file and nothing more. A rule that is already absolute, has no path,
+globs the path or puts a `*` before it is left alone, because a `*` before the script
+name would also match `-c '<code>'`; a workspace path that cannot be spliced into a rule
+verbatim (whitespace, rule metacharacters) disables the twins with a warning. This makes
+a blanket `Bash(python3 *)` unnecessary for the absolute-path case. Harbor task packages
+carry only `eval.yaml`'s own permissions and are not twinned.
+
 ## How they compile
 
 The runner ([`agent_eval/agent/claude_code.py`](https://github.com/opendatahub-io/agent-eval-harness/blob/main/agent_eval/agent/claude_code.py))

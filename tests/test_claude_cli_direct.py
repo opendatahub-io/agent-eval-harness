@@ -187,6 +187,22 @@ def test_build_env_without_a_binding_or_plan(monkeypatch):
     assert env["CLAUDE_CODE_USE_VERTEX"] == "1" and env["CLAUDE_CODE_SUBAGENT_MODEL"] == "claude-sonnet-4-5"
 
 
+def test_vertex_credential_locations_stay_home_under_a_plan(monkeypatch):
+    """The plan blanks Vertex, so the operator's GCP credential locations are not
+    forwarded to the agent (the K8s runner already skips the mount); without a
+    plan they travel as before, and an explicit runner.env entry still wins."""
+    for k in ("GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_CONFIG", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE"):
+        monkeypatch.setenv(k, f"/home/op/{k.lower()}")
+    with_plan = ClaudeCodeRunner(provider_plan=make_plan())._build_env()
+    assert not (set(with_plan) & ClaudeCodeRunner._VERTEX_CREDENTIAL_KEYS)
+    without = ClaudeCodeRunner()._build_env()
+    assert ClaudeCodeRunner._VERTEX_CREDENTIAL_KEYS <= set(without)
+    explicit = ClaudeCodeRunner(provider_plan=make_plan(),
+                                env={"GOOGLE_APPLICATION_CREDENTIALS": "/explicit/sa.json"})._build_env()
+    assert explicit["GOOGLE_APPLICATION_CREDENTIALS"] == "/explicit/sa.json"
+    assert "CLOUDSDK_CONFIG" not in explicit
+
+
 def test_overlay_is_removed_when_env_setup_fails(workspace, tmp_path):
     """The overlay holds the key before the process env is built: a failure
     there (the hook-ids directory cannot be created) still removes it."""

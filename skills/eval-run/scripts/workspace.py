@@ -436,8 +436,10 @@ def _create_repo_mode_settings(case_ws, project_root, config):
     settings = {}
 
     # Start with project permissions
-    _carry_over_permissions(settings)
-    _merge_harness_permissions(settings, config)
+    # The agent runs in the project checkout (case_ws holds only its I/O), so
+    # the absolute twins of the project's relative Bash rules root there.
+    _carry_over_permissions(settings, project_root)
+    _merge_harness_permissions(settings, config, project_root)
 
     # Add repo write protection
     perms = settings.setdefault("permissions", {})
@@ -647,6 +649,92 @@ def _expand_symlink_permissions(allow_list):
     return allow_list + extras
 
 
+_BASH_RULE = re.compile(r"^Bash\((.+)\)$")
+# A workspace path that could not be spliced into a rule verbatim: whitespace
+# splits the rule's tokens, the others are rule or shell metacharacters.
+_UNSAFE_BASE = re.compile(r"""[\s*?\[\]'"$`]""")
+
+
+def _rule_path_token(tokens, index):
+    """``(path, suffix)`` for a Bash rule token: the ``:*`` suffix Claude Code
+    treats as a trailing `` *`` (recognized at the end of a rule only) is split
+    off so the path can be inspected and rebuilt with it."""
+    token = tokens[index]
+    if index == len(tokens) - 1 and token.endswith(":*"):
+        return token[:-2], ":*"
+    return token, ""
+
+
+def _relative_path_index(tokens):
+    """Index of the first token of a Bash rule that names a project-relative
+    path (``scripts/foo.py``), or ``None`` when no token does or a wildcard
+    comes first — a ``*`` before the path would also match ``-c '<code>'``,
+    so such a rule is never widened."""
+    for index in range(len(tokens)):
+        path, _suffix = _rule_path_token(tokens, index)
+        if "*" in path or "?" in path or "[" in path:
+            return None
+        if ("/" in path and not path.startswith(("/", "-", "~", "$", "'", '"'))
+                and ".." not in path.split("/")):
+            return index
+    return None
+
+
+def _expand_workspace_bash_permissions(rules, workspace, *, require_exists=True):
+    """Add an absolute-workspace twin for every relative-path Bash rule.
+
+    Claude Code matches a Bash rule literally up to its first ``*``, so a
+    project rule such as ``Bash(python3 scripts/foo.py *)`` never matches the
+    ``python3 <workspace>/scripts/foo.py ...`` form weaker models emit for the
+    same script — and in headless mode that denial ends the run.  The
+    directory the agent runs in is known here, so for each rule whose first
+    path-looking argument is project-relative the same rule is added with that
+    argument rewritten to the literal ``<workspace>/<arg>`` (the ``./`` prefix
+    dropped, everything else verbatim, a trailing ``:*`` kept) and, when the
+    given path is itself a symlink, its real path.  Never a wildcard: the twin
+    allows — or denies — the same program on the same file and nothing more.
+    Rules that are already absolute, carry no path, glob the path or put a
+    ``*`` before it are left alone.
+
+    ``require_exists`` (allow lists) adds a twin only when the target exists
+    under *workspace* — a project resource the harness symlinked or copied
+    there.  Deny lists pass ``False``: a deny twin can only remove permission,
+    and it must exist whenever the matching allow twin does.
+    """
+    if workspace is None:
+        return rules
+    ws = Path(workspace)
+    bases = [ws]
+    real = Path(os.path.realpath(ws))
+    if real != ws:
+        bases.append(real)
+    unsafe = [b for b in bases if _UNSAFE_BASE.search(str(b))]
+    if unsafe:
+        print(f"WARNING: not adding absolute-path permission twins: workspace path "
+              f"{str(unsafe[0])!r} cannot be spliced into a rule verbatim", file=sys.stderr)
+        return rules
+    extras = []
+    for pattern in rules:
+        m = _BASH_RULE.match(pattern) if isinstance(pattern, str) else None
+        if not m:
+            continue
+        tokens = m.group(1).split(" ")
+        index = _relative_path_index(tokens)
+        if index is None:
+            continue
+        path, suffix = _rule_path_token(tokens, index)
+        if require_exists and not (ws / path).exists():
+            continue
+        verbatim = path[2:] if path.startswith("./") else path
+        for base in bases:
+            twin_tokens = list(tokens)
+            twin_tokens[index] = f"{base}/{verbatim}{suffix}"
+            twin = f"Bash({' '.join(twin_tokens)})"
+            if twin not in rules and twin not in extras:
+                extras.append(twin)
+    return rules + extras
+
+
 def _inject_env(settings, config):
     """Inject execution.env into settings.json env block.
 
@@ -669,8 +757,12 @@ def _inject_env(settings, config):
             env_block[key] = str(value)
 
 
-def _carry_over_permissions(settings):
-    """Copy project permissions (allow, deny, additionalDirectories) into settings."""
+def _carry_over_permissions(settings, workspace=None):
+    """Copy project permissions (allow, deny, additionalDirectories) into settings.
+
+    With *workspace* (the directory the agent runs in), every relative-path
+    Bash rule — allow and deny — also gets its absolute twin
+    (:func:`_expand_workspace_bash_permissions`)."""
     import json as _json
 
     project_settings = Path.cwd() / ".claude" / "settings.json"
@@ -685,9 +777,16 @@ def _carry_over_permissions(settings):
     proj_perms = proj.get("permissions", {})
     if proj_perms.get("allow"):
         allow_list = _expand_symlink_permissions(list(proj_perms["allow"]))
+        allow_list = _expand_workspace_bash_permissions(allow_list, workspace)
         settings.setdefault("permissions", {})["allow"] = allow_list
     if proj_perms.get("deny"):
-        settings.setdefault("permissions", {})["deny"] = list(proj_perms["deny"])
+        # Add to whatever deny list the settings hold (eval.yaml's, written by
+        # the interception generator) — a deny is never dropped by another.
+        existing_deny = settings.setdefault("permissions", {}).setdefault("deny", [])
+        for rule in _expand_workspace_bash_permissions(
+                list(proj_perms["deny"]), workspace, require_exists=False):
+            if rule not in existing_deny:
+                existing_deny.append(rule)
     if proj_perms.get("additionalDirectories"):
         dirs = list(proj_perms["additionalDirectories"])
         for d in list(dirs):
@@ -745,9 +844,16 @@ def _carry_over_hooks(settings, config):
         if carried:
             hooks.setdefault(event, []).extend(carried)
 
-def _merge_harness_permissions(settings, config):
+def _merge_harness_permissions(settings, config, workspace=None):
     """Merge eval.yaml permissions.allow into settings so named subagents
-    (which may not inherit --allowed-tools) receive the harness patterns."""
+    (which may not inherit --allowed-tools) receive the harness patterns.
+    With *workspace*, relative-path Bash rules get their absolute twins too —
+    the merged allow rules, and whatever deny list the settings hold by now
+    (eval.yaml's, written by the interception generator, or the project's)."""
+    perms = settings.setdefault("permissions", {})
+    if perms.get("deny"):
+        perms["deny"] = _expand_workspace_bash_permissions(
+            list(perms["deny"]), workspace, require_exists=False)
     allow = (
         (config.permissions or {}).get("allow")
         if hasattr(config, "permissions")
@@ -755,8 +861,9 @@ def _merge_harness_permissions(settings, config):
     )
     if not allow:
         return
-    harness_allow = _expand_symlink_permissions(list(allow))
-    existing = settings.setdefault("permissions", {}).setdefault("allow", [])
+    harness_allow = _expand_workspace_bash_permissions(
+        _expand_symlink_permissions(list(allow)), workspace)
+    existing = perms.setdefault("allow", [])
     for pattern in harness_allow:
         if pattern not in existing:
             existing.append(pattern)
@@ -827,8 +934,8 @@ def _setup_subagent_only_hook(workspace, config):
     settings = {}
 
     # Carry over project permissions (allow, deny, additionalDirectories)
-    _carry_over_permissions(settings)
-    _merge_harness_permissions(settings, config)
+    _carry_over_permissions(settings, workspace)
+    _merge_harness_permissions(settings, config, workspace)
 
     # Grant project root access
     project_root = str(Path.cwd().resolve())
@@ -885,8 +992,8 @@ def _setup_tool_hooks(workspace, config):
             pass
 
     # Carry over project permissions (allow, deny, additionalDirectories)
-    _carry_over_permissions(settings)
-    _merge_harness_permissions(settings, config)
+    _carry_over_permissions(settings, workspace)
+    _merge_harness_permissions(settings, config, workspace)
 
     # Grant access to the project root so symlinked resources can be read.
     project_root = str(Path.cwd().resolve())
