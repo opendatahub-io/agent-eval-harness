@@ -69,6 +69,8 @@ matrix:
       - low
       - high
   replications: 3        # optional, default 1
+  analysis:              # optional
+    correction: holm     # holm (default) | fdr_bh | none
 ```
 
 This is `2 × 2 = 4` conditions. With 3 replications over (say) 5 cases that's
@@ -118,6 +120,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/orchestrate.py --config eval.yaml --analyze-
 | `--avg-cost-per-run <float>` | unset | Per-run cost used by `--dry-run` for a point estimate. |
 | `--output <path>` | default compare dir | Output dir for the `/eval-compare` report. |
 | `--no-report` | off | Compute `anova.json` but skip rendering the report. |
+| `--correction <method>` | unset | Multiple-comparison correction across the ANOVA term family: `holm`, `fdr_bh` (alias `bh`), or `none`. Overrides `matrix.analysis.correction`; when neither is supplied, `holm` applies. |
 
 !!! tip "Estimate cost before you commit"
     `--dry-run` prints the design and a cost line. It uses `--avg-cost-per-run`
@@ -160,6 +163,14 @@ Compute the statistics over the runs' `summary.yaml` files and write
 `anova.json`: a repeated-measures or mixed-effects ANOVA (chosen automatically
 from how many factors actually vary), per-condition means, and a cost/quality
 Pareto frontier. `--analyze-only` runs *just* this step.
+
+Multi-factor designs report one **joint Wald test per model term** — every
+main effect and every interaction — and correct the resulting p-value family
+for multiple comparisons (**Holm** by default; `fdr_bh` or `none` via
+`--correction` / `matrix.analysis.correction`). Raw and adjusted p-values are
+both written to `anova.json`; significance is judged on the adjusted value.
+See [Analysis of variance](../concepts/anova.md#per-term-wald-tests-and-multiplicity-correction)
+for the statistics.
 
 ### Step 4 — Report
 

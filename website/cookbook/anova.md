@@ -158,6 +158,12 @@ matrix:
 That's `2 × 2 = 4` conditions; with 3 replications over 4 cases → `4 × 4 × 3 =
 48` runs. Use `--dry-run` first to see the cost.
 
+With multiple factors, `anova.json` reports one joint Wald test per term —
+`model`, `context`, and the `model:context` interaction (the row that answers
+"only some models") — with raw and Holm-adjusted p-values side by side (switch
+methods with `--correction`; see
+[the statistics](../concepts/anova.md#per-term-wald-tests-and-multiplicity-correction)).
+
 ## Reproduce the analysis offline
 
 The example ships committed `sample-runs/`, so you can exercise the analysis and

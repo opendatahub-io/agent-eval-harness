@@ -80,8 +80,30 @@ def pmap(an):
         return vals
     factor=an.get("factor") or "effect"
     return {factor: an.get("p_value")}
+def padjmap(an):  # term -> adjusted p; mirrors pmap's single/multi-factor shapes
+    vals=an.get("p_adjusted")
+    if isinstance(vals,dict):
+        return vals
+    factor=an.get("factor") or "effect"
+    return {factor: vals}
+CORR_LABELS={"holm":"Holm","bh":"Benjamini-Hochberg (FDR)","none":"none"}
+def corr_label(an):
+    c=an.get("correction")
+    return CORR_LABELS.get(c,str(c)) if c is not None else None
+def corr_note(an):
+    # An adjusted value is never shown without naming the method behind it.
+    c=an.get("correction")
+    if c is None:
+        return ""
+    if c=="none":
+        return "No multiple-comparison correction — significance on raw p-values."
+    return (f"{corr_label(an)}-adjusted across a family of "
+            f"{an.get('family_size','?')} term test(s); significance on adjusted p.")
 def best_p(an):
-    vals=[v for v in pmap(an).values() if isinstance(v,(int,float))]
+    # The headline number must be the one the SIGNIFICANT verdict was judged
+    # on: minimum adjusted p when a correction ran, raw p otherwise.
+    source=padjmap(an) if an.get("correction") not in (None,"none") else pmap(an)
+    vals=[v for v in source.values() if isinstance(v,(int,float))]
     return min(vals) if vals else None
 def sig_for(an,factor):
     sig=an.get("significant")
@@ -93,27 +115,47 @@ def factor_label(an):
     return str(an.get("factor","model"))
 def anova_md_lines(an):
     lines=["","## ANOVA","",f"- Method: {an.get('method','?')}"]
+    corrected=an.get("correction") is not None
     if "p_values" in an:
         lines.append(f"- Factors: {factor_label(an)}")
-        for factor,p in pmap(an).items():
-            result="SIGNIFICANT" if sig_for(an,factor) else "not significant"
-            lines.append(f"- {factor}: p: {fnum(p,4)} — {result}")
+        adj=padjmap(an)
+        for term,p in pmap(an).items():
+            result="SIGNIFICANT" if sig_for(an,term) else "not significant"
+            line=f"- {term}: p: {fnum(p,4)}"
+            if corrected:
+                line+=f" · p-adj ({corr_label(an)}): {fnum(adj.get(term),4)}"
+            lines.append(f"{line} — {result}")
+        if corrected:
+            lines.append(f"- Correction: {corr_note(an)}")
         lines.append(f"- Result: {'SIGNIFICANT' if sig_any(an) else 'not significant'}")
         return lines
     p=an.get("p_value");ng2=an.get("details",[{}])[0].get("ng2") if an.get("details") else None
     lines += [f"- F: {fnum(an.get('f_statistic'))}",f"- p: {fnum(p,4)}",
-              f"- η²: {fnum(ng2)} ({eff_bucket(ng2)})",
-              f"- Result: {'SIGNIFICANT' if sig_any(an) else 'not significant'}"]
+              f"- η²: {fnum(ng2)} ({eff_bucket(ng2)})"]
+    if corrected:
+        lines.append(f"- p-adj ({corr_label(an)}, family of {an.get('family_size','?')}): "
+                     f"{fnum(an.get('p_adjusted'),4)}")
+    lines.append(f"- Result: {'SIGNIFICANT' if sig_any(an) else 'not significant'}")
     return lines
 def factor_p_table(an):
     if "p_values" not in an:
         return ""
-    rows="".join(
-        f"<tr><td>{html.escape(str(factor))}</td><td class=num>{fnum(p,4)}</td>"
-        f"<td>{'SIGNIFICANT' if sig_for(an,factor) else 'not significant'}</td></tr>"
-        for factor,p in pmap(an).items()
-    )
-    return f"<table style='margin-top:14px'><thead><tr><th>Factor</th><th class=num>p</th><th>Result</th></tr></thead><tbody>{rows}</tbody></table>"
+    corrected=an.get("correction") is not None
+    adj=padjmap(an)
+    head="<tr><th>Term</th><th class=num>p (raw)</th>"
+    if corrected:
+        head+="<th class=num>p (adj)</th>"
+    head+="<th>Result</th></tr>"
+    rows=""
+    for term,p in pmap(an).items():
+        rows+=f"<tr><td>{html.escape(str(term))}</td><td class=num>{fnum(p,4)}</td>"
+        if corrected:
+            rows+=f"<td class=num>{fnum(adj.get(term),4)}</td>"
+        rows+=f"<td>{'SIGNIFICANT' if sig_for(an,term) else 'not significant'}</td></tr>"
+    note=(f"<div class=sub style='margin-top:8px'>{html.escape(corr_note(an))}</div>"
+          if corrected else "")
+    return (f"<table style='margin-top:14px'><thead>{head}</thead>"
+            f"<tbody>{rows}</tbody></table>{note}")
 
 # ---------- markdown per run ----------
 def render_md(rid,d):
@@ -137,8 +179,9 @@ def render_html(rid,d):
     p,sig,F=best_p(an),sig_any(an),an.get("f_statistic")
     ng2=an.get("details",[{}])[0].get("ng2") if an.get("details") else None
     computed=isinstance(p,(int,float))
-    badge=(f"<span class='badge sig'>SIGNIFICANT &nbsp;p={fnum(p,3)}</span>" if sig
-           else f"<span class='badge nsig'>not significant"+(f" &nbsp;p={fnum(p,3)}" if computed else " · no variance")+"</span>")
+    plabel="adj. p" if an.get("correction") not in (None,"none") else "p"
+    badge=(f"<span class='badge sig'>SIGNIFICANT &nbsp;{plabel}={fnum(p,3)}</span>" if sig
+           else f"<span class='badge nsig'>not significant"+(f" &nbsp;{plabel}={fnum(p,3)}" if computed else " · no variance")+"</span>")
     levels=", ".join(str(x) for fv in des.get("factors",{}).values() for x in fv)
     meta=("<dl class=meta>"+f"<dt>Factor</dt><dd>{html.escape(factor_label(an))}</dd>"
           f"<dt>Levels</dt><dd>{html.escape(levels)}</dd>"
@@ -156,7 +199,7 @@ def render_html(rid,d):
     effect_label="factors" if "p_values" in an else "η² (effect)"
     effect_value=str(len(pmap(an))) if "p_values" in an else f"{fnum(ng2)}"+(f" · {eff_bucket(ng2)}" if ng2 is not None else "")
     tiles="".join(f"<div class=tile><div class=k>{k}</div><div class=v>{v}</div></div>" for k,v in
-        [("F-statistic",fnum(F)),("p-value",fnum(p,4)),
+        [("F-statistic",fnum(F)),(f"{plabel}-value" if plabel!="p" else "p-value",fnum(p,4)),
          (effect_label,effect_value),("alpha",str(an.get("alpha",0.05)))])
     if sig:
         top=max(conds,key=lambda x:x.get("mean",0))
