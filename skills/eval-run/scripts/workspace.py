@@ -497,6 +497,9 @@ def _create_repo_mode_settings(case_ws, project_root, config):
     if config.inputs.tools:
         _setup_in_repo_tool_hooks(case_ws, config, settings)
 
+    # Carry over the project's own hooks (after the harness's, before env)
+    _carry_over_hooks(settings, config)
+
     # Inject execution.env
     _inject_env(settings, config)
 
@@ -696,6 +699,49 @@ def _carry_over_permissions(settings):
         ).extend(dirs)
 
 
+def _carry_over_hooks(settings, config):
+    """Append the project's settings hooks to the run settings.
+
+    ``.claude/settings.json`` in the project (the same file the permission
+    carry-over reads) may declare ``hooks`` the skill under test relies on:
+    a ``SessionStart``/``compact`` recovery banner, a ``Stop`` guard.  Left
+    out of the workspace settings, the skill runs under eval without the
+    machinery it has in production, and the eval measures something else.
+
+    Each event's handler groups are deep-copied and **appended** after the
+    harness's own hooks (``SubagentStop`` capture, ``PreToolUse``
+    interception), so those keep running first; ``runner.settings`` is
+    merged later and still wins.  Hook commands run with the session cwd —
+    the case workspace — exactly as in the checkout, so a relative command
+    needs the file it names to be linked or copied into the workspace.
+    Disabled with ``execution.project_hooks: false``.  A malformed ``hooks``
+    block (or a malformed event/group inside it) is skipped, never raised.
+    """
+    import copy
+    import json as _json
+
+    if not getattr(config.execution, "project_hooks", True):
+        return
+    project_settings = Path.cwd() / ".claude" / "settings.json"
+    if not project_settings.exists():
+        return
+    try:
+        with open(project_settings) as f:
+            proj = _json.load(f)
+    except (_json.JSONDecodeError, OSError):
+        return
+    proj_hooks = proj.get("hooks") if isinstance(proj, dict) else None
+    if not isinstance(proj_hooks, dict):
+        return
+
+    hooks = settings.setdefault("hooks", {})
+    for event, groups in proj_hooks.items():
+        if not isinstance(groups, list):
+            continue
+        carried = [copy.deepcopy(g) for g in groups if isinstance(g, dict)]
+        if carried:
+            hooks.setdefault(event, []).extend(carried)
+
 def _merge_harness_permissions(settings, config):
     """Merge eval.yaml permissions.allow into settings so named subagents
     (which may not inherit --allowed-tools) receive the harness patterns."""
@@ -767,8 +813,8 @@ def _setup_subagent_only_hook(workspace, config):
 
     When there are no inputs.tools, we still need the SubagentStop hook
     to capture background agent transcripts for tracing. This creates
-    a minimal .claude/settings.json with just the hook and project
-    permissions.
+    a minimal .claude/settings.json with the hook, the project's
+    permissions and the project's own hooks.
     """
     import json as _json
 
@@ -793,6 +839,9 @@ def _setup_subagent_only_hook(workspace, config):
     subagent_dir = str((workspace / "subagents").resolve())
     setup_subagent_hook(settings, subagent_dir)
 
+    # Carry over the project's own hooks (after the harness's, before env)
+    _carry_over_hooks(settings, config)
+
     # Inject execution.env into settings
     _inject_env(settings, config)
 
@@ -811,7 +860,7 @@ def _setup_tool_hooks(workspace, config):
     Delegates the core interception artifacts (handlers, hooks, interceptor
     script) to :func:`agent_eval.tools.interception.generate_interception`,
     then layers workspace-specific settings on top (project permissions,
-    subagent capture, execution env, runner settings).
+    subagent capture, project hooks, execution env, runner settings).
     """
     import json as _json
     from agent_eval.tools.interception import generate_interception
@@ -846,6 +895,9 @@ def _setup_tool_hooks(workspace, config):
     from agent_eval.agent.stream_capture import setup_subagent_hook
     subagent_dir = str((workspace / "subagents").resolve())
     setup_subagent_hook(settings, subagent_dir)
+
+    # Carry over the project's own hooks (after the harness's, before env)
+    _carry_over_hooks(settings, config)
 
     # Inject execution.env into settings
     _inject_env(settings, config)

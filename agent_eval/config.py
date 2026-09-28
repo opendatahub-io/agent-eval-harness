@@ -626,6 +626,11 @@ class ExecutionConfig:
       Values starting with ``$`` are resolved from the caller's environment
       (e.g., ``$JIRA_TOKEN`` → ``os.environ["JIRA_TOKEN"]``).  Missing
       vars are silently omitted.  Literal values are passed through as-is.
+    - project_hooks: carry the project's ``.claude/settings.json`` ``hooks``
+      into each workspace's settings (appended after the harness's own
+      SubagentStop/PreToolUse hooks), so a skill keeps the hooks it has in
+      production — a SessionStart/compact recovery banner, a Stop guard.
+      Default True; set False to run the skill with the harness hooks only.
     """
 
     mode: str = "case"
@@ -636,6 +641,7 @@ class ExecutionConfig:
     max_budget_usd: Optional[float] = None
     parallelism: Optional[int] = None
     env: dict = field(default_factory=dict)
+    project_hooks: bool = True
     # Multi-step pipeline. When non-empty, REPLACES skill/prompt/arguments —
     # each entry is one agent invocation run sequentially in the shared per-case
     # workspace (see StepConfig). Mutually exclusive with skill/prompt; case
@@ -648,6 +654,12 @@ class ExecutionConfig:
         if self.mode not in valid_modes:
             raise ValueError(
                 f"execution.mode must be one of {valid_modes}, got: {self.mode}"
+            )
+
+        if not isinstance(self.project_hooks, bool):
+            raise ValueError(
+                "execution.project_hooks must be a boolean, got: "
+                f"{self.project_hooks!r}"
             )
 
         # Validate skill/prompt mutual exclusivity
@@ -2007,6 +2019,7 @@ class EvalConfig:
             max_budget_usd=exec_raw.get("max_budget_usd"),
             parallelism=exec_raw.get("parallelism"),
             env=exec_raw.get("env") or {},
+            project_hooks=exec_raw.get("project_hooks", True),
             steps=steps,
         )
 

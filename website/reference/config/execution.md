@@ -15,6 +15,7 @@ execution:
   # parallelism: 4        # concurrent cases (case mode only)
   # env:
   #   JIRA_TOKEN: $JIRA_TOKEN   # $VAR resolved from the caller's environment
+  # project_hooks: true     # carry the project's .claude/settings.json hooks (default)
 ```
 
 ## Fields
@@ -29,6 +30,7 @@ execution:
 | `max_budget_usd` | float \| null | `null` → **100.0** | Per-invocation cost cap. |
 | `parallelism` | int \| null | `null` → **1** | Max concurrent case executions (case mode only). |
 | `env` | map | `{}` | Env vars injected into each workspace's `.claude/settings.json`. See [env](#injecting-environment-variables). |
+| `project_hooks` | bool | `true` | Append the project's `.claude/settings.json` `hooks` to each workspace's settings. See [project hooks](#carrying-the-projects-hooks). |
 | `steps` | list | `[]` | Multi-step pipeline — sequential agent invocations sharing the case workspace. Replaces `skill`/`prompt`. See [Multi-step pipelines](#multi-step-pipelines). |
 
 !!! note "Nulls become harness defaults"
@@ -225,6 +227,35 @@ execution:
     `models.providers.openrouter.budget.run_usd`. See
     [models → providers](models.md#providers-openrouter).
 
+## Carrying the project's hooks
+
+A skill often relies on hooks declared in its project's `.claude/settings.json` — a
+`SessionStart` handler matching `compact` that re-injects the pipeline state after an
+auto-compaction, a `Stop` guard that refuses a premature end of turn. The harness
+generates its own `settings.json` per workspace, so without a carry-over the skill would
+run under eval **without** the machinery it has in production, and the eval would measure
+something else.
+
+With `project_hooks: true` (the default) the harness appends every event's handler
+groups from the project's `.claude/settings.json` to the workspace settings:
+
+- **after** its own hooks on the same event (`SubagentStop` transcript capture,
+  `PreToolUse` tool interception keep running first),
+- **before** [`runner.settings`](runner.md#settings), which is merged last and still wins.
+
+Hook commands run with the **workspace** as their cwd, exactly as they run with the
+checkout as cwd in production, so a relative command must name a file the harness links
+into the workspace (`scripts/`, `.claude/`, `.context/`, …). Set `project_hooks: false`
+to run the skill with the harness hooks only. A malformed `hooks` block is skipped, never
+raised. Like the permission carry-over, this applies to local workspaces (isolated, batch,
+and `workspace_mode: repo`); a Harbor task package carries `eval.yaml` permissions, not the
+project's settings file.
+
+```yaml
+execution:
+  project_hooks: false     # measure the skill without its production hooks
+```
+
 ## Precedence
 
 CLI flags on `/eval-run` (and `execute.py`) always override the config:
@@ -245,6 +276,7 @@ These errors are raised at **config load time** (`EvalConfig.from_yaml`), not mi
 | --- | --- |
 | `mode` not in `case`/`batch` | `execution.mode must be one of ['case', 'batch']` |
 | Both `skill` and `prompt` set | `execution.skill and execution.prompt are mutually exclusive` |
+| `project_hooks` not a boolean | `execution.project_hooks must be a boolean` |
 | Required template field missing at run time | `Missing required field in template: …` |
 
 !!! note "Deprecated top-level `skill:`"
