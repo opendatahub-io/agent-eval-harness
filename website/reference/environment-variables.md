@@ -50,7 +50,8 @@ Bedrock).
 | `ANTHROPIC_DEFAULT_OPUS_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL` | Map the `opus`/`sonnet`/`haiku` aliases to specific model IDs. |
 | `OPENROUTER_API_KEY` | OpenRouter inference key for `openrouter:/…` judges and for the agent-under-test when `models.skill` is `openrouter:/…` (the agent receives it as `ANTHROPIC_AUTH_TOKEN` through the run's settings overlay / `--agent-env`, never this variable). **Env-only**: the variable name is configurable (`models.providers.openrouter.api_key_env`) but the key may never appear in an eval config or any `env:` surface — such entries fail at load. |
 | `OPENROUTER_MANAGEMENT_KEY` | OpenRouter management key, read only at `routing.enforcement: key-guardrail` to provision a per-run key. Env-only, same rule as above. |
-| `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`, `CLOUDSDK_CONFIG`, `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE` | Standard GCP credential/project vars, forwarded when set — except under an OpenRouter plan, where the agent has no Vertex to reach and none of the operator's credential locations is forwarded (an explicit `runner.env` entry still is). |
+| `GOOGLE_APPLICATION_CREDENTIALS`, `CLOUDSDK_CONFIG`, `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE` | GCP credential locations, forwarded when set — except under an OpenRouter plan, where the agent has no Vertex to reach and none of them is forwarded (an explicit `runner.env` entry still is). |
+| `GOOGLE_CLOUD_PROJECT` | GCP project, forwarded when set. Under an OpenRouter plan it is a managed key: blanked by the plan and rejected in `runner.env`. |
 | `OPENAI_API_KEY` (and other `OPENAI_*`) | OpenAI credentials for `runner.type: codex`; forwarded to the `codex exec` subprocess and into Harbor containers running the Codex agent. |
 | `CODEX_HOME` | Codex CLI state directory, forwarded when set. |
 | `CODEX_API_KEY` | Alternative Codex credential, forwarded when set. |
