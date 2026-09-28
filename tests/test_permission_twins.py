@@ -49,6 +49,8 @@ PROJECT_ALLOW = [
 PROJECT_DENY = [
     "Bash(python3 scripts/foo.py --purge *)",  # narrows an allowed script
     "Bash(python3 scripts/nuke.py *)",         # not under the workspace: a deny twin still lands
+    "Bash(python3 scripts/*)",                 # a globbed deny keeps covering the allow twins
+    "Bash(python3 * scripts/foo.py)",          # a wildcard before the path is kept for a deny
     "Bash(curl *)",
 ]
 
@@ -116,12 +118,29 @@ def test_twins_are_literal_and_only_for_workspace_resources(tmp_path, monkeypatc
     assert not [r for r in extras if "missing.py" in r or "/opt/tool.py" in r or "*.py" in r or ".." in r]
 
 
-def test_deny_twins_do_not_need_the_target_to_exist():
+def test_deny_twins_need_no_existing_target_and_keep_their_globs():
     deny = workspace._expand_workspace_bash_permissions(list(PROJECT_DENY), Path("/ws"), require_exists=False)
     assert deny == PROJECT_DENY + [
         "Bash(python3 /ws/scripts/foo.py --purge *)",
         "Bash(python3 /ws/scripts/nuke.py *)",
+        "Bash(python3 /ws/scripts/*)",
+        "Bash(python3 * /ws/scripts/foo.py)",
     ]
+
+
+def test_a_globbed_relative_deny_still_covers_the_allow_twins(tmp_path, monkeypatch):
+    """Deny beats allow in Claude Code, but only when a deny rule matches the
+    command text: the allow twin `python3 <ws>/scripts/foo.py` would slip past a
+    relative `Bash(python3 scripts/*)` unless that deny is twinned as well."""
+    project = _project(tmp_path, monkeypatch, allow=["Bash(python3 scripts/foo.py *)"],
+                       deny=["Bash(python3 scripts/*)"])
+    ws = _workspace(tmp_path, project)
+    workspace._setup_subagent_only_hook(ws, _config(project))
+    perms = _settings(ws)
+    assert f"Bash(python3 {ws}/scripts/foo.py *)" in perms["allow"]
+    assert f"Bash(python3 {ws}/scripts/*)" in perms["deny"]
+    # and an allow rule with a globbed path is still never widened
+    assert not [r for r in perms["allow"] if "*" in r.split(" ")[1] if " " in r]
 
 
 def test_without_a_workspace_nothing_changes():
@@ -168,6 +187,7 @@ def test_batch_settings_carry_allow_and_deny_twins(tmp_path, monkeypatch):
     assert set(PROJECT_ALLOW) <= set(perms["allow"])
     assert f"Bash(python3 {ws}/scripts/foo.py --purge *)" in perms["deny"]
     assert f"Bash(python3 {ws}/scripts/nuke.py *)" in perms["deny"]
+    assert f"Bash(python3 {ws}/scripts/*)" in perms["deny"]
     assert "Bash(curl *)" in perms["deny"]
 
 

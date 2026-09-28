@@ -665,14 +665,20 @@ def _rule_path_token(tokens, index):
     return token, ""
 
 
-def _relative_path_index(tokens):
+def _relative_path_index(tokens, *, allow_glob=False):
     """Index of the first token of a Bash rule that names a project-relative
-    path (``scripts/foo.py``), or ``None`` when no token does or a wildcard
-    comes first — a ``*`` before the path would also match ``-c '<code>'``,
-    so such a rule is never widened."""
+    path (``scripts/foo.py``), or ``None`` when no token does.
+
+    For an allow rule (``allow_glob=False``) a wildcard anywhere up to and
+    including the path aborts: a ``*`` before the path would also match
+    ``-c '<code>'`` and a globbed path is not one file, so such a rule is
+    never widened.  For a deny rule (``allow_glob=True``) wildcards are kept
+    as they are — a deny twin can only remove permission, and a relative deny
+    such as ``Bash(python3 scripts/*)`` must keep covering the absolute twins
+    of the allow rules it narrows."""
     for index in range(len(tokens)):
         path, _suffix = _rule_path_token(tokens, index)
-        if "*" in path or "?" in path or "[" in path:
+        if not allow_glob and ("*" in path or "?" in path or "[" in path):
             return None
         if ("/" in path and not path.startswith(("/", "-", "~", "$", "'", '"'))
                 and ".." not in path.split("/")):
@@ -693,13 +699,15 @@ def _expand_workspace_bash_permissions(rules, workspace, *, require_exists=True)
     dropped, everything else verbatim, a trailing ``:*`` kept) and, when the
     given path is itself a symlink, its real path.  Never a wildcard: the twin
     allows — or denies — the same program on the same file and nothing more.
-    Rules that are already absolute, carry no path, glob the path or put a
-    ``*`` before it are left alone.
+    Allow rules that are already absolute, carry no path, glob the path or
+    put a ``*`` before it are left alone.
 
     ``require_exists`` (allow lists) adds a twin only when the target exists
     under *workspace* — a project resource the harness symlinked or copied
     there.  Deny lists pass ``False``: a deny twin can only remove permission,
-    and it must exist whenever the matching allow twin does.
+    it must exist whenever the matching allow twin does, and it keeps the
+    source rule's wildcards (``Bash(python3 scripts/*)`` denies the twin of
+    every allowed script), so the target need not exist either.
     """
     if workspace is None:
         return rules
@@ -719,7 +727,7 @@ def _expand_workspace_bash_permissions(rules, workspace, *, require_exists=True)
         if not m:
             continue
         tokens = m.group(1).split(" ")
-        index = _relative_path_index(tokens)
+        index = _relative_path_index(tokens, allow_glob=not require_exists)
         if index is None:
             continue
         path, suffix = _rule_path_token(tokens, index)

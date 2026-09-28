@@ -121,12 +121,14 @@ first path-looking argument is project-relative, it adds the same rule with that
 argument rewritten to the literal `<workspace>/<path>` (a leading `./` dropped, a
 trailing `:*` kept, and the real path added when the path it was given is a symlink). An
 allow twin is added only when the target exists under the workspace (a project resource
-the harness symlinked or copied there); a deny twin is added regardless, since it can
-only remove permission. The twin is never a wildcard: it allows or denies the same
-program on the same file and nothing more. A rule that is already absolute, has no path,
-globs the path or puts a `*` before it is left alone, because a `*` before the script
-name would also match `-c '<code>'`; a workspace path that cannot be spliced into a rule
-verbatim (whitespace, rule metacharacters) disables the twins with a warning. This makes
+the harness symlinked or copied there) and is never a wildcard: it allows the same
+program on the same file and nothing more, so an allow rule that is already absolute,
+has no path, globs the path or puts a `*` before it is left alone (a `*` before the
+script name would also match `-c '<code>'`). A deny twin is added regardless and keeps
+the source rule's wildcards, since it can only remove permission: `Bash(python3
+scripts/*)` in the deny list keeps denying the twins of every allowed script. A
+workspace path that cannot be spliced into a rule verbatim (whitespace, rule
+metacharacters) disables the twins with a warning. This makes
 a blanket `Bash(python3 *)` unnecessary for the absolute-path case. Harbor task packages
 carry only `eval.yaml`'s own permissions and are not twinned.
 
