@@ -40,6 +40,15 @@ permissions:
 You can mix both forms in the same list. The presence of *any* dict switches the
 whole block onto the path-based code path (see [How they compile](#how-they-compile)).
 
+Both lists also land, compiled the same way, in the workspace `.claude/settings.json`
+the local runner writes — with or without tool interception, in batch, per-case and
+repo mode — so the workspace settings carry the same rules the runner passes on the
+command line: one file to inspect, and the one the [absolute Bash
+twins](#relative-bash-rules-get-an-absolute-workspace-twin) are added to. (In earlier
+releases a path-based rule in `allow` aborted the workspace builders before the agent
+started, and `deny` reached the settings only through the interception generator; with
+simple rules the main agent still received both lists through the runner's CLI flags.)
+
 ## Path-based rules and the compiler
 
 Path-based rules are normalized by

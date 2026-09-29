@@ -28,6 +28,7 @@ import yaml
 
 from agent_eval.config import EvalConfig, deep_merge
 from agent_eval.tools.interception import extract_tool_patterns
+from agent_eval.tools.permissions import compile_permission_rules
 from agent_eval.workspace_provisioning import materialize_shared_files
 from workspace_files import _copy_input_files
 
@@ -853,24 +854,35 @@ def _carry_over_hooks(settings, config):
             hooks.setdefault(event, []).extend(carried)
 
 def _merge_harness_permissions(settings, config, workspace=None):
-    """Merge eval.yaml permissions.allow into settings so named subagents
-    (which may not inherit --allowed-tools) receive the harness patterns.
-    With *workspace*, relative-path Bash rules get their absolute twins too —
-    the merged allow rules, and whatever deny list the settings hold by now
-    (eval.yaml's, written by the interception generator, or the project's)."""
+    """Merge eval.yaml ``permissions`` into the workspace settings.
+
+    The runner also passes these lists on the command line (or, for
+    path-based rules, in its ``--settings`` overlay); holding them in the
+    workspace settings as well gives one file to inspect — with or without
+    tool interception, whose generator writes both lists only when
+    ``inputs.tools`` is set — and the place where relative-path Bash rules get
+    their absolute twins.  Both lists go through the same compiler as the
+    Harbor task packages (:func:`compile_permission_rules`: path-based rules
+    become Claude Code patterns, Bash hardening on deny) and are merged with
+    dedupe into whatever the settings already hold (the generator's, the
+    project's); with *workspace*, relative-path Bash rules get their absolute
+    twins (:func:`_expand_workspace_bash_permissions`).
+    """
+    cfg_perms = (config.permissions or {}) if hasattr(config, "permissions") else {}
     perms = settings.setdefault("permissions", {})
-    if perms.get("deny"):
+    deny = compile_permission_rules(cfg_perms.get("deny"), harden_bash=True)
+    if deny or perms.get("deny"):
+        merged_deny = list(perms.get("deny") or [])
+        for rule in deny:
+            if rule not in merged_deny:
+                merged_deny.append(rule)
         perms["deny"] = _expand_workspace_bash_permissions(
-            list(perms["deny"]), workspace, require_exists=False)
-    allow = (
-        (config.permissions or {}).get("allow")
-        if hasattr(config, "permissions")
-        else None
-    )
+            merged_deny, workspace, require_exists=False)
+    allow = compile_permission_rules(cfg_perms.get("allow"))
     if not allow:
         return
     harness_allow = _expand_workspace_bash_permissions(
-        _expand_symlink_permissions(list(allow)), workspace)
+        _expand_symlink_permissions(allow), workspace)
     existing = perms.setdefault("allow", [])
     for pattern in harness_allow:
         if pattern not in existing:
