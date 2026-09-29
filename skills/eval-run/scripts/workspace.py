@@ -793,7 +793,8 @@ def _carry_over_permissions(settings, workspace=None):
         # the interception generator) — a deny is never dropped by another.
         existing_deny = settings.setdefault("permissions", {}).setdefault("deny", [])
         for rule in _expand_workspace_bash_permissions(
-                list(proj_perms["deny"]), workspace, require_exists=False):
+                _expand_symlink_permissions(list(proj_perms["deny"])),
+                workspace, require_exists=False):
             if rule not in existing_deny:
                 existing_deny.append(rule)
     if proj_perms.get("additionalDirectories"):
@@ -865,8 +866,10 @@ def _merge_harness_permissions(settings, config, workspace=None):
     Harbor task packages (:func:`compile_permission_rules`: path-based rules
     become Claude Code patterns, Bash hardening on deny) and are merged with
     dedupe into whatever the settings already hold (the generator's, the
-    project's); with *workspace*, relative-path Bash rules get their absolute
-    twins (:func:`_expand_workspace_bash_permissions`).
+    project's).  Deny gets every variant allow gets — the resolved-path form
+    for a symlinked absolute prefix and, with *workspace*, the absolute Bash
+    twins (:func:`_expand_workspace_bash_permissions`) — so a deny keeps
+    covering what the widened allow covers.
     """
     cfg_perms = (config.permissions or {}) if hasattr(config, "permissions") else {}
     perms = settings.setdefault("permissions", {})
@@ -876,8 +879,10 @@ def _merge_harness_permissions(settings, config, workspace=None):
         for rule in deny:
             if rule not in merged_deny:
                 merged_deny.append(rule)
+        # A deny gets every variant an allow would: the resolved-path form for a
+        # symlinked absolute prefix (/tmp -> /private/tmp), then the Bash twins.
         perms["deny"] = _expand_workspace_bash_permissions(
-            merged_deny, workspace, require_exists=False)
+            _expand_symlink_permissions(merged_deny), workspace, require_exists=False)
     allow = compile_permission_rules(cfg_perms.get("allow"))
     if not allow:
         return

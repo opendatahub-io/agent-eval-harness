@@ -125,15 +125,19 @@ def test_project_deny_survives_next_to_the_eval_yaml_deny_without_interception(t
     assert perms["deny"] == ["Bash(rm *)"] + COMPILED_DENY + [f"Bash(python3 {ws}/scripts/foo.py --purge *)"]
 
 
-def test_compiled_allow_still_gets_the_symlink_expansion(tmp_path, monkeypatch):
+def test_symlink_expansion_applies_to_allow_and_deny_alike(tmp_path, monkeypatch):
     """The resolved-path variant for rules under a symlinked absolute prefix
-    (macOS /tmp -> /private/tmp) is still derived after compilation."""
-    project = _project(tmp_path, monkeypatch, None)
+    (macOS /tmp -> /private/tmp) is derived after compilation for allow — and
+    for deny, from eval.yaml and from the project, or a deny on the link would
+    leave the resolved path open that the widened allow grants."""
     real = tmp_path / "real-out"
     real.mkdir()
+    (real / "private").mkdir()
     link = tmp_path / "link-out"
     link.symlink_to(real)
-    perms, _ = _build("subagent-only", tmp_path, project,
-                      _config(project, f"permissions:\n  allow:\n    - Edit({link}/**)\n"))
-    assert f"Edit({link}/**)" in perms["allow"]
-    assert f"Edit({link.resolve()}/**)" in perms["allow"]
+    project = _project(tmp_path, monkeypatch, {"deny": [f"Edit({link}/project-private/**)"]})
+    perms, _ = _build("subagent-only", tmp_path, project, _config(
+        project, f"permissions:\n  allow:\n    - Edit({link}/**)\n  deny:\n    - Edit({link}/private/**)\n"))
+    assert {f"Edit({link}/**)", f"Edit({link.resolve()}/**)"} <= set(perms["allow"])
+    assert {f"Edit({link}/private/**)", f"Edit({link.resolve()}/private/**)"} <= set(perms["deny"])
+    assert {f"Edit({link}/project-private/**)", f"Edit({link.resolve()}/project-private/**)"} <= set(perms["deny"])
