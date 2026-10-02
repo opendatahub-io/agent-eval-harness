@@ -33,6 +33,40 @@ class TestGetAnthropicClient:
         assert isinstance(client, AnthropicVertex)
         assert client.access_token is None
 
+    # OpenShell >= 0.1.2: the placeholder the gateway injects is the access token
+    # (the proxy swaps it on the Vertex hosts), and the host agentic-ci picked
+    # for Claude Code is the judges' base URL too.
+    @patch.dict(os.environ, {
+        "ANTHROPIC_VERTEX_PROJECT_ID": "my-project",
+        "CLOUD_ML_REGION": "global",
+        "GOOGLE_VERTEX_AI_SERVICE_ACCOUNT_TOKEN": "openshell-placeholder",
+        "ANTHROPIC_VERTEX_BASE_URL": "https://aiplatform.googleapis.com/v1",
+    }, clear=True)
+    def test_vertex_with_openshell_placeholder(self):
+        from anthropic import AnthropicVertex
+        client = _get_anthropic_client()
+        assert isinstance(client, AnthropicVertex)
+        assert client.access_token == "openshell-placeholder"
+        assert str(client.base_url).rstrip("/") == "https://aiplatform.googleapis.com/v1"
+
+    @patch.dict(os.environ, {
+        "ANTHROPIC_VERTEX_PROJECT_ID": "my-project",
+        "GOOGLE_VERTEX_AI_TOKEN": "adc-placeholder",
+    }, clear=True)
+    def test_vertex_with_adc_placeholder(self):
+        client = _get_anthropic_client()
+        assert client.access_token == "adc-placeholder"
+
+    # The older provider's token still wins when both are present.
+    @patch.dict(os.environ, {
+        "ANTHROPIC_VERTEX_PROJECT_ID": "my-project",
+        "GCP_SA_ACCESS_TOKEN": "legacy-token",
+        "GOOGLE_VERTEX_AI_SERVICE_ACCOUNT_TOKEN": "openshell-placeholder",
+    }, clear=True)
+    def test_legacy_token_takes_precedence(self):
+        client = _get_anthropic_client()
+        assert client.access_token == "legacy-token"
+
     # Direct API path: ANTHROPIC_API_KEY should produce a standard Anthropic client
     @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}, clear=True)
     def test_api_key(self):

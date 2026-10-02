@@ -3565,11 +3565,25 @@ def _get_anthropic_client():
     region = os.environ.get("CLOUD_ML_REGION", "us-east5")
     if project_id:
         from anthropic import AnthropicVertex
-        access_token = os.environ.get("GCP_SA_ACCESS_TOKEN")
+        # GCP_SA_ACCESS_TOKEN is the token the older OpenShell google-cloud
+        # provider exposed. OpenShell >= 0.1.2 injects a placeholder instead
+        # (GOOGLE_VERTEX_AI_SERVICE_ACCOUNT_TOKEN for a service account,
+        # GOOGLE_VERTEX_AI_TOKEN for gcloud ADC) that the supervisor proxy
+        # swaps for the real token on the Vertex hosts, and agentic-ci names
+        # the host Claude Code should use in ANTHROPIC_VERTEX_BASE_URL; the
+        # judges follow the same route. With none of them set the SDK falls
+        # back to Application Default Credentials as before.
+        access_token = (
+            os.environ.get("GCP_SA_ACCESS_TOKEN")
+            or os.environ.get("GOOGLE_VERTEX_AI_SERVICE_ACCOUNT_TOKEN")
+            or os.environ.get("GOOGLE_VERTEX_AI_TOKEN")
+        )
+        base_url = os.environ.get("ANTHROPIC_VERTEX_BASE_URL")
         return AnthropicVertex(
             project_id=project_id,
             region=region,
             access_token=access_token or None,
+            **({"base_url": base_url} if base_url else {}),
         )
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN")

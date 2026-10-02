@@ -806,6 +806,14 @@ class ClaudeCodeRunner(EvalRunner):
         "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
         "ANTHROPIC_DEFAULT_HAIKU_MODEL",
         "CLOUD_ML_REGION", "CLAUDE_CODE_USE_VERTEX",
+        # OpenShell >= 0.1.2 has no metadata server in the sandbox: agentic-ci's
+        # env script points Claude Code at the Vertex host directly and hands it
+        # a placeholder bearer token that the supervisor proxy swaps for the real
+        # one (CLAUDE_CODE_SKIP_VERTEX_AUTH=1, ANTHROPIC_AUTH_TOKEN=<placeholder>,
+        # ANTHROPIC_VERTEX_BASE_URL=<host>/v1). Dropping the two switches here
+        # sends Claude Code back to Application Default Credentials, which fail.
+        "CLAUDE_CODE_SKIP_VERTEX_AUTH", "ANTHROPIC_VERTEX_BASE_URL",
+        "CLAUDE_CODE_MAX_RETRIES",
         "CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_CODE_SUBAGENT_MODEL",
         # The bg-kill failure note tells users to raise this; an exact-name
         # allowlist would otherwise swallow the export and make that advice
@@ -828,6 +836,12 @@ class ClaudeCodeRunner(EvalRunner):
         "GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_CONFIG",
         "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
     })
+    # The OpenShell placeholder switches above: Vertex routing details with no
+    # use under a plan, which blanks Vertex, so they stay home with the
+    # credential locations.
+    _VERTEX_PLACEHOLDER_KEYS = frozenset({
+        "CLAUDE_CODE_SKIP_VERTEX_AUTH", "ANTHROPIC_VERTEX_BASE_URL",
+    })
 
     def _build_env(self, extra_env=None):
         """Build subprocess environment with allowlisted keys only.
@@ -843,7 +857,7 @@ class ClaudeCodeRunner(EvalRunner):
         """
         ambient = self._SAFE_ENV_KEYS
         if self._plan is not None:
-            ambient = ambient - self._VERTEX_CREDENTIAL_KEYS
+            ambient = ambient - self._VERTEX_CREDENTIAL_KEYS - self._VERTEX_PLACEHOLDER_KEYS
         env = {k: v for k, v in os.environ.items() if k in ambient}
         for k, v in self._env.items():
             if v is None:

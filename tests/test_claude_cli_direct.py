@@ -203,6 +203,23 @@ def test_vertex_credential_locations_stay_home_under_a_plan(monkeypatch):
     assert "CLOUDSDK_CONFIG" not in explicit
 
 
+def test_openshell_vertex_placeholder_switches_travel_without_a_plan(monkeypatch):
+    """OpenShell >= 0.1.2: agentic-ci's env script sets CLAUDE_CODE_SKIP_VERTEX_AUTH
+    and ANTHROPIC_VERTEX_BASE_URL so Claude Code sends the placeholder bearer
+    token instead of looking for Application Default Credentials; both must reach
+    the CLI. Under a plan Vertex is blanked and they stay home."""
+    monkeypatch.setenv("CLAUDE_CODE_SKIP_VERTEX_AUTH", "1")
+    monkeypatch.setenv("ANTHROPIC_VERTEX_BASE_URL", "https://aiplatform.googleapis.com/v1")
+    monkeypatch.setenv("CLAUDE_CODE_MAX_RETRIES", "25")
+    without = ClaudeCodeRunner()._build_env()
+    assert without["CLAUDE_CODE_SKIP_VERTEX_AUTH"] == "1"
+    assert without["ANTHROPIC_VERTEX_BASE_URL"] == "https://aiplatform.googleapis.com/v1"
+    assert without["CLAUDE_CODE_MAX_RETRIES"] == "25"
+    with_plan = ClaudeCodeRunner(provider_plan=make_plan())._build_env()
+    assert not (set(with_plan) & ClaudeCodeRunner._VERTEX_PLACEHOLDER_KEYS)
+    assert with_plan["CLAUDE_CODE_MAX_RETRIES"] == "25"
+
+
 def test_overlay_is_removed_when_env_setup_fails(workspace, tmp_path):
     """The overlay holds the key before the process env is built: a failure
     there (the hook-ids directory cannot be created) still removes it."""
