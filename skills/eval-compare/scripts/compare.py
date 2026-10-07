@@ -193,7 +193,13 @@ def get_metric(run, key, default=None):
     if key == "num_turns":
         return rr.get("num_turns", default)
     if key == "wall_clock_s":
-        return rr.get("wall_clock_s", default)
+        # `wall_clock_s` is what execute.py writes today; the harbor runner and
+        # older runs record the same elapsed time as `duration_s`. Fall back so
+        # pre-rename runs still report a wall clock instead of "--".
+        wall = rr.get("wall_clock_s")
+        if wall is None:
+            wall = rr.get("duration_s")
+        return default if wall is None else wall
     if key == "output_tokens":
         return (rr.get("token_usage") or {}).get("output", default)
     if key == "cache_hit_rate":
@@ -337,7 +343,16 @@ def fmt(v, fmt_type="num"):
     if v is None:
         return "--"
     if fmt_type == "usd":
+        # Keep cents for run totals, but never round a real cost down to
+        # "$0.00": sub-cent figures (per-turn costs on cheap models) get
+        # enough decimals to stay distinguishable.
+        if v != 0 and abs(v) < 0.01:
+            return f"${v:,.4f}"
         return f"${v:,.2f}"
+    if fmt_type == "usd_precise":
+        # Per-turn costs span three orders of magnitude across models; a fixed
+        # 4 decimals keeps the whole column comparable at a glance.
+        return f"${v:,.4f}"
     if fmt_type == "pct":
         return f"{v * 100:.1f}%"
     if fmt_type == "int":
@@ -345,7 +360,10 @@ def fmt(v, fmt_type="num"):
     if fmt_type == "time":
         if v < 60:
             return f"{int(v)}s"
-        return f"{int(v / 60)} min"
+        if v < 3600:
+            return f"{int(v / 60)} min"
+        hours, minutes = divmod(int(v / 60), 60)
+        return f"{hours}h {minutes:02d}m"
     if fmt_type == "tokens":
         if v >= 1_000_000:
             return f"{v / 1_000_000:.1f}M"
@@ -787,7 +805,7 @@ def generate_report(runs, title, overview, output_dir, stats=None):
         ("Tokens / Turn", "output_tokens_per_turn", "int", True),
         ("Avg Turns" if multi_run else "Total Turns", "num_turns", "int", False),
         ("Wall Clock", "wall_clock_s", "time", False),
-        ("Cost / Turn", "cost_per_turn", "usd", False),
+        ("Cost / Turn", "cost_per_turn", "usd_precise", False),
         ("Cache Hit Rate", "cache_hit_rate", "pct", True),
     ]
     cost_rows = [(label, [model_aggs[m][key] for m in models], ft, hib)

@@ -170,6 +170,29 @@ def test_is_pass_rate_false_for_numeric_judge_even_if_all_01():
 
 
 # ---------------------------------------------------------------------------
+# get_metric
+# ---------------------------------------------------------------------------
+
+def _run_with_result(**result):
+    return {"run_result": result, "summary": {}}
+
+
+def test_get_metric_wall_clock_prefers_wall_clock_s():
+    run = _run_with_result(wall_clock_s=120, duration_s=999)
+    assert compare.get_metric(run, "wall_clock_s") == 120
+
+
+def test_get_metric_wall_clock_falls_back_to_duration_s():
+    # The harbor runner and pre-rename runs record elapsed time as duration_s.
+    run = _run_with_result(duration_s=20021.4)
+    assert compare.get_metric(run, "wall_clock_s") == 20021.4
+
+
+def test_get_metric_wall_clock_missing_returns_default():
+    assert compare.get_metric(_run_with_result(num_turns=10), "wall_clock_s") is None
+
+
+# ---------------------------------------------------------------------------
 # best_worst_indices + _rank_color
 # ---------------------------------------------------------------------------
 
@@ -198,6 +221,32 @@ def test_rank_color_best_and_worst():
 @pytest.mark.parametrize("v,expected", [(45, "45s"), (130, "2 min"), (0, "0s")])
 def test_fmt_time_sub_minute(v, expected):
     assert compare.fmt(v, "time") == expected
+
+
+@pytest.mark.parametrize("v,expected", [
+    (3600, "1h 00m"), (3599, "59 min"), (20021, "5h 33m"), (16800, "4h 40m"),
+])
+def test_fmt_time_hours(v, expected):
+    """Multi-hour runs read as hours, not a four-digit minute count."""
+    assert compare.fmt(v, "time") == expected
+
+
+@pytest.mark.parametrize("v,expected", [
+    (60.05, "$60.05"), (1.67, "$1.67"), (0.01, "$0.01"), (0, "$0.00"),
+    # Sub-cent costs keep enough precision to stay distinguishable from zero.
+    (0.001142, "$0.0011"), (0.007494, "$0.0075"),
+])
+def test_fmt_usd_never_rounds_a_real_cost_to_zero(v, expected):
+    assert compare.fmt(v, "usd") == expected
+
+
+@pytest.mark.parametrize("v,expected", [
+    (0.001142, "$0.0011"), (0.0393, "$0.0393"), (1.5, "$1.5000"),
+])
+def test_fmt_usd_precise_fixed_four_decimals(v, expected):
+    """Per-turn costs span orders of magnitude; a fixed width keeps the
+    column comparable across models."""
+    assert compare.fmt(v, "usd_precise") == expected
 
 
 @pytest.mark.parametrize("v,expected", [(800, "800"), (1500, "1.5K"), (2_000_000, "2.0M")])
