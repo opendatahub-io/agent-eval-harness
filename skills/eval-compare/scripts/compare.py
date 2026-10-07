@@ -194,11 +194,19 @@ def get_metric(run, key, default=None):
         return rr.get("num_turns", default)
     if key == "wall_clock_s":
         # `wall_clock_s` is what execute.py writes today; the harbor runner and
-        # older runs record the same elapsed time as `duration_s`. Fall back so
-        # pre-rename runs still report a wall clock instead of "--".
+        # older runs record elapsed time as `duration_s`. Fall back so those
+        # runs still report a wall clock instead of "--" — but only when
+        # `duration_s` really is elapsed time. Harbor sets
+        # `duration_s = wall_clock_s or total_agent_duration`, so when its job
+        # timestamps are missing the field degrades to the SUM of trial
+        # durations, which over-reports wall clock for parallel trials. That
+        # case is identifiable: harbor also writes the sum as
+        # `agent_duration_s`, and the two are equal only on the degraded path.
         wall = rr.get("wall_clock_s")
         if wall is None:
-            wall = rr.get("duration_s")
+            duration = rr.get("duration_s")
+            if duration is not None and duration != rr.get("agent_duration_s"):
+                wall = duration
         return default if wall is None else wall
     if key == "output_tokens":
         return (rr.get("token_usage") or {}).get("output", default)
@@ -339,6 +347,14 @@ def color_for(model):
     return MODEL_COLORS.get(model, "#8b949e")
 
 
+def _fmt_usd_nonzero(v, decimals, max_decimals=10):
+    """Format a dollar amount at `decimals` places, widening until the first
+    significant digit survives rounding. A real cost never renders as zero."""
+    while decimals < max_decimals and v != 0 and round(abs(v), decimals) == 0:
+        decimals += 1
+    return f"${v:,.{decimals}f}"
+
+
 def fmt(v, fmt_type="num"):
     if v is None:
         return "--"
@@ -347,12 +363,12 @@ def fmt(v, fmt_type="num"):
         # "$0.00": sub-cent figures (per-turn costs on cheap models) get
         # enough decimals to stay distinguishable.
         if v != 0 and abs(v) < 0.01:
-            return f"${v:,.4f}"
+            return _fmt_usd_nonzero(v, 4)
         return f"${v:,.2f}"
     if fmt_type == "usd_precise":
         # Per-turn costs span three orders of magnitude across models; a fixed
         # 4 decimals keeps the whole column comparable at a glance.
-        return f"${v:,.4f}"
+        return _fmt_usd_nonzero(v, 4)
     if fmt_type == "pct":
         return f"{v * 100:.1f}%"
     if fmt_type == "int":

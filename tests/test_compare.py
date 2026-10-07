@@ -188,6 +188,21 @@ def test_get_metric_wall_clock_falls_back_to_duration_s():
     assert compare.get_metric(run, "wall_clock_s") == 20021.4
 
 
+def test_get_metric_wall_clock_accepts_harbor_timestamp_duration():
+    # Harbor derived duration_s from job timestamps: it differs from the
+    # summed agent time, so it is a genuine wall clock.
+    run = _run_with_result(duration_s=900.0, agent_duration_s=2400.0)
+    assert compare.get_metric(run, "wall_clock_s") == 900.0
+
+
+def test_get_metric_wall_clock_rejects_summed_agent_duration():
+    # Harbor sets duration_s = wall_clock_s or total_agent_duration. With no
+    # job timestamps it equals agent_duration_s — a sum over parallel trials,
+    # not elapsed time. Better "--" than an inflated wall clock.
+    run = _run_with_result(duration_s=2400.0, agent_duration_s=2400.0)
+    assert compare.get_metric(run, "wall_clock_s") is None
+
+
 def test_get_metric_wall_clock_missing_returns_default():
     assert compare.get_metric(_run_with_result(num_turns=10), "wall_clock_s") is None
 
@@ -235,6 +250,8 @@ def test_fmt_time_hours(v, expected):
     (60.05, "$60.05"), (1.67, "$1.67"), (0.01, "$0.01"), (0, "$0.00"),
     # Sub-cent costs keep enough precision to stay distinguishable from zero.
     (0.001142, "$0.0011"), (0.007494, "$0.0075"),
+    # Widens past four decimals rather than showing "$0.0000".
+    (0.00004, "$0.00004"), (0.0000004, "$0.0000004"),
 ])
 def test_fmt_usd_never_rounds_a_real_cost_to_zero(v, expected):
     assert compare.fmt(v, "usd") == expected
@@ -242,10 +259,12 @@ def test_fmt_usd_never_rounds_a_real_cost_to_zero(v, expected):
 
 @pytest.mark.parametrize("v,expected", [
     (0.001142, "$0.0011"), (0.0393, "$0.0393"), (1.5, "$1.5000"),
+    (0.00004, "$0.00004"), (0, "$0.0000"),
 ])
 def test_fmt_usd_precise_fixed_four_decimals(v, expected):
     """Per-turn costs span orders of magnitude; a fixed width keeps the
-    column comparable across models."""
+    column comparable across models, widening only to keep a real cost
+    from displaying as zero."""
     assert compare.fmt(v, "usd_precise") == expected
 
 
