@@ -1,3 +1,17 @@
+# [1.55.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.54.0...v1.55.0) (2026-10-08)
+
+
+### Bug Fixes
+
+* **anova:** accept scalar judge_results in the per-judge fan-out and tighten honesty details ([a872c39](https://github.com/opendatahub-io/agent-eval-harness/commit/a872c39081cf2e4d4b60cabe93028d6e9b9baab1))
+* **anova:** map integers beyond float range to a missing observation instead of raising ([ab4397b](https://github.com/opendatahub-io/agent-eval-harness/commit/ab4397b64934bd83d9273087e18454f770cc4224))
+* **anova:** treat non-finite judge values as missing observations, and keep unobserved judges visible ([fce31b9](https://github.com/opendatahub-io/agent-eval-harness/commit/fce31b9a80ef4dbe888dbf09ab59041ca1859d01))
+
+
+### Features
+
+* **anova:** opt-in per-judge ANOVA fan-out with Benjamini-Hochberg correction ([1f71e12](https://github.com/opendatahub-io/agent-eval-harness/commit/1f71e12ce1d5fdf0e4fe60b6ee38a1985a0b671c))
+
 # [1.54.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.53.4...v1.54.0) (2026-10-08)
 
 
