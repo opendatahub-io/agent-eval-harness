@@ -248,13 +248,12 @@ def test_in_memory_scalar_judge_results_are_analysed():
 
 
 def test_non_finite_judge_values_are_not_observations(tmp_path):
-    """nan/inf are not measurements (and an int beyond float range must not
-    crash extraction): an inf must never reach the fit as variance, and a
-    judge whose every value is non-finite is excluded with a reason that
-    names the cause rather than analysed on garbage."""
+    """nan/inf are not measurements: an inf must never reach the fit as
+    variance, and a judge whose every value is non-finite is excluded with
+    a reason that names the cause rather than analysed on garbage."""
     runs = tmp_path / "eval"
     _mk_run(runs, "r-a", "model-a", {
-        "c1": {"quality": 4, "broken": 10 ** 400},
+        "c1": {"quality": 4, "broken": float("inf")},
         "c2": {"quality": 5, "broken": float("nan")},
         "c3": {"quality": 4, "broken": float("inf")},
         "c4": {"quality": 5, "broken": float("nan")},
@@ -274,3 +273,28 @@ def test_non_finite_judge_values_are_not_observations(tmp_path):
     assert pj["family_size"] == sum(
         1 for e in pj["judges"].values()
         for term in e["terms"].values() if term["p_raw"] is not None)
+
+
+def test_judge_columns_observation_rules():
+    """Unit contract of the observation filter: finite numerics and bools are
+    observations; None, non-numeric, nan/inf, and an int beyond float range
+    (float() raises OverflowError) all register the column with NaN rather
+    than crashing or inventing a value; pairwise never registers."""
+    from analyze import _judge_columns
+    cols = _judge_columns({
+        "ok": {"value": 4},
+        "flag": {"value": True},
+        "scalar": 0.5,
+        "errored": {"value": None, "error": "crashed"},
+        "text": {"value": "n/a"},
+        "nan": {"value": float("nan")},
+        "inf": float("inf"),
+        "huge": 10 ** 400,
+        "pairwise": {"value": "A"},
+        "cmp": {"value": 1, "judge_type": "pairwise"},
+    })
+    assert cols["judge:ok"] == 4.0 and cols["judge:flag"] == 1.0
+    assert cols["judge:scalar"] == 0.5
+    for name in ("errored", "text", "nan", "inf", "huge"):
+        assert math.isnan(cols[f"judge:{name}"]), name
+    assert "judge:pairwise" not in cols and "judge:cmp" not in cols
