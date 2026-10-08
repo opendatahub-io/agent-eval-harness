@@ -56,8 +56,8 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/compare.py discover <input-dir>
 
 The scanner walks `<input-dir>` recursively, treating **every directory that
 contains a `summary.yaml`** as a run. It prints a JSON manifest with each run's
-directory, resolved model, cost, judge scores, and whether an HTML report is
-present. Runs are grouped by model (from `run_result.json`, falling back to the
+directory, resolved model, cost and its `cost_source`, judge scores, and whether an HTML
+report is present. Runs are grouped by model (from `run_result.json`, falling back to the
 `run_id`), so several runs of one model aggregate together.
 
 The manifest also reports `"has_stats": true` when an `anova.json` (written by
@@ -138,6 +138,45 @@ open <output-dir>/index.html
     only *renders* the pre-computed numbers in `anova.json`. Produce that file
     first with [`/eval-anova`](eval-anova.md), pointing both skills at the same
     directory of runs.
+
+## Mixed providers and cost sources
+
+`/eval-compare` never refuses to pool runs. When the runs it finds were made on different
+providers — Claude on Vertex next to GLM on OpenRouter, or `audit` next to
+`key-guardrail` — it groups and averages them as usual and **appends footnotes** under the
+Cost & Efficiency table (`compare.py generate` also prints them as `NOTE:` lines on
+stderr). The classification behind the first footnote is each run's `cost_source` from
+`run_result.json`: legacy hyphenated literals are normalised, and a run without the field
+counts as `runner:reported`, the historical default.
+
+| Class | `cost_source` values | Meaning |
+| --- | --- | --- |
+| `real` | any `openrouter:*` (`openrouter:generation`, `openrouter:key-usage`) | Billed spend read back from the provider. |
+| `estimate` | `runner:reported`, `runner:estimate`, `harness:estimate`, anything else | The runner's or the harness's own figure, not spend. |
+| `unavailable` | `unavailable` | No truth source landed; `cost_usd` is `null`. |
+
+The five footnotes, verbatim:
+
+- `Cost sources are mixed and not directly comparable — <class>: <models>; … . Provider-priced (openrouter:*) costs are billed spend; runner/harness figures are estimates; unavailable means no truth source landed.`
+  — the compared runs fall into more than one class.
+- `<model>: runs were pooled across different routing declarations (<n> routing shas) — served providers may differ.`
+- `<model>: runs were pooled across enforcement levels (<levels>) — these are different factor levels.`
+  — `audit`, `key-guardrail` and `none` (no plan, or a plan whose routing table declares nothing (no `order`, `only`, `ignore`, `allow_fallbacks` or `quantizations` on any key))
+  mixed under one model.
+- `<model>: <n> run(s) have routing violations or an incomplete audit.`
+- `<model>: served providers differ across runs — <run>: declared …; served … | …`
+  — each run's declared pins next to the providers that actually served it.
+
+Each per-run tab embeds that run's own `report.html`, so the **Cost Provenance** panel
+differs from tab to tab: it renders only when the run-level `run_result.json` carries a
+`cost_source` — every provider-routed run and a batch-mode `claude-code` run — and is
+absent otherwise, a plain Anthropic case-mode run of the `claude-code` runner included
+(its `runner:reported` label lives per case only); that asymmetry is expected. The panel's
+rows are listed in [The HTML report → Cost provenance and routing audit](../concepts/report.md#cost-provenance-and-routing-audit).
+[`/eval-anova`](eval-anova.md#rules-at-a-glance) is stricter — it skips degraded and
+mixed-enforcement runs instead of footnoting them. The mental model behind the classes is
+in [Model providers → Cost provenance across providers](../concepts/providers.md#cost-provenance-across-providers);
+the field list is in [runs directory → cost provenance](../reference/runs-directory.md#cost-provenance).
 
 ## Where to go next
 

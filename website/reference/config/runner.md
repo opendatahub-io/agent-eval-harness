@@ -31,6 +31,13 @@ flowchart TD
 | `cli` | Any command you provide, via a placeholder template | Wrapping OpenCode, a custom agent, or a shell script. See the [opaque CLI runner contract](https://github.com/opendatahub-io/agent-eval-harness/blob/main/docs/opaque-cli-runner-contract.md) |
 | `responses-api` | OpenAI Responses API with the Shell tool + Skills API | Apples-to-apples comparison of the *same* skill on an OpenAI model |
 
+!!! note "Which model ids a runner accepts"
+    `claude-code` takes a bare Anthropic id, `anthropic:/…` or `openrouter:/<author>/<slug>`
+    — it is the only runner the harness-managed OpenRouter plan supports. The other four
+    pass the resolved skill model to their own CLI or API and authenticate through their
+    own environment (`CURSOR_API_KEY`, `OPENAI_*`). See
+    [Model providers → Which role accepts which provider](../../concepts/providers.md#which-role-accepts-which-provider).
+
 ## Field reference
 
 Not every runner reads every field. The matrix below shows where each field lands.
@@ -199,6 +206,12 @@ A `dict` whose meaning depends on the runner:
         memory_limit_mb: 4096
     ```
 
+    !!! warning "`settings.api_key` is a secret authored in your config"
+        The runner reads `api_key` from `runner.settings` as written — the one place a
+        provider credential can live in `eval.yaml`, outside the env-only rule that
+        applies to `OPENROUTER_*`. Leave it unset and export `OPENAI_API_KEY` instead;
+        the runner falls back to it.
+
 === "codex"
 
     Each key is passed to `codex exec` as a `-c key=value` config override.
@@ -269,15 +282,11 @@ runner:
     [environment variables](../environment-variables.md).
 
 !!! note "Managed keys under an OpenRouter plan"
-    When `models.skill` is `openrouter:/…`, the provider plan owns the agent's
-    routing env on `runner.env`, `runner.settings.env`, `execution.env` and the
-    per-step variants: `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` and
-    `ANTHROPIC_CUSTOM_HEADERS` are rejected on presence, the Vertex/Bedrock
-    blanks and the model aliases load only when identical to the plan's values,
-    and `OPENROUTER_API_KEY` / `OPENROUTER_MANAGEMENT_KEY` may never be authored
-    anywhere. The plan's env reaches the agent through the runner's own channel
-    (overlay, `--agent-env`, pod spec + Secret) and wins over `runner.env` there.
-    See [models.providers](providers.md).
+    While `models.skill` is `openrouter:/…`, the provider plan owns the agent's routing
+    variables on `runner.env` and `runner.settings.env` as on every other env surface,
+    and its block reaches the agent through the runner's own channel (overlay,
+    `--agent-env`, pod spec + Secret), winning over `runner.env` — the rule is spelled
+    out once in [models.providers → Validation](providers.md#validation).
 
 ### `system_prompt`
 

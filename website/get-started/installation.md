@@ -1,14 +1,16 @@
 # Installation & setup
 
-The harness is a **Claude Code plugin**. Installing it makes all eight skills
+The harness is a **Claude Code plugin**. Installing it makes all ten skills
 available: `/eval-setup`, `/eval-analyze`, `/eval-dataset`, `/eval-run`,
-`/eval-review`, `/eval-mlflow`, `/eval-optimize`, and `/eval-check`.
+`/eval-review`, `/eval-mlflow`, `/eval-optimize`, `/eval-compare`, `/eval-anova`,
+and `/eval-check`.
 
 ## Requirements
 
 - **Python 3.11+** (3.12+ if you plan to use the [Harbor](../guides/harbor.md) backend)
 - **Claude Code**
-- An **Anthropic API key** *or* **Google Vertex** credentials
+- Model credentials: an **Anthropic API key**, **Google Vertex** credentials, or an
+  **OpenRouter** key (see [step 2](#2-provide-model-credentials))
 
 ## 1. Install the plugin
 
@@ -29,22 +31,25 @@ available: `/eval-setup`, `/eval-analyze`, `/eval-dataset`, `/eval-run`,
 !!! info "Dependencies auto-install"
     The plugin's `SessionStart` hook installs the Python dependencies into an
     isolated virtual environment the first time you open a session — you don't need
-    to `pip install` anything for local runs. The optional extras below are only for
-    specific backends.
+    to `pip install` anything for local runs. The optional extras below are for
+    specific backends, runners and skills.
 
-Optional backend extras (installed into the same environment):
+Optional extras (installed into the same environment):
 
 | Extra | Enables | Command |
 | --- | --- | --- |
 | `mlflow` | Experiment tracking, datasets, traces | `pip install -e '.[mlflow]'` |
 | `harbor` | Containerized execution (Podman/Kubernetes) | `pip install -e '.[harbor]'` |
 | `evalhub` | The EvalHub platform adapter | `pip install -e '.[evalhub]'` |
-| `openai` | The OpenAI Responses API runner | `pip install -e '.[openai]'` |
+| `openai` | The OpenAI SDK: the Responses API runner, and `openai:/` / `openrouter:/` judges (the session hook adds it to `.eval-venv` by itself when a judge model needs it) | `pip install -e '.[openai]'` |
+| `anova` | The statistics behind [`/eval-anova`](../guides/eval-anova.md) (scipy, statsmodels, pandas, pingouin) | `pip install -e '.[anova]'` |
 | `all` | Everything above | `pip install -e '.[all]'` |
 
 ## 2. Provide model credentials
 
-The harness reads credentials from the environment. Use **one** of:
+The harness reads credentials from the environment. Pick the path for the models
+you name in `models:` — the agent under test and the LLM judges each follow their
+own model id (see [Model providers](../concepts/providers.md#credentials-by-backend)):
 
 === "Anthropic API"
 
@@ -55,22 +60,51 @@ The harness reads credentials from the environment. Use **one** of:
 === "Google Vertex"
 
     ```bash
+    export CLAUDE_CODE_USE_VERTEX=1
     export ANTHROPIC_VERTEX_PROJECT_ID=my-gcp-project
-    export ANTHROPIC_VERTEX_REGION=us-east5
+    export CLOUD_ML_REGION=us-east5
     ```
+
+    This is the one Vertex recipe: the Claude Code CLI (the agent) reads all three,
+    and the Anthropic judge client reads `ANTHROPIC_VERTEX_PROJECT_ID` and
+    `CLOUD_ML_REGION` (default `us-east5`). Only `/eval-dataset`'s synthetic
+    generation reads `ANTHROPIC_VERTEX_REGION` instead of `CLOUD_ML_REGION` — export
+    it too if you generate synthetic cases on Vertex.
+
+=== "OpenRouter"
+
+    ```bash
+    export OPENROUTER_API_KEY=sk-or-...
+    ```
+
+    Then write the model as `openrouter:/<author>/<slug>` — `--model` or
+    `models.skill` for the agent (requires `runner.type: claude-code`), `models.judge`
+    or a per-judge `model:` for judges. Two things still want an Anthropic path:
+    [`/eval-setup`'s credential check](#3-optional-run-eval-setup) and
+    [synthetic dataset generation](../guides/eval-dataset.md#synthetic-generation-in-detail).
+    See [Running on OpenRouter](../guides/openrouter.md).
 
 See the [environment variables reference](../reference/environment-variables.md) for
 the full list.
 
 ## 3. (Optional) Run `/eval-setup`
 
-`/eval-setup` is a convenience command that verifies dependencies, checks your API
-keys, configures MLflow, and sets the runs directory. **You can skip it** — but it's
-the easiest way to stand up MLflow and confirm your environment is healthy.
+`/eval-setup` is a convenience command that verifies dependencies, checks your model
+credentials, configures MLflow, and sets the runs directory. **You can skip it** — but
+it's the easiest way to stand up MLflow and confirm your environment is healthy.
 
 ```bash
 /eval-setup
 ```
+
+!!! warning "The credential check is not provider-aware"
+    The setup preflight (`check_env.py`) recognises `ANTHROPIC_API_KEY` and
+    `ANTHROPIC_VERTEX_PROJECT_ID` only. An OpenRouter-only or OpenAI-only setup — or a
+    `cursor` / `codex` runner authenticating through `CURSOR_API_KEY` / `OPENAI_API_KEY`
+    — is reported as `api_keys … none set` and the check exits non-zero, although runs
+    work. Export whatever your model ids need per
+    [Model providers → Credentials by backend](../concepts/providers.md#credentials-by-backend);
+    the gap is listed under [Limitations](../concepts/providers.md#limitations).
 
 Useful flags:
 

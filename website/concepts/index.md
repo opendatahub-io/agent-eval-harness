@@ -15,9 +15,11 @@ flowchart LR
     C[eval.yaml] --> E[Execution model<br/>case/batch · skill/prompt]
     E --> R[Runner<br/>agent runtime]
     R --> B[Backend<br/>Local · Harbor · EvalHub]
+    R -. model id .-> P[Provider<br/>Anthropic · OpenRouter · OpenAI]
     D[Dataset] --> R
     B --> O[Outputs + traces]
     O --> J[Judges]
+    J -. judge model .-> P
     J --> T[Thresholds]
     J --> RW[Reward scalar]
     J --> REP[HTML report]
@@ -31,6 +33,7 @@ flowchart LR
 - [**The execution model**](execution-model.md) — `case`/`batch` × `skill`/`prompt`: how many invocations, and what to run.
 - [**Runners**](runners.md) — The `EvalRunner` abstraction: `claude-code`, `cursor`, `codex`, `cli`, `responses-api`.
 - [**Execution backends**](backends.md) — One `eval.yaml`, three execution paths: Local, Harbor, EvalHub.
+- [**Model providers**](providers.md) — Who serves each role's model: bare ids and `provider:/` URIs, the three families, credentials per backend, cost provenance.
 - [**Datasets & provenance**](datasets.md) — Case anatomy and the `skill` / `synthetic` / `from-traces` strategies.
 - [**Judges & scoring**](judges.md) — The five judge types and the `outputs` record they see.
 - [**Pairwise & sampling**](pairwise-and-sampling.md) — A/B run comparison and statistical judge stability.

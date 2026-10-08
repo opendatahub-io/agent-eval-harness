@@ -19,7 +19,7 @@ command behaves differently depending on the config it reads. There is **no
 | `generation.strategy` | Who writes cases | Source of content |
 | --- | --- | --- |
 | `skill` *(default, absent → this)* | The agent authors them | The skill analysis in `eval.md` / `eval.yaml` |
-| `synthetic` | A script (`generate_synthetic.py`) via the Claude API | `generation.seeds` + `generation.context` |
+| `synthetic` | A script (`generate_synthetic.py`) via the Anthropic SDK for a Claude model, or via the configured runner for any other accepted id | `generation.seeds` + `generation.context` |
 | `from-traces` | The agent shapes them | Real inputs extracted from MLflow production traces |
 
 ```mermaid
@@ -209,8 +209,18 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/generate_synthetic.py \
   --config eval.yaml --output eval/dataset/cases --dry-run
 ```
 
-The generator uses `models.judge` (falling back to a default) and authenticates via
-`ANTHROPIC_API_KEY` or `ANTHROPIC_VERTEX_PROJECT_ID`. It writes each case's
+The generator uses `models.judge` (falling back to `claude-opus-4-6`); there is no
+`generation.model` key. That model is either a Claude id — bare or `anthropic:/…`,
+called through the Anthropic SDK with `ANTHROPIC_API_KEY`, else `ANTHROPIC_AUTH_TOKEN`,
+else `ANTHROPIC_VERTEX_PROJECT_ID` (Vertex region from `ANTHROPIC_VERTEX_REGION`,
+default `us-east5`; unlike the judge client, a key or token wins over Vertex here) — or
+anything else — a `runner:/<model>` id, or a bare id that is not a Claude id (one
+containing `claude`, starting with `opus`, `sonnet` or `haiku`, or in the LiteLLM
+`anthropic/…` form) — which the configured runner serves. `openai:/` and `openrouter:/` ids are **rejected** with an
+explicit error: if your judges run on OpenRouter, keep `models.judge` on a Claude or
+runner-served id and put the `openrouter:/` model on each judge's own `model:` (see
+[Model providers](../concepts/providers.md#which-role-accepts-which-provider)).
+It writes each case's
 `input.yaml` (only what the agent sees) and `annotations.yaml` (all evaluation
 metadata), auto-moving any `expected_*` fields the LLM misplaces into `input` back
 into `annotations`.

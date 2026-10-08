@@ -185,6 +185,42 @@ jobs:
     with `--runner harbor` — the config is unchanged; only the substrate flag
     differs.
 
+## OpenRouter in CI
+
+A run whose skill model is `openrouter:/…` ([Running on OpenRouter](openrouter.md)) needs
+three more things from the job:
+
+- **The key as a secret.** Export `OPENROUTER_API_KEY` from the CI secret store, and
+  `OPENROUTER_MANAGEMENT_KEY` as well at `enforcement: key-guardrail`. Neither may be
+  authored in `eval.yaml` or on an `env:` surface — the loader rejects it. Anthropic
+  judges still need their own credentials; the agent under a plan does not.
+- **Two extra gates.** `execute.py` takes `--strict-cost` and `--strict-routing`. Both
+  turn a run that would otherwise exit `0` into exit `2` (a run that already failed keeps
+  its own code), and both are no-ops without a provider plan. `--strict-cost` fails on
+  `cost_source: unavailable` or `budget.exceeded: run`; `--strict-routing` fails on
+  routing violations or `audit_complete: false`. The reason is printed as `STRICT: …` on
+  stderr and persisted in `run_result.json` as `strict_failures`, with `exit_code`
+  rewritten to `2`. `--allow-estimate` is the opposite knob — it records the runner
+  estimate as `runner:estimate` instead of `unavailable` — and belongs to offline
+  replays, not to CI.
+- **A null cost is unknown, not zero.** Without `--strict-cost` an unreconciled run still
+  exits `0`: `execute.py` prints `COST: unavailable`, the reconcile step warns
+  `cost_source unavailable — no /generation row and no key-usage delta landed`, and the
+  report's **Cost Provenance** panel opens with a red banner ("Cost unavailable: no
+  /generation row and no key-usage delta landed — cost_usd is null (the runner estimate is
+  not spend)"). A job that reads `cost_usd` for a spend budget must treat `null` as
+  unknown.
+
+```yaml title=".github/workflows/eval.yml (excerpt)"
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}     # the inference key
+      # OPENROUTER_MANAGEMENT_KEY: ${{ secrets.OPENROUTER_MANAGEMENT_KEY }}  # key-guardrail only
+```
+
+The threshold gate exits `1` and the strict flags exit `2`; a CI step fails on either.
+`--strict-cost` / `--strict-routing` are flags of `execute.py`, listed with the other
+`/eval-run` flags in [eval-run → Flags](eval-run.md#flags).
+
 ## Where to go next
 
 <div class="grid cards" markdown>

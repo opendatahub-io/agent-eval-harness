@@ -135,6 +135,16 @@ optimize. Same config on your laptop, Harbor containers, or EvalHub.
 
     [:octicons-arrow-right-24: Runners](concepts/runners.md)
 
+-   :material-cloud-outline: **Any model provider**
+
+    ---
+
+    Claude on Anthropic or Vertex by default; open-weights models through
+    OpenRouter on the agent and judge roles with `openrouter:/<author>/<slug>`;
+    OpenAI-compatible judges.
+
+    [:octicons-arrow-right-24: Model providers](concepts/providers.md)
+
 -   :material-trophy: **Reward API for RL**
 
     ---

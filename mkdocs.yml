@@ -186,6 +186,7 @@ nav:
     - "The execution model": concepts/execution-model.md
     - "Runners (agent runtimes)": concepts/runners.md
     - "Execution backends": concepts/backends.md
+    - "Model providers": concepts/providers.md
     - "Datasets & case provenance": concepts/datasets.md
     - "Judges & scoring": concepts/judges.md
     - "Pairwise & judge sampling": concepts/pairwise-and-sampling.md

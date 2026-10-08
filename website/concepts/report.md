@@ -41,7 +41,7 @@ Sections render top-to-bottom in this order; empty sections are omitted.
 
 ```mermaid
 flowchart TD
-    H[Header: skill / run / baseline / date] --> RC[Run Configuration + Model Usage]
+    H[Header: skill / run / baseline / date] --> RC[Run Configuration + Cost Provenance + Model Usage]
     RC --> AN[Analysis — from analysis.md, if present]
     AN --> SS[Scoring Summary + stability bars]
     SS --> RG[Regressions — only if a threshold failed]
@@ -52,12 +52,59 @@ flowchart TD
 
 | Section | Source | Notes |
 | --- | --- | --- |
-| Run Configuration | `run_result.json` | Model, effort, agent, duration, cost, turns, exit code, plus a **Model Usage** table (per-model tokens, cache hit rate, cost/turn, cost/Mtok). |
+| Run Configuration | `run_result.json` + `summary.yaml` | Model, effort, agent, duration, cost, turns, exit code, then **Judge Cost** / **Total Cost** rows from `summary.yaml` (`judge_usage`, `total_cost_source`), plus a **Model Usage** table (per-model tokens, cache hit rate, cost/turn, cost/Mtok). |
+| Cost Provenance | `run_result.json` | Between the configuration grid and Model Usage; rendered only when the run-level `run_result.json` carries a `cost_source` — a batch-mode `claude-code` run or any provider-plan run; absent in case mode without a plan. One **Cost source** row for a batch-mode Anthropic run; for a provider-routed run, the full provenance and routing-audit record with red/amber banners. See [below](#cost-provenance-and-routing-audit). |
 | Analysis | `analysis.md` | The agent's recommendation, rendered as markdown in a highlighted callout. Optional YAML frontmatter (`agent`, `model`, `date`) drives the subtitle. |
 | Scoring Summary | `summary.yaml` + `thresholds` | One row per judge: type, metric (`pass_rate` or `mean`), value, threshold, PASS/FAIL/SKIP/ERROR. Pairwise gets its own row. |
 | Regressions | thresholds | Only appears when a judge is below its [threshold](../concepts/thresholds.md). |
 | Per-Case Reward Overview | `summary.yaml` + `reward` | Compact matrix of the [reward](../concepts/reward-api.md) and every judge score per case. **Rendered only when a non-empty `reward:` block is configured.** |
 | Per-Case Details | `cases/` tree | Judge rationales, inputs, rendered output artifacts, and baseline diffs — one collapsible card per case. |
+
+## Cost provenance and routing audit
+
+A **Cost Provenance** panel is drawn from the run-level `run_result.json` whenever
+it carries a `cost_source`. Two kinds of run do: a **batch-mode** run of the
+`claude-code` runner, whose runner label (`runner:reported` on the Anthropic API or
+Vertex, `runner:estimate` behind an `ANTHROPIC_BASE_URL` gateway) is written to that
+file, and every run under a **provider plan** on any backend — Local, Harbor or
+EvalHub — where reconciliation writes the label. In the default case mode without a
+plan the runner's label lives only in `cases/<id>/run_result.json`, which the report
+does not read, so there is no panel; nor is there one on Harbor or EvalHub without a
+plan, or for the other runners, which write no `cost_source`. Which rows appear
+depends on what was written:
+
+| Row | Present when | Source field |
+| --- | --- | --- |
+| Cost source | always (the panel's own condition) | `cost_source` |
+| Cost confidence — `priced / total` requests, unpriced count | reconciled under a plan | `cost_confidence`, `cost_coverage` |
+| Cost (runner estimate), with its `×` factor over real spend | `cost_usd_estimate` is set and differs from `cost_usd` | `cost_usd_estimate` |
+| Key-usage cross-check | a key-usage delta was recorded | `cost_coverage.key_usage_delta_usd` |
+| Hook cost | hook spend > 0 | `hook_cost_usd` |
+| Budget — invocation cap, CLI cap, run pool, enforcement, `EXCEEDED` | a plan | `budget` |
+| Key — scope, hash, "exposed to the agent" | a plan | `provider` |
+| Enforcement, Declared pins, Providers served, Audit (`compliant / audited`, violations, unattributed, incomplete), Snapshot | a plan | `routing` |
+
+Banners render above the grid for the loud states: red for `cost_source:
+unavailable`, a degraded routing audit, an incomplete audit (unattributed
+generations) and a budget exceeded; amber for routing violations under
+`policy: warn`. `cost_warnings` are listed under the grid. The panel describes
+the current run only; with `--baseline`, the configuration grid above it — the
+**Judge Cost** / **Total Cost** rows included — shows the baseline value next to
+the current one wherever they differ.
+
+Those two rows come from `summary.yaml`, not `run_result.json`. **Judge Cost**
+appears when `judge_usage` was recorded (any LLM-backed judge call). Its figure,
+`judge_cost_usd`, is the sum over the priced calls — Anthropic and OpenAI SDK
+judges report tokens only, OpenRouter judges carry `usage.cost` — and reads `n/a`
+only when no call was priced. With judges on several providers it is therefore a
+partial figure: the `N unpriced` count next to it (`requests_missing_cost`) says how
+many calls it misses. **Total Cost** appears whenever `total_cost_source` is not
+`none` — the agent or the judge spend is numeric — and shows a figure only for
+`complete`, meaning both addends were numeric (not that every judge call was
+priced); otherwise `n/a (agent-only | judge-only)`. Field semantics are in the
+[runs directory](../reference/runs-directory.md#cost-provenance) and
+[`summary.yaml`](../reference/runs-directory.md#summaryyaml); the provider
+background is on [Model providers](../concepts/providers.md#cost-provenance-across-providers).
 
 ## Scoring summary and per-case rationale
 
@@ -202,5 +249,6 @@ shadow-free layout so hard copies stay legible.
 - [**Reward API**](../concepts/reward-api.md) — how the reward column is composed
 - [**Thresholds**](../concepts/thresholds.md) — what drives PASS/FAIL and the Regressions section
 - [**Tracing**](../concepts/tracing.md) — the execution data behind Model Usage
+- [**Model providers**](../concepts/providers.md) — what the Cost Provenance panel is accounting for
 
 </div>

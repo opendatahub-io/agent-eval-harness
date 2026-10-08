@@ -8,7 +8,8 @@ tours the `agent_eval` Python package so you know where each concept lives.
 
 Everything downstream is driven by one config file. `eval.yaml` is parsed into an
 [`EvalConfig`](../reference/python-api.md) and strictly validated at load time, a
-[runner](runners.md) invokes the target on an [execution backend](backends.md),
+[runner](runners.md) invokes the target on an [execution backend](backends.md)
+against a [model provider](providers.md) chosen by the role's model id,
 the produced artifacts are collected, [judges](judges.md) score them, and the
 results become a report plus optional MLflow tracking.
 
@@ -18,6 +19,7 @@ flowchart TD
     C --> W["Per-case workspace<br/>(input.yaml + workspace.files)"]
     W --> R["Runner<br/>(EvalRunner ABC)"]
     R --> B{"Execution backend<br/>(--runner flag)"}
+    R -.->|"models.skill / --model"| P["Model provider<br/>(bare id · anthropic:/ · openrouter:/)"]
     B -->|local| L["Agent CLI subprocess"]
     B -->|harbor| H["Harbor task package<br/>(container)"]
     B -->|evalhub| E["In-process in Job pod"]
@@ -25,6 +27,7 @@ flowchart TD
     H --> O
     E --> O
     O --> J["Judges<br/>(check / LLM / agent / builtin / module)"]
+    J -.->|"models.judge"| P
     J --> T["Thresholds<br/>(regression gate)"]
     J --> RW["Reward scalar<br/>(optional, RL)"]
     J --> REP["report.html + results"]
@@ -87,6 +90,9 @@ Python package. The package is where the harness logic actually lives.
 agent_eval/
 ├── config.py          # eval.yaml → EvalConfig (+ strict validation)
 ├── state.py           # shared key-value state persistence
+├── prompt_backends.py # model URI → judge backend (Anthropic SDK, OpenAI SDK, OpenRouter client, runner)
+├── providers/         # provider plans: env block, ledger, cost reconcile;
+│                      #   openrouter/ (preflight, routing, keys, audit, backfill)
 ├── agent/             # runners: the EvalRunner abstraction
 │   ├── base.py        #   EvalRunner ABC + RunResult
 │   ├── claude_code.py #   Claude Code CLI runner (claude --print)
@@ -110,6 +116,10 @@ Key handoffs between package and skills:
 - **`EvalRunner` + `RunResult`** (`agent/base.py`) is the runtime-agnostic seam. The
   `runner.type` discriminator (`claude-code`, `cli`, …) selects the implementation;
   new agent runtimes plug in here. See [Runners](runners.md).
+- **`providers/` + `prompt_backends.py`** are the model-access seam. A role's model id
+  (`bare`, `anthropic:/`, `openai:/`, `openrouter:/`, `runner:/`) picks the judge
+  backend, and an `openrouter:/` skill model activates a provider plan whose env block
+  each backend delivers its own way. See [Model providers](providers.md).
 - **`harbor/` and `evalhub/`** are alternative execution substrates behind the same
   config. Harbor emits self-contained container task packages (with the judge engine
   bundled as `reward.json`); EvalHub runs the eval in-process inside a Job pod. See
@@ -136,6 +146,7 @@ See [Judges & scoring](judges.md).
 - [**The execution model**](execution-model.md) — the case/batch × skill/prompt grid
 - [**Runners**](runners.md) — the `EvalRunner` abstraction and `runner.type`
 - [**Execution backends**](backends.md) — Local, Harbor, EvalHub from one config
+- [**Model providers**](providers.md) — who serves each role's model, and how credentials reach it
 - [**Datasets & case provenance**](datasets.md) — case anatomy and the three strategies
 - [**Judges & scoring**](judges.md) — the five judge types and the outputs record
 - [**Regression thresholds**](thresholds.md) — how a run is gated
