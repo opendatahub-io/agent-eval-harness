@@ -20,6 +20,7 @@ import datetime
 import hashlib
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -55,9 +56,13 @@ def _judge_columns(per_judge: dict[str, Any]) -> dict[str, float]:
     (``{name: {"value": ...}}``) and the in-memory ``RunResult.judge_results``
     scalar form (``{name: True}`` / ``{name: 0.9}``) that analyze_experiment
     receives. Numeric judges pass through as-is and booleans coerce to 0/1 (a
-    pass/fail judge is analysable as a rate). Pairwise verdicts and error/None
-    samples yield no observation — the column stays NaN for that row rather
-    than an invented 0 that would drag the judge's mean.
+    pass/fail judge is analysable as a rate). Pairwise verdicts, error/None
+    samples, and non-finite values (``nan``/``inf`` — not a measurement, and
+    ``inf`` would reach the fit as variance) yield no observation — the column
+    still exists but holds NaN for that row, rather than an invented 0 that
+    would drag the judge's mean. Registering the column even when nothing is
+    observed is what lets a judge that never scores show up in ``excluded``
+    with a reason instead of vanishing from the artifact.
     """
     cols: dict[str, float] = {}
     for name, rec in per_judge.items():
@@ -69,10 +74,13 @@ def _judge_columns(per_judge: dict[str, Any]) -> dict[str, float]:
             value = rec.get("value")
         else:
             value = rec
+        key = f"{_JUDGE_PREFIX}{name}"
         if isinstance(value, bool):
-            cols[f"{_JUDGE_PREFIX}{name}"] = 1.0 if value else 0.0
-        elif isinstance(value, (int, float)):
-            cols[f"{_JUDGE_PREFIX}{name}"] = float(value)
+            cols[key] = 1.0 if value else 0.0
+        elif isinstance(value, (int, float)) and math.isfinite(value):
+            cols[key] = float(value)
+        else:
+            cols[key] = float("nan")
     return cols
 
 
@@ -328,9 +336,9 @@ def _per_judge_analysis(
             excluded.append({"judge": name,
                              "reason": "no scored samples among the analysed "
                                        "(common) cases — values were error/"
-                                       "None, non-numeric, or only on cases "
-                                       "excluded by the common-case "
-                                       "restriction"})
+                                       "None, non-numeric, non-finite, or "
+                                       "only on cases excluded by the "
+                                       "common-case restriction"})
             continue
         n_conditions = int(sub["condition_id"].nunique())
         if n_conditions < 2:

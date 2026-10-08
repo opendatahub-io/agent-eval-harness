@@ -6,6 +6,7 @@ judge, then Benjamini-Hochberg-corrects the ONE family spanning every
 summary.yaml runs with a known structure — deterministic by design.
 """
 
+import math
 import sys
 from pathlib import Path
 from types import SimpleNamespace as NS
@@ -154,7 +155,10 @@ def test_error_and_none_samples_are_skipped_not_zeroed(tmp_path):
 
     rows, _, _ = load_conditions_from_runs(runs, NS(reward=None))
     by_case = {(r["model"], r["case_id"]): r for r in rows}
-    assert "judge:sparse" not in by_case[("model-a", "c3")]
+    # errored sample: the judge is known (column registered) but the row
+    # holds NaN — never a 0.0 that would drag the mean
+    assert math.isnan(by_case[("model-a", "c3")]["judge:sparse"])
+    # judge absent from the record entirely: no column contribution at all
     assert "judge:sparse" not in by_case[("model-b", "c2")]
 
     analysis, _ = analyze_runs(runs, NS(reward=None), per_judge=True)
@@ -226,7 +230,6 @@ def test_in_memory_scalar_judge_results_are_analysed():
     """RunResult.judge_results carries plain scalars ({name: True} /
     ({name: 0.9}) rather than summary.yaml records — the fan-out must accept
     both shapes instead of silently dropping every judge."""
-    sys.path.insert(0, _scripts_dir)
     from analyze import analyze_experiment
     from orchestrate import Condition, RunResult
 
@@ -242,3 +245,31 @@ def test_in_memory_scalar_judge_results_are_analysed():
     judges = analysis["per_judge"]["judges"]
     assert "quality" in judges and "tests_pass" in judges
     assert analysis["per_judge"]["family_size"] >= 2
+
+
+def test_non_finite_judge_values_are_not_observations(tmp_path):
+    """nan/inf are not measurements: an inf must never reach the fit as
+    variance, and a judge whose every value is non-finite is excluded with
+    a reason that names the cause rather than analysed on garbage."""
+    runs = tmp_path / "eval"
+    _mk_run(runs, "r-a", "model-a", {
+        "c1": {"quality": 4, "broken": float("inf")},
+        "c2": {"quality": 5, "broken": float("nan")},
+        "c3": {"quality": 4, "broken": float("inf")},
+        "c4": {"quality": 5, "broken": float("nan")},
+    })
+    _mk_run(runs, "r-b", "model-b", {
+        "c1": {"quality": 2, "broken": float("nan")},
+        "c2": {"quality": 1, "broken": float("inf")},
+        "c3": {"quality": 3, "broken": float("nan")},
+        "c4": {"quality": 1, "broken": float("inf")},
+    })
+    analysis, _ = analyze_runs(runs, NS(reward=None), per_judge=True)
+    pj = analysis["per_judge"]
+    assert "quality" in pj["judges"]
+    assert "broken" not in pj["judges"]
+    reasons = {e["judge"]: e["reason"] for e in pj["excluded"]}
+    assert "non-finite" in reasons["broken"]
+    assert pj["family_size"] == sum(
+        1 for e in pj["judges"].values()
+        for term in e["terms"].values() if term["p_raw"] is not None)
