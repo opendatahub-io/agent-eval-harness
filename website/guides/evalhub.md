@@ -168,11 +168,28 @@ resource requests/limits).
 
     The pod needs `ANTHROPIC_API_KEY` or Vertex AI credentials as environment
     variables (see [environment variables](../reference/environment-variables.md)).
-    For an `openrouter:/…` skill model the pod needs `OPENROUTER_API_KEY` instead (plus
-    `OPENROUTER_MANAGEMENT_KEY` at `enforcement: key-guardrail`): the adapter builds the
-    provider plan in the pod, reconciles the run there and ships `cost_source` /
-    `routing` / `provider` / `budget` back with the job results, which the client writes
-    into `run_result.json` (see the [OpenRouter guide](openrouter.md#runners)).
+
+=== "Platform-native, OpenRouter model"
+
+    Same job config; only the `model` block changes. The JobSpec model is the skill
+    model — it overrides `models.skill` in `eval.yaml` the way `--model` does locally —
+    so an `openrouter:/` id activates the provider plan inside the job pod
+    (`runner.type` must be `claude-code`):
+
+    ```yaml title="job-config.yaml (model block)"
+    model:
+      name: "openrouter:/z-ai/glm-5.2:exacto"   # the rest of the file is unchanged
+    ```
+
+    The pod's own environment must hold `OPENROUTER_API_KEY` (plus
+    `OPENROUTER_MANAGEMENT_KEY` at `enforcement: key-guardrail`). The EvalHub server owns
+    the pod spec, so the harness injects nothing: credentials reach the pod out of band,
+    exactly as `ANTHROPIC_API_KEY` does in the Anthropic case. The adapter builds the plan
+    in the pod, runs the preflight and reconciles the run there, then ships `cost_source`
+    / `routing` / `provider` / `budget` back with the job results, which the client
+    writes into `run_result.json`. See
+    [Model providers → Credentials by backend](../concepts/providers.md#credentials-by-backend)
+    and the [OpenRouter guide](openrouter.md#backends).
 
 === "Client-side (/eval-run --runner evalhub)"
 
@@ -227,6 +244,7 @@ EvalHub's `JobResults`. Each entry is an `EvaluationResult` with a `metric_type`
 - [**eval-run**](eval-run.md) — the local runner and `--runner` flag
 - [**Container images**](../reference/container-images.md) — `agent-eval-harness` vs `agent-eval-hub`
 - [**Environment variables**](../reference/environment-variables.md) — API keys, `EVALHUB_URL`, namespace
+- [**Model providers**](../concepts/providers.md) — which model ids each role accepts and how credentials reach each backend
 - [**Reward API**](../concepts/reward-api.md) — collapse judges into one scalar
 
 </div>

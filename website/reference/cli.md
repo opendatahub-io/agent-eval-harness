@@ -51,6 +51,18 @@ order for a first eval, or invoke individually.
 | `/eval-mlflow` | Dataset sync, result logging, trace feedback | [eval-mlflow](../guides/eval-mlflow.md) |
 | `/eval-check` | Full-harness config health check across all skills | [eval-check](../guides/eval-check.md) |
 
+!!! note "`/eval-run` provider flags"
+    Besides `--model` / `--subagent-model`, the `execute.py` step behind `/eval-run` takes
+    three flags for runs whose skill model is `openrouter:/…`: `--strict-cost` (exit `2`
+    on `cost_source: unavailable` or `budget.exceeded: run`), `--strict-routing` (exit `2`
+    on routing violations or an incomplete audit) and `--allow-estimate` (record
+    `runner:estimate` instead of `unavailable` on an offline replay). All three are no-ops
+    without a provider plan and only ever turn a successful run into exit `2`. There is no
+    `--judge-model` on `execute.py`; the judge model comes from a per-judge `model:`,
+    `models.judge` or the `EVAL_JUDGE_MODEL` variable. See
+    [eval-run → Flags](../guides/eval-run.md#flags) and
+    [Model providers](../concepts/providers.md).
+
 !!! tip "See the whole flow"
     The [pipeline guide](../guides/pipeline.md) shows how these stages hand off to each
     other, and the [get-started walkthrough](../get-started/first-eval.md) runs the
@@ -128,7 +140,7 @@ python -m agent_eval.harbor.run \
 | Flag | Purpose |
 | --- | --- |
 | `--config` | Path to `eval.yaml` (required) |
-| `--model` | Model for the agent under test (required) |
+| `--model` | Model for the agent under test (required); a bare id or an `openrouter:/<author>/<slug>` URI |
 | `--output` | Harness run dir to write (required) |
 | `--tasks-dir` | Where task packages live / are generated (required) |
 | `--jobs-dir` | Where Harbor writes its job output (required) |
@@ -141,7 +153,7 @@ python -m agent_eval.harbor.run \
 | `--mount SOURCE:TARGET[:ro\|rw]` | Repeatable Podman bind mount; defaults to read-only |
 | `--cpus` / `--memory-mb` | Hard per-environment CPU and memory limits |
 | `--no-llm-judges` | Keep deterministic judges and omit model-calling judges |
-| `--judge-model` | Override the in-container judge model during task generation |
+| `--judge-model` | Override the in-container judge model — Harbor **task generation only** (errors on pre-generated tasks unless `--regenerate`); accepts `provider:/` URIs such as `openrouter:/<author>/<slug>`. The local `/eval-run` has no such flag. |
 | `--arguments` / `--skill` | Override generated task instructions |
 | `--regenerate` | Rebuild task packages even if `--tasks-dir` already has them |
 
@@ -201,8 +213,8 @@ loader's message on a broken chain (missing base, cycle, absolute path).
 
 ### `agent_eval.providers.openrouter.*` — provider maintenance
 
-OpenRouter runs (spec 014) have three maintenance entry points; none of them spends
-on the agent path, and every key is read from the environment, never from a flag:
+OpenRouter runs have three maintenance entry points; none of them spends on the agent
+path, and every key is read from the environment, never from a flag:
 
 ```bash
 # the run's preflight without a run: catalog, pins, key, eligibility; writes routing_snapshot.json
@@ -215,7 +227,8 @@ python3 -m agent_eval.providers.openrouter.backfill <run_dir> [--config eval.yam
 python3 -m agent_eval.providers.openrouter.keys revoke <run_dir>
 ```
 
-See [models → providers](config/models.md#how-the-agent-reaches-openrouter).
+See [`models.providers`](config/providers.md) and the
+[OpenRouter guide → Offline commands](../guides/openrouter.md#offline-commands).
 
 ## `state.py` — the context-safe state store
 

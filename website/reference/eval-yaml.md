@@ -98,6 +98,7 @@ one `judge`.
           <span class="sd-f">subagent</span>
           <span class="sd-f">judge</span>
           <span class="sd-f">hook</span>
+          <span class="sd-f">providers</span>
         </div>
       </div>
       <div class="sd-card">
@@ -212,7 +213,7 @@ one `judge`.
 | `extends` | Layer this file over a base config (a *profile*) | [extends](config/extends.md) |
 | `execution` | What to run and how cases are processed | [execution](config/execution.md) |
 | `runner` | Agent runtime + runtime-specific knobs | [runner](config/runner.md) |
-| `models` | Model per role: skill, subagent, judge, hook | [models](config/models.md) |
+| `models` | Model per role: skill, subagent, judge, hook; `providers` registers how `provider:/` ids are served | [models](config/models.md) · [models.providers](config/providers.md) |
 | `permissions` | Tool allow/deny for headless runs | [permissions](config/permissions.md) |
 | `mlflow` | Experiment tracking (opt-in) | [mlflow](config/mlflow.md) |
 | `dataset` | Where cases live and what they contain | [dataset](config/dataset.md) |
@@ -301,8 +302,9 @@ runner:
   #                       # cursor is model-specific
 
 models:
-  skill: claude-opus-4-6  # required (or pass --model)
+  skill: claude-opus-4-6  # required (or pass --model); openrouter:/<author>/<slug> activates models.providers
   judge: claude-opus-4-6  # used by LLM and pairwise judges
+  # providers:            # the openrouter block behind provider:/ ids — see models.providers
 
 permissions:
   deny:

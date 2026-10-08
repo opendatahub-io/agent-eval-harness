@@ -103,14 +103,14 @@ Parsed from `$ARGUMENTS` at Step 0. CLI flags override the corresponding `eval.y
 | Flag | Default | Effect |
 | --- | --- | --- |
 | `--config <path>` | auto-discover | Path to the eval config |
-| `--model <model>` | `models.skill` | Model for the skill/agent under test. **Required if `models.skill` is unset.** |
+| `--model <model>` | `models.skill` | Model for the skill/agent under test. **Required if `models.skill` is unset.** Accepts a bare id or a provider URI (`openrouter:/<author>/<slug>[:variant]`), which activates the OpenRouter plan for the run — see [Model providers](../concepts/providers.md) and [Running on OpenRouter](openrouter.md). |
 | `--subagent-model <model>` | `models.subagent` → falls back to `--model` | Model for subagents (e.g. sonnet subagents under an opus main) |
 | `--skill <name>` | from config | Override the skill being tested |
 | `--run-id <id>` | `YYYY-MM-DD-<model>` | Identifier for this run (names the output directory) |
 | `--cases <id> [<id> …]` | all cases | Run only the listed case IDs |
 | `--baseline <run-id>` | — | Add a pairwise A/B comparison against a prior run under the same eval-name |
 | `--no-llm-judges` | false | Skip every judge that calls a model — `llm` (`prompt`, `prompt_file`, `llm_rubric`), `agent`, and LLM builtins; run only deterministic judges |
-| `--strict-cost` / `--strict-routing` / `--allow-estimate` | false | `execute.py` flags for provider-routed runs: fail the run (exit 2) when the cost could not be reconciled or the run budget was exceeded, or when the routing audit found violations; `--allow-estimate` lets an offline replay record the runner estimate as `runner:estimate` instead of `unavailable`. Under a plan the run ends with a short settle (about 20 s, up to 60 s) while the backfill drains and the key usage is read. See [runs directory → cost provenance](../reference/runs-directory.md#cost-provenance). |
+| `--strict-cost` / `--strict-routing` / `--allow-estimate` | false | `execute.py` flags for provider-routed runs (an `openrouter:/` skill model; no-ops otherwise): fail the run (exit 2) when the cost could not be reconciled or the run budget was exceeded, or when the routing audit found violations; `--allow-estimate` lets an offline replay record the runner estimate as `runner:estimate` instead of `unavailable`. Under a plan the run ends with a short settle (about 20 s, up to 60 s) while the backfill drains and the key usage is read. See [runs directory → cost provenance](../reference/runs-directory.md#cost-provenance). |
 | `--gold` | false | After scoring, save collected artifacts back to the dataset cases as gold references |
 | `--effort <level>` | `runner.effort` | Reasoning effort. Applied by `claude-code` (`low`…`max`), `codex` (`minimal`…`xhigh`), and Cursor model parameter syntax; Cursor leaves IDs that already encode an effort variant unchanged; ignored by runners without an effort control |
 | `--runner <type>` | `local` | `local` (default pipeline), `harbor` (containerized), or `evalhub` (platform) |
@@ -228,6 +228,8 @@ Open `report.html` first; it renders the whole run. To understand each panel, se
 ## Other backends
 
 The same `eval.yaml` runs unchanged across substrates — the backend is only ever a flag.
+Changing the **model provider** is not a backend switch: `--model openrouter:/…` keeps
+whichever backend you chose — see [Running on OpenRouter](openrouter.md).
 
 <div class="grid cards" markdown>
 

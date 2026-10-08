@@ -9,7 +9,7 @@ code — so **no project-specific images are needed**.
 
 | Image | Containerfile | Base | Extra contents | Used by |
 |---|---|---|---|---|
-| **`agent-eval-harness`** | [`deploy/Containerfile`](https://github.com/opendatahub-io/agent-eval-harness/blob/main/deploy/Containerfile) | `ubi9/python-312` | Node + npm, git, tar, `@anthropic-ai/claude-code`, `anthropic[vertex]`, `pyyaml`, `jinja2`, the `agent_eval` package + `skills/` | Harbor trial pods (local Podman + K8s/OpenShift), and as the **base** for EvalHub Job pods |
+| **`agent-eval-harness`** | [`deploy/Containerfile`](https://github.com/opendatahub-io/agent-eval-harness/blob/main/deploy/Containerfile) | `ubi9/python-312` | Node + npm, git, tar, `@anthropic-ai/claude-code`, `@openai/codex`, `anthropic[vertex]`, `openai` (serves `openai:/` and `openrouter:/` judges in-container), `pyyaml`, `jinja2`, the `agent_eval` package + `skills/` | Harbor trial pods (local Podman + K8s/OpenShift), and as the **base** for EvalHub Job pods |
 | **`agent-eval-hub`** | [`deploy/evalhub/Containerfile`](https://github.com/opendatahub-io/agent-eval-harness/blob/main/deploy/evalhub/Containerfile) | `agent-eval-harness` | `eval-hub-sdk[adapter]`, `boto3`, `mlflow-skinny`, and `entrypoint.py` | The EvalHub provider pod (adapter runs **in-process** — no Harbor, no sub-pods) |
 
 ```mermaid
@@ -37,7 +37,8 @@ What's inside:
   via npm. `cursor-agent` is **not** included — that is why `runner.type: cursor` is
   local-only (unavailable on the Harbor and EvalHub backends).
 - **Python deps:** `pyyaml`, `anthropic[vertex]` (LLM judges via Vertex or the direct
-  API), `jinja2`.
+  API), `jinja2`, and `openai` — the OpenAI SDK that serves `openai:/` and
+  `openrouter:/` judges in-container.
 - **The harness itself:** `agent_eval/`, `skills/`, and `pyproject.toml` copied to
   `/opt/agent-eval-harness`, put on `PYTHONPATH`.
 

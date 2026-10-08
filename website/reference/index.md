@@ -17,6 +17,7 @@ task-oriented walkthroughs, see [Guides](../guides/index.md).
 - [**execution**](../reference/config/execution.md) — `mode` (case/batch), `skill`/`prompt`, `arguments`, `timeout`, `max_budget_usd`, `parallelism`, `env`
 - [**runner**](../reference/config/runner.md) — `type`, `effort`, `settings`, `plugin_dirs`, `env`, `system_prompt`, `workspace_mode`
 - [**models**](../reference/config/models.md) — `skill`, `subagent`, `judge`, `hook` roles and CLI precedence
+- [**models.providers**](../reference/config/providers.md) — The `openrouter` block behind `provider:/` ids: key variables, routing table, enforcement, judge client
 - [**mlflow**](../reference/config/mlflow.md) — `experiment`, `tracking_uri`, `tags`
 - [**dataset**](../reference/config/dataset.md) — `path`, `schema`, `workspace.files`
 - [**generation**](../reference/config/generation.md) — `strategy` (skill/synthetic/from-traces), `context`, `seeds`
@@ -93,7 +94,7 @@ task-oriented walkthroughs, see [Guides](../guides/index.md).
 
     ---
 
-    Every `AGENT_EVAL_*`, `ANTHROPIC_*`, and `MLFLOW_*` variable the harness reads.
+    Every `AGENT_EVAL_*`, `ANTHROPIC_*`, `OPENROUTER_*`, `OPENAI_*`, and `MLFLOW_*` variable the harness reads.
 
     [:octicons-arrow-right-24: Environment variables](../reference/environment-variables.md)
 

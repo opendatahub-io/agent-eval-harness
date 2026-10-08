@@ -17,7 +17,7 @@ than one could apply, the harness resolves in this priority order (see
 | 1 | **builtin** | `builtin` | Registered judge from `agent_eval/judges/` | Python judge: whatever it returns · LLM judge (`.md`): boolean |
 | 2 | **inline check** | `check` | A Python snippet, in-process | `(bool \| number, rationale)` |
 | 3 | **agent** | `agent` (+ `prompt` / `prompt_file` / `llm_rubric`) | An agent run through the runner abstraction (reads a staged workspace) | numeric or boolean via `output/score.json` |
-| 4 | **LLM** | `prompt` / `prompt_file` / `llm_rubric` | An Anthropic SDK call, MLflow `make_judge`, or the configured runner (chosen by model + creds) | numeric on `score_range` (told `1–5` when undeclared) or boolean |
+| 4 | **LLM** | `prompt` / `prompt_file` / `llm_rubric` | One SDK call — Anthropic SDK, OpenAI SDK (incl. OpenAI-compatible gateways) or the OpenRouter client — or the configured runner, chosen by the judge model's `provider:/` prefix | numeric on `score_range` (told `1–5` when undeclared) or boolean |
 | 5 | **external code** | `module` + `function` | An imported Python callable | whatever it returns |
 
 !!! warning "`builtin` is mutually exclusive"
@@ -297,6 +297,14 @@ judges:
     model: claude-sonnet-4-6  # overrides models.judge for this judge only
 ```
 
+The resolved id also selects the **backend**, independently of the runner that
+executed the skill: `anthropic:/…` or a bare Claude id (`claude…`, `opus`, `sonnet`,
+`haiku`) calls the Anthropic SDK; `openai:/…` or any other bare id calls the OpenAI SDK
+(an OpenAI-compatible gateway via `OPENAI_BASE_URL`); `openrouter:/<author>/<slug>`
+uses a dedicated OpenRouter client; `runner:/…` grades through the configured runner.
+See the [backend table](../reference/config/judges.md#model-providers-judge-backend)
+and [Model providers](providers.md#agent-path-and-judge-path).
+
 !!! tip "Sampling stochastic judges"
     Only LLM judges are stochastic. Set `samples: N` (or `--samples N` on the CLI) to
     run a judge N times per case and reduce — median for numeric, majority vote for
@@ -308,6 +316,7 @@ judges:
 <div class="grid cards" markdown>
 
 - [**judges config reference**](../reference/config/judges.md) — every field, exhaustively
+- [**Model providers**](providers.md) — which `provider:/` ids a judge accepts and where each backend's credentials come from
 - [**builtin judges**](../reference/builtin-judges.md) — the shipped library
 - [**thresholds**](thresholds.md) — turn scores into regression gates
 - [**pairwise & sampling**](pairwise-and-sampling.md) — A/B comparison and repeated judging

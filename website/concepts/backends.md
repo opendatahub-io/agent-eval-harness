@@ -4,6 +4,12 @@ One `eval.yaml` describes **what** to evaluate; a CLI flag chooses **where** it
 runs. The same config runs unchanged across three execution backends — Local,
 Harbor, and EvalHub — because the execution substrate is never a config key.
 
+This page is about **execution environments** only. Which vendor serves the
+model calls — Anthropic through the runner's own configuration, OpenRouter, an
+OpenAI-compatible endpoint — is a separate axis, chosen by the model ids in
+`models:`; see [Model providers](providers.md), including
+[which credential each backend needs](providers.md#credentials-by-backend).
+
 !!! tip "The config is portable by design"
     `eval.yaml` owns the agent type (`runner.type`), dataset, judges, thresholds,
     models, and MLflow settings. It does **not** own the **execution backend**,
@@ -62,6 +68,7 @@ reporting live in the harness regardless of where cases execute.
 | Harbor | Containerized trial orchestration, agent zoo, concurrency, trajectory | Judgment, reporting, regression detection |
 | Environments (`podman.py`, `kubernetes.py`) | Container/pod lifecycle, exec, file transfer, credentials | Agent behavior, grading |
 | EvalHub | Job governance, scheduling, MLflow persistence, OCI export | Execution, judgment |
+| Model provider (`models.*` ids) | Which vendor serves the agent and judge calls, cost provenance | Where it runs, how the credential is delivered (per backend — see [Model providers](providers.md#credentials-by-backend)) |
 
 ## How judging stays portable
 
@@ -142,6 +149,7 @@ regardless of backend. What differs is only *where* the judge engine runs.
 ## Related
 
 - [Runners](runners.md) — the `runner.type` agent runtimes (`claude-code`, `cursor`, `codex`, `cli`, `responses-api`)
+- [Model providers](providers.md) — the third axis: which vendor serves the model ids in `models:`
 - [Architecture](architecture.md) — how the pieces fit together
 - [Container images](../reference/container-images.md) — the base and provider images
 - [Judges](judges.md) — the judge engine that stays portable across backends

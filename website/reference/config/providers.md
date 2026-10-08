@@ -1,18 +1,25 @@
 # `models.providers` — the provider registry
 
+This page is the block reference. For the provider-neutral model — which roles accept which
+URI, the three provider families, credentials per backend — read
+[Model providers](../../concepts/providers.md).
+
 `models.providers` declares how a `<provider>:/<model>` URI on any role (`models.skill`,
-`subagent`, `hook`, `judge`, a per-judge `model:`, the `--model` / `--subagent-model` /
-`--judge-model` flags) is served. It lives under `models` because it exists only to
-resolve those URIs. One provider kind exists in this release, **`openrouter`**, and the
-block is optional: an `openrouter:/…` judge works with the defaults and `OPENROUTER_API_KEY`
-exported, and an `openrouter:/…` skill model activates the direct agent transport with the
-defaults too. A declared block is **inert until a role names it** — a base `eval.yaml` can
+`subagent`, `hook`, `judge`, a per-judge `model:`, the `--model` / `--subagent-model`
+flags, and the Harbor runner's `--judge-model`, which applies to task generation only) is
+served. It lives under `models` because it exists only to resolve those URIs. One provider
+kind exists, **`openrouter`** (the block, the direct agent transport, the routing snapshot
+and the audit since v1.50.0; the full per-slug preflight, audit-aware pooling and a working
+`enforcement: key-guardrail` since v1.51.0; Kubernetes and EvalHub delivery since
+v1.53.0), and the block is optional: an `openrouter:/…` judge
+works with the defaults and `OPENROUTER_API_KEY` exported, and an `openrouter:/…` skill
+model activates the direct agent transport with the defaults too. A declared block is **inert until a role names it** — a base `eval.yaml` can
 hold the shared routing table while its roles stay on Anthropic, and a
 [profile](extends.md) flips `models.skill` to `openrouter:/…` to activate it.
 
 For the narrative (what the transport does, what each enforcement level guarantees, cost
 provenance, secrets) read the [OpenRouter guide](../../guides/openrouter.md); the
-[models](models.md#providers-openrouter) page shows the block in context.
+[models](models.md) page covers the roles and their precedence.
 
 ## The `openrouter` block
 
@@ -47,7 +54,7 @@ models:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `kind` | `openrouter` | Must equal the block name. `openai-compatible` and any other kind are rejected ("not implemented in this release"). |
+| `kind` | `openrouter` | Must equal the block name. `openai-compatible` is rejected with a pointer to `openai:/…` plus `OPENAI_BASE_URL` (the loader's message reads "not implemented in this release"); any other block name is rejected as an unknown provider. |
 | `api_key_env` | `OPENROUTER_API_KEY` | Name of the environment variable holding the inference key. The key itself may never be authored in a config or on any `env:` surface; a value that looks like a key is rejected. On Kubernetes the same key also lives in the credentials Secret under this name. |
 | `management_key_env` | `OPENROUTER_MANAGEMENT_KEY` | Name of the variable holding the management key, read only at `enforcement: key-guardrail` to provision the per-run key. Never forwarded anywhere. |
 | `base_url` | `https://openrouter.ai/api` | Origin the agent (`ANTHROPIC_BASE_URL`) and the harness clients talk to. No `/v1` suffix (the harness appends it). Plain `http` is allowed for a loopback host only. |
@@ -63,7 +70,7 @@ models:
 | `routing.enforcement` | `audit` | `audit`: preflight + post-hoc audit, the agent holds the operator key. `key-guardrail`: a per-run key with a provider allow-list and a real-dollar limit, provisioned through the management API and revoked at run end. |
 | `routing.guardrail.key_name` | `agent-eval {run_id}` | Name of the per-run key (`{run_id}` substituted). |
 | `routing.guardrail.providers` | `pinned` | The per-run key's allow-list: `pinned` = the union of the pinned sets of the routing keys the agent roles use, or an explicit list of provider slugs. A guardrail with no provider restriction is a validation error. |
-| `routing.guardrail.revoke_on_exit` | `true` | Always true in this release. |
+| `routing.guardrail.revoke_on_exit` | `true` | Always `true`; `false` is rejected at load. |
 | `routing.guardrail.settle_s` | `20` | Key-usage settle before the run-end read; a shorter value warns (the counter settles in about 20 s). |
 | `judge.concurrency` | `4` | Concurrent OpenRouter judge requests. |
 | `judge.max_retries` | `3` | Retries on 429 (`Retry-After`), 502/503 and provider-unavailable replies. |
@@ -88,8 +95,9 @@ Fail fast at load, one consolidated error per category: unknown keys; reserved k
 (`transport`, `direct`, `proxy`, `gateway`, `generation_backfill`, `key_exposure_ack`,
 `budget.max_unpriced*`) named as unsupported; `key-guardrail` without `budget.run_usd`
 or without pins / an explicit allow-list; `revoke_on_exit: false`; `judge.inherit_pins`
-without a routing table; a bare non-Anthropic model id next to a routing entry for it
-("bare-id footgun" — write `openrouter:/<id>` or drop the pins); `subagent` / `hook` on a
+without a routing table; with the block declared but no plan active, a bare agent id
+that has a routing entry or is not an Anthropic id ("bare-id footgun" — write
+`openrouter:/<id>` or drop the pins); `subagent` / `hook` on a
 different provider kind than the skill; `runner.type` other than `claude-code` for an
 `openrouter:/` skill model (also per step); an `agent:` judge whose model is
 `openrouter:/…`. The **managed-key ownership** rule applies while a plan is active:
@@ -125,13 +133,17 @@ appear in; `eval_params.config_chain` records the chain, and
 `python3 -m agent_eval.config --print <profile>` shows the merged result with provenance.
 See [extends](extends.md).
 
-## Where the key goes, per runner
+<a id="where-the-key-goes-per-runner"></a>
 
-| Runner | How the agent gets `ANTHROPIC_AUTH_TOKEN` | Host variables needed |
+## Where the key goes, per backend
+
+| Backend | How the agent gets `ANTHROPIC_AUTH_TOKEN` | Host variables needed |
 | --- | --- | --- |
 | local `claude-code` | the per-run settings overlay (`.eval-overlay.json`, 0600, removed at exit) | `OPENROUTER_API_KEY` (+ `OPENROUTER_MANAGEMENT_KEY` at `key-guardrail`) |
 | Harbor podman | value-free `--agent-env` carriers (the value in the harbor child env) | same |
 | Harbor Kubernetes / OpenShift | `valueFrom.secretKeyRef` from the credentials Secret (`AGENT_EVAL_K8S_CREDENTIALS_SECRET`, key `OPENROUTER_API_KEY`) at `audit`; from the per-run Secret `agent-eval-<run_id>-openrouter` at `key-guardrail` | `audit`: `OPENROUTER_API_KEY` on the host (preflight, backfill, key usage) **and** in the credentials Secret; `key-guardrail`: `OPENROUTER_MANAGEMENT_KEY` on the host, `OPENROUTER_API_KEY` only for `openrouter:/` judges (then also in the credentials Secret) |
 | EvalHub | the pod's own environment (credentials injected by the cluster), through the same overlay in the pod | `OPENROUTER_API_KEY` in the job pod (+ `OPENROUTER_MANAGEMENT_KEY` at `key-guardrail`) |
 
-The management key is never forwarded to any of them.
+The management key is never forwarded to any of them. The cross-provider version of this
+table — Anthropic direct, Vertex, Bedrock, OpenRouter and OpenAI on every backend — is
+[Model providers → Credentials by backend](../../concepts/providers.md#credentials-by-backend).

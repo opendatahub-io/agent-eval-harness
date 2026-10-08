@@ -12,7 +12,9 @@ runtime-agnostic.
     *where* the eval runs (Local, [Harbor](../guides/harbor.md),
     [EvalHub](../guides/evalhub.md)) — always chosen by a **CLI flag** (`--runner`),
     never in the config. The same `eval.yaml` runs unchanged across all three
-    backends. See [Execution backends](backends.md) for that axis.
+    backends. See [Execution backends](backends.md) for that axis. A third axis,
+    the **model provider** (which vendor serves the model ids in `models:`), is
+    covered in [Model providers](providers.md).
 
 !!! note "Runners also back `agent` judges"
     The same abstraction runs judges, not just cases. An
@@ -133,6 +135,15 @@ the cost the CLI printed.
 
 **Highlights specific to this runner:**
 
+- **Provider** — an Anthropic model through whatever Claude Code itself is
+  configured for (direct API key, an `ANTHROPIC_BASE_URL` gateway, or Vertex —
+  all forwarded by the allowlist below; the harness never routes it), or
+  `openrouter:/<author>/<slug>`, which the harness serves itself through a
+  provider plan. Agent roles accept nothing else; the caveats (bare ids on agent
+  roles, `openrouter:/` on this runner only) are in
+  [Model providers → Limitations](providers.md#limitations). See
+  [Model providers](providers.md#three-provider-families) and
+  [Running on OpenRouter](../guides/openrouter.md#direct-transport-no-proxy).
 - **Plugin staging** — every `runner.plugin_dirs` entry outside the workspace is
   copied into `<workspace>/.staged-plugins/` and `--plugin-dir` receives the copy,
   so the real plugin path never enters session context; in-workspace entries
@@ -159,7 +170,8 @@ the cost the CLI printed.
   `.eval-permissions.json` merged with the workspace settings. See
   [permissions](../reference/config/permissions.md). Under an OpenRouter plan the
   same overlay (then named `.eval-overlay.json`, mode 0600) also carries the
-  agent's env block — see [models → providers](../reference/config/models.md#how-the-agent-reaches-openrouter).
+  agent's env block — see [Running on OpenRouter](../guides/openrouter.md#direct-transport-no-proxy)
+  and [Model providers](providers.md#credentials-by-backend).
 - **Subagents** — session persistence stays on so `SubagentStop` hooks can copy
   subagent transcripts; the session dir under `~/.claude/projects/` is cleaned up
   post-run.
@@ -170,10 +182,27 @@ the cost the CLI printed.
 
 Unlike the opaque CLI runner, the Claude Code runner does **not** inherit your full
 environment — it executes agent-generated tool calls, so it forwards only an
-allowlist of keys (`_SAFE_ENV_KEYS`): `PATH`, `HOME`, `USER`, `SHELL`, `LANG`,
-`ANTHROPIC_*` (API key / auth token / base URL / Vertex + default model overrides),
-`CLAUDE_CODE_*`, Google Cloud credentials, `MLFLOW_TRACKING_URI` /
-`MLFLOW_EXPERIMENT_NAME`, and `AGENT_EVAL_RUNS_DIR`.
+**exact-name** allowlist (`_SAFE_ENV_KEYS`; no prefix matching):
+
+| Group | Forwarded when set |
+| --- | --- |
+| OS baseline | `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `LC_ALL`, `TERM` |
+| Anthropic credentials & endpoint | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` |
+| Model aliases | `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL` |
+| Vertex | `CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`, `CLAUDE_CODE_SKIP_VERTEX_AUTH`, `ANTHROPIC_VERTEX_BASE_URL`, `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`, `CLOUDSDK_CONFIG`, `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE` |
+| Claude Code tuning | `CLAUDE_CODE_MAX_RETRIES`, `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` |
+| Harness | `MLFLOW_TRACKING_URI`, `MLFLOW_EXPERIMENT_NAME`, `AGENT_EVAL_RUNS_DIR` |
+
+**Not** on the list: `CLAUDE_CODE_USE_BEDROCK`, `AWS_REGION` and every other `AWS_*`
+credential — Bedrock on this runner needs explicit `runner.env` entries (only the
+Harbor Podman backend forwards them from the host); `OPENROUTER_*` (under a plan the
+agent sees the key only as `ANTHROPIC_AUTH_TOKEN` in the overlay); and `OPENAI_*`.
+Under an OpenRouter plan the Google credential locations and the two OpenShell
+Vertex switches (`CLAUDE_CODE_SKIP_VERTEX_AUTH`, `ANTHROPIC_VERTEX_BASE_URL`) are
+dropped from the ambient copy too, and every plan-managed key is removed after all
+merges, so nothing can put the host's `ANTHROPIC_API_KEY` back. `runner.env` entries
+win over ambient values on collision. The per-backend picture is on
+[Model providers](providers.md#credentials-by-backend).
 
 !!! warning "Forwarding extra env vars"
     To pass anything *not* on the allowlist (e.g. a `JIRA_TOKEN` the skill needs), add
@@ -198,6 +227,13 @@ runner:
     CURSOR_API_KEY: $CURSOR_API_KEY
 ```
 
+- **Provider** — Cursor's own account. The only provider variables on its
+  exact-name allowlist are `CURSOR_API_KEY`, `CURSOR_API_ENDPOINT` and
+  `CURSOR_AGENT_BIN`; the model id is whatever `cursor-agent --model` accepts
+  (the harness appends `[effort=…]`), so `provider:/` ids do not apply, and an
+  `openrouter:/` skill model is rejected at config load for this runner
+  ("cursor has no base-URL knob"). Anthropic and OpenAI credentials are not
+  forwarded — add them under `runner.env` if the skill itself needs them.
 - **Local backend only.** The Harbor and EvalHub base image ships no
   `cursor-agent` CLI, so Harbor has no cursor agent and EvalHub rejects the
   config at load. Use `claude-code` or `codex` there.
@@ -250,8 +286,15 @@ Codex does not support `inputs.tools` interception. It also rejects
 `workspace_mode: repo`, where the harness cannot enforce repository answer-key
 protections. Use the default isolated workspace for Codex evals.
 
-Like the Claude Code runner, Codex starts from a safe environment allowlist rather than
-forwarding the full host environment. Add intentional variables under `runner.env` or
+**Provider.** OpenAI, through Codex's own configuration. Like the Claude Code runner,
+Codex starts from an exact-name allowlist rather than the full host environment; the
+provider names on it are `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_ORG_ID`,
+`OPENAI_ORGANIZATION`, `OPENAI_PROJECT`, `OPENAI_MODEL`, `CODEX_HOME` and
+`CODEX_API_KEY` (plus the OS baseline, the MLflow variables and `AGENT_EVAL_RUNS_DIR`).
+Anthropic and GCP credentials are deliberately not forwarded — LLM judges run in the
+harness process, not in the agent's. The model id is passed verbatim to
+`codex exec --model`, so `provider:/` ids do not apply and an `openrouter:/` skill
+model is rejected at config load. Add anything else under `runner.env` or
 `execution.env`; `$VAR` values are resolved from the caller.
 
 ## `cli` (opaque CLI runner)
@@ -269,6 +312,12 @@ runner:
   type: cli
   command: "my-runner run {agent} --model {model} --out {output_dir}"
 ```
+
+**Provider.** Whatever the command does. `{model}` is substituted raw (from `--model`
+or `models.skill`) and is opaque to the harness — no `provider:/` routing happens, the
+command inherits your full `os.environ` plus `execution.env` (`runner.env` is not
+applied by this runner), and credentials are whatever you exported. An `openrouter:/`
+skill model is rejected at config load for this runner.
 
 ### Placeholders
 
@@ -321,7 +370,8 @@ report as `None` and cost tables in the report are empty. All fields are optiona
     tracing, subagent transcript capture, permission-denial detection, and real-time
     progress logging all require the `claude-code` runner. The opaque runner inherits
     your **full** `os.environ` (commands come from the eval author, not untrusted
-    input); `runner.env` adds keys on top with `$VAR` resolution.
+    input); `execution.env` adds keys on top with `$VAR` resolution, and `runner.env`
+    is a no-op here (see [runner](../reference/config/runner.md)).
 
 ## `responses-api`
 
@@ -353,6 +403,16 @@ runner:
 !!! note "Not wired"
     `settings_path` and `max_budget_usd` are accepted for ABC compatibility but the
     Responses API exposes no equivalent knobs, so they have no effect here.
+
+**Provider.** An OpenAI-compatible endpoint: `runner.settings.base_url` / `api_key` /
+`default_model`, each falling back to `OPENAI_BASE_URL` / `OPENAI_API_KEY` /
+`OPENAI_MODEL`; `--model` (or `models.skill`) overrides `default_model` per run.
+`provider:/` ids do not apply, and an `openrouter:/` skill model is rejected at config
+load for this runner.
+
+!!! warning "`settings.api_key` is a secret in config"
+    It is the one credential the harness accepts from `eval.yaml` rather than the
+    environment. Prefer `OPENAI_API_KEY` so the config stays shareable.
 
 ## Choosing a runner
 
@@ -416,6 +476,7 @@ registry.
 <div class="grid cards" markdown>
 
 - [**Execution backends**](backends.md) — Local vs Harbor vs EvalHub (the `--runner` flag)
+- [**Model providers**](providers.md) — which model ids and credentials each runner can use
 - [**runner (config reference)**](../reference/config/runner.md) — every `runner.*` key
 - [**Skill vs prompt mode**](../guides/skill-vs-prompt.md) — what `target`/`args` encode
 - [**Cross-runner: OpenCode**](../cookbook/cross-runner-opencode.md) — an opaque CLI runner end to end

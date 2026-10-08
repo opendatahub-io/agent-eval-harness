@@ -44,7 +44,7 @@ The sections render top to bottom in this order (empty sections are omitted):
 
 ```mermaid
 flowchart TD
-    H[Header — skill · run · baseline · date] --> RC[Run Configuration + Model Usage]
+    H[Header — skill · run · baseline · date] --> RC[Run Configuration + Cost Provenance + Model Usage]
     RC --> AN[Analysis — agent's recommendation]
     AN --> SS[Scoring Summary — per-judge pass_rate / mean]
     SS --> RG[Regressions — only if a threshold is breached]
@@ -61,6 +61,20 @@ down token counts, cache hit rate, and derived efficiency metrics
 (cost / turn, output tokens / turn, cost / Mtok) — one column per model, plus a
 Total column for multi-model runs. A collapsible **Parameters** row shows the
 exact invocation (execution mode, budget, timeout, and the resolved skill args).
+
+### Cost provenance & routing audit
+
+Between the configuration grid and the Model Usage table, a **Cost Provenance**
+panel says where the cost figure came from. It renders when the run-level
+`run_result.json` carries a `cost_source` — a batch-mode `claude-code` run, or
+any run under a provider plan — and on a provider-routed run it grows from a
+single **Cost source** row into the full provenance and routing-audit record.
+Banners above it flag what needs a look: **red** for cost unavailable (`cost_usd`
+is `null`), a degraded or incomplete routing audit, and budget exceeded;
+**amber** for routing violations under `policy: warn`. The grid's **Judge Cost**
+and **Total Cost** rows come from `summary.yaml`; a Judge Cost followed by
+`N unpriced` is a partial sum. Row by row, with the exact conditions:
+[the report concept](../concepts/report.md#cost-provenance-and-routing-audit).
 
 ### Scoring summary
 

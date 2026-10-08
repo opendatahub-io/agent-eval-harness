@@ -115,7 +115,8 @@ The `/eval-*` slash commands drive the workflow in order. Each maps to a skill u
 ## Running headless & at scale
 
 The same `eval.yaml` runs unchanged across execution backends — the backend is a
-`--runner` CLI flag, never a config key.
+`--runner` CLI flag, never a config key. The **model provider** is not a backend either:
+it is the id you write on a role (see [Model providers](../concepts/providers.md)).
 
 <div class="grid cards" markdown>
 
@@ -143,6 +144,15 @@ The same `eval.yaml` runs unchanged across execution backends — the backend is
     Run the eval in-process inside an EvalHub Job pod.
 
     [:octicons-arrow-right-24: Run on EvalHub](evalhub.md)
+
+-   :material-router-network: **Running on OpenRouter**
+
+    ---
+
+    Put the agent under test or the judges on an open-weights model with an
+    `openrouter:/<author>/<slug>` id — key, routing pins, enforcement, cost provenance.
+
+    [:octicons-arrow-right-24: Run on OpenRouter](openrouter.md)
 
 </div>
 

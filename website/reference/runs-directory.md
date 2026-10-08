@@ -43,7 +43,9 @@ $AGENT_EVAL_RUNS_DIR/<run-id>/
 │                       #   + judge_usage / total_cost_usd (judge spend, see below)
 ├── provider/           # OpenRouter runs only (absent otherwise) — see "Cost provenance"
 │   ├── ledger.jsonl            # one row per provider generation the harness learned about
-│   ├── routing_snapshot.json   # the preflight's frozen catalog view the routing audit joins against
+│   ├── routing_snapshot.json   # the preflight's frozen catalog view the routing audit joins against:
+│   │                           #   ts, routing_sha, enforcement, key_scope, preflight, providers_map_sha,
+│   │                           #   keys (per routing key: variant, roles, pinned_set, eligible, excluded), pricing, catalog
 │   ├── hook-ids-<case>.jsonl   # generation ids of the harness's own hook calls (tool interception)
 │   └── key.json                # enforcement: key-guardrail only — the per-run key's hash, name,
 │                               #   limit, providers, created_at / revoked_at (never the key)
@@ -74,12 +76,18 @@ channel**: what the LLM judges themselves consumed, kept apart from the agent's 
 | --- | --- |
 | `per_case.<case>.<judge>.usage` | The judge call's usage record: `model`, `provider`, `id`, `prompt_tokens`, `completion_tokens`, `reasoning_tokens`, `cost_usd`, `cost_source` (`provider-inline` when the provider priced the request in its reply, e.g. OpenRouter; `runner-estimate` for a runner/agent judge's CLI estimate; `none` when only tokens are known). Sampled judges (`samples: N`) store the sum over all attempts, failed ones included, with `requests` / `requests_missing_cost`. |
 | `per_case.<case>.<judge>.tool_choice_mode` | Present only when an OpenRouter judge had to fall back from a forced tool call (`required` or `auto`). |
-| `judge_usage` | Run-level aggregate: `judge_cost_usd` (`null` when no call was priced — never a partial sum), `requests`, `requests_missing_cost`, token totals, `cost_sources` (count per source), `by_judge`, `by_model`, and `tool_choice_fallbacks` when any happened. Absent when no judge produced usage (deterministic-only runs). |
+| `judge_usage` | Run-level aggregate: `judge_cost_usd` — the sum over the priced calls, `null` only when none was priced; with judges on several providers it is a partial figure, so read `requests_missing_cost` next to it (the report shows `N unpriced`) — plus `requests`, token totals, `cost_sources` (count per source), `by_judge`, `by_model`, and `tool_choice_fallbacks` when any happened. `total_cost_source: complete` means both addends were numeric, not that every judge call was priced. Absent when no judge produced usage (deterministic-only runs). |
 | `total_cost_usd` / `total_cost_source` | Agent `cost_usd` + `judge_cost_usd`, written only when at least one addend is known. The sum is computed only when **both** are numeric; otherwise `total_cost_usd` is `null` and `total_cost_source` says which side was numeric (`complete`, `agent-only`, `judge-only`). An estimate is never used to fill a null. |
 
 Judge spend never enters `run_result.json` `cost_usd`, so `run_metrics`
 (`cost_per_turn_usd`, `cost_per_mtok_usd`) stay agent-only and comparable with older runs.
 The pairwise section carries its own `judge_usage` for the comparison judge's calls.
+
+The judge-level `cost_source` literals are hyphenated, per-call labels
+(`provider-inline`, `runner-estimate`, `none`); the run-level `cost_source` in
+`run_result.json` uses the colon form `<origin>:<method>` described under
+[cost provenance](#cost-provenance). They never mix: `judge_usage` is summed from the
+former, `cost_usd` carries the latter.
 
 ### `run_result.json`
 
@@ -114,7 +122,7 @@ unchanged, so a run without OpenRouter reads exactly as before.
 | --- | --- |
 | `cost_usd` | Agent spend from a **truth source**: the sum of priced ledger rows when generation coverage is at least 80 %, else the key-usage delta, else `null`. Never the runner's estimate, never a mix. |
 | `cost_usd_estimate` | The runner's own number (Claude Code prices a non-Anthropic model 2 to 60 times high). Set once, never overwritten. |
-| `cost_source` | `openrouter:generation`, `openrouter:key-usage`, `runner:estimate` (only with `--allow-estimate`), `runner:reported` (Claude Code on Anthropic/Vertex, the legacy default), `harness:estimate` (Codex), or `unavailable`. Legacy literals (`openrouter-reconciled`, `runner-reported`) are read as their colon forms. |
+| `cost_source` | `openrouter:generation` / `openrouter:key-usage` — a truth source landed (plan runs only). `runner:estimate` — the `claude-code` runner labels its own number this way under a plan **and** whenever the effective `ANTHROPIC_BASE_URL` host is not `api.anthropic.com` (an operator gateway, no plan needed); under a plan the reconciler replaces it with a truth source, or writes it instead of `unavailable` only when `--allow-estimate` is passed. `runner:reported` — Claude Code talking to `api.anthropic.com` or Vertex, and what readers assume when the field is absent. `unavailable` — plan run, no truth source. `harness:estimate` is reserved: nothing writes it today — the `codex` runner sets no `cost_source`, so its litellm-priced estimate is read as `runner:reported`. Legacy literals (`openrouter-reconciled`, `runner-reported`, `harness-estimate`) are read as their colon forms. |
 | `cost_confidence` | `high` (coverage ≥ 95 % and the key-usage cross-check within 5 %), `medium` (coverage 80 to 95 %, or key-usage only on a dedicated key), `low` (coverage below 80 % on a shared key, or a cross-check deviation above 5 %). |
 | `cost_coverage` | `{requests, requests_priced, requests_missing_cost, requests_unattributed, coverage, key_usage_delta_usd, key_usage_settle_s}` — the denominator is the transcript's `gen-…` ids, not the ledger. |
 | `cost_warnings` | Human-readable findings: unpriced requests, a cross-check deviation, an unmatched per-model key, routing violations. |
@@ -122,7 +130,7 @@ unchanged, so a run without OpenRouter reads exactly as before.
 | `providers` | `{<provider slug>: {requests, cost_usd}}`, with `unknown` for unattributed rows. |
 | `per_model_usage[m].cost_usd` / `.cost_usd_estimate` / `.providers` | Per-model cost from the ledger join (bare-slug echo, permaslug via the catalog, single-model fallback); the estimate is preserved next to it. A key with no match keeps `null` and a warning. |
 | `routing` | The audit of served providers against the declared pins: `enforcement`, `policy`, `sha`, `declared`, `served`, `audited`, `compliant`, `violations`, `unattributed`, `degraded`, `audit_complete`, `snapshot`. A violation is a billed, kept generation whose provider was outside the declared set; it is reported, never repaired. |
-| `provider` | `{name, kind, transport: direct, runner, base_url, key_scope, key_hash, key_exposed_to_agent, background_model}`. `key_scope` is `operator` at `enforcement: audit` and `per-run` at `key-guardrail`. |
+| `provider` | `{name, kind, transport: direct, runner, base_url, key_scope, key_hash, key_exposed_to_agent, background_model}`. `key_scope` is `operator` at `enforcement: audit` and `per-run` at `key-guardrail` — on a per-run key the key-usage delta is the run's own spend by construction. |
 | `budget` | `{invocation_usd, cli_cap_usd, run_usd, enforcement: cli-estimate \| key-guardrail, exceeded, exceeded_reason, overshoot_usd}`; `exceeded: run` with `post-hoc` is set when the reconciled sum passes `budget.run_usd`. |
 
 Under a plan the case aggregate follows the same arithmetic: one unpriced case makes
@@ -130,9 +138,16 @@ the run's `cost_usd` `null` (`cases_priced` says how many were priced); a partia
 not spend. `execute.py --strict-cost` exits 2 on `cost_source: unavailable` or an
 exceeded run budget, `--strict-routing` on violations or an incomplete audit.
 
-`routing.enforcement` reads `none` when no routing key carries pins (nothing to
+Downstream, `/eval-compare` pools runs across cost-source classes, routing declarations
+and enforcement levels and footnotes them, while `/eval-anova` skips degraded and
+mixed-enforcement runs — see
+[eval-compare → Mixed providers and cost sources](../guides/eval-compare.md#mixed-providers-and-cost-sources)
+and [eval-anova → Rules at a glance](../guides/eval-anova.md#rules-at-a-glance).
+
+`routing.enforcement` reads `none` when the routing table declares nothing — no
+`order`, `only`, `ignore`, `allow_fallbacks` or `quantizations` on any key (nothing to
 enforce, whatever the configured level). At `key-guardrail` a failed revocation of the
-per-run key adds a `cost_warnings` entry naming the hash; `python3 -m
+per-run key is logged as a stderr `ERROR` and adds a `cost_warnings` entry naming the hash; `python3 -m
 agent_eval.providers.openrouter.keys revoke <run_dir>` retries it, and `python3 -m
 agent_eval.providers.openrouter.backfill <run_dir>` re-queries unpriced generations
 offline.

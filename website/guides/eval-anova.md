@@ -46,11 +46,12 @@ pip install -e ".[anova]"        # or: uv pip install -e ".[anova]"
 ```
 
 !!! note "Credentials"
-    Both the agent runs and the LLM judges use your Claude credentials. For the
-    direct API, set `ANTHROPIC_API_KEY=sk-…`. For Vertex AI, set
-    `CLAUDE_CODE_USE_VERTEX=1`, `CLOUD_ML_REGION=global`, and
-    `ANTHROPIC_VERTEX_PROJECT_ID=…`, then run `gcloud auth application-default
-    login`.
+    Both the agent runs and the LLM judges use the credentials of the provider each role's
+    model names — set them up once as described in
+    [Installation → Provide model credentials](../get-started/installation.md#2-provide-model-credentials).
+    Levels of the `model` factor may be provider URIs (`openrouter:/<author>/<slug>`),
+    since each one is passed as `--model`; see [Model providers](../concepts/providers.md)
+    and the pooling rules [below](#rules-at-a-glance).
 
 ## Design the matrix
 
@@ -239,6 +240,17 @@ downstream model-comparison CI uses: fan out `/eval-run`, then analyze + compare
       so the ANOVA is skipped with a note (expected, not a bug).
     - **Small-N has low power.** More cases and replications buy sensitivity, but
       at multiplicative cost. Treat a single sweep as *screening*, not proof.
+    - **Provider-routed runs are filtered, not footnoted.** A run whose routing audit is
+      `degraded` (violations or unattributed generations under `policy: strict`) is
+      skipped with a warning; so is a run whose `routing.enforcement` (`audit`,
+      `key-guardrail`, or `none` — no plan, or a plan whose routing table declares nothing (no `order`, `only`, `ignore`, `allow_fallbacks` or `quantizations` on any key))
+      differs from the first run of its condition — those are different factor levels, not replications. The
+      `allow_unaudited` / `allow_mixed_enforcement` overrides exist only as parameters of
+      `analyze_runs()`; `orchestrate.py` exposes no flag for them. A condition that pools
+      `openrouter:*` billed costs with runner estimates is still analysed, with a warning
+      that the costs are not comparable. See
+      [Mixed providers and cost sources](eval-compare.md#mixed-providers-and-cost-sources)
+      and [Model providers](../concepts/providers.md#cost-provenance-across-providers).
 
 ## Where to go next
 

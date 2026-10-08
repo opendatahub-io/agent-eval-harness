@@ -34,6 +34,14 @@ repository `context` and the `seeds` that drive an LLM to author cases.
     - `strategy: synthetic` with an empty `seeds` list, and
     - any `seeds` present while `strategy` is not `synthetic`.
 
+!!! note "Which model writes the cases"
+    Synthetic generation calls **`models.judge`** (default `claude-opus-4-6`); there is
+    no `generation.model` key. A Claude id is served by the Anthropic SDK and any other
+    accepted id by the configured runner, while `openai:/…` and `openrouter:/…` ids are
+    rejected — see
+    [Synthetic generation in detail](../../guides/eval-dataset.md#synthetic-generation-in-detail)
+    and [Model providers → Which role accepts which provider](../../concepts/providers.md#which-role-accepts-which-provider).
+
 ### context
 
 `context` holds repository-specific knowledge — documentation structure, constraints,

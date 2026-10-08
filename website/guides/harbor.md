@@ -156,6 +156,21 @@ python -m agent_eval.harbor.run \
     host user's `/proc` visibility, and the local container deliberately runs with the
     invoking UID, so this is resource isolation rather than credential isolation.
 
+    Under an `openrouter:/` skill model the plan's env block **narrows** this forwarding:
+    the Anthropic credentials (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+    `ANTHROPIC_BASE_URL`), the Vertex variables (`CLAUDE_CODE_USE_VERTEX`,
+    `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`, `GOOGLE_CLOUD_PROJECT`) and the
+    Bedrock switches (`CLAUDE_CODE_USE_BEDROCK`, `AWS_REGION`, `AWS_BEARER_TOKEN_BEDROCK`)
+    are not forwarded, and the GCP credentials file is not mounted. The AWS access-key
+    variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`) and the
+    `OPENAI_*` variables are still forwarded when set — unset them on the host for
+    isolation. Export `OPENROUTER_API_KEY` on the host (and `OPENROUTER_MANAGEMENT_KEY` at
+    `enforcement: key-guardrail`): the inference key reaches the agent as
+    `ANTHROPIC_AUTH_TOKEN` through value-free `--agent-env` carriers, and
+    `OPENROUTER_API_KEY` itself enters the container only when an in-container
+    `openrouter:/` judge needs it. See
+    [Model providers → Credentials by backend](../concepts/providers.md#credentials-by-backend).
+
 !!! warning "SELinux and external mounts"
     The Podman adapter disables SELinux labeling when external bind mounts are present
     because relabeling a large shared dataset can be destructive. Use only a dedicated,
@@ -229,8 +244,16 @@ Unlike Podman, nothing is forwarded from your host. Credentials come from the cl
     `agent-eval-<run_id>-openrouter` before `harbor run` and deletes it with the key —
     the harness's identity needs `create`, `get` and `delete` on `secrets` in the
     namespace, and the host needs `OPENROUTER_MANAGEMENT_KEY` (the credentials Secret is
-    then needed only for an in-container `openrouter:/` judge). See the
-    [OpenRouter guide](openrouter.md#runners).
+    then needed only for an in-container `openrouter:/` judge).
+
+    Under a plan the trial container carries **no Anthropic credentials**: the plan's
+    `ANTHROPIC_API_KEY=""` and blanked Vertex entries are explicit pod env and win over
+    the credentials Secret (on Podman the same variables are stripped), so an
+    in-container LLM judge must be `openrouter:/` or `openai:/` (or deterministic) — a
+    Claude judge next to an OpenRouter agent works only on Local and EvalHub. The
+    per-backend credential matrix is in
+    [Model providers → Credentials by backend](../concepts/providers.md#credentials-by-backend);
+    the Kubernetes specifics are in the [OpenRouter guide](openrouter.md#backends).
 
 === "Vertex AI (Secret file)"
 
@@ -242,6 +265,12 @@ Unlike Podman, nothing is forwarded from your host. Credentials come from the cl
     # then: AGENT_EVAL_K8S_GCP_CREDENTIALS_SECRET=vertex-creds
     ```
 
+    Also put `CLAUDE_CODE_USE_VERTEX=1`, `ANTHROPIC_VERTEX_PROJECT_ID` and
+    `CLOUD_ML_REGION` in the credentials Secret (`AGENT_EVAL_K8S_CREDENTIALS_SECRET`,
+    `envFrom`) — nothing but `ANTHROPIC_MODEL` / `ANTHROPIC_BASE_URL` is inherited from
+    your shell on Kubernetes, so without them Claude Code (and an in-container Anthropic
+    judge) falls back to the direct API with no key.
+
 === "Vertex AI (Workload Identity)"
 
     No stored key — the pod runs as an SA federated to GCP (preferred):
@@ -249,6 +278,11 @@ Unlike Podman, nothing is forwarded from your host. Credentials come from the cl
     ```bash
     AGENT_EVAL_K8S_SERVICE_ACCOUNT=<sa>
     ```
+
+    The same three Vertex variables (`CLAUDE_CODE_USE_VERTEX=1`,
+    `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`) still go in the credentials
+    Secret (`AGENT_EVAL_K8S_CREDENTIALS_SECRET`); the service account only replaces the
+    key file.
 
 ### Project resources via ConfigMap
 
@@ -275,7 +309,7 @@ what it needs into `/workspace` at runtime.
 | --- | --- |
 | `AGENT_EVAL_K8S_NAMESPACE` | Target namespace |
 | `AGENT_EVAL_K8S_CREDENTIALS_SECRET` | Secret with API keys (injected via `envFrom`; under an OpenRouter plan also `OPENROUTER_API_KEY`, mapped to `ANTHROPIC_AUTH_TOKEN` via `secretKeyRef`) |
-| `AGENT_EVAL_K8S_GCP_CREDENTIALS_SECRET` | Secret with GCP SA key (file mount) |
+| `AGENT_EVAL_K8S_GCP_CREDENTIALS_SECRET` | Secret with GCP SA key (file mount); the Vertex variables themselves go in the credentials Secret |
 | `AGENT_EVAL_K8S_SERVICE_ACCOUNT` | Pod ServiceAccount (Workload Identity) |
 | `AGENT_EVAL_K8S_PROJECT_CONFIGMAP` | ConfigMap with project resources (< 1 MB) |
 | `AGENT_EVAL_K8S_INSTALL_PACKAGES` | `1` to run the agent install (default: skip for prebuilt images) |

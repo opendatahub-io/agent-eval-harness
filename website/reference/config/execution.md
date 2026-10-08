@@ -217,16 +217,12 @@ execution:
     `$VAR` syntax.
 
 !!! note "Managed keys under an OpenRouter plan"
-    When `models.skill` is `openrouter:/…`, the agent's routing env is derived by
-    the provider plan and owned by it on `execution.env`, the step `env:` blocks,
-    `runner.env` and `runner.settings.env`: `ANTHROPIC_BASE_URL`,
-    `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_CUSTOM_HEADERS` fail at load, static
-    keys (Vertex/Bedrock blanks, model aliases) must match the plan, a non-empty
-    `ANTHROPIC_API_KEY` warns, and the OpenRouter key variables are env-only.
-    `max_budget_usd` keeps its per-invocation meaning; the run-wide pool is
-    `models.providers.openrouter.budget.run_usd`. The rule holds on every runner —
-    local, Harbor podman, Harbor Kubernetes, EvalHub. See
-    [models.providers](providers.md).
+    While `models.skill` is `openrouter:/…`, the provider plan owns the agent's routing
+    variables on `execution.env` and the step `env:` blocks as on every other env
+    surface — the rule is spelled out once in
+    [models.providers → Validation](providers.md#validation). `max_budget_usd` keeps its
+    per-invocation meaning; the run-wide pool is
+    `models.providers.openrouter.budget.run_usd`.
 
 ## Carrying the project's hooks
 

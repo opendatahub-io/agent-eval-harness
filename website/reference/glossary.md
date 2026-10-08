@@ -7,10 +7,14 @@ meet them in the pipeline.
 !!! tip "The one distinction to internalize"
     A **runner** is the agent runtime *inside* the box (which CLI drives the
     model — Claude Code, an OpenCode CLI, …). An **execution backend** is the
-    box *around* it (Local process, Harbor container, EvalHub Job pod). The
+    box *around* it (Local process, Harbor container, EvalHub Job pod). A
+    **provider** is who serves the model's tokens (Anthropic through the
+    runner's own setup, OpenRouter through a harness-managed plan, an
+    OpenAI-compatible endpoint) and is named by the role's model id. The
     runner lives in `eval.yaml` under `runner:`; the backend is always a CLI
     flag (`--runner local|harbor`), **never** a config key — so one config runs
-    unchanged everywhere.
+    unchanged everywhere; the provider is the optional `<provider>:/` scheme on
+    `models.*` or `--model`. See [Model providers](../concepts/providers.md).
 
 ## What you execute
 
@@ -34,6 +38,7 @@ flowchart LR
     R -->|--runner local| L["Local process"]
     R -->|--runner harbor| H["Harbor container"]
     R -->|platform| E["EvalHub Job pod"]
+    R -->|"model id / provider URI"| P["Provider<br/>(Anthropic · OpenRouter · OpenAI)"]
 ```
 
 | Term | Definition | More |
@@ -41,7 +46,20 @@ flowchart LR
 | **Runner** (agent runtime) | The agent CLI/harness that drives the model, selected by `runner.type` (`claude-code`, `cli`, …) with runtime-specific knobs (`effort`, `settings`, `plugin_dirs`, `env`, `system_prompt`, `command`, `workspace_mode`). | [Runners](../concepts/runners.md) · [runner config](config/runner.md) |
 | **Execution backend / substrate** | The environment the run executes in — Local, Harbor (containers), or EvalHub (platform Job pod). Chosen with a CLI flag, never in `eval.yaml`. | [Backends](../concepts/backends.md) |
 | **Workspace** | The isolated per-case directory the runner executes in. `dataset.workspace.files` whitelists per-case files and/or shared `{dest, source}` project/plugin resources to copy in; `runner.workspace_mode: repo` runs in the real repository instead of an isolated copy. | [dataset config](config/dataset.md) · [eval-run](../guides/eval-run.md) |
+| **Provider** (model access) | The service that serves a role's model, selected by the model id: a bare id goes wherever the runner (or, for judges, the SDK heuristic) is configured; `anthropic:/`, `openai:/`, `openrouter:/<author>/<slug>` and `runner:/` name it explicitly. Not an execution backend. | [Model providers](../concepts/providers.md) · [models.providers](config/providers.md) |
 | **Run** | One execution of the suite, stored under `$AGENT_EVAL_RUNS_DIR` (default `eval/runs/<run-id>/`) with artifacts, scores, and `report.html`. | [Runs directory](runs-directory.md) |
+
+## Model providers
+
+| Term | Definition | More |
+| --- | --- | --- |
+| **Provider URI** | `<provider>:/<id>` on a role (`models.skill`, `subagent`, `hook`, `judge`, a per-judge `model:`, `--model`). Scheme lower-cased, leading slashes on the id stripped (`openai://x` = `openai:/x`); an `openrouter:/` id is `<author>/<slug>[:variant]`. Agent roles accept a bare id, `anthropic:/` or `openrouter:/`; judges also `openai:/` and `runner:/`. | [What a model id is](../concepts/providers.md#what-a-model-id-is) |
+| **Provider plan** / **managed keys** | The env block the harness derives when `models.skill` is `openrouter:/` (`ANTHROPIC_BASE_URL`, the inference key as `ANTHROPIC_AUTH_TOKEN`, blanked Vertex/Bedrock switches, model aliases) and delivers per backend; the keys it owns are rejected on every `env:` surface while it is active. `claude-code` only. | [Three provider families](../concepts/providers.md#three-provider-families) · [validation](config/providers.md#validation) |
+| **Transport** | How the agent's requests travel under a plan: Claude Code calls OpenRouter directly (`provider.transport: direct` in `run_result.json`); the harness never proxies. | [OpenRouter guide](../guides/openrouter.md#direct-transport-no-proxy) |
+| **Judge backend** | The client a judge grades through, chosen by the judge model id and never by the runner: Anthropic SDK, OpenAI SDK (incl. `OPENAI_BASE_URL` gateways), the OpenRouter client, or the configured runner (`runner:/`, `agent:` judges). Distinct from the *execution* backend. | [judges → Model providers](config/judges.md#model-providers-judge-backend) |
+| **Enforcement level** | OpenRouter only: `audit` (preflight + post-hoc audit, the agent holds the operator key) or `key-guardrail` (a per-run key with a provider allow-list and a dollar limit). Set by `models.providers.openrouter.routing.enforcement`. | [Enforcement levels](../guides/openrouter.md#enforcement-levels) |
+| **Routing audit** | After the run, every billed generation's served provider is joined against the declared pins; violations are reported in `run_result.routing`, never repaired. | [The routing lifecycle](../guides/openrouter.md#the-routing-lifecycle) |
+| **Cost source** | `run_result.cost_source`, `<origin>:<method>`: `runner:reported` (Claude Code's billed total), `runner:estimate` (behind an operator gateway, or under a plan with `--allow-estimate`), `openrouter:generation` / `openrouter:key-usage` (provider-priced), `unavailable` (`cost_usd: null`). Per-judge-call records use a hyphenated set (`provider-inline`, `runner-estimate`, `none`). | [Cost provenance across providers](../concepts/providers.md#cost-provenance-across-providers) · [runs directory](runs-directory.md#cost-provenance) |
 
 ## Scoring and gating
 
@@ -68,6 +86,7 @@ flowchart LR
 - [**The eval.yaml schema**](eval-yaml.md) — every config key in one place
 - [**Execution model**](../concepts/execution-model.md) — case/batch × skill/prompt
 - [**Runners**](../concepts/runners.md) vs [**Backends**](../concepts/backends.md) — the runtime/substrate split
+- [**Model providers**](../concepts/providers.md) — the third leg: who serves the model and how credentials reach it
 - [**Your first eval**](../get-started/first-eval.md) — the terms in action
 
 </div>

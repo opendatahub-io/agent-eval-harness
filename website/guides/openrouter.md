@@ -1,14 +1,17 @@
-# Running an eval on OpenRouter
+# Running on OpenRouter
 
 OpenRouter is a first-class provider for both the **agent under test** and the **LLM
-judges**: write `openrouter:/<author>/<slug>[:variant]` on a role and the harness does the
-rest. This guide is the narrative; the knobs are in
-[`models.providers`](../reference/config/providers.md).
+judges**: write `openrouter:/<author>/<slug>[:variant]` on a
+[role](../reference/config/models.md#the-four-roles) and the harness does the rest. This
+guide is the narrative; the knobs are in [`models.providers`](../reference/config/providers.md);
+the provider-neutral mental model — which roles accept which URI, how the agent path differs
+from the judge path, where credentials come from on each backend — is
+[Model providers](../concepts/providers.md).
 
 ```yaml
 models:
   skill:    openrouter:/z-ai/glm-5.2:exacto     # the agent under test
-  judge:    openrouter:/z-ai/glm-5.2            # the judges (optional; any judge URI works)
+  judge:    openrouter:/z-ai/glm-5.2            # the judges (optional; see the judge note below)
   providers:
     openrouter:
       routing:
@@ -21,6 +24,15 @@ export OPENROUTER_API_KEY=…
 /eval-run --config eval-profiles/openrouter-glm-5.2.yaml
 ```
 
+!!! note "The judge role is independent — except on Harbor"
+    A Claude or `openai:/` judge next to an OpenRouter agent works on Local and EvalHub,
+    where the judge engine runs in the harness process or job pod with its own
+    environment. On Harbor under a plan the trial container carries **no Anthropic
+    credentials** (Podman strips them; on Kubernetes the plan's `ANTHROPIC_API_KEY=""`
+    and blanked Vertex entries are explicit pod env and win over the credentials Secret),
+    so an in-container LLM judge there must be `openrouter:/` or `openai:/` (or
+    deterministic). See [Model providers → Agent path and judge path](../concepts/providers.md#agent-path-and-judge-path).
+
 ## Direct transport, no proxy
 
 The agent's Claude Code process talks to `https://openrouter.ai/api/v1/messages`
@@ -30,10 +42,11 @@ Vertex/Bedrock variables, the `ANTHROPIC_DEFAULT_*_MODEL` / `CLAUDE_CODE_SUBAGEN
 aliases so every slot Claude Code picks by name resolves to an OpenRouter id, the
 attribution headers — and hands it to the runner: a 0600 settings overlay locally,
 value-free `--agent-env` carriers on Harbor podman, the pod spec plus a Secret on
-Kubernetes. There is no listener, no framing, no request rewriting and no second
-transport mode: a proxy would put the harness on the HTTP path for nothing the design
-needs, since cost, attribution and routing can all be read back from OpenRouter itself
-(spec 014, Decision 1). An operator who already fronts Claude Code with an
+Kubernetes. `claude --model` receives the bare `slug:variants`; the `openrouter:/` scheme
+is the harness's and never reaches the CLI. There is no listener, no framing, no request rewriting and no second
+transport mode. The harness deliberately does not ship a proxy: one would put it on the
+HTTP path for nothing the design needs, since cost, attribution and routing can all be read
+back from OpenRouter itself. An operator who already fronts Claude Code with an
 Anthropic-compatible endpoint keeps doing so through plain `execution.env`; that path is
 untouched and outside this feature (`cost_source: runner:estimate`).
 
@@ -51,8 +64,10 @@ about pins is enforced around the request, by the two levels below.
 3. **Audit** at reconcile: every billed generation's served provider is joined against
    the pinned set → `routing.violations`. Violations are **reported, never repaired** —
    the generation is billed and the case's output stands. `policy: strict` marks the run
-   `degraded` (`--strict-routing` exits 2), `warn` flags it. eval-compare and eval-anova
-   refuse to pool runs whose declaration, audit outcome or enforcement level differ.
+   `degraded` (`--strict-routing` exits 2), `warn` flags it. Downstream, `/eval-compare`
+   pools such runs and footnotes them while `/eval-anova` skips them — see
+   [eval-compare → Mixed providers and cost sources](eval-compare.md#mixed-providers-and-cost-sources)
+   and [eval-anova → Rules at a glance](eval-anova.md#rules-at-a-glance).
 
 The agent holds the **operator key** (`provider.key_exposed_to_agent: true`,
 `key_scope: operator`; the startup line says so). `budget.run_usd` is enforced post hoc.
@@ -60,20 +75,22 @@ The agent holds the **operator key** (`provider.key_exposed_to_agent: true`,
 ### `key-guardrail` (opt-in)
 
 Everything `audit` does, plus a **per-run key** provisioned through the management API
-before any spend: `limit` = `budget.run_usd`, allow-list = the pinned providers (or
-`guardrail.providers`). The key is read back and any mismatch — a different limit, no
+(`POST /api/v1/keys`) before any spend: `limit` = `budget.run_usd`, allow-list = the
+pinned providers (or `guardrail.providers`). The key is read back and any mismatch — a different limit, no
 echoed allow-list — revokes it and refuses to start, so a server that does not enforce
 what was asked never runs the eval. The per-run key is what the agent, the backfill and
-the key-usage reads use; judges keep the operator key. It is revoked at run end on every
-exit path (Ctrl-C included), `provider/key.json` records hash and state (never the key),
-and `python3 -m agent_eval.providers.openrouter.keys revoke <run_dir>` retries a failed
-revoke. Server-side enforcement means a pin violation cannot happen (an unroutable request
+the key-usage reads use; judges keep the operator key. It is revoked
+(`DELETE /api/v1/keys/{hash}`) at run end, after the backfill drain and the key-usage
+settle, on every exit path (Ctrl-C included, with an `atexit` fallback should the
+session never close); `provider/key.json` records hash and state (never the key), and
+`python3 -m agent_eval.providers.openrouter.keys revoke <run_dir>` retries a failed
+revoke (reported as a stderr `ERROR` and a `cost_warnings` entry). Server-side enforcement means a pin violation cannot happen (an unroutable request
 404s) and a budget breach is a 402 (`budget.exceeded_reason: limit_usd`).
 
 !!! warning "Verified per run, not established"
     The management API's guardrail field names have not been exercised against a live
-    management key (spec 014 probe #26). They live in one function and the read-back
-    fails closed; until the probe runs, treat `key-guardrail` as bounded exposure whose
+    management key (spec 014 probe #26). They live in one function
+    (`agent_eval.providers.openrouter.keys.key_request`) and the read-back fails closed; until the probe runs, treat `key-guardrail` as bounded exposure whose
     provider restriction is verified by that read-back at every start.
 
 ## Account-level settings
@@ -98,8 +115,8 @@ there is nothing to audit and the key warns.
    and every OpenRouter judge — slug exists; each pinned provider serves it, at a declared
    quantization, with tools and `tool_choice: auto` for agents and `tool_choice: function`
    for pinned judges (a forced tool call under pins answers 404 otherwise); degraded
-   endpoints (`status < 0`) excluded; `max_completion_tokens < 32000` warns; key valid;
-   account eligible. A catalog fetch failure degrades to `warn`; key, slug and eligibility
+   endpoints (`status < 0`) excluded, and a pinned set with no eligible endpoint left
+   fails; `max_completion_tokens < 32000` warns; key valid; account eligible. A catalog fetch failure degrades to `warn`; key, slug and eligibility
    stay strict. `python3 -m agent_eval.providers.openrouter.preflight --config eval.yaml`
    runs it without a run.
 2. **Snapshot**: the frozen catalog view the audit joins against, so a catalog change
@@ -147,13 +164,24 @@ operator's `HOME`, so application-default credentials on disk stay reachable —
 podman or Kubernetes runner for isolation from them (podman skips the credentials mount,
 the pod gets no credentials volume).
 
-## Runners
+<a id="runners"></a>
+
+## Backends
+
+How the plan reaches the agent on each execution backend (the `--runner` / `--env`
+choice — see [Execution backends](../concepts/backends.md)). The cross-provider version of
+this list is the matrix in
+[Model providers → Credentials by backend](../concepts/providers.md#credentials-by-backend).
 
 - **Local claude-code**: the overlay beats `execution.env`, `runner.settings.env` and a
   user-level `settings.json` that forces Vertex; managed keys are stripped from the CLI's
   process env.
-- **Harbor podman** (`--runner harbor --env podman`): carriers, host Vertex/Bedrock/
-  Anthropic variables not forwarded while the plan is active.
+- **Harbor podman** (`--runner harbor --env podman`): value-free `--agent-env` carriers;
+  while the plan is active the Anthropic credentials, the Vertex variables and the
+  Bedrock switches (`CLAUDE_CODE_USE_BEDROCK`, `AWS_REGION`, `AWS_BEARER_TOKEN_BEDROCK`)
+  are not forwarded and the GCP credentials file is not mounted — `AWS_ACCESS_KEY_ID` /
+  `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` and the `OPENAI_*` variables still are
+  (unset them on the host for isolation).
 - **Harbor Kubernetes / OpenShift** (`--env kubernetes|openshift`): the credentials
   Secret named by `AGENT_EVAL_K8S_CREDENTIALS_SECRET` must hold `OPENROUTER_API_KEY`; the
   harness maps it to `ANTHROPIC_AUTH_TOKEN` via `secretKeyRef` and writes the plan's
@@ -194,6 +222,12 @@ python3 -m agent_eval.providers.openrouter.keys revoke <run_dir>          # retr
   there is no cooldown or provider widening.
 - A `models.hook` on a different provider kind is rejected: the hook subprocess inherits
   the agent's env and would 404 on an Anthropic slug.
+- Synthetic dataset generation rejects `openrouter:/` models — see
+  [Model providers → Limitations](../concepts/providers.md#limitations).
+- `/eval-setup` does not recognise `OPENROUTER_API_KEY` (the run itself is unaffected) —
+  see [Model providers → Limitations](../concepts/providers.md#limitations).
+- `anthropic:/` on an agent role is normalised only while a plan is active — see
+  [Model providers → Limitations](../concepts/providers.md#limitations).
 - Kubernetes `key-guardrail`: the per-run Secret is deleted in the same `finally` as the
   key revoke, whether or not the revoke succeeds. It is left behind only when its own
   delete fails (RBAC, API outage — logged as `cleanup failed`) or when the harness
