@@ -1,3 +1,17 @@
+# [1.54.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.53.4...v1.54.0) (2026-10-08)
+
+
+### Bug Fixes
+
+* **anova:** headline p matches the corrected verdict; teach interpretation prompt adjusted-p semantics ([77bd2f8](https://github.com/opendatahub-io/agent-eval-harness/commit/77bd2f867e3de5dc0e2a2838a9d9a043f3b6febc))
+* **anova:** review follow-ups — reject non-string correction values, report excluded_terms on degenerate single-factor paths, tighten guide wording ([d7cfa2e](https://github.com/opendatahub-io/agent-eval-harness/commit/d7cfa2ea02b7d1c36d18a9c0bb1dad85b17423f6))
+* **anova:** support statsmodels 0.15's model_spec in the term-slice fallback ([ce05e6c](https://github.com/opendatahub-io/agent-eval-harness/commit/ce05e6c3ff1b951746e1c23f480a6f166042f02a))
+
+
+### Features
+
+* **anova:** per-term Wald tests with Holm/BH multiplicity correction ([49332cb](https://github.com/opendatahub-io/agent-eval-harness/commit/49332cbde142574cd8565383477b355652a57fb1))
+
 ## [1.53.4](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.53.3...v1.53.4) (2026-10-07)
 
 
