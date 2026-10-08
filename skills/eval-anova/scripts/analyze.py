@@ -77,8 +77,12 @@ def _judge_columns(per_judge: dict[str, Any]) -> dict[str, float]:
         key = f"{_JUDGE_PREFIX}{name}"
         if isinstance(value, bool):
             cols[key] = 1.0 if value else 0.0
-        elif isinstance(value, (int, float)) and math.isfinite(value):
-            cols[key] = float(value)
+        elif isinstance(value, (int, float)):
+            try:
+                as_float = float(value)
+            except OverflowError:  # int beyond float range: not a measurement
+                as_float = float("nan")
+            cols[key] = as_float if math.isfinite(as_float) else float("nan")
         else:
             cols[key] = float("nan")
     return cols

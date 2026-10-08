@@ -248,12 +248,13 @@ def test_in_memory_scalar_judge_results_are_analysed():
 
 
 def test_non_finite_judge_values_are_not_observations(tmp_path):
-    """nan/inf are not measurements: an inf must never reach the fit as
-    variance, and a judge whose every value is non-finite is excluded with
-    a reason that names the cause rather than analysed on garbage."""
+    """nan/inf are not measurements (and an int beyond float range must not
+    crash extraction): an inf must never reach the fit as variance, and a
+    judge whose every value is non-finite is excluded with a reason that
+    names the cause rather than analysed on garbage."""
     runs = tmp_path / "eval"
     _mk_run(runs, "r-a", "model-a", {
-        "c1": {"quality": 4, "broken": float("inf")},
+        "c1": {"quality": 4, "broken": 10 ** 400},
         "c2": {"quality": 5, "broken": float("nan")},
         "c3": {"quality": 4, "broken": float("inf")},
         "c4": {"quality": 5, "broken": float("nan")},
