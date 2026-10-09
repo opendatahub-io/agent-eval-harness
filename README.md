@@ -245,16 +245,20 @@ judges:
       return True, f"Output has {len(content.strip())} chars"
 
   # LLM judge with inline prompt (conditional — skipped when condition is false)
-  - name: output_quality
-    if: "not annotations.get('skip_quality', False)"  # Skip based on annotations
+  - name: completeness
+    if: "not annotations.get('skip_completeness', False)"  # Skip based on annotations
     feedback_type: int
     score_range: [1, 5]      # declare the scale — omitting it warns at config load
     description: |
-      Evaluate quality compared to the reference. Score 1-5.
+      How completely the output covers the reference — one criterion;
+      clarity and accuracy belong to other judges.
     prompt: |
-      Compare the generated output against the reference.
-      Consider: completeness, clarity, accuracy, and relevance.
-      Score 1-5 where 5 is excellent.
+      How completely does the generated output cover the reference?
+
+      {{ outputs }}
+
+      Score 1-5: 1 = most requirements missing, 3 = covers the basics
+      with gaps, 5 = every requirement addressed.
 
   # LLM judge with prompt file and supplementary context
   # - name: detailed_quality
@@ -297,7 +301,7 @@ judges:
 
 # Thresholds for regression detection
 thresholds:
-  output_quality:
+  completeness:
     min_mean: 3.5            # Minimum average score
   # has_content:
   #   min_pass_rate: 1.0     # Minimum fraction of cases passing (0.0–1.0)
