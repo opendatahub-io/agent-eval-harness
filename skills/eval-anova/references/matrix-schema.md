@@ -89,9 +89,10 @@ with ≥2 levels, each pair reporting `estimate` (composite-scale difference,
 `a − b`), `se`, `p_raw`, `p_adjusted`, and `significant`. The correction
 family is the pairwise contrasts *within that factor* (never pooled across
 factors), and each block carries the factor's omnibus adjusted p for context —
-contrasts are computed regardless of the omnibus outcome. They come from the
-already-fitted model (no refitting): pingouin paired tests for single-factor
-designs, coefficient contrasts on the mixed model otherwise — flagged
+contrasts are computed regardless of the omnibus outcome. Single-factor
+designs run pingouin's paired tests across cases (a separate test, not the
+`rm_anova` fit); multi-factor designs take coefficient contrasts from the
+already-fitted mixed model (no refitting) — flagged
 `contrast_type: reference-cell` when the model includes interactions (level
 differences at the other factors' reference levels, not marginal means).
 Degenerate pairs (no finite p, e.g. zero-variance paired differences) are

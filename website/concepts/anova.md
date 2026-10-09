@@ -138,8 +138,10 @@ compared:
   refitting): level-vs-reference is a single fixed-effect coefficient, level A
   vs level B the coefficient difference. Single-factor designs use pingouin's
   paired tests with the observed paired mean differences.
-- **Holm within the factor** — the correction family is the pairwise contrasts
-  *within that factor* (never pooled across factors); raw p-values stay
+- **The configured correction, within the factor** — `matrix.analysis.correction`
+  (Holm by default, `bh`, or `none`) applies to contrasts too; the correction
+  family is the pairwise contrasts *within that factor* (never pooled across
+  factors); raw p-values stay
   visible alongside the adjusted ones, and `significant` is judged on the
   adjusted value.
 - **Reference-cell contrasts when interactions are present** — with
