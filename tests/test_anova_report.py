@@ -267,3 +267,17 @@ def test_degenerate_contrast_block_shows_reason_not_table():
     assert "No pairwise tests: No variance in response" in markdown
     rendered = report.render_html("anova-test", d)
     assert "No pairwise tests: No variance in response" in rendered
+
+
+def test_contrasts_markdown_escapes_pipes_and_html():
+    """Level names and notes are user controlled: a '|' must not split the
+    table row and raw HTML must not survive into the markdown (the HTML
+    renderer already escapes the same values)."""
+    report = load_report_module()
+    d = contrasts_analysis()
+    d["contrasts"]["model"]["pairs"][0]["a"] = "opus|4<script>x</script>"
+    d["contrasts"]["model"]["note"] = "a | b <b>bold</b>"
+    markdown = report.render_md("anova-test", d)
+    assert "| opus\\|4&lt;script&gt;x&lt;/script&gt; | claude-haiku-4-5 |" in markdown
+    assert "<script>" not in markdown and "<b>" not in markdown
+    assert "- a \\| b &lt;b&gt;bold&lt;/b&gt;" in markdown

@@ -71,8 +71,9 @@ git repo (a per-user temp dir is used as a fallback when unset).
    `anova.json` also carries post-hoc **pairwise level contrasts** per factor (`contrasts` key):
    every level pair gets an estimate (composite-scale difference), SE, raw p, and a p adjusted
    within that factor's family — so a significant omnibus becomes actionable ("opus vs sonnet:
-   +0.06, adjusted p = .02"). Computed from the same fit (no refitting) regardless of the omnibus
-   result; with interactions in the model they are reference-cell contrasts and labelled as such.
+   +0.06, adjusted p = .02"). Computed regardless of the omnibus result — coefficient contrasts on
+   the already-fitted mixed model (no refitting) for multi-factor designs, paired tests across
+   cases for single-factor ones; with interactions they are reference-cell contrasts, labelled as such.
 4. **Report**: `/eval-compare` renders the cross-condition comparison, including the statistics
    section, from the runs + `anova.json`.
 

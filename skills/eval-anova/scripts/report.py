@@ -65,6 +65,11 @@ def eff_bucket(v): return "n/a" if v is None else ("small" if v<0.06 else "mediu
 def order_models(ms): return sorted(ms)
 def fnum(x, n=3): return f"{x:.{n}f}" if isinstance(x,(int,float)) else "—"
 def esc(x): return html.escape(str(x))  # user-controlled values (model/case/task ids, run_id)
+def mdcell(x):
+    # Markdown-table counterpart of esc(): a level/judge name or note is user
+    # controlled — a '|' would split the row and raw HTML would survive a
+    # later markdown->HTML render. Quotes stay literal (quote=False).
+    return html.escape(str(x), quote=False).replace("|", "\\|").replace("\n", " ")
 def cmodel(c):  # model name from a condition summary: flat, nested, or id
     if not c:
         return "?"
@@ -157,13 +162,13 @@ def per_judge_md_lines(d):
             e=judges[name] or {}
             for term,cell in (e.get("terms") or {}).items():
                 res="SIGNIFICANT" if cell.get("significant") else "not significant"
-                L.append(f"| {name} | {term} | {fnum(cell.get('p_raw'),4)} | "
+                L.append(f"| {mdcell(name)} | {mdcell(term)} | {fnum(cell.get('p_raw'),4)} | "
                          f"{fnum(cell.get('p_adjusted'),4)} | {res} | {e.get('n_cases','?')} |")
         L+=["",f"*{per_judge_note(pj)}*"]
     if excluded:
         L.append("")
     for ex in excluded:
-        L.append(f"- Excluded from the family: {ex.get('judge','?')} — {ex.get('reason','')}")
+        L.append(f"- Excluded from the family: {mdcell(ex.get('judge','?'))} — {mdcell(ex.get('reason',''))}")
     return L
 def per_judge_html(d):
     pj=d.get("per_judge") or {}
@@ -226,16 +231,16 @@ def contrasts_md_lines(contrasts):
     if not contrasts: return []
     lines=["","## Pairwise contrasts (post-hoc)"]
     for factor,blk in contrasts.items():
-        lines+=["",f"### {factor}","",
+        lines+=["",f"### {mdcell(factor)}","",
                 f"- {contrast_family_note(blk)} Omnibus p-adj: {fnum(blk.get('omnibus_p_adjusted'),4)}."]
-        if blk.get("note"): lines.append(f"- {blk['note']}")
+        if blk.get("note"): lines.append(f"- {mdcell(blk['note'])}")
         if blk.get("reason"):
-            lines.append(f"- No pairwise tests: {blk['reason']}")
+            lines.append(f"- No pairwise tests: {mdcell(blk['reason'])}")
             continue
         lines+=["","| A | B | Estimate | SE | p (raw) | p (adj) | Result |",
                 "|---|---|---|---|---|---|---|"]
         for p in blk.get("pairs",[]):
-            lines.append(f"| {p.get('a')} | {p.get('b')} | {fnum(p.get('estimate'))} "
+            lines.append(f"| {mdcell(p.get('a'))} | {mdcell(p.get('b'))} | {fnum(p.get('estimate'))} "
                          f"| {fnum(p.get('se'))} | {fnum(p.get('p_raw'),4)} "
                          f"| {fnum(p.get('p_adjusted'),4)} | {contrast_result(p)} |")
     return lines
