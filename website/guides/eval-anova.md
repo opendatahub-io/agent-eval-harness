@@ -283,7 +283,8 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/report.py $AGENT_EVAL_RUNS_DIR/<eval-name>
 The deep report opens with a headline badge — **SIGNIFICANT** / **not
 significant** with the p it was judged on, labelled **adj. p** whenever a
 correction ran — then the sections **Experiment**, **Condition means
-(ranked)**, **ANOVA** (F / p / η² tiles and the per-term raw-vs-adjusted
+(ranked)**, **ANOVA** (F / p tiles; η² for single-factor results or a
+factor-count tile for multi-factor results, plus the per-term raw-vs-adjusted
 table), **Pairwise contrasts (post-hoc)** (an A / B / estimate / SE / p table
 per factor, with the family and correction named), **Per-judge effects
 (screening)** when the artifact has a `per_judge` block (judge × term rows plus
