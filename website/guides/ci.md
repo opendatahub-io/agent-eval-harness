@@ -124,6 +124,80 @@ python3 skills/eval-run/scripts/score.py regression \
     test. They compose — a run can pass its absolute floors yet still fail because it
     dropped sharply versus the baseline.
 
+## Gating a model or config comparison
+
+`thresholds` and `--baseline` judge **one run**. When a job fans `/eval-run` out across
+several models or configs and analyzes them with
+[`/eval-anova`](eval-anova.md#re-analyze-existing-runs) (`--analyze-only` over the runs
+directory), the question becomes *"is the candidate significantly worse than the
+baseline?"* — and the orchestrator will not answer it with its exit code. After a
+completed analysis `orchestrate.py` **exits `0` whether or not anything was
+significant** (it exits non-zero only when it cannot analyze at all: no scored runs, or
+the `anova` extra missing). The gate has to be a step of your own over `anova.json`.
+
+The relevant part of the artifact is the level-contrast block for the factor you are
+comparing on — `contrasts.<factor>.pairs[]`, each with `a`, `b`, `estimate` (`a − b` on
+the composite scale, so its sign depends on which level sorted first), `p_adjusted`, and
+`significant` (judged on the adjusted p under the block's `correction`):
+
+```bash title="gate-anova.sh"
+#!/usr/bin/env bash
+# usage: gate-anova.sh anova.json FACTOR CANDIDATE BASELINE
+set -euo pipefail
+verdict=$(jq -r --arg f "$2" --arg cand "$3" --arg base "$4" '
+  (.contrasts[$f].pairs // [])
+  | map(select(([.a, .b] | sort) == ([$cand, $base] | sort)))
+  | if length == 0 then "missing: no \($f) contrast for \($cand) vs \($base)"
+    elif .[0].p_adjusted == null then "no-evidence: \(.[0].reason // "no finite p")"
+    else .[0]
+      | (if .a == $cand then .estimate else -(.estimate) end) as $delta   # candidate − baseline
+      | if .significant and $delta < 0 then
+          "regression: \($cand) - \($base) = \($delta) (adj. p \(.p_adjusted))"
+        elif .significant then
+          "improvement: \($cand) - \($base) = \($delta) (adj. p \(.p_adjusted))"
+        else "no-difference: adj. p \(.p_adjusted)" end
+    end' "$1")
+echo "$verdict"
+case "$verdict" in regression:*|missing:*) exit 1 ;; esac
+```
+
+```bash
+bash gate-anova.sh "$AGENT_EVAL_RUNS_DIR/<eval-name>/anova.json" model "$CANDIDATE_MODEL" "$BASELINE_MODEL"
+```
+
+Three semantics are baked in deliberately:
+
+- **Fail only on a *significant* loss.** The step exits `1` when the pair is
+  `significant: true` *and* the candidate-minus-baseline estimate is negative (the sign
+  is flipped when the candidate happens to be `b`). A significant gain and a
+  non-significant gap both exit `0`.
+- **A `null` p is "no evidence", not a pass.** A degenerate pair (zero-variance paired
+  differences, for instance) carries `p_adjusted: null`, `significant: false`, and a
+  `reason`. The step prints `no-evidence:` and exits `0` so the build is not blocked on a
+  statistic that does not exist — but nothing has been shown either way, which is why the
+  next point exists. If your policy is "the comparison must be testable", add
+  `no-evidence:*` to the failing patterns.
+- **Non-significance ≠ equivalence.** `no-difference` means *this sample could not tell
+  them apart*, not that the candidate is as good. Keep `thresholds` as the hard floor —
+  run `score.py regression` on the candidate's own run before this step — so a candidate
+  can never ship on a sweep too small to detect its regression.
+
+Two refinements, both read from the same artifact:
+
+- **Omnibus first, if you want it.** The factor's adjusted omnibus p is
+  `.anova.p_adjusted` — a scalar for a single-factor analysis, a dict keyed by term for a
+  grid: `jq -r --arg f model '.anova.p_adjusted | if type == "object" then .[$f] else . end'`.
+  The contrast gate above does not require it; the contrasts are computed regardless.
+- **Mind the contrast type on a grid.** With interactions in the model (two or more
+  factors), `contrasts.model` is flagged `contrast_type: reference-cell` — the model gap
+  *at the other factors' reference levels*, not a marginal mean. Gate on a single-factor
+  comparison (only `model` varies) when you want the marginal reading, or re-analyze the
+  subset of runs for one level of the other factor.
+
+Pin the correction on the command line in CI (`--analyze-only --correction holm`) so an
+edit to `matrix.analysis.correction` cannot silently change what "significant" means to
+the gate; the `--correction` flag takes precedence over the config.
+
 ## A GitHub Actions job
 
 !!! warning "Illustrative skeleton — not drop-in runnable"

@@ -113,7 +113,7 @@ See `references/matrix-schema.md` for the full schema.
 
 - **Repeated-measures ANOVA** (default): Accounts for case difficulty as a blocking factor. Correct when the same cases are evaluated under all conditions.
 - **Mixed-effects model**: For multi-factor designs with crossed random effects. Reports one joint Wald test per term (main effects and interactions), Holm/BH-corrected across the term family.
-- **Pairwise level contrasts (post-hoc)**: For every factor with ≥2 levels, all level pairs with estimate/SE/raw p/adjusted p, Holm-corrected within the factor. From the fitted model (mixedlm coefficient contrasts — reference-cell when interactions are present) or paired pingouin tests (single factor).
+- **Pairwise level contrasts (post-hoc)**: For every factor with ≥2 levels, all level pairs with estimate/SE/raw p/adjusted p, corrected within the factor by the configured method (`--correction` / `matrix.analysis.correction`: Holm by default, `bh`, or `none`). From the fitted model (mixedlm coefficient contrasts — reference-cell when interactions are present) or paired pingouin tests (single factor).
 - **One-way ANOVA**: available in the stats library for independent samples (cases NOT reused), but rarely appropriate — the orchestrator does not auto-select it.
 
 See `prompts/interpret-anova.md` for guidance on interpreting results.
