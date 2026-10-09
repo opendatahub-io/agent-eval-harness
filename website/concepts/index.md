@@ -23,6 +23,7 @@ flowchart LR
     J --> T[Thresholds]
     J --> RW[Reward scalar]
     J --> REP[HTML report]
+    J -. ≥ 2 runs .-> AN[Compare · ANOVA]
 ```
 
 ## In this section
@@ -35,9 +36,9 @@ flowchart LR
 - [**Execution backends**](backends.md) — One `eval.yaml`, three execution paths: Local, Harbor, EvalHub.
 - [**Model providers**](providers.md) — Who serves each role's model: bare ids and `provider:/` URIs, the three families, credentials per backend, cost provenance.
 - [**Datasets & provenance**](datasets.md) — Case anatomy and the `skill` / `synthetic` / `from-traces` strategies.
-- [**Judges & scoring**](judges.md) — The five judge types and the `outputs` record they see.
+- [**Judges & scoring**](judges.md) — The five judge types and the `outputs` record they see. LLM judges give their rationale before the verdict, grade material fenced as untrusted (`[BEGIN EVALUATED MATERIAL]`, a prompt-injection mitigation), and can be calibrated with few-shot anchors from human review labels.
 - [**Pairwise & sampling**](pairwise-and-sampling.md) — A/B run comparison and statistical judge stability.
-- [**Analysis of variance**](anova.md) — Full-factorial DoE, repeated-measures / mixed-effects ANOVA, and the cost/quality Pareto frontier.
+- [**Analysis of variance**](anova.md) — Full-factorial DoE, repeated-measures / mixed-effects ANOVA, per-term Wald tests with Holm / Benjamini–Hochberg multiplicity correction, post-hoc level contrasts, opt-in per-judge screening, and the cost/quality Pareto frontier.
 - [**Regression thresholds**](thresholds.md) — How `min_mean` / `min_pass_rate` / `min_win_rate` / `max_error_rate` gate a run.
 - [**The Reward API**](reward-api.md) — Collapsing judges into a single `[0, 1]` scalar for GRPO.
 - [**Tool interception**](tool-interception.md) — The `PreToolUse` hook and 3-tier AskUserQuestion answering.

@@ -16,7 +16,8 @@ the CLI flags change between local, containerized, and platform runs.
 
     ---
 
-    How setup, analyze, dataset, run, review, optimize, and mlflow fit together.
+    How setup, analyze, dataset, run, compare/anova, review, optimize, and mlflow fit
+    together.
 
     [:octicons-arrow-right-24: Pipeline at a glance](pipeline.md)
 
@@ -66,7 +67,8 @@ The `/eval-*` slash commands drive the workflow in order. Each maps to a skill u
 
     ---
 
-    Compare models or runs side-by-side into one self-contained HTML report.
+    Compare models or runs side-by-side into one self-contained HTML report — with
+    the ANOVA, contrasts, and Pareto section when an `anova.json` is present.
 
     [:octicons-arrow-right-24: Compare models/runs](eval-compare.md)
 
@@ -74,7 +76,9 @@ The `/eval-*` slash commands drive the workflow in order. Each maps to a skill u
 
     ---
 
-    Sweep a matrix of models/configs and test whether score differences are statistically real.
+    Sweep a matrix of models/configs and test whether score differences are
+    statistically real: per-term tests with Holm/BH-corrected p-values, post-hoc level
+    contrasts ("A vs B: estimate, adjusted p"), and opt-in per-judge screening.
 
     [:octicons-arrow-right-24: Analyze variance](eval-anova.md)
 
@@ -82,7 +86,9 @@ The `/eval-*` slash commands drive the workflow in order. Each maps to a skill u
 
     ---
 
-    Present results, collect human feedback, and propose targeted changes.
+    Present results, collect human feedback, and turn it into targeted changes — and
+    into judge calibration: your labels become few-shot anchors via
+    [`judges[].examples`](../reference/config/judges.md#few-shot-examples-from-human-reviews-examples).
 
     [:octicons-arrow-right-24: Review results](eval-review.md)
 

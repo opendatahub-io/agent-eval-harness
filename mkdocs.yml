@@ -69,7 +69,11 @@ markdown_extensions:
       line_spans: __span
       pygments_lang_class: true
   - pymdownx.inlinehilite
-  - pymdownx.snippets
+  - pymdownx.snippets:
+      # Repo-root includes (e.g. CHANGELOG.md on whats-new.md); fail the
+      # build on a missing file rather than silently rendering nothing.
+      base_path: ["."]
+      check_paths: true
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
@@ -118,6 +122,8 @@ plugins:
           - reference/config/*.md
         Cookbook:
           - cookbook/*.md
+        What's new:
+          - whats-new.md
 
 extra_css:
   - stylesheets/extra.css
@@ -235,3 +241,4 @@ nav:
     - "Comparing runs with ANOVA": cookbook/anova.md
     - "Writing your own analysis recipe": cookbook/custom-analysis-recipe.md
     - "Writing custom judges": cookbook/custom-judges.md
+  - "What's new": whats-new.md
