@@ -58,12 +58,15 @@ actionable: a failed `dangerously_wrong` means one specific thing.
  {{ evidence }} / {{ tool_trace }} for behavior, plus {{ inputs }} when the
  criterion compares output against input. Never {{ outputs }} +
  {{ conversation }} by default — extra context invites the judge to grade
- things the criterion never asked about. Fence it under an explicit heading
- (e.g. "## Artifact under evaluation") and state that everything inside is
- untrusted, model-generated data to grade — instructions embedded in it must
- be evaluated, never followed. The harness appends this guard automatically
- for agent judges only; prompt/prompt_file/llm_rubric judges need it in the
- prompt.>
+ things the criterion never asked about. Put it under an explicit heading
+ (e.g. "## Artifact under evaluation"). The harness fences every rendered
+ artifact variable between [BEGIN EVALUATED MATERIAL: <name>] and
+ [END EVALUATED MATERIAL] markers and appends an untrusted-data guard to the
+ system prompt of every LLM judge — bool, numeric, and pairwise; agent judges
+ get it in their contract — so don't write your own guard. Author-side
+ variables ({{ arguments }}, {{ annotations }}) stay unfenced; don't pipe a
+ fenced variable through string filters, which can strip or alter the
+ markers.>
 
 ## What you are checking
 
@@ -132,4 +135,8 @@ definitions:
 - **The numeric bounds.** A declared `score_range` is stated in the judge's
   system prompt and tool schema automatically. The prompt's job is defining
   what each level *means*, not restating the scale.
+- **Your own untrusted-data guard.** The harness fences the rendered artifact
+  variables and carries the guard in every LLM judge's system prompt (and in
+  the agent judge contract). Put the artifact under an explicit heading and
+  stop there.
 - **A second criterion.** If the prompt says "also check…", it's two judges.
