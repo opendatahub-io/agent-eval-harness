@@ -1,3 +1,17 @@
+# [1.56.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.55.0...v1.56.0) (2026-10-09)
+
+
+### Bug Fixes
+
+* **anova:** escape markdown table cells in the deep report; correct the contrasts provenance wording ([ce31d15](https://github.com/opendatahub-io/agent-eval-harness/commit/ce31d15390231f683ca314fc477478541f3ab28e))
+* **anova:** label wholesale pairwise-test failure as systemic, not per-pair degeneracy ([a3de7ca](https://github.com/opendatahub-io/agent-eval-harness/commit/a3de7caf32428c55699c9f7d33ac8904db487e80))
+* **anova:** read the mixedlm design spec via model_spec on statsmodels 0.15 for contrasts ([9e8a183](https://github.com/opendatahub-io/agent-eval-harness/commit/9e8a1830a70f44694f21262a071a9fe3714d0af9))
+
+
+### Features
+
+* **anova:** Holm-corrected pairwise level contrasts ([a591225](https://github.com/opendatahub-io/agent-eval-harness/commit/a591225854ed2217d989c3b638b9645855b938c5))
+
 # [1.55.0](https://github.com/opendatahub-io/agent-eval-harness/compare/v1.54.0...v1.55.0) (2026-10-08)
 
 
