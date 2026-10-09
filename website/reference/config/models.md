@@ -192,8 +192,10 @@ a hook on a different provider kind than the skill is rejected at load. The bare
     `hook_model` is computed from the config's roles, not from `--model` /
     `--subagent-model`. A plan activated only by `--model openrouter:/…` over an
     Anthropic `models.skill` leaves an unset hook on the Claude default inside the
-    OpenRouter env — set `models.hook` (or `background_model`) in the config, or put the
-    `openrouter:/` skill model in a [profile](extends.md).
+    OpenRouter env — `background_model` does not help there either, since it is consulted
+    only when the config's own skill model activates the plan. Set `models.hook` to an
+    `openrouter:/` id, or put the `openrouter:/` skill model in a [profile](extends.md)
+    ([#241](https://github.com/opendatahub-io/agent-eval-harness/issues/241)).
 
 ```yaml
 models:
