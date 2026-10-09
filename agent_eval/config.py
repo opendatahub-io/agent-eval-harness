@@ -1541,7 +1541,8 @@ class JudgeExamplesConfig:
 
     ``source`` selects the harvest source (``reviews``: human labels from
     prior runs' review.yaml, both the flat ``feedback`` map and the
-    per-judge ``verdicts`` map written by /eval-review). ``count`` caps how
+    per-judge ``verdicts`` map — hand-authored today, no skill writes it yet).
+    ``count`` caps how
     many exemplars are injected per case; ``mix`` lists which verdict
     classes are eligible (default both, so the judge sees a clear pass AND
     a clear fail whenever the pool has them).

@@ -617,14 +617,19 @@ class _OutputsProxy(dict):
     """
 
     def __str__(self):
-        files = self.get("files", {})
-        parts = []
-        for path, content in sorted(files.items()):
-            if isinstance(content, dict) and content.get("_binary"):
-                parts.append(f"\n### {path}\n\n<binary: {content['name']}>\n")
-            else:
-                parts.append(f"\n### {path}\n\n{content}\n")
-        return "".join(parts)
+        return _format_files(self.get("files", {}))
+
+
+def _format_files(files):
+    """The ``### <path>`` listing both ``{{ outputs }}`` and ``{{ outputs.files }}``
+    render — one place, so the two never drift."""
+    parts = []
+    for path, content in sorted(files.items()):
+        if isinstance(content, dict) and content.get("_binary"):
+            parts.append(f"\n### {path}\n\n<binary: {content['name']}>\n")
+        else:
+            parts.append(f"\n### {path}\n\n{content}\n")
+    return "".join(parts)
 
 
 class _FencedStr(str):
@@ -690,6 +695,11 @@ class _FencedFiles(dict):
     def items(self):
         return [(k, self._wrap(k, v)) for k, v in super().items()]
 
+    def __str__(self):
+        # Bare ``{{ outputs.files }}`` used to print a dict repr — raw, unfenced
+        # file content. Render the same fenced listing as bare ``{{ outputs }}``.
+        return _fence_untrusted(_format_files(dict(self)), "outputs.files")
+
 
 class _FencedOutputs(_OutputsProxy):
     """Render-time view whose agent-produced content is fenced.
@@ -731,7 +741,7 @@ def _contains_fenced(value):
     """Whether a value carries untrusted file content (a `_FencedStr`/
     `_FencedFiles`), directly or nested, so a serializer's output can be marked
     as evaluated material."""
-    if isinstance(value, (_FencedStr, _FencedFiles)):
+    if isinstance(value, (_FencedStr, _FencedFiles, _FencedOutputs)):
         return True
     if isinstance(value, dict):
         return any(_contains_fenced(v) for v in value.values())
@@ -746,7 +756,8 @@ def _tojson_filter(value):
     unmarked, letting `{{ outputs.files[...] | tojson }}` bypass the fence."""
     rendered = json.dumps(value, indent=2, default=str)
     if _contains_fenced(value):
-        return _fence_untrusted(rendered, "outputs.files (json)")
+        label = "outputs (json)" if isinstance(value, _FencedOutputs) else "outputs.files (json)"
+        return _fence_untrusted(rendered, label)
     return rendered
 
 
