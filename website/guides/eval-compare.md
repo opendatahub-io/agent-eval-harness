@@ -95,7 +95,7 @@ It also adds model-card **badges** where they clearly apply:
 
 | Badge | Meaning |
 | --- | --- |
-| **Best Value** | Best quality-for-cost, and consistent across runs. |
+| **Best Value** | Best quality-for-cost, and consistent across runs — the condition you would pick off the [cost/quality Pareto frontier](../concepts/anova.md#cost-vs-quality-the-pareto-frontier). |
 | **Highly Variable** | Multiple runs whose scores diverge significantly (disqualifies Best Value). |
 | **Not Viable** | Fundamentally fails the task — very low scores or missing outputs. |
 
@@ -124,13 +124,20 @@ open <output-dir>/index.html
   alongside the overall **F** statistic when the artifact provides one
   (single-factor repeated-measures / one-way analyses; the multi-factor
   mixed-effects model reports per-term Wald tests instead), the design (`n_cases`, `replications`,
-  any excluded conditions), and — when the artifact includes one — a
-  **cost/quality Pareto frontier**. When the artifact carries a `per_judge`
-  block (the opt-in per-judge fan-out), a compact judge-by-term screening
-  table follows, with raw and BH-adjusted p-values and any excluded judges
-  listed with their reasons. Older artifacts without the correction
-  fields render with their single p column unchanged. With no `anova.json`,
-  this section is simply absent and the rest of the report is unchanged.
+  any excluded cases — those missing from some condition), then a
+  **Pairwise level contrasts (post-hoc)** table per factor — every pair of
+  levels with its estimate (`a − b` on the composite scale), SE, raw and
+  adjusted p, and result, headed by the factor's correction family and omnibus
+  adjusted p, with a note on what the estimate is (paired differences,
+  marginal, or reference-cell when interactions are in the model) — and, when
+  the artifact includes one, a **cost/quality Pareto frontier**. When the
+  artifact carries a `per_judge` block (opt-in per-judge screening), a compact
+  **Per-judge effects (screening)** judge-by-term table follows, with raw and
+  BH-adjusted p-values and any excluded judges listed with their reasons.
+  Older artifacts without the correction fields render with their single p
+  column unchanged. With no `anova.json`, this section is simply absent and
+  the rest of the report is unchanged. How to read the section top to bottom
+  is in [When is a difference real?](../concepts/anova.md#when-is-a-difference-real).
 - **Light/dark theme** — a header toggle mirrors the per-run reports and
   remembers your choice.
 

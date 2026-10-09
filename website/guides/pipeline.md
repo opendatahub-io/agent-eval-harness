@@ -40,13 +40,16 @@ flowchart LR
     run -. any time .-> mlflow[("/eval-mlflow<br/>track")]
     review -. any time .-> mlflow
     optimize -. any time .-> mlflow
+    run -- ≥2 runs --> compare["/eval-compare<br/>cross-run report"]
+    anova["/eval-anova<br/>matrix → ANOVA"] -. per cell .-> run
+    anova --> compare
 
     %% Mark optional steps with a dashed border, NOT a fill. Material forces node
     %% label text to a theme-adaptive color (white in dark mode) inside a closed
     %% shadow DOM, so a light fill would render white-on-light text. Leaving the
     %% fill to the theme keeps the label readable; the dashed stroke marks them.
     classDef opt stroke:#9e9e9e,stroke-width:1.5px,stroke-dasharray:4 3;
-    class setup,review,optimize,mlflow opt;
+    class setup,review,optimize,mlflow,compare,anova opt;
 ```
 
 The dashed loops back to `/eval-run` are the improvement cycle: review or optimize a run,

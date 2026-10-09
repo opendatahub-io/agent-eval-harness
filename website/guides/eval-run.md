@@ -208,6 +208,8 @@ majority vote, numeric by median. See [pairwise & sampling](../concepts/pairwise
     regular judges: each case is judged both A/B and B/A, and only a consistent preference
     counts as a win. `summary.yaml` gains a `pairwise` section with `wins_a`, `wins_b`, and
     `ties`. Gate on it with a `min_win_rate` [threshold](../concepts/thresholds.md).
+    For more than two runs, or to know whether a gap is statistically significant, see
+    [`/eval-compare`](eval-compare.md) and [`/eval-anova`](eval-anova.md).
 
 ## Reading the results
 

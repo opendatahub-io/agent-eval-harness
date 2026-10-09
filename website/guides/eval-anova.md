@@ -3,8 +3,10 @@
 `/eval-anova` runs a Design-of-Experiments (DoE) sweep over a **matrix** of
 configurations — models, thinking-effort levels, prompts, tools — and tells you
 whether the score differences between them are *statistically real* or just
-run-to-run noise. It reports an ANOVA (F-statistic, p-value, effect size) plus a
-cost-vs-quality Pareto frontier.
+run-to-run noise. It reports an ANOVA (raw and adjusted p-values per term —
+plus F and effect size for a single-factor design), the **level contrasts**
+that say which levels differ and by how much, and a cost-vs-quality Pareto
+frontier.
 
 It is **not** its own executor. `/eval-anova` wraps [`/eval-run`](eval-run.md):
 it expands the matrix into conditions, runs `/eval-run` once per matrix cell to
@@ -14,9 +16,11 @@ touches is a normal run — nothing bespoke — so the same directory of runs al
 works with every other skill.
 
 !!! abstract "What it produces"
-    A set of standard `/eval-run` runs (one per matrix cell), an `anova.json`
-    with the ANOVA verdict, per-condition means, and a cost/quality Pareto
-    frontier, and a `/eval-compare` HTML report with a **Statistical
+    A set of standard `/eval-run` runs (one per matrix cell); an `anova.json`
+    with the ANOVA verdict, the post-hoc level contrasts per factor (estimate,
+    SE, raw and adjusted p for every pair of levels), per-condition means, a
+    cost/quality Pareto frontier, and — when enabled — a per-judge screening
+    block; and a `/eval-compare` HTML report with a **Statistical
     Significance** section folded in automatically.
 
 ## When to use it
@@ -28,8 +32,9 @@ scoring a single one — even if you never say "ANOVA" or "DoE":
 - Decide **which model or config is best** for a task, and by how much.
 - **Sweep or grid** several factors at once (model × effort × prompt).
 - Run **replications** to average out an agent's stochastic noise.
-- Check whether a score difference is **statistically significant** (F, p,
-  effect size) instead of eyeballing two averages.
+- Check whether a score difference is **statistically significant** (adjusted
+  p per term; F and effect size for a single factor) — and *which* levels
+  differ — instead of eyeballing two averages.
 - Any time an `eval.yaml` already carries a [`matrix:`](#design-the-matrix)
   block, or you want to fan an eval out across configurations.
 
@@ -71,7 +76,8 @@ matrix:
       - high
   replications: 3        # optional, default 1
   analysis:              # optional
-    correction: holm     # holm (default) | fdr_bh | none
+    correction: holm     # holm (default) | bh (alias fdr_bh) | none
+    # per_judge: false  # opt-in per-judge screening; set true (or pass --per-judge) to enable
 ```
 
 This is `2 × 2 = 4` conditions. With 3 replications over (say) 5 cases that's
@@ -121,8 +127,8 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/orchestrate.py --config eval.yaml --analyze-
 | `--avg-cost-per-run <float>` | unset | Per-run cost used by `--dry-run` for a point estimate. |
 | `--output <path>` | default compare dir | Output dir for the `/eval-compare` report. |
 | `--no-report` | off | Compute `anova.json` but skip rendering the report. |
-| `--correction <method>` | unset | Multiple-comparison correction across the ANOVA term family: `holm`, `fdr_bh` (alias `bh`), or `none`. Overrides `matrix.analysis.correction`; when neither is supplied, `holm` applies. |
-| `--per-judge` | off | Also run the ANOVA once per judge (screening), Benjamini–Hochberg-corrected across the whole judges×terms family. Enables `matrix.analysis.per_judge`. |
+| `--correction <method>` | unset | Multiple-comparison correction across the ANOVA term family (and within each factor's contrasts): `holm`, `bh` (alias `fdr_bh`), or `none`. Precedence: `--correction` > `matrix.analysis.correction` > `holm`. |
+| `--per-judge` | off | Also run the ANOVA once per judge (screening), Benjamini–Hochberg-corrected across the whole judges×terms family. Same as `matrix.analysis.per_judge: true` — either one enables it; the flag cannot turn a config-enabled screen off. |
 
 !!! tip "Estimate cost before you commit"
     `--dry-run` prints the design and a cost line. It uses `--avg-cost-per-run`
@@ -136,7 +142,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/orchestrate.py --config eval.yaml --analyze-
 flowchart LR
     M[matrix in eval.yaml] --> D[1. Design<br/>expand conditions]
     D --> X[2. Execute<br/>/eval-run per cell]
-    X --> A[3. Analyze<br/>ANOVA + Pareto → anova.json]
+    X --> A[3. Analyze<br/>ANOVA + contrasts + Pareto → anova.json]
     A --> R[4. Report<br/>/eval-compare]
 ```
 
@@ -168,11 +174,23 @@ Pareto frontier. `--analyze-only` runs *just* this step.
 
 Multi-factor designs report one **joint Wald test per model term** — every
 main effect and every interaction — and correct the resulting p-value family
-for multiple comparisons (**Holm** by default; `fdr_bh` or `none` via
+for multiple comparisons (**Holm** by default; `bh` or `none` via
 `--correction` / `matrix.analysis.correction`). Raw and adjusted p-values are
 both written to `anova.json`; significance is judged on the adjusted value.
-See [Analysis of variance](../concepts/anova.md#per-term-wald-tests-and-multiplicity-correction)
+Single-factor designs get a repeated-measures F with its effect size instead
+(a family of one, so the correction is moot). See
+[Analysis of variance](../concepts/anova.md#per-term-wald-tests-and-multiplicity-correction)
 for the statistics.
+
+**Which levels differ: contrasts.** The omnibus verdict is followed by
+post-hoc **level contrasts** for every factor with two or more levels, written
+under a top-level `contrasts` key: each pair of levels gets an `estimate`
+(`a − b` on the composite scale), `se`, `p_raw`, `p_adjusted`, and
+`significant`, corrected by the same method *within that factor*. They come
+from the already-fitted mixed model (reference-cell contrasts when the model
+has interactions — `contrast_type` says so) or from paired tests across cases
+for a single factor, and are computed whether or not the omnibus was
+significant. See [Level contrasts](../concepts/anova.md#level-contrasts-post-hoc).
 
 With `--per-judge` (or `matrix.analysis.per_judge: true`), the same ANOVA also
 runs **once per judge** over that judge's per-case values, with one
@@ -202,16 +220,74 @@ $AGENT_EVAL_RUNS_DIR/                 # default eval/runs
     └── comparison-report/index.html  # the /eval-compare report (with the stats section)
 ```
 
+`anova.json` is one JSON object with these top-level keys:
+
+| Key | What it holds |
+| --- | --- |
+| `anova` | The omnibus result: `method`, `correction`, `family_size`, `alpha`, `significant`; scalar `f_statistic` / `p_value` / `p_adjusted` (+ `details` with η² as `ng2`) for a single factor, or per-term `p_values` / `p_adjusted` / `significant` dicts (keys like `model`, `context`, `model:context`) for several; `excluded_terms` + `note` when a term was degenerate. |
+| `contrasts` | One block per factor: `correction`, `family`, `family_size`, `contrast_type`, `omnibus_p_adjusted`, `note`, and `pairs[]` of `{a, b, estimate, se, p_raw, p_adjusted, significant}` (+ `reason` on a degenerate pair). |
+| `condition_summaries` | Per condition: `levels`, `mean`, `std`, `min`, `max`, `n`, and `cost` when every run reported one. |
+| `pareto_frontier` | The non-dominated conditions on (cost, mean) — all conditions when any cost is missing. |
+| `design` | `factors` → observed levels, `n_cases`, `replications`, and `excluded_cases` when non-empty. |
+| `per_case` | Composite per condition × case — the heatmap's data. |
+| `excluded_cases` | Cases dropped because they were missing under some condition. |
+| `per_judge` | Only with per-judge screening: `correction: bh`, `family_size`, `judges.<name>.terms.<term>` with `p_raw` / `p_adjusted` / `significant`, and `excluded[]` with a `reason` each. |
+| `n_runs`, `n_conditions`, `generated_at` | Bookkeeping. |
+
+A trimmed excerpt from the committed
+[offline example](../cookbook/anova.md#reading-the-offline-example) (one
+factor, `context`, so the term result is scalar — a grid would show
+`p_adjusted: {"model": …, "context": …, "model:context": …}` instead):
+
+```json
+{
+  "anova": {
+    "method": "Repeated-measures ANOVA (pingouin rm_anova)",
+    "factor": "context",
+    "f_statistic": 3.947, "p_value": 0.1411, "p_adjusted": 0.1411,
+    "significant": false, "correction": "holm", "family_size": 1
+  },
+  "contrasts": {
+    "context": {
+      "correction": "holm", "family_size": 1, "contrast_type": "paired",
+      "omnibus_p_adjusted": 0.1411,
+      "pairs": [
+        {"a": "cognee", "b": "none", "estimate": 0.3125, "se": 0.1573,
+         "p_raw": 0.1411, "p_adjusted": 0.1411, "significant": false}
+      ]
+    }
+  },
+  "per_judge": {
+    "correction": "bh", "family_size": 1,
+    "judges": {
+      "tests_pass": {"terms": {"context": {"p_raw": 0.391, "p_adjusted": 0.391,
+                                             "significant": false}}, "n_cases": 4}
+    },
+    "excluded": [{"judge": "solution_quality",
+                  "reason": "Degenerate design — near-zero within-subject variance produced a non-finite F."}]
+  }
+}
+```
+
 There are **two** ways to read the results, both purely from on-disk artifacts —
 neither re-runs the experiment:
 
 ```bash
-# Comparison report — leaderboard + heatmap + the ANOVA/Pareto section when anova.json exists:
+# Comparison report — leaderboard + heatmap + the Statistical Significance section when anova.json exists:
 python3 ${CLAUDE_PLUGIN_ROOT}/skills/eval-compare/scripts/compare.py generate $AGENT_EVAL_RUNS_DIR/<eval-name>
 
-# Stats-forward deep view for one experiment — condition means, F / p / η², per-case matrix:
+# Stats-forward deep view for one experiment (anova-report.html + anova-report.md next to anova.json):
 python3 ${CLAUDE_SKILL_DIR}/scripts/report.py $AGENT_EVAL_RUNS_DIR/<eval-name>
 ```
+
+The deep report opens with a headline badge — **SIGNIFICANT** / **not
+significant** with the p it was judged on, labelled **adj. p** whenever a
+correction ran — then the sections **Experiment**, **Condition means
+(ranked)**, **ANOVA** (F / p / η² tiles and the per-term raw-vs-adjusted
+table), **Pairwise contrasts (post-hoc)** (an A / B / estimate / SE / p table
+per factor, with the family and correction named), **Per-judge effects
+(screening)** when the artifact has a `per_judge` block (judge × term rows plus
+the excluded judges and their reasons), and the **Per-case scores** matrix.
 
 ## Re-analyze existing runs
 
@@ -225,7 +301,24 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/orchestrate.py --config eval.yaml --analyze-
 
 If the runs carry `condition.json` files, the ANOVA groups by those factor
 levels; otherwise it falls back to grouping by model. This is the path the
-downstream model-comparison CI uses: fan out `/eval-run`, then analyze + compare.
+downstream model-comparison CI uses: fan out `/eval-run`, then analyze + compare
+(and [gate on the result](ci.md#gating-a-model-or-config-comparison) with a
+step of your own — the orchestrator exits `0` whether or not anything was
+significant).
+
+It is also the cheap way to change the statistics without re-running a single
+cell. Switching the correction or turning on per-judge screening is a
+re-analysis, not a re-execution:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/orchestrate.py --config eval.yaml \
+    --analyze-only --correction bh --per-judge
+```
+
+This rewrites `anova.json` (and re-renders the report) with Benjamini–Hochberg
+across the term family and the per-judge block added; the runs on disk are
+untouched. Both reports name the correction next to every adjusted value, so
+the switch is visible in the output.
 
 ## Rules at a glance
 
