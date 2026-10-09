@@ -21,6 +21,7 @@ flowchart TD
         A["/eval-setup → /eval-analyze → /eval-dataset →<br/>/eval-run → /eval-review → /eval-optimize → /eval-mlflow"]
         C["/eval-check"]
         C2["/eval-compare"]
+        C3["/eval-anova → /eval-run per cell → /eval-compare"]
     end
     subgraph CS["Console script (pip-installed)"]
         T["claude-trace"]
@@ -36,7 +37,7 @@ flowchart TD
 
 ## Slash commands
 
-Nine skills ship as slash commands. Each one is a stage in the pipeline; run them in
+Ten skills ship as slash commands. Each one is a stage in the pipeline; run them in
 order for a first eval, or invoke individually.
 
 | Command | Purpose | Guide |
@@ -46,6 +47,7 @@ order for a first eval, or invoke individually.
 | `/eval-dataset` | Generate or expand test cases (and Harbor task packages / S3 export via `export_s3.py`) | [eval-dataset](../guides/eval-dataset.md) |
 | `/eval-run` | Execute the suite, collect artifacts, score, report | [eval-run](../guides/eval-run.md) |
 | `/eval-compare` | Compare results across models/runs into one HTML report | [eval-compare](../guides/eval-compare.md) |
+| `/eval-anova` | Fan a `matrix:` of configurations out over `/eval-run`, then ANOVA + Pareto into `anova.json` and the comparison report | [eval-anova](../guides/eval-anova.md) |
 | `/eval-review` | Interactive human review of a run; propose config changes | [eval-review](../guides/eval-review.md) |
 | `/eval-optimize` | Automated refinement loop (composes with `/eval-run`) | [eval-optimize](../guides/eval-optimize.md) |
 | `/eval-mlflow` | Dataset sync, result logging, trace feedback | [eval-mlflow](../guides/eval-mlflow.md) |
@@ -67,6 +69,51 @@ order for a first eval, or invoke individually.
     The [pipeline guide](../guides/pipeline.md) shows how these stages hand off to each
     other, and the [get-started walkthrough](../get-started/first-eval.md) runs the
     core four end to end.
+
+### `/eval-anova` scripts — `orchestrate.py` and `report.py`
+
+`/eval-anova` is an orchestrator over `/eval-run`: `orchestrate.py` reads the
+[`matrix:`](config/matrix.md) block, drives the eval-run pipeline once per
+condition × replication (each cell a standard run stamped with a `condition.json`),
+then writes `anova.json` and renders the `/eval-compare` report. Runs land under
+`$AGENT_EVAL_RUNS_DIR/<eval-name>/`.
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/orchestrate.py --config eval.yaml                 # run → analyze → report
+python3 ${CLAUDE_SKILL_DIR}/scripts/orchestrate.py --config eval.yaml --dry-run       # design + cost estimate only
+python3 ${CLAUDE_SKILL_DIR}/scripts/orchestrate.py --config eval.yaml --analyze-only  # re-analyze existing runs
+```
+
+| Flag | Default | Effect |
+| --- | --- | --- |
+| `--config <path>` | — (required) | The `eval.yaml` carrying the `matrix:` block |
+| `--dry-run` | off | Validate the matrix, print the design and a cost estimate, run nothing |
+| `--analyze-only` | off | Recompute `anova.json` over the existing runs and re-render; no execution. Reads the matrix non-strictly, so it also works over CI-produced run dirs that never had one |
+| `--cases <id…>` | all cases | Restrict execution to these case ids |
+| `--avg-cost-per-run <float>` | unset | Per-run USD cost for the `--dry-run` estimate (else `execution.max_budget_usd` as an upper bound, else "unknown") |
+| `--output <path>` | `<runs>/comparison-report` | Output dir for the `/eval-compare` report |
+| `--no-report` | off | Write `anova.json` but skip the report render |
+| `--correction <method>` | unset | `holm` \| `bh` \| `fdr_bh` \| `none` across the ANOVA term family; overrides `matrix.analysis.correction` (then `holm`) |
+| `--per-judge` | off | Also run the ANOVA once per judge, one Benjamini–Hochberg family across judges × terms; enables `matrix.analysis.per_judge` |
+
+The process exits non-zero when the config has no `matrix:` (outside
+`--analyze-only`), when the dataset has no cases, or when no cell completed; a single
+failing cell is logged and skipped so a partial matrix still yields an analysis.
+
+`report.py` is the statistics-forward companion view — condition means, F / p / η²,
+the per-case matrix, contrasts and the per-judge table — rendered purely from
+`anova.json`:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/report.py [PATH]   # an anova.json, a dir holding one, or a runs dir
+```
+
+`PATH` defaults to `$AGENT_EVAL_RUNS_DIR` (else `eval/runs`); the script writes
+`anova-report.html` and `anova-report.md` next to the `anova.json` it found. The
+pooled cross-model comparison (leaderboard, heatmap) is `/eval-compare`'s
+`compare.py generate <runs-dir> [--output DIR] [--title T] [--overview TEXT]`, which
+folds the statistics section in whenever it finds an `anova.json`. See
+[experiment-level artifacts](runs-directory.md#experiment-level-artifacts).
 
 ## `claude-trace` (console script)
 

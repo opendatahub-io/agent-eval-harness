@@ -216,6 +216,7 @@ nav:
       - "judges": reference/config/judges.md
       - "reward": reference/config/reward.md
       - "thresholds": reference/config/thresholds.md
+      - "matrix": reference/config/matrix.md
       - "hooks": reference/config/hooks.md
     - "Built-in judges": reference/builtin-judges.md
     - "Built-in generation prompts": reference/builtin-prompts.md

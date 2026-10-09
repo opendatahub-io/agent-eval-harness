@@ -69,6 +69,10 @@ A judge named exactly `pairwise` is treated specially:
 - **`load_judges` skips it** — a judge called `pairwise` is *excluded* from normal
   per-case scoring, so it never shows up as a regular column. Reserve the name for the
   comparison judge.
+- **No `examples:` block** — the comparison flow renders its own prompt and never
+  injects human-labeled exemplars, so declaring
+  [`examples`](../reference/config/judges.md#few-shot-examples-from-human-reviews-examples)
+  on the `pairwise` judge is rejected at config load.
 - The `pairwise` subcommand picks its judge in this order:
     1. `--judge <name>` if given,
     2. otherwise the **first judge that defines `prompt` or `prompt_file`**.
@@ -90,10 +94,20 @@ about ties:
 | Accuracy | Is it factually correct and internally consistent? |
 | Relevance | Does it stay focused on what was asked? |
 
-The judge call forces a `submit_comparison` tool with two fields — `preferred`
-(`A` / `B` / `tie`) and `reasoning` — so the verdict comes back in known fields instead
-of free-form text. Anything a custom prompt wants weighed is folded into `reasoning`; the
-harness stays prompt-agnostic and only needs `preferred` to tally results.
+The judge call forces a `submit_comparison` tool with two fields, **in this order**:
+`reasoning` first, then `preferred` (`A` / `B` / `tie`). The ordering is deliberate —
+the judge works through both outputs before it commits to a verdict token, the same
+rationale-first contract every scored and pass/fail judge uses. Anything a custom
+prompt wants weighed is folded into `reasoning`; the harness stays prompt-agnostic and
+only needs `preferred` to tally results.
+
+!!! note "Both outputs are fenced evaluated material"
+    Each side is wrapped in `[BEGIN EVALUATED MATERIAL: output]` / `[END EVALUATED
+    MATERIAL]` markers before being placed under its `## Output A` / `## Output B`
+    heading (the label is side-neutral so the position swap cannot leak), and the
+    pairwise system prompt carries the same untrusted-data guard as the per-case
+    judges: fenced content is assessed, never obeyed. See
+    [Fenced vs unfenced](../reference/config/judges.md#fenced-vs-unfenced).
 
 ### Results
 

@@ -41,6 +41,9 @@ $AGENT_EVAL_RUNS_DIR/<run-id>/
 ├── summary.yaml        # judge results: judges (mean, pass_rate, scored_cases,
 │                       #   errored_cases, stability) + per_case + run_metrics
 │                       #   + judge_usage / total_cost_usd (judge spend, see below)
+├── analysis.md         # optional: the agent's written analysis + recommendation
+├── review.yaml         # optional: human feedback from /eval-review — see below
+├── condition.json      # /eval-anova cells only: {condition_id, levels} — see "Experiment-level artifacts"
 ├── provider/           # OpenRouter runs only (absent otherwise) — see "Cost provenance"
 │   ├── ledger.jsonl            # one row per provider generation the harness learned about
 │   ├── routing_snapshot.json   # the preflight's frozen catalog view the routing audit joins against:
@@ -181,6 +184,62 @@ Written by `collect.py` — a map of case ID to per-output-path artifact counts,
 `{"case-001-simple": {"artifacts": 1, "artifacts/reviews": 1}}`. Use it to confirm the
 run produced what you expect before scoring.
 
+### `review.yaml`
+
+Human feedback on a run, written by [`/eval-review`](../guides/eval-review.md) and
+read by `/eval-optimize`, `/eval-mlflow --action push-feedback`, the HTML report
+(the per-case **Human feedback** row) and any judge that declares
+[`examples:`](config/judges.md#few-shot-examples-from-human-reviews-examples). Two
+shapes are understood; a file may carry both.
+
+=== "feedback (flat) — what /eval-review writes"
+
+    ```yaml title="$AGENT_EVAL_RUNS_DIR/<eval-name>/<run-id>/review.yaml"
+    run_id: "<run-id>"
+    reviewed_cases: 3
+    feedback_cases: 2
+    reviewer: "human"
+    feedback:
+      case-001-simple: "Too vague — never names the affected component"
+      case-002-complex: "Good, but the summary repeats the title"
+      case-003-edge: ""      # empty = acceptable
+    ```
+
+    One free-text comment per case, keyed by the **exact case directory name**. For
+    `examples:` harvesting, a non-empty comment classifies the case as a *fail*
+    anchor and an empty one as a *pass* anchor.
+
+=== "verdicts (structured) — hand-authored"
+
+    ```yaml
+    verdicts:
+      case-001-simple:
+        has_content: true          # bool judge → true | false
+        completeness: 2            # numeric judge → a value on ITS score_range
+      case-002-complex:
+        completeness: 5
+    ```
+
+    The reviewer's own verdict **per judge**, on that judge's scale. This is the
+    shape `examples:` prefers — a per-judge verdict wins over the flat comment when
+    both exist — but **no skill writes it today**: add it by hand when you want
+    judge-specific calibration anchors. Numeric verdicts only anchor when clear
+    (top quarter of the scale = pass, bottom quarter = fail); mid-scale or
+    off-scale values are skipped, never clamped.
+
+Case ids become path components when excerpts are loaded, so a key that is not a
+plain directory name is ignored. A malformed file is skipped with a warning — a bad
+review never fails scoring.
+
+### `analysis.md`
+
+The agent's written interpretation of the run — failure patterns, root causes, a
+recommendation — authored by `/eval-run`'s results-analysis step (and refined by
+`/eval-review`). Optional: when present, `report.py` renders it as the **Analysis**
+section of `report.html`, and `/eval-review` reads it as context before the case
+walkthrough. Rebuild the report after editing it by hand (see
+[reading the report](../get-started/reading-the-report.md#how-its-built)).
+
 ## Per-case artifacts: `artifacts/` vs `_modified/`
 
 A case produces outputs in two distinct ways, and the harness collects both:
@@ -262,6 +321,102 @@ where noted.
     regardless of `traces` — those toggles only gate logs, the event stream, and
     execution metrics.
 
+## Experiment-level artifacts
+
+[`/eval-anova`](../guides/eval-anova.md) adds a layer **above** the per-run
+directories: each cell of the [`matrix`](config/matrix.md) is a standard run, and the
+statistics and comparison live next to them under the eval name.
+
+```text
+$AGENT_EVAL_RUNS_DIR/<eval-name>/
+├── <date>-<model>[-<factor>-<level>…][-r<n>]/   # one standard run per condition × replication
+│   ├── summary.yaml                            # what analyze reads (per_case judge values)
+│   ├── run_result.json                         # model + cost_usd (+ cost provenance)
+│   ├── condition.json                          # the cell's factor levels
+│   └── …
+├── anova.json                                  # the statistics artifact (analyze.py)
+├── anova-report.html / anova-report.md         # report.py's statistics-forward view (on demand)
+└── comparison-report/                          # compare.py generate — the default --output
+    ├── index.html                              # leaderboard, heatmap, statistics section
+    └── <run-slug>/report.html                  # a copy of each run's own report
+```
+
+### `condition.json`
+
+Stamped on every cell by `orchestrate.py` after the run completes:
+
+```json
+{"condition_id": "a59751750104", "levels": {"context": "none", "model": "claude-sonnet-4-6"}}
+```
+
+`levels` is the condition's factor → level map; `condition_id` is the first 12 hex
+digits of a SHA-256 over the sorted levels. The analysis **re-derives the id from
+`levels`** (runs sharing identical levels are replications of one condition), so a
+hand-written id is harmless. A run directory with no `condition.json` is grouped by
+the `model` in its `run_result.json` instead — the path CI fan-outs of plain
+`/eval-run` take — and a run with neither is skipped with a warning.
+
+### `anova.json`
+
+Written by `analyze.py` (`analyze_runs`) into the runs directory; `/eval-compare`
+and `report.py` render from it without recomputing anything.
+
+| Key | Contents |
+| --- | --- |
+| `anova` | The omnibus test — shape below. |
+| `contrasts` | Post-hoc pairwise level contrasts, one block per factor — shape below. |
+| `condition_summaries` | One entry per condition: `condition_id`, `levels`, each factor also flattened to the top level (`model: …`), and the composite's `mean` / `std` / `min` / `max` / `n` over its rows (cases × replications); `cost` — the mean run `cost_usd` — only when every run of the condition reported one. |
+| `pareto_frontier` | The non-dominated subset of `condition_summaries` (minimize `cost`, maximize `mean`). Equals the full list when any condition lacks a `cost`. |
+| `design` | `{factors: {<name>: [<levels>]}, n_cases, replications}`, plus `excluded_cases` when any. |
+| `per_case` | `{<condition key>: {<case_id>: composite}}`, replication-averaged. The key is the bare level for a single factor, else `a=x, b=y`. |
+| `excluded_cases` | Cases absent under at least one condition, dropped so the design stays crossed. |
+| `n_runs` | Distinct (condition, replication) pairs analysed. |
+| `n_conditions` | Number of conditions. |
+| `per_judge` | Only with `analysis.per_judge` / `--per-judge` — shape below. |
+| `generated_at` | UTC ISO-8601 timestamp. |
+
+**`anova`** — common fields: `method`, `alpha`, `correction` (`holm` \| `bh` \|
+`none`), `family_size` (real tests only), `significant`, and, when a term's test was
+degenerate, `excluded_terms` plus a `note`. The rest depends on the design:
+
+| Design | Fields |
+| --- | --- |
+| **Single factor** (repeated-measures) | `factor`, `f_statistic`, `p_value` (the Greenhouse–Geisser-corrected p when pingouin reports one), `p_uncorrected`, `p_adjusted` (a family of one, so equal to `p_value`), scalar `significant`, `details` (pingouin's table rows — `ng2` is the η² the reports show). |
+| **Multi-factor** (mixed-effects) | `factors`, and per-term dicts keyed `a`, `b`, `a:b` (every main effect and interaction): `p_values` (raw joint Wald p), `p_adjusted`, `significant`; plus `coefficients` and `all_p_values` per dummy coefficient, `aic`, `bic`. |
+| **Skipped** | `method: "ANOVA (skipped)"`, every statistic `null`, `family_size: 0`, and a `note` saying why (no factor with ≥ 2 levels, or fewer than 2 conditions). |
+
+**`contrasts.<factor>`** — `correction`, `family` (a label: the pairs within this
+factor), `family_size`, `contrast_type` (`paired` for single-factor designs,
+`marginal` for an interaction-free mixed model, `reference-cell` when the model has
+interactions), `omnibus_p_adjusted` (the factor's own omnibus result, for context —
+contrasts are computed regardless of it), a `note` explaining what `estimate` means
+whenever there are pairs, and a block-level `reason` when none could be computed.
+`pairs[]` entries carry `a`, `b`, `estimate` (`a − b` on the composite scale), `se`,
+`p_raw`, `p_adjusted`, `significant`, and a per-pair `reason` when the pair was
+degenerate (its `p_raw` is `null` and it is excluded from the family).
+
+**`per_judge`** — `correction: bh` (always Benjamini–Hochberg, one family across every
+(judge, term) test), `family_size`, `alpha`, `judges.<name>` with `method`,
+`n_cases`, `n_conditions`, `terms.<term>.{p_raw, p_adjusted, significant}` (and a
+`note` when the fit flagged something), `excluded[]` as `{judge, reason}` for judges
+with a degenerate design, and a block `note`.
+
+!!! note "Honesty rules baked into the shape"
+    A `null` p-value is a degenerate test, never a fabricated one; it is excluded
+    from its correction family and from `family_size`. Raw and adjusted values are
+    always written side by side, and `significant` is judged on the adjusted value
+    (on raw under `correction: none`). See
+    [Analysis of variance](../concepts/anova.md#per-term-wald-tests-and-multiplicity-correction).
+
+### `comparison-report/`
+
+The output of `compare.py generate <runs-dir>` (what `orchestrate.py` invokes unless
+`--no-report`; `--output` relocates it). `index.html` is the tabbed cross-model
+report — leaderboard, model × case heatmap, and the Statistical Significance section
+when an `anova.json` sits in the input dir (or exactly one does below it) — and each
+run's own `report.html` is copied under a unique `<run-slug>/` so the tabs can embed
+them. See [/eval-compare](../guides/eval-compare.md).
+
 ## Related
 
 <div class="grid cards" markdown>
@@ -269,6 +424,8 @@ where noted.
 - [**traces config**](config/traces.md) — the stdout / stderr / events / metrics toggles
 - [**outputs config**](config/outputs.md) — declaring `path` and `tool` artifacts to collect
 - [**judges**](config/judges.md) — how judges read the case record
+- [**matrix config**](config/matrix.md) — the block behind `condition.json` and `anova.json`
+- [**/eval-anova guide**](../guides/eval-anova.md) — producing and re-analysing experiment artifacts
 - [**tracing**](../concepts/tracing.md) — the event stream and MLflow traces
 - [**environment variables**](environment-variables.md) — `AGENT_EVAL_RUNS_DIR` and friends
 

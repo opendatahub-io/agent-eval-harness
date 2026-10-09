@@ -148,6 +148,7 @@ one `judge`.
           <span class="sd-f">model</span>
           <span class="sd-f">arguments</span>
           <span class="sd-f">samples</span>
+          <span class="sd-f">examples</span>
           <span class="sd-f">score_range</span>
           <span class="sd-f">feedback_type</span>
         </div>
@@ -173,6 +174,16 @@ one `judge`.
           <span class="sd-f">gate</span>
           <span class="sd-f">score_range</span>
           <span class="sd-f">raw[]</span>
+        </div>
+      </div>
+      <div class="sd-card">
+        <a class="sd-key sd-link" href="../config/matrix/">matrix</a>
+        <div class="sd-purpose">Factorial grid <code>/eval-anova</code> fans out and tests</div>
+        <div class="sd-fields">
+          <span class="sd-f">factors</span>
+          <span class="sd-f">replications</span>
+          <span class="sd-f">analysis.correction</span>
+          <span class="sd-f">analysis.per_judge</span>
         </div>
       </div>
     </div>
@@ -225,6 +236,7 @@ one `judge`.
 | `judges` | How each case is scored | [judges](config/judges.md) |
 | `thresholds` | Regression gates per judge | [thresholds](config/thresholds.md) |
 | `reward` | Collapse judges into an RL reward scalar | [reward](config/reward.md) |
+| `matrix` | Factorial design for `/eval-anova`: factors, replications, p-value correction | [matrix](config/matrix.md) |
 | `skill` | **Deprecated** — use `execution.skill` | *(see below)* |
 
 !!! warning "`skill:` at the top level is deprecated"
@@ -361,9 +373,11 @@ thresholds:
 
 <div class="grid cards" markdown>
 
+- [**extends**](config/extends.md) — layer a profile over a base config; merge policy and `!replace`
 - [**execution**](config/execution.md) — mode, skill/prompt, arguments, timeout, budget, parallelism, env
 - [**runner**](config/runner.md) — type, effort, permission_mode, settings, plugin_dirs, env, system_prompt, command, workspace_mode
 - [**models**](config/models.md) — skill, subagent, judge, hook roles and precedence
+- [**models.providers**](config/providers.md) — the `openrouter` block behind `provider:/` ids: keys, routing, enforcement
 - [**permissions**](config/permissions.md) — allow/deny patterns and the path-based compiler
 - [**mlflow**](config/mlflow.md) — experiment, tracking_uri, tags
 - [**dataset**](config/dataset.md) — path, schema, workspace.files
@@ -372,8 +386,9 @@ thresholds:
 - [**outputs**](config/outputs.md) — path vs tool, schema, batch_pattern, types
 - [**traces**](config/traces.md) — stdout, stderr, events, metrics
 - [**hooks**](config/hooks.md) — before/after all/each, before_scoring
-- [**judges**](config/judges.md) — the five judge types and all fields
+- [**judges**](config/judges.md) — the five judge types and all fields, including `examples`
 - [**thresholds**](config/thresholds.md) — min_mean, min_pass_rate, min_win_rate, max_error_rate
 - [**reward**](config/reward.md) — single-judge and formula reward modes
+- [**matrix**](config/matrix.md) — factors, replications, `analysis.correction`, `analysis.per_judge`
 
 </div>

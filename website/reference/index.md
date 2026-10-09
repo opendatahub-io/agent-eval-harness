@@ -14,6 +14,7 @@ task-oriented walkthroughs, see [Guides](../guides/index.md).
 <div class="grid cards" markdown>
 
 - [**eval.yaml schema**](../reference/eval-yaml.md) — Every top-level key, with two minimal configs and a fully annotated example
+- [**extends**](../reference/config/extends.md) — Layer a profile over a base config: merge policy, `!replace`, `config_chain`
 - [**execution**](../reference/config/execution.md) — `mode` (case/batch), `skill`/`prompt`, `arguments`, `timeout`, `max_budget_usd`, `parallelism`, `env`
 - [**runner**](../reference/config/runner.md) — `type`, `effort`, `settings`, `plugin_dirs`, `env`, `system_prompt`, `workspace_mode`
 - [**models**](../reference/config/models.md) — `skill`, `subagent`, `judge`, `hook` roles and CLI precedence
@@ -29,6 +30,7 @@ task-oriented walkthroughs, see [Guides](../guides/index.md).
 - [**judges**](../reference/config/judges.md) — The five judge types and every field
 - [**thresholds**](../reference/config/thresholds.md) — `min_mean`, `min_pass_rate`, `min_win_rate`, `max_error_rate`
 - [**reward**](../reference/config/reward.md) — Collapse judges into an RL reward scalar
+- [**matrix**](../reference/config/matrix.md) — `factors`, `replications`, `analysis.correction`, `analysis.per_judge` for `/eval-anova`
 
 </div>
 
@@ -78,7 +80,7 @@ task-oriented walkthroughs, see [Guides](../guides/index.md).
 
     ---
 
-    The per-run and per-case layout under `$AGENT_EVAL_RUNS_DIR` (default `eval/runs`).
+    The per-run and per-case layout under `$AGENT_EVAL_RUNS_DIR` (default `eval/runs`), plus `review.yaml`, `anova.json`, and the other experiment-level artifacts.
 
     [:octicons-arrow-right-24: Runs directory](../reference/runs-directory.md)
 

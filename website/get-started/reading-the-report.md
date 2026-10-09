@@ -83,7 +83,7 @@ One row per judge with its type, aggregated metric, and threshold status.
 | Column | Meaning |
 | --- | --- |
 | Judge | Judge `name` from `eval.yaml` |
-| Type | `check`, `llm (model)`, `builtin`, or `code` |
+| Type | `check`, `llm (model)`, `agent (model)`, `builtin`, or `code` |
 | Metric | `pass_rate` for boolean judges, `mean` for numeric judges |
 | Value | The aggregate (e.g. `80%` or `3.75`) |
 | Threshold | The gate from [`thresholds`](../concepts/thresholds.md) (`≥ …`) |
