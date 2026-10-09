@@ -448,6 +448,27 @@ class TestOutputsProxy:
             assert "[BEGIN EVALUATED MATERIAL" in rendered
             assert "EVIL INSTRUCTIONS" in rendered
 
+    def test_jinja2_tojson_fences_the_whole_outputs_proxy(self):
+        """`{{ outputs | tojson }}` — what the builtin output_completeness judge
+        renders — must be fenced: the proxy IS evaluated material even though
+        walking its raw dict values finds no tagged string."""
+        from score import _render_jinja2_template
+        rendered = _render_jinja2_template(
+            '{{ outputs | tojson }}', {},
+            {"files": {"a.md": "EVIL INSTRUCTIONS"}, "cost_usd": 0.42})
+        assert "[BEGIN EVALUATED MATERIAL: outputs (json)]" in rendered
+        assert "EVIL INSTRUCTIONS" in rendered and "0.42" in rendered
+
+    def test_jinja2_bare_outputs_files_renders_fenced_listing(self):
+        """Bare `{{ outputs.files }}` used to print an unfenced dict repr; it now
+        renders the same fenced `### <path>` listing as bare `{{ outputs }}`."""
+        from score import _render_jinja2_template
+        rendered = _render_jinja2_template(
+            '{{ outputs.files }}', {}, {"files": {"a.md": "EVIL INSTRUCTIONS"}})
+        assert "[BEGIN EVALUATED MATERIAL: outputs.files]" in rendered
+        assert "### a.md" in rendered and "EVIL INSTRUCTIONS" in rendered
+        assert "{'a.md'" not in rendered
+
     def test_jinja2_tojson_leaves_trusted_metadata_unfenced(self):
         """`| tojson` on non-file (trusted) fields is not over-fenced."""
         from score import _render_jinja2_template
