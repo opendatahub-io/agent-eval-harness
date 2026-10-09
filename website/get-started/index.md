@@ -18,7 +18,8 @@ scored HTML report.
 </div>
 
 That's it — `/eval-setup` and `/eval-mlflow` are optional (dependencies auto-install,
-and MLflow logging is opt-in).
+and MLflow logging is opt-in), and so are `/eval-compare` and `/eval-anova`, which
+only come into play once you have more than one run to put side by side.
 
 ## How the pieces fit
 
@@ -33,8 +34,18 @@ graph TD
         R -.-> V["/eval-review<br/>human feedback"]
         R -.-> O["/eval-optimize<br/>auto-refine"]
         R -.-> M["/eval-mlflow<br/>log + trace"]
+        R -.-> C["/eval-compare<br/>runs side by side"]
+        N["/eval-anova<br/>matrix sweep + ANOVA"] -.-> R
+        N -.-> C
     end
 ```
+
+!!! tip "Once you have more than one run"
+    [`/eval-compare`](../guides/eval-compare.md) renders models or runs side by side
+    in one report. [`/eval-anova`](../guides/eval-anova.md) goes further: it sweeps a
+    `matrix:` of models/configs (fanning out `/eval-run` per cell) and tells you —
+    with Holm-corrected p-values and post-hoc level contrasts — whether a difference
+    is statistically real before you act on it.
 
 ## In this section
 

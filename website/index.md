@@ -13,8 +13,8 @@ hide:
 # Make agent performance measurable — and improvable
 
 Evaluate skills and agent capabilities with one declarative
-`eval.yaml`: analyze, generate cases, run, judge, trace in MLflow, then
-optimize. Same config on your laptop, Harbor containers, or EvalHub.
+`eval.yaml`: analyze, generate cases, run, judge, compare, trace in MLflow,
+then optimize. Same config on your laptop, Harbor containers, or EvalHub.
 
 <p class="aeh-cta" markdown>
 [Get started :material-arrow-right:](get-started/index.md){ .md-button .md-button--primary }
@@ -89,6 +89,14 @@ optimize. Same config on your laptop, Harbor containers, or EvalHub.
     `/eval-optimize` proposes skill fixes from failures and re-runs so
     you keep only real gains.
 
+-   **[↻ · Compare](guides/eval-compare.md)**
+
+    ---
+
+    Close the loop with evidence: `/eval-compare` lines runs up side by
+    side, and [`/eval-anova`](guides/eval-anova.md) tells you whether a
+    model or config difference is statistically real before you keep it.
+
 </div>
 
 [See the full pipeline guide :material-arrow-right:](guides/pipeline.md)
@@ -113,9 +121,23 @@ optimize. Same config on your laptop, Harbor containers, or EvalHub.
     ---
 
     Built-in judges, inline Python checks, rubrics, pairwise A/B, and
-    N-sample stability — all in one config.
+    N-sample stability — all in one config. LLM judges reason before they
+    rule, read graded material fenced as untrusted (prompt-injection
+    mitigation), and calibrate on few-shot anchors harvested from your
+    `/eval-review` labels.
 
     [:octicons-arrow-right-24: Judges & scoring](concepts/judges.md)
+
+-   :material-sigma: **Is the difference real?**
+
+    ---
+
+    `/eval-compare` puts runs side by side; `/eval-anova` sweeps a model ×
+    config matrix and answers statistically — per-term Wald tests with
+    Holm/Benjamini–Hochberg correction, post-hoc level contrasts, per-judge
+    screening, and a cost/quality Pareto frontier.
+
+    [:octicons-arrow-right-24: Analysis of variance](concepts/anova.md)
 
 -   :material-server-network: **One config, three backends**
 

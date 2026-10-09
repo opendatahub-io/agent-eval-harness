@@ -47,7 +47,8 @@ testing.
 
     ---
 
-    When you're sweeping models or configs and want to know which score differences are statistically real.
+    When you're sweeping models or configs and want to know which score differences
+    are statistically real — corrected p-values, level contrasts, per-judge screening.
 
 -   :material-file-edit: **[Write your own analysis recipe](custom-analysis-recipe.md)**
 
@@ -59,7 +60,8 @@ testing.
 
     ---
 
-    When builtin judges aren't enough — author `check`, `module`, and LLM judges.
+    When builtin judges aren't enough — author `check`, `module`, and LLM judges:
+    boolean-first prompts, one failure mode each, calibrated from human labels.
 
 </div>
 
@@ -83,7 +85,15 @@ flowchart TD
     N -->|Yes| O[custom-judges]
     A --> P{Comparing configs<br/>for significance?}
     P -->|Yes| Q[anova]
+    A --> S{A judge disagrees<br/>with you?}
+    S -->|Yes| T["eval-review → judges[].examples"]
 ```
+
+The last branch isn't a recipe but a loop: label the disputed cases with
+[`/eval-review`](../guides/eval-review.md), triage the disagreement (underspecified
+skill prompt first, bad case second, miscalibrated judge last), and declare
+[`examples:`](../reference/config/judges.md#few-shot-examples-from-human-reviews-examples)
+on the judge so your labels become its few-shot calibration anchors on the next run.
 
 !!! note "Start from the walkthrough"
     New to the harness? Do [your first eval](../get-started/first-eval.md) end to end
