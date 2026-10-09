@@ -8,7 +8,11 @@ iterates until judges pass or it hits `--max-iterations`.
 !!! abstract "What it changes — and what it never touches"
     It edits **only the artifact under test** (the skill's `SKILL.md`). It never edits
     judges, test cases, or `eval.yaml`. The eval harness is treated as ground truth: if
-    a judge looks wrong, the loop reports it but leaves it alone.
+    a judge looks wrong, the loop reports it but leaves it alone. The fix path for a
+    wrong-looking judge is
+    [`/eval-review`](eval-review.md#when-a-judge-and-a-human-disagree) — triage
+    prompt → case → judge, then feed your labels back as
+    [calibration anchors](eval-review.md#turn-labels-into-calibration) with `examples:`.
 
 ## How it differs from /eval-review
 
@@ -86,6 +90,7 @@ determines what the loop is allowed to do about it:
 | `builtin` | Shared, versioned judges in `agent_eval/judges/` | Never edits their code; suggests adjusting `arguments:` in `eval.yaml` (e.g. raising `max_cost_usd`) |
 | `check` | Inline Python in `eval.yaml` | Reads the snippet — failures are deterministic and reproducible |
 | `llm` | LLM prompt judge | Reads the prompt; the fault may be the skill output *or* an overly strict prompt |
+| `agent` | LLM judge upgraded with an `agent:` block (tool-using) | As for `llm` — reads the prompt; the rationale cites what the judge inspected in its staged workspace |
 | `code` | External Python `module`/`function` | Reads the function to understand the validation |
 
 See [judges](../concepts/judges.md) for the full taxonomy.

@@ -7,8 +7,9 @@ cases injected into its prompt as calibration anchors — the judge sees what a
 human actually accepted and rejected on this eval, instead of inferring the
 bar from the rubric text alone.
 
-Two review.yaml shapes are read (the structured one is the human-calibration
-schema /eval-review writes when per-judge verdicts are collected):
+Two review.yaml shapes are read. ``/eval-review`` writes only the flat
+``feedback`` map today; the structured ``verdicts`` map is a hand-authored
+(or externally produced) per-judge label that this module honors as well:
 
     feedback:                # flat: case -> free-text comment
       case-001: "too vague"  #   non-empty = the reviewer flagged the case

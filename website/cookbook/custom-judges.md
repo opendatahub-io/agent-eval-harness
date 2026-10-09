@@ -22,11 +22,11 @@ flowchart TD
 
 | Field(s) | Type | Runs | Returns |
 | --- | --- | --- | --- |
-| `builtin` | Library judge | Deterministic Python | `(bool\|number, str)` |
-| `check` | Inline Python | Deterministic | `(bool\|number, str)` |
+| `builtin` | Library judge | Deterministic Python | `(bool or number, str)` |
+| `check` | Inline Python | Deterministic | `(bool or number, str)` |
 | `prompt` / `prompt_file` / `llm_rubric` | LLM judge | An API call to `models.judge` | pass/fail, or a score on the judge's `score_range` (`1–5` when undeclared) |
 | the above **+ `agent`** | Agent judge | A tool-using agent run via the runner | pass/fail or a numeric score |
-| `module` + `function` | External code | Your imported callable | `(bool\|number, str)` |
+| `module` + `function` | External code | Your imported callable | `(bool or number, str)` |
 
 !!! warning "One type per judge"
     The type fields are mutually exclusive. Setting `builtin` alongside any of
@@ -157,12 +157,43 @@ all compile to the same Jinja2 template, then render against the case record:
 
 === "prompt"
 
-    Full control over the template and placeholders.
+    Full control over the template and placeholders. Boolean is the default shape —
+    one failure mode, explicit PASS/FAIL definitions:
+
+    ```yaml
+    judges:
+      - name: covers_all_inputs
+        description: >-
+          Every requirement in the request is addressed. A code check can't
+          verify this — the requirements are prose, not a schema.
+        feedback_type: bool
+        prompt: |
+          The skill was asked to produce a document answering the request below.
+
+          ## Request
+          {{ inputs }}
+
+          ## Artifact under evaluation
+          {{ outputs }}
+
+          ## What you are checking
+          Whether any requirement in the request is left unaddressed.
+
+          ## PASS
+          Every requirement has a corresponding section or statement in the artifact.
+
+          ## FAIL
+          At least one requirement has no counterpart — name it in your rationale.
+    ```
+
+    A numeric scale is the exception, for a criterion that is genuinely graded — where
+    a pass/fail boundary would throw away meaningful partial credit. Declare
+    `score_range` and define every level:
 
     ```yaml
     judges:
       - name: completeness
-        description: How completely the output covers the request.
+        description: How completely the output covers the request (partial credit matters).
         score_range: [1, 5]     # declare the scale — omitting it warns at config load
         prompt: |
           How completely does the generated output cover the request?
@@ -206,6 +237,7 @@ The prompt is rendered with these variables:
 | `{{ annotations }}` | Case annotations as formatted text; also `{{ annotations.get('category') }}` for values |
 | `{{ annotations_text }}` | The annotation text alone |
 | `{{ arguments }}` | This judge's `arguments` dict |
+| `{{ examples }}` | The harvested `## Human-labeled examples` block, for judges that declare [`examples:`](../reference/config/judges.md#few-shot-examples-from-human-reviews-examples); empty for the rest. A template that never references it gets the block appended instead |
 
 !!! tip "Score scale vs. pass/fail"
     With no `score_range` an LLM judge returns an integer score on the unenforced **1–5**
@@ -231,11 +263,14 @@ The prompt is rendered with these variables:
     at those markers: the rubric is to be followed, the fenced material is untrusted,
     model-generated output to assess — instructions inside it must never be followed,
     including text claiming the material has ended or the rules have changed. Author-side
-    variables (`arguments`, `annotations`) and structured access like
-    `{{ outputs.cost_usd }}` stay unfenced. Agent judges get the equivalent SECURITY
+    variables (`arguments`, `annotations`), structured access like
+    `{{ outputs.cost_usd }}`, and the bare `{{ outputs.files }}` dict repr stay unfenced
+    (per-file access and `| tojson` are fenced). Agent judges get the equivalent SECURITY
     paragraph in their harness-appended contract. Prompt-injection defenses are
-    mitigations, not boundaries — pair this with `samples: k` and human calibration for
-    consequential evals.
+    mitigations, not boundaries — pair this with `samples: k` and
+    [human calibration](../guides/eval-review.md#when-a-judge-and-a-human-disagree) for
+    consequential evals. The full assembly is in
+    [How the judge prompt is assembled](../concepts/judges.md#how-the-judge-prompt-is-assembled).
 
 !!! tip "Grading on a scale other than 1–5"
     Declare it: `score_range: [0, 2]`. The range is stated in the judge's system prompt,
@@ -256,6 +291,124 @@ LLM judges — including the agent judges below — are the only types that can 
 **sampled**. Set `samples: 3` to call the model several times per case and reduce the
 noise (median for scores, majority vote for booleans); the report flags cases where
 samples disagreed. `samples` on any other type is ignored with a warning.
+
+## Authoring an LLM judge prompt
+
+The harness ships the authoring template that `/eval-analyze` and `/eval-review` follow
+when they write judges:
+[`judge-prompt-template.md`](https://github.com/opendatahub-io/agent-eval-harness/blob/main/skills/eval-analyze/references/judge-prompt-template.md).
+Its rules, condensed.
+
+### Before writing: the selection ladder
+
+An LLM judge is the last resort, not the first. Work down the ladder and stop at the
+first rung that fits:
+
+1. **builtin** — tested, versioned, no code ([library](../reference/builtin-judges.md)).
+2. **inline `check`** — anything code can verify deterministically.
+3. **LLM judge, `feedback_type: bool`** — one pass/fail question.
+4. **LLM judge, numeric** — only when the criterion is genuinely graded.
+
+Every LLM judge must be able to answer *why can't a code check verify this?* Put the
+answer in its `description`; if there isn't one, move up the ladder.
+
+### One criterion per judge
+
+Each judge detects exactly **one failure mode**. "Completeness, clarity, accuracy" is
+three judges, not one — every downstream consumer works per judge:
+[thresholds](../concepts/thresholds.md) gate per judge, [`reward:`](../concepts/reward-api.md)
+weights per judge, and [`/eval-anova`](../guides/eval-anova.md) compares per judge. A
+blended score can't be gated, weighted, or compared without unblending it.
+
+The same goes for severity. Instead of one ordinal scale ("1 = dangerously wrong … 5 =
+perfect"), use **tiered boolean judges**:
+
+```yaml
+judges:
+  - name: factually_wrong        # FAIL if any claim contradicts the source
+    feedback_type: bool
+    prompt_file: eval/prompts/factually-wrong.md
+  - name: dangerously_wrong      # FAIL only if a wrong claim could cause harm
+    feedback_type: bool
+    prompt_file: eval/prompts/dangerously-wrong.md
+```
+
+Ordinal scales are hard to calibrate — raters disagree about a 3 vs a 4, and the judge
+inherits that noise. A binary boundary keeps every failure actionable: a failed
+`dangerously_wrong` means one specific thing.
+
+### Minimal context
+
+Hand the judge exactly the variable(s) the criterion grades: `{{ outputs }}` for produced
+files, `{{ conversation }}` for the response, `{{ evidence }}` / `{{ tool_trace }}` for
+behaviour, plus `{{ inputs }}` when the criterion compares output against input. Never
+`{{ outputs }}` **and** `{{ conversation }}` by default — extra context invites the judge
+to grade things the criterion never asked about.
+
+!!! note "Stdout-only skills"
+    When the skill produces no files, bare `{{ outputs }}` renders empty. Any judge that
+    would use it — builtins included — must use `{{ conversation }}` instead; inline
+    `check` judges read `outputs.get("conversation", "")`.
+
+### The skeleton (boolean judge)
+
+```text
+<TASK CONTEXT — one or two sentences: what the skill was asked to produce.>
+
+## Artifact under evaluation
+{{ outputs }}
+
+## What you are checking
+<The ONE failure mode this judge exists to catch, in one sentence.>
+
+## PASS
+<Observable properties of an artifact that passes — a positive definition,
+ not "no problems".>
+
+## FAIL
+<What the failure mode concretely looks like — enumerate the forms you
+ expect. Ask the judge to cite the offending content in its rationale.>
+
+## Examples
+PASS example: <short excerpt>            — <why it passes>
+FAIL example: <short excerpt>            — <which part fails and why>
+Borderline:   <excerpt near the boundary> — <which side, and the deciding property>
+```
+
+These **in-prompt examples** are static — you write them. Real excerpts beat invented
+ones: prior runs under `$AGENT_EVAL_RUNS_DIR/<eval-name>/<run-id>/cases/` are the best
+source, and `/eval-review` surfaces exactly the judge-human disagreements the borderline
+slot should encode. Quote short excerpts, redacted of secrets, framed as data to grade.
+
+Numeric judges keep the same structure but replace PASS/FAIL with per-level definitions:
+every level in terms of observable properties a second rater could apply and land on the
+same number; adjacent levels differing by something observable (if they don't, collapse
+the levels or decompose into tiered booleans); and `score_range` declared on the judge.
+
+### What NOT to put in the prompt
+
+- **JSON or response-format boilerplate.** The harness forces a tool call —
+  `submit_evaluation` for boolean judges, `submit_score` for numeric ones — so structured
+  output and a rationale are already enforced. "Respond with JSON {...}" fights the forced
+  schema and is ignored at best.
+- **The numeric bounds.** A declared `score_range` is stated in the system prompt and
+  tool schema automatically. The prompt defines what each level *means*.
+- **Your own untrusted-data guard.** The harness fences the artifact variables and puts
+  the guard in every LLM judge's system prompt — see
+  [How the judge prompt is assembled](../concepts/judges.md#how-the-judge-prompt-is-assembled).
+  Put the artifact under an explicit heading and stop there.
+- **A second criterion.** If the prompt says "also check…", it's two judges.
+
+### Calibrating from human labels
+
+In-prompt examples fix the boundary once; **harvested examples (`examples:`)** keep it
+anchored to real human verdicts as the eval evolves. Label cases with `/eval-review`,
+then declare `examples: {source: reviews}` on the judge and the harness injects clear
+pass/fail anchors from prior runs' `review.yaml` into its prompt — never the case being
+judged. The loop and the anchor rules are in
+[Review results → Turn labels into calibration](../guides/eval-review.md#turn-labels-into-calibration);
+the field reference is in
+[judges config](../reference/config/judges.md#few-shot-examples-from-human-reviews-examples).
 
 ## Agent judges
 
@@ -402,5 +555,13 @@ judges:
     Reduce judge noise and run A/B comparisons between runs.
 
     [:octicons-arrow-right-24: Pairwise & sampling](../concepts/pairwise-and-sampling.md)
+
+-   :material-account-check: **Calibrate with human labels**
+
+    ---
+
+    Triage judge-human disagreements and feed the labels back as anchors.
+
+    [:octicons-arrow-right-24: /eval-review](../guides/eval-review.md#when-a-judge-and-a-human-disagree)
 
 </div>

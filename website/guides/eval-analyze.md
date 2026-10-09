@@ -113,6 +113,25 @@ references"`) forces judges to guess; a specific one
     `/eval-dataset` to emit `TODO_` placeholders instead of fabricating realistic but
     invalid values.
 
+## How it picks judges
+
+Judges are chosen by walking a **selection ladder** and stopping at the first rung that
+fits: a [builtin](../reference/builtin-judges.md) (parameterized with `arguments:`), then
+an inline `check` for anything code can verify, then a **boolean** LLM judge
+(`feedback_type: bool`) with explicit PASS/FAIL definitions, and — only for a genuinely
+graded criterion — a numeric LLM judge with a declared `score_range`. Every LLM judge's
+`description` must say why a code check can't verify the criterion, and each judge
+detects **one failure mode**: "completeness, clarity, accuracy" becomes three judges, and
+severity becomes tiered boolean judges rather than a 1–5 scale, because thresholds,
+reward composition, and `/eval-anova` all work per judge.
+
+LLM prompts follow the harness's
+[judge-prompt template](https://github.com/opendatahub-io/agent-eval-harness/blob/main/skills/eval-analyze/references/judge-prompt-template.md)
+— task context, the one artifact variable the criterion grades, PASS/FAIL blocks, and
+example slots — with no response-format boilerplate: the harness forces a tool call and
+fences the artifact itself. The same rules, with the skeleton, are in
+[Authoring an LLM judge prompt](../cookbook/custom-judges.md#authoring-an-llm-judge-prompt).
+
 ## Recursive sub-skill reading
 
 Skill analysis follows the sub-skill chain — `Skill` tool calls and `/skill-name`

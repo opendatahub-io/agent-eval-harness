@@ -88,7 +88,10 @@ turn count — which can reveal unclear instructions even when the output looks 
 ## review.yaml
 
 Feedback is persisted so it survives the conversation and can be consumed by
-[`/eval-optimize`](eval-optimize.md) and [`/eval-mlflow`](eval-mlflow.md):
+[`/eval-optimize`](eval-optimize.md), [`/eval-mlflow`](eval-mlflow.md), and — as
+calibration anchors — by your LLM judges (see
+[Turn labels into calibration](#turn-labels-into-calibration)). `/eval-review` writes the
+flat `feedback` map:
 
 ```yaml title="$AGENT_EVAL_RUNS_DIR/<eval-name>/<id>/review.yaml"
 run_id: "<id>"
@@ -101,10 +104,31 @@ feedback:
   case-003-edge-case: ""  # empty = acceptable
 ```
 
+The file can carry two more sections, each written by a different hand:
+
+| Section | Shape | Written by | Read by |
+| --- | --- | --- | --- |
+| `feedback` | `{case: comment}` — a non-empty comment means *flagged*, an empty one *acceptable* | `/eval-review` | `/eval-optimize`, `/eval-mlflow push-feedback`, `judges[].examples` |
+| `verdicts` | `{case: {judge: true / false / <score>}}` — your own verdict per judge, on that judge's scale | **You, by hand** — no skill writes it today | `judges[].examples` |
+| `mlflow_feedback` | `{case/judge: {value, rationale, source}}` | `/eval-mlflow --action pull-feedback` | `/eval-optimize` |
+
+A hand-authored `verdicts` map refines a case-level comment into per-judge labels — useful
+when a case is fine for one judge and wrong for another:
+
+```yaml
+verdicts:
+  case-002-complex-refactor:
+    covers_all_inputs: false   # boolean judge → true / false
+    completeness: 2            # numeric judge → a value on its score_range
+```
+
+Where both sections label the same case, the per-judge verdict wins for that judge;
+judges without an entry fall back to the flat comment.
+
 !!! warning "Keys must match case directory names exactly"
-    The `feedback` keys are the **exact case directory names** — the same values
-    accepted by `--cases`. `/eval-optimize` looks up which cases had human feedback by
-    these keys, so a mismatch silently drops the feedback. The file is written
+    The `feedback` (and `verdicts`) keys are the **exact case directory names** — the
+    same values accepted by `--cases`. `/eval-optimize` looks up which cases had human
+    feedback by these keys, so a mismatch silently drops the feedback. The file is written
     directly (not via `state.py`, which produces a different format).
 
 ## Analyze patterns, then propose changes
@@ -123,8 +147,12 @@ IDs and feedback that motivate it — and asks for approval.
 
 !!! warning "Approval required — the skill proposes, it does not impose"
     `/eval-review` never edits `SKILL.md` (or adds judges to `eval.yaml`) without your
-    explicit approval. When it suggests new judges, it prefers
-    [builtins](../reference/builtin-judges.md) with `arguments:` over inline code.
+    explicit approval. When it suggests new judges it walks the selection ladder —
+    [builtin](../reference/builtin-judges.md) with `arguments:` → inline `check` →
+    boolean LLM judge → numeric LLM judge — one failure mode per judge, and writes LLM
+    prompts from the
+    [judge-prompt template](../cookbook/custom-judges.md#authoring-an-llm-judge-prompt),
+    using the run you just reviewed to fill its PASS/FAIL/borderline example slots.
 
 ### Prompt-mode targets the docs, not a skill
 
@@ -141,6 +169,82 @@ skill — the artifact under test is the documentation or analysis prompt.
     `execution.prompt` set. Proposed edits target the documentation or prompt under
     test (e.g. `CLAUDE.md`, `ai-docs/`). See
     [skill vs prompt](skill-vs-prompt.md).
+
+## When a judge and a human disagree
+
+Two rows of the pattern table are disagreements — *judge failed, you said fine* and *you
+flagged, judge passed*. Most of them are not judge bugs, so the skill triages in a fixed
+order (from its
+[analysis framework](https://github.com/opendatahub-io/agent-eval-harness/blob/main/skills/eval-review/prompts/review-results.md)):
+
+1. **Underspecified skill prompt.** Is the skill's `SKILL.md` (or spec) silent about the
+   thing being disputed? If the expectation was never written down, fix the prompt first
+   and keep the judge only as a regression guard for the now-explicit rule. Rewriting the
+   judge to encode an unwritten expectation hides the real gap.
+2. **Bad case.** Is the test case ambiguous, self-contradictory, or testing something the
+   skill was never asked to do? Fix or drop the case.
+3. **Miscalibrated judge.** Only once prompt and case are sound: tighten the judge's
+   PASS/FAIL definitions and add the disputed case as a labeled *borderline* example in
+   the judge prompt — the
+   [prompt skeleton](../cookbook/custom-judges.md#authoring-an-llm-judge-prompt) has a
+   slot for exactly this.
+
+!!! warning "Downgrade a judge's model only after alignment is confirmed"
+    Moving a judge to a cheaper model is a step for **after** it agrees with your labels
+    on the current model — a cheaper judge that was never aligned just disagrees more
+    quietly. Alignment doesn't transfer across models either: after switching, re-run the
+    same disagreement and borderline cases on the target model and keep the downgrade
+    only if they still pass.
+
+## Turn labels into calibration
+
+The labels in `review.yaml` can feed straight back into the judges. Declare an
+`examples:` block on an LLM (or agent) judge and, on the next run, the harness injects a
+few human-labeled cases from **prior runs** into its prompt as calibration anchors — the
+judge sees what a human actually accepted and rejected on this eval instead of inferring
+the bar from the rubric alone:
+
+```yaml title="eval.yaml"
+judges:
+  - name: covers_all_inputs
+    feedback_type: bool
+    prompt_file: eval/prompts/covers-all-inputs.md
+    examples:
+      source: reviews        # prior runs' review.yaml — the only source today
+      count: 3               # at most 3 exemplars per case
+      mix: [pass, fail]      # drawn round-robin: pass, fail, pass
+```
+
+How anchors are chosen:
+
+- **Clear verdicts only.** A boolean verdict is always clear. A numeric verdict anchors
+  only from the **top quarter** of the judge's `score_range` (a pass) or the **bottom
+  quarter** (a fail); mid-scale and off-scale values are never used. With the flat
+  `feedback` map alone, a non-empty comment is a fail anchor and an empty one a pass
+  anchor.
+- **Prior runs only — never the case itself.** The run being scored is excluded from
+  harvesting, and the case under judgment is never one of its own anchors: an exemplar
+  must not leak a human verdict on the very case being graded.
+- **Deterministic.** Within a class, the most substantive comment wins, then the newest
+  run — the same labels always produce the same exemplars.
+
+These **harvested examples** complement the static **in-prompt examples** you write into
+the PASS/FAIL/borderline slots: the slots fix the boundary once; `examples:` keeps the
+judge anchored to real verdicts as the dataset and the skill evolve.
+
+The loop, end to end:
+
+```bash
+/eval-review --run-id run-1                     # label cases → review.yaml
+# add examples: to the disputed judge in eval.yaml
+/eval-run --run-id run-2 --baseline run-1       # re-score with anchors, compare to run-1
+/eval-review --run-id run-2 --cases <disputed>  # did the disagreements close?
+```
+
+Field defaults, load-time validation, and the shape of the injected block are in the
+[judges reference](../reference/config/judges.md#few-shot-examples-from-human-reviews-examples);
+where the block lands in the assembled prompt is in
+[Judges & scoring](../concepts/judges.md#how-the-judge-prompt-is-assembled).
 
 ## Next steps
 
@@ -179,9 +283,10 @@ After applying approved changes, common follow-ups are:
 
     ---
 
-    Turn coverage gaps into new judges.
+    Turn coverage gaps into new judges, and labels into calibration anchors.
 
     [:octicons-arrow-right-24: Judges](../concepts/judges.md) ·
+    [Writing custom judges](../cookbook/custom-judges.md#authoring-an-llm-judge-prompt) ·
     [Builtin judges](../reference/builtin-judges.md)
 
 </div>
