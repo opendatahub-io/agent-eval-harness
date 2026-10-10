@@ -287,6 +287,12 @@ def _cursor_permission_patterns(
                 unsupported(
                     f"Cursor cannot translate MCP permission rule 'Mcp({argument})'"
                 )
+        elif tool in {"Agent", "Task"}:
+            # Cursor has no sub-agent permission.  Denying one is a no-op
+            # (nothing to confine), so stay quiet; allowing one cannot be
+            # represented, so say so.
+            if not deny:
+                unsupported(f"Cursor has no permission mapping for {tool!r}")
         else:
             unsupported(f"Cursor has no permission mapping for {tool!r}")
 
@@ -349,7 +355,7 @@ def _cursor_permission_patterns(
 
         if rule.strip() in {
             "Read", "Grep", "Glob", "Edit", "Write", "Bash", "Shell",
-            "WebFetch", "WebSearch", "Mcp",
+            "WebFetch", "WebSearch", "Mcp", "Agent", "Task",
         }:
             add_tool(rule.strip())
             continue

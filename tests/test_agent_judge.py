@@ -281,9 +281,13 @@ class TestRunnerIsolation:
         judge = _agent_judge(feedback_type="int", score_range=[0, 5])
         self._load_and_run(judge, {"score": 1, "rationale": "x"}, cap)
         # Permissions passed to from_config AND set on the copied config.
+        # An allow list alone does not confine a headless Claude Code judge
+        # (unlisted tools stay callable), so the escape hatches are denied.
+        expected = {"allow": ["Read", "Grep", "Glob"],
+                    "deny": ["Bash", "WebFetch", "WebSearch", "Agent"]}
         perms = cap["from_config_overrides"].get("permissions")
-        assert perms == {"allow": ["Read", "Grep", "Glob"]}
-        assert cap["config_permissions"] == {"allow": ["Read", "Grep", "Glob"]}
+        assert perms == expected
+        assert cap["config_permissions"] == expected
 
     def test_allowed_tools_override(self):
         cap = {}
@@ -291,7 +295,37 @@ class TestRunnerIsolation:
                              allowed_tools=["Read", "Grep", "Glob", "Bash"])
         self._load_and_run(judge, {"passed": True, "rationale": "x"}, cap)
         perms = cap["from_config_overrides"].get("permissions")
-        assert perms == {"allow": ["Read", "Grep", "Glob", "Bash"]}
+        # An explicitly allowed tool drops out of the default deny list.
+        assert perms == {"allow": ["Read", "Grep", "Glob", "Bash"],
+                         "deny": ["WebFetch", "WebSearch", "Agent"]}
+
+    def test_scoped_allow_lifts_the_bare_default_deny(self):
+        """A deny beats an allow, so `Bash` left in the deny list would take
+        away the tool that `Bash(pytest:*)` asks for."""
+        cap = {}
+        judge = _agent_judge(feedback_type="bool",
+                             allowed_tools=["Read", "Bash(pytest:*)"])
+        self._load_and_run(judge, {"passed": True, "rationale": "x"}, cap)
+        perms = cap["from_config_overrides"].get("permissions")
+        assert perms == {"allow": ["Read", "Bash(pytest:*)"],
+                         "deny": ["WebFetch", "WebSearch", "Agent"]}
+
+    def test_denied_tools_override(self):
+        cap = {}
+        judge = _agent_judge(feedback_type="bool",
+                             allowed_tools=["Read"],
+                             denied_tools=["Bash", "Write"])
+        self._load_and_run(judge, {"passed": True, "rationale": "x"}, cap)
+        perms = cap["from_config_overrides"].get("permissions")
+        assert perms == {"allow": ["Read"], "deny": ["Bash", "Write"]}
+
+    def test_denied_tools_empty_list_disables_default_deny(self):
+        cap = {}
+        judge = _agent_judge(feedback_type="bool",
+                             allowed_tools=["Read"], denied_tools=[])
+        self._load_and_run(judge, {"passed": True, "rationale": "x"}, cap)
+        perms = cap["from_config_overrides"].get("permissions")
+        assert perms == {"allow": ["Read"], "deny": []}
 
     def test_judge_runner_is_independent_of_skill_runner(self):
         """The judge's own runner/permissions must not be the skill-under-test's
@@ -309,7 +343,9 @@ class TestRunnerIsolation:
         # Judge got its OWN claude-code runner + read-only perms, NOT the
         # skill's cli runner / broad perms.
         assert cap["config_runner"].type == "claude-code"
-        assert cap["config_permissions"] == {"allow": ["Read", "Grep", "Glob"]}
+        assert cap["config_permissions"] == {
+            "allow": ["Read", "Grep", "Glob"],
+            "deny": ["Bash", "WebFetch", "WebSearch", "Agent"]}
         # And the original skill config was not mutated by the shallow copy.
         assert config.runner.type == "cli"
         assert config.permissions == {"allow": ["Read", "Write", "Bash", "Edit"]}
@@ -570,23 +606,10 @@ class TestAgentJudgeHardening:
         assert (ws / "real.txt").read_text() == "ok"        # normal file still staged
         assert (ws / "output").is_dir()                     # empty verdict dir created
 
-    def test_context_symlinked_when_read_only(self, tmp_path):
-        """A read-only judge gets a symlinked (live) ./.context pointer — the fast path."""
-        from score import _stage_agent_workspace
-        ctx = tmp_path / "ctxdir"
-        ctx.mkdir()
-        (ctx / "doc.md").write_text("reference")
-        ws = tmp_path / "ws"
-        ws.mkdir()
-        _stage_agent_workspace(ws, {"files": {}}, None, ["ctxdir"], tmp_path,
-                               writable=False)
-        staged = ws / ".context" / "ctxdir"
-        assert staged.is_symlink()                       # live pointer, not a copy
-        assert (staged / "doc.md").read_text() == "reference"
-
-    def test_context_copied_when_writable_blocks_write_through(self, tmp_path):
-        """A write-capable judge gets a COPY, so a write can't escape ./.context/
-        to real project files (CWE-59/829)."""
+    def test_context_copied_blocks_write_through(self, tmp_path):
+        """Context is always a COPY, so a write can't escape ./.context/ to real
+        project files (CWE-59/829). Even the default Read/Grep/Glob judge can
+        write: it has to, for output/score.json."""
         from score import _stage_agent_workspace
         ctx = tmp_path / "ctxdir"
         ctx.mkdir()
@@ -594,8 +617,7 @@ class TestAgentJudgeHardening:
         src_file.write_text("original")
         ws = tmp_path / "ws"
         ws.mkdir()
-        _stage_agent_workspace(ws, {"files": {}}, None, ["ctxdir"], tmp_path,
-                               writable=True)
+        _stage_agent_workspace(ws, {"files": {}}, None, ["ctxdir"], tmp_path)
         staged = ws / ".context" / "ctxdir"
         assert not staged.is_symlink()                   # real copy, not a live link
         assert staged.is_dir()

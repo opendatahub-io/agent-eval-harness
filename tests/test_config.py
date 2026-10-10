@@ -528,6 +528,24 @@ judges:
 """))
 
 
+@pytest.mark.parametrize("key", ["allowed_tools", "denied_tools"])
+@pytest.mark.parametrize("value", ["Bash", "[Bash, 1]"])
+def test_agent_tool_list_must_be_list_of_strings(tmp_path, key, value):
+    """A scalar would be iterated per character downstream (deny B,a,s,h)."""
+    with pytest.raises(ValueError,
+                       match=f"agent.{key}' must be a list of tool names"):
+        EvalConfig.from_yaml(_write(tmp_path, f"""
+name: t
+execution:
+  skill: s
+judges:
+  - name: bad
+    prompt: grade
+    agent:
+      {key}: {value}
+"""))
+
+
 def test_agent_nested_runner_invalid_command_raises(tmp_path):
     """The nested runner is validated by the SAME logic as the top-level
     runner (command must be str or list of str)."""

@@ -115,7 +115,7 @@ than one could apply, the harness resolves in this priority order (see
 
     An `agent:` block runs the judge as a tool-using agent *through the runner
     abstraction*, against an isolated, staged workspace: the case's output files (filtered
-    by `agent.inputs`) plus each `agent.context` dir/file are symlinked in read-only, and a
+    by `agent.inputs`) plus each `agent.context` dir/file are copied in, and a
     writable `./output/` receives the verdict. The judge writes `./output/score.json` —
     `{"score": <integer in [0, 2]>, "rationale": "…"}` or `{"passed": <bool>,
     "rationale": "…"}`. `feedback_type` selects which, and the numeric spec states the

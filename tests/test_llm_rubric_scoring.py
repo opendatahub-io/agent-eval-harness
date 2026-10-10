@@ -359,8 +359,11 @@ class TestLLMRubricJudgeLoading:
         assert "Return exactly one JSON object and nothing else." in captured["prompt"]
         assert "output/score.json" not in captured["prompt"]
         assert "write your verdict" not in captured["prompt"].lower()
+        # Read-only means denying the escape hatches too; the allow list by
+        # itself does not stop a headless Claude Code judge calling Bash.
         assert captured["kwargs"]["permissions"] == {
-            "allow": ["Read", "Grep", "Glob"]
+            "allow": ["Read", "Grep", "Glob"],
+            "deny": ["Bash", "WebFetch", "WebSearch", "Agent"],
         }
 
 

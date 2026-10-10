@@ -505,6 +505,33 @@ def test_cursor_permission_translation_warns_for_unknown_tool(tmp_path, monkeypa
         runner._prepare_permissions(tmp_path)
 
 
+def test_cursor_denied_agent_tool_is_a_quiet_no_op(tmp_path, monkeypatch):
+    """The harness's default judge deny list includes Agent, which Cursor has
+    no permission for.  Denying it must neither warn nor leak a pattern."""
+    import warnings
+    runner = _runner(
+        monkeypatch,
+        permissions={"allow": ["Read"],
+                     "deny": ["Bash", "WebFetch", "WebSearch", "Agent"]},
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        snapshot = runner._prepare_permissions(tmp_path)
+    try:
+        config = json.loads(snapshot.path.read_text())
+        assert "Shell(**)" in config["permissions"]["deny"]
+        assert "WebFetch(*)" in config["permissions"]["deny"]
+        assert not any("Agent" in p for p in config["permissions"]["deny"])
+    finally:
+        CursorAgentRunner._restore_permissions(snapshot)
+
+
+def test_cursor_allowed_agent_tool_still_rejected(tmp_path, monkeypatch):
+    runner = _runner(monkeypatch, permissions={"allow": ["Read", "Agent"]})
+    with pytest.raises(ValueError, match="no permission mapping for 'Agent'"):
+        runner._prepare_permissions(tmp_path)
+
+
 def test_cursor_permission_translation_keeps_mcp_wildcards(tmp_path, monkeypatch):
     runner = _runner(monkeypatch, permissions={"allow": ["mcp__*"]})
     snapshot = runner._prepare_permissions(tmp_path)
